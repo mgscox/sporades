@@ -9952,12 +9952,15 @@ var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
   "table_xinfo"
 ]);
 function containsSideEffectSqlToken(sql) {
-  for (const token of readSqlTokens(sql)) {
+  return containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false);
+}
+function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
+  for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
     const value = token.value.toLowerCase();
     if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
       return true;
     }
-    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
+    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
       return true;
     }
   }
@@ -9984,11 +9987,11 @@ var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
   "set_config",
   "setval"
 ]);
-function readSqlTokens(sql) {
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn = true) {
   const tokens = [];
   let index = 0;
   while (index < sql.length) {
-    const skipped = skipSqlLiteralOrComment(sql, index);
+    const skipped = skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn);
     if (skipped > index) {
       index = skipped;
       continue;
@@ -10029,13 +10032,13 @@ function readSqlTokenIdentifier(sql, index) {
   }
   return readBareSqlIdentifier(sql, index);
 }
-function skipSqlLiteralOrComment(sql, index) {
+function skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn = true) {
   if (sql[index] === "/" && sql[index + 1] === "*") {
     const end = sql.indexOf("*/", index + 2);
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
     return end ? index + 2 + end.index + 1 : sql.length;
   }
   if (sql[index] !== "'") {
@@ -10164,7 +10167,7 @@ function readSqlTableReference(sql, startIndex) {
   }
   return parts;
 }
-function skipSqlTrivia(sql, startIndex) {
+function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn = true) {
   let index = startIndex;
   let advanced = true;
   while (advanced) {
@@ -10180,7 +10183,7 @@ function skipSqlTrivia(sql, startIndex) {
       continue;
     }
     if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = /[\n\r]/.exec(sql.slice(index + 2));
+      const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
       index = end ? index + 2 + end.index + 1 : sql.length;
       advanced = true;
     }

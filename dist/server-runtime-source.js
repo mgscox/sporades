@@ -7935,9 +7935,7 @@ function sqlTheEnginesLexDifferently(sql) {
     return null;
 }
 // Everything a verdict is drawn from, under one engine's line-comment rule, in a form two runs can
-// be compared with. Every consumer of the walk — the first token, the separator search, the safe
-// PRAGMA check, the keyword scan and the terminator strip — reads the same three things out of it,
-// so two runs that agree here cannot disagree downstream:
+// be compared with. It records three things:
 //
 //   - **which characters are content**, position included, so a token that moves is a difference;
 //   - **which characters are trivia**, comment and whitespace collapsed together, because no
@@ -7945,6 +7943,18 @@ function sqlTheEnginesLexDifferently(sql) {
 //   - **where a quoted run starts and ends**, emitted opaquely, so that a `;` inside a literal under
 //     one rule and outside it under the other is a difference rather than the same character at the
 //     same offset.
+//
+// This covers exactly the four consumers that reach the walk through `skipSqlStringOrComment` — the
+// first token, the separator search, the safe PRAGMA check and the terminator strip. Two runs that
+// agree here cannot disagree in any of those.
+//
+// It does **not** cover the side-effect keyword scan, and an earlier version of this comment claimed
+// it did. That scan walks `skipSqlLiteralOrComment`, a deliberately different tokenizer that knows
+// neither dollar quoting nor E-strings, so it can read a span this one treats as a single opaque
+// literal — which is the whole reason it exists. Agreement here says nothing about it: `"--<CR>E`
+// yields the token `e` under one line-comment rule and none under the other while this fingerprint
+// is identical under both. The scan is covered instead by being run under both rules and unioned;
+// see `containsSideEffectSqlToken`.
 //
 // The comparison is derived rather than described, for the reason recorded on the block-comment
 // counter above and demonstrated twice there: a rule that recognises the dangerous text is a rule
@@ -8034,13 +8044,39 @@ export const SAFE_INSPECTION_PRAGMAS = new Set([
     "table_list",
     "table_xinfo",
 ]);
+// The scan runs under *both* line-comment terminators and reports a hit found under either, which is
+// the only combination that is safe here and is not the same operation the gate's other walks do.
+// They compare two readings and refuse a disagreement, because they answer "which statement is
+// this" and a disagreement means there is no single answer. This one answers "is a destructive verb
+// anywhere in here", so two readings compose by union: a verb one reading hides behind a comment and
+// the other exposes is still a verb, and there is nothing to be ambiguous about.
+//
+// Taking the union rather than picking a terminator is what this needed, and picking one is the
+// mistake that was here. `skipSqlLiteralOrComment` was given the CR rule along with every other walk,
+// which composes exactly as the main walk's did: the CR ends the `--`, exposing a `/*` that then
+// swallows the verb past the LF.
+//
+//     SELECT $$a; --b<CR>/*<LF>DROP TABLE t;<LF>*/$$ AS s
+//
+// Postgres reads all of that as one dollar-quoted literal and answers a string. SQLite and libSQL
+// have no dollar quoting, so to them it is a real `DROP` in a second statement — and they execute
+// it. This scan is the only cover for that, deliberately, because it is the one walk that does not
+// know dollar quoting and so can see inside a literal the other two engines never see as one; the
+// separator walk cannot help, since `$$…;…$$` genuinely *is* one statement to Postgres, and
+// `sqlContentFingerprint` cannot see it either, because the whole span is one opaque quoted run to
+// it under both readings. Under the LF rule the `DROP` is plain text and the scan fires. Under CR
+// alone it was invisible.
 function containsSideEffectSqlToken(sql) {
-    for (const token of readSqlTokens(sql)) {
+    return (containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false));
+}
+function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
+    for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
         const value = token.value.toLowerCase();
         if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
             return true;
         }
-        if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
+        if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) &&
+            sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
             return true;
         }
     }
@@ -8095,11 +8131,11 @@ export const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
     "set_config",
     "setval",
 ]);
-function readSqlTokens(sql) {
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn = true) {
     const tokens = [];
     let index = 0;
     while (index < sql.length) {
-        const skipped = skipSqlLiteralOrComment(sql, index);
+        const skipped = skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn);
         if (skipped > index) {
             index = skipped;
             continue;
@@ -8140,15 +8176,16 @@ function readSqlTokenIdentifier(sql, index) {
     }
     return readBareSqlIdentifier(sql, index);
 }
-function skipSqlLiteralOrComment(sql, index) {
+function skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn = true) {
     if (sql[index] === "/" && sql[index + 1] === "*") {
         const end = sql.indexOf("*/", index + 2);
         return end === -1 ? sql.length : end + 2;
     }
     if (sql[index] === "-" && sql[index + 1] === "-") {
-        // A line comment ends at CR as well as LF, because Postgres spells a comment's body
-        // `[^\n\r]`. See `skipSqlStringOrComment` for why every walk in this file has to agree.
-        const end = /[\n\r]/.exec(sql.slice(index + 2));
+        // Neither terminator is the right one for this walk on its own, so its only caller runs it under
+        // both and unions the results — see `containsSideEffectSqlToken`. Hard-coding the CR rule here
+        // hid a `DROP` behind a `/*` the CR had exposed.
+        const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
         return end ? index + 2 + end.index + 1 : sql.length;
     }
     if (sql[index] !== "'") {
@@ -8378,7 +8415,7 @@ function readSqlTableReference(sql, startIndex) {
 // leaving the operator to read "not read-only" about a pasted non-breaking space.
 //
 // A line comment ends at CR as well as LF, for the reason set out on `skipSqlStringOrComment`.
-function skipSqlTrivia(sql, startIndex) {
+function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn = true) {
     let index = startIndex;
     let advanced = true;
     while (advanced) {
@@ -8394,7 +8431,7 @@ function skipSqlTrivia(sql, startIndex) {
             continue;
         }
         if (sql[index] === "-" && sql[index + 1] === "-") {
-            const end = /[\n\r]/.exec(sql.slice(index + 2));
+            const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
             index = end ? index + 2 + end.index + 1 : sql.length;
             advanced = true;
         }

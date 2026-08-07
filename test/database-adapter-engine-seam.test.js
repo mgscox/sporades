@@ -402,6 +402,50 @@ const LINE_COMMENT_COMPOSITION_ATTEMPTS = [
   "SELECT 1 AS s --x\r AS z",
 ];
 
+// Which verbs are reachable through the dollar-quote route is a question with an executed answer,
+// it is only about which payloads belong in this battery. It is *not* a reason to relax anything:
+// the exploit is `DROP` and `CREATE`, both of which SQLite and libSQL have and both of which were
+// refused at the pre-work base and admitted at 80c14e4. The engines that read *inside* such a run
+// are SQLite and libSQL — Postgres reads a literal — and those two have no `TRUNCATE` and no `DO`,
+// so a payload built from those verbs would pass whatever the gate did. Measured with a canary on
+// all three:
+//
+//     DROP      SQLite=GONE     libSQL=GONE     Postgres=intact
+//     DELETE    SQLite=EMPTIED  libSQL=EMPTIED  Postgres=intact
+//     TRUNCATE  SQLite=intact   libSQL=intact   Postgres=intact
+//     DO        SQLite=intact   libSQL=intact   Postgres=intact
+//
+// So the belt has to cover every destructive verb SQLite and libSQL have, and it does. A `TRUNCATE`
+// payload here would be a test that passes for a reason that has nothing to do with the gate — this
+// battery had one until the canary said otherwise, and it was replaced with `DELETE` and `UPDATE`
+// rather than deleted, because the class needs more than one live witness.
+//
+// A destructive verb inside a dollar-quoted run. Three things line up, and the third was this
+// work's own regression.
+//
+// `$$…;…$$` genuinely is one statement to Postgres, so the separator walk is defeated legitimately
+// and `sqlContentFingerprint` sees one opaque quoted run under both line-comment rules. The only
+// cover is the side-effect keyword scan, which walks a deliberately different tokenizer that knows
+// nothing of dollar quoting and therefore reads the verb SQLite and libSQL will really execute.
+//
+// Round 1 gave that tokenizer the CR line-comment rule along with every other walk, which blinded
+// it by exactly the composition round 4 fixed elsewhere: the CR ends the `--`, exposing a `/*` that
+// swallows the verb past the LF. The scan now runs under both terminators and unions the hits.
+//
+// These are refused at the pre-work base and were admitted at 80c14e4 — the regression was
+// invisible to four rounds of round-over-round comparison, which is why the differential baseline is
+// now the base rather than the previous commit.
+const DOLLAR_QUOTE_BELT_ATTEMPTS = [
+  "SELECT $$a; --b\r/*\nDROP TABLE sporades_injection_canary;\n*/$$ AS s",
+  "SELECT $$a; --b\r/*\nDELETE FROM sporades_injection_canary;\n*/$$ AS s",
+  "SELECT $$a--\r/*\nDROP TABLE sporades_injection_canary;$$ AS s",
+  "SELECT $tag$a; --b\r/*\nDROP TABLE sporades_injection_canary;\n*/$tag$ AS s",
+  "SELECT $$a; --b\r/*\nUPDATE sporades_injection_canary SET id = 'x';\n*/$$ AS s",
+  // The same belt, without the comment trick: the scan has always caught these and must keep doing
+  // so, because the separator walk cannot.
+  "SELECT $$a; DROP TABLE sporades_injection_canary$$ AS s",
+];
+
 const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
 
 // The same species one level down: text the walk reads is not always the text the engine receives.
@@ -427,7 +471,7 @@ const UNREPRESENTABLE_TEXT_ATTEMPTS = [
 const UNREPRESENTABLE_TEXT_MESSAGE = "Only SQL text the database receives unchanged is allowed.";
 
 test("no second statement hides inside a dollar-quoted or an E-string literal", () => {
-  for (const sql of INJECTION_ATTEMPTS) {
+  for (const sql of [...INJECTION_ATTEMPTS, ...DOLLAR_QUOTE_BELT_ATTEMPTS]) {
     const validation = validateReadOnlyInspectionSql(sql);
     assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
     assert.equal(validation.error.message, "Only read-only SQL is allowed.");
@@ -511,34 +555,37 @@ function nestingBlockCommentEnd(sql, start) {
 }
 
 test("everything admitted closes its block comments where a nesting lexer does", () => {
-  // `/*/` and `**/` are pieces in their own right, and ` SELECT 1 ` carries its own spacing, so the
-  // shapes below are reachable within the depth bound. A first attempt at this generator used
-  // single-token pieces and could not emit either of them at depth 5 — the assertions caught it,
-  // which is the whole reason they are here.
-  // `/*/` and `**/` are pieces in their own right, `--` and the two line endings are pieces because
-  // the line-comment terminator composes with block comments, and ` SELECT 1 ` carries its own
-  // spacing, so every shape asserted below is reachable within the depth bound.
+  // Two corpora, because one alphabet cannot serve both classes at a workable depth.
   //
-  // The piece set is the part of this test that has been wrong three times. It could not reach
-  // nesting depth in round 2, could not reach the `/*/` straddle in round 3, and in round 4 it had
-  // no `--`, `\r` or `\n` at all, so it reported clean about a class of disagreement it could not
-  // express. Adding a rule without adding its alphabet here is how that keeps happening.
-  //
-  // Depth is 5 rather than 6 because nine pieces at six deep is half a million strings for no new
-  // shape class. The two comment shapes asserted below are the five-piece spellings of the round-1
-  // and round-2 defects — `/*/* SELECT 1 */*/` nests and `/*/*/ SELECT 1 */*/` straddles, and both
-  // are refused for the same reason their longer cousins in the attempt lists above are.
-  const pieces = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
+  // The piece set is the part of this test that has been wrong four times: it could not reach
+  // nesting depth in round 2, could not reach the `/*/` straddle in round 3, had no `--`, `\r` or
+  // `\n` at all in round 4, and in round 5 had no quote characters and only ever *appended* the
+  // verb — so it could not express a verb hidden *inside* a quoted run, which is exactly the shape
+  // that regressed. Adding a rule without adding its alphabet here is how that keeps happening.
+  const commentPieces = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
+  const quotingPieces = ["/*", "*/", "--", "\r", "\n", " ", "$$", "'", '"', "E'"];
+
   const corpus = [];
-  const build = (depth, acc) => {
-    if (depth === 0) {
-      corpus.push(`${acc} TRUNCATE TABLE t`);
-      corpus.push(`${acc}; DROP TABLE t`);
-      return;
-    }
-    for (const piece of pieces) build(depth - 1, acc + piece);
+  const build = (pieces, maxDepth, shapes) => {
+    const walk = (depth, acc) => {
+      if (depth === 0) {
+        for (const shape of shapes) corpus.push(shape(acc));
+        return;
+      }
+      for (const piece of pieces) walk(depth - 1, acc + piece);
+    };
+    for (let depth = 1; depth <= maxDepth; depth += 1) walk(depth, "");
   };
-  for (let depth = 1; depth <= 5; depth += 1) build(depth, "");
+
+  // Appended: the verb follows whatever trivia the prefix turned out to be.
+  build(commentPieces, 5, [(acc) => `${acc} TRUNCATE TABLE t`, (acc) => `${acc}; DROP TABLE t`]);
+  // Surrounded: the verb sits inside a quoted run, which is where the separator walk and the
+  // keyword scan read the same bytes differently and only the scan can see it.
+  build(quotingPieces, 4, [
+    (acc) => `SELECT $$a${acc}DROP TABLE t;$$ AS s`,
+    (acc) => `SELECT 'a${acc}DROP TABLE t;' AS s`,
+    (acc) => `SELECT $$a${acc}TRUNCATE TABLE t;$$ AS s`,
+  ]);
 
   // Corpus adequacy, asserted rather than assumed: the shape that defeated each previous round must
   // be in here, or a clean result below means nothing. Every round so far reported clean from a
@@ -549,6 +596,16 @@ test("everything admitted closes its block comments where a nesting lexer does",
   assert.ok(
     corpus.some((sql) => sql.includes("--") && sql.includes("\r") && sql.includes("/*")),
     "corpus cannot compose a line comment, a carriage return and a block comment",
+  );
+  // Round 5's shape: a destructive verb inside a dollar-quoted run, hidden from the keyword scan by
+  // a `--<CR>/*<LF>` composition. One statement to Postgres, two to SQLite and libSQL.
+  assert.ok(
+    corpus.includes("SELECT $$a--\r/*\nDROP TABLE t;$$ AS s"),
+    "corpus cannot emit the round-5 dollar-quote-wrapped shape",
+  );
+  assert.ok(
+    corpus.some((sql) => /\$\$.*DROP/s.test(sql)),
+    "corpus cannot wrap a verb in a dollar quote at all",
   );
   assert.ok(corpus.length > 15000, `corpus is too small to be meaningful: ${corpus.length}`);
 
@@ -564,11 +621,12 @@ test("everything admitted closes its block comments where a nesting lexer does",
       sqlContentFingerprint(sql, false),
       `admitted text the two line-comment rules read differently: ${JSON.stringify(sql)}`,
     );
-    // Only comments the walk actually starts at count. Scanning every `/*` in the string would
-    // examine positions inside a comment the walk had already stepped over, which is not a comment
-    // start on any engine. The corpus holds no quotes, so stepping over both comment kinds is the
-    // whole of the traversal — and the line-comment step has to be here now that `--` is a piece,
-    // or a `/*` inside a line comment gets held to a rule that does not apply to it.
+    // The nesting property is checked on the quote-free half only. Stepping over both comment kinds
+    // is the whole of the traversal there; once a payload carries `'`, `$$` or `"`, deciding whether
+    // a `/*` opens a comment or sits inside a literal needs the runtime's own quoting walk, and
+    // reimplementing that here would be asserting this test against itself. The quoted half is
+    // covered by the fingerprint assertion above, by the batteries, and by the live sweep.
+    if (/['"$`[]|E'/.test(sql)) continue;
     let index = 0;
     while (index < sql.length) {
       if (sql[index] === "-" && sql[index + 1] === "-") {
@@ -723,6 +781,7 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
             ...UNREPRESENTABLE_TEXT_ATTEMPTS.map((sql) => [sql, UNREPRESENTABLE_TEXT_MESSAGE]),
             ...NESTED_BLOCK_COMMENT_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
             ...LINE_COMMENT_COMPOSITION_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
+            ...DOLLAR_QUOTE_BELT_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
           ];
           for (const [sql, message] of attempts) {
             const result = await adapter.runReadOnlyInspectionQuery(sql);
@@ -775,6 +834,7 @@ test("no injection attempt is sent to the engine at all", async () => {
     ...UNREPRESENTABLE_TEXT_ATTEMPTS,
     ...NESTED_BLOCK_COMMENT_ATTEMPTS,
     ...LINE_COMMENT_COMPOSITION_ATTEMPTS,
+    ...DOLLAR_QUOTE_BELT_ATTEMPTS,
   ];
   const admitted = [];
   await withLibsqlAdapter(
