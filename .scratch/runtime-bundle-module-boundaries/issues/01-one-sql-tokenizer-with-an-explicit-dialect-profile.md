@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # One SQL Tokenizer With An Explicit Dialect Profile
 

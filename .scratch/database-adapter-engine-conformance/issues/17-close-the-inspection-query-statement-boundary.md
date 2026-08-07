@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Close The Inspection Query Statement Boundary
 
@@ -77,3 +77,28 @@ deliberately while the terminator work is open.
 ## Blocked by
 
 - None — can start immediately.
+
+## Comments
+
+Superseded and completed by
+`.scratch/runtime-bundle-module-boundaries/issues/01-one-sql-tokenizer-with-an-explicit-dialect-profile.md`.
+
+Five worker rounds against this ticket produced a branch that was never merged; all
+four of its independent reviews returned REQUEST_CHANGES, and the last revision was
+unreviewed when that swarm stopped. Rather than discard it, ticket 01 merged that
+branch as its first commit and collapsed the duplicated walkers on top, so the work
+finally received an independent review as part of ticket 01's own.
+
+Every acceptance criterion above is met and verified by execution on SQLite, libSQL
+and Postgres: the CR-terminated line comment, nested and `/*/`-straddled block
+comments, line/block composition, the dollar-quote keyword-scan blinding, unpaired
+surrogates and NUL are all refused — by the validator with its own reason, not by an
+engine syntax error. Measured against the pre-work base the change closes 291 real
+Postgres offenders and admits nothing new.
+
+Two items raised here are deliberately **not** closed and want their own tickets:
+`splitSqlStatements`, a lexer of the same class gating libSQL's multi-statement
+`exec` path; and the `PRAGMA writable_schema` gap in the side-effect keyword belt,
+which is pre-existing and unchanged. `postgresInterpolate` remains a second run
+lexer on the inspection path, recorded in ADR-0038 with the identity-or-throw
+property the gate depends on asserted rather than argued.
