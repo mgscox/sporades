@@ -322,6 +322,7 @@ export declare function validateReadOnlyInspectionSql(sql: any): {
 } | {
     ok: true;
 };
+export declare function sqlContentFingerprint(sql: string, lineCommentEndsAtCarriageReturn: boolean): string;
 export declare const SAFE_INSPECTION_PRAGMAS: Set<string>;
 export declare const SIDE_EFFECT_SQL_KEYWORDS: Set<string>;
 export declare const SIDE_EFFECT_SQL_FUNCTIONS: Set<string>;
