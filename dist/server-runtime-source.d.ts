@@ -326,6 +326,47 @@ export declare function sqlContentFingerprint(sql: string, lineCommentEndsAtCarr
 export declare const SAFE_INSPECTION_PRAGMAS: Set<string>;
 export declare const SIDE_EFFECT_SQL_KEYWORDS: Set<string>;
 export declare const SIDE_EFFECT_SQL_FUNCTIONS: Set<string>;
+export declare function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn: boolean): {
+    comments: boolean;
+    lineCommentEndsAtCarriageReturn: boolean;
+    dollarQuoting: boolean;
+    escapeStrings: boolean;
+    quotes: string;
+    unterminatedQuotedRunReachesEndOfInput: boolean;
+};
+export declare function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn: boolean): {
+    comments: boolean;
+    lineCommentEndsAtCarriageReturn: boolean;
+    dollarQuoting: boolean;
+    escapeStrings: boolean;
+    quotes: string;
+    unterminatedQuotedRunReachesEndOfInput: boolean;
+};
+export declare function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn: boolean): {
+    comments: boolean;
+    lineCommentEndsAtCarriageReturn: boolean;
+    dollarQuoting: boolean;
+    escapeStrings: boolean;
+    quotes: string;
+    unterminatedQuotedRunReachesEndOfInput: boolean;
+};
+export declare function sqlDialectQuotedRunsOnly(): {
+    comments: boolean;
+    lineCommentEndsAtCarriageReturn: boolean;
+    dollarQuoting: boolean;
+    escapeStrings: boolean;
+    quotes: string;
+    unterminatedQuotedRunReachesEndOfInput: boolean;
+};
+export declare function sqlDialectQuotedIdentifiersOnly(quotes: string): {
+    comments: boolean;
+    lineCommentEndsAtCarriageReturn: boolean;
+    dollarQuoting: boolean;
+    escapeStrings: boolean;
+    quotes: string;
+    unterminatedQuotedRunReachesEndOfInput: boolean;
+};
+export declare function skipSqlQuotedOrCommented(sql: string, index: number, dialect: any): number;
 export declare function sqlWithoutTrailingTerminator(sql: any): string;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 type TrustedRefreshTransport = {

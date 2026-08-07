@@ -84,12 +84,37 @@ Demoted is not the same as dispensable, and there is one place this scan is the
 and libSQL, which have no such quoting — so the separator rule is defeated
 legitimately, and the fingerprint below sees one opaque literal under either
 reading. The scan is the only walk that looks inside, precisely because it is the
-one that does not know dollar quoting. That is why it walks a different tokenizer
-from everything else here, and why giving that tokenizer a single line-comment
+one that does not know dollar quoting. That is why it asks for a different dialect
+from everything else here, and why giving that dialect a single line-comment
 terminator blinded it: a `--<CR>` exposed a `/*` that swallowed the verb past the
 LF, and `SELECT $$a; --b<CR>/*<LF>DROP TABLE t;<LF>*/$$ AS s` was admitted and
 dropped the table on both engines. It now runs under both terminators and unions
 the hits.
+
+That ignorance used to be spelled as a *second function*. There were two walkers:
+one knowing the union of the three engines' quoting, one knowing neither Postgres
+form, sharing their comment handling verbatim and then diverging. The divergence
+was deliberate and security-critical and was recorded only in a prose comment
+beside them — which is a shape an edit can violate while looking obviously
+correct, and one did. The carriage-return terminator was right for Postgres, was
+applied to both walkers because they looked like the same function, and destroyed
+the asymmetry; nothing failed, because no type, parameter or test encoded it. The
+same family of defect then recurred four more times, each fix landing in one
+walker and leaving its sibling.
+
+There is one tokenizer now, `skipSqlQuotedOrCommented`, and the engine differences
+are a dialect profile it takes as an argument. The keyword scan asks for
+`sqlDialectWithoutPostgresStringForms` and asks for it by name, so reading the
+call site tells you which lexing it walks with; widening that profile fails a test
+rather than a Capsule. The trivia skipper and both identifier readers were a third,
+fourth and fifth copy of the same comment and quoting rules, and they go through
+the one tokenizer too — a fix that had left any of them in place would not have
+removed the class.
+
+The bundling constraint is what shaped the answer rather than something worked
+around: a runtime function reaches the generated Capsule bundle as its own source
+text, so it cannot close over a module constant, and the profiles are functions
+emitted alongside it rather than constants it would have to restate.
 
 Union, not refuse-on-disagreement, and the difference is worth holding onto: the
 other walks answer *which statement is this*, where two readings disagreeing means

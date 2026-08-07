@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  SERVER_RUNTIME_SOURCE_FUNCTIONS,
   createDatabaseDialect,
   createDatabaseNormalization,
   createSharedDatabaseAdapterMethods,
@@ -9,7 +10,10 @@ import {
   libsqlRowNormalization,
   postgresDatabaseDialect,
   postgresRowNormalization,
+  skipSqlQuotedOrCommented,
   sqlContentFingerprint,
+  sqlDialectEveryEngineQuotes,
+  sqlDialectWithoutPostgresStringForms,
   sqlWithoutTrailingTerminator,
   sqliteDatabaseDialect,
   sqliteRowNormalization,
@@ -446,7 +450,23 @@ const DOLLAR_QUOTE_BELT_ATTEMPTS = [
   // The same belt, without the comment trick: the scan has always caught these and must keep doing
   // so, because the separator walk cannot.
   "SELECT $$a; DROP TABLE sporades_injection_canary$$ AS s",
+  // The `CREATE TABLE` limb of the same shape, in both dollar-quote spellings. A canary row only
+  // witnesses a *destructive* first token; a second statement beginning `CREATE` leaves it alone
+  // and is still not a `SELECT`, so it needs the probe below to be observed at all. Running a
+  // canary and calling that an oracle is how an earlier sweep of this work reported clean for a
+  // whole class.
+  "SELECT $$a; CREATE TABLE sporades_injection_probe (id int)$$ AS s",
+  "SELECT $tag$a; CREATE TABLE sporades_injection_probe (id int)$tag$ AS s",
+  "SELECT $$a; --b\r/*\nCREATE TABLE sporades_injection_probe (id int);\n*/$$ AS s",
 ];
+
+// Whether the table those payloads try to bring into existence exists. `to_regclass` answers NULL
+// rather than raising when it does not, and the two SQLite-family engines answer no rows.
+const PROBE_TABLE_EXISTS = {
+  Postgres: "SELECT to_regclass('sporades_injection_probe') AS t",
+  SQLite: "SELECT name AS t FROM sqlite_schema WHERE name = 'sporades_injection_probe'",
+  libSQL: "SELECT name AS t FROM sqlite_schema WHERE name = 'sporades_injection_probe'",
+};
 
 const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
 
@@ -655,6 +675,115 @@ test("everything admitted closes its block comments where a nesting lexer does",
   assert.ok(admitted > 500, `too few admitted for this to be evidence: ${admitted}`);
 });
 
+// The invariant that five rounds of defects were able to violate, written where an edit cannot
+// violate it quietly.
+//
+// The keyword scan must walk without knowing Postgres's dollar quoting or its E-strings. That is
+// not an oversight to be tidied up: `SELECT $$a; DROP TABLE t$$ AS s` is one literal to Postgres
+// and a real second statement to SQLite and libSQL, which have neither form and execute the `DROP`.
+// A walk that knew dollar quoting would skip the verb as literal content and admit it.
+//
+// Until now that asymmetry lived in a prose comment beside two near-identical functions, and a
+// change that was right for one of them and applied to both destroyed it without failing anything.
+// It is a named argument now, so widening it fails here — asked of the tokenizer rather than read
+// off the profile's fields, because a field can be renamed and a behaviour cannot.
+test("the dialect the keyword scan asks for withholds the two string forms only Postgres has", () => {
+  const withheld = sqlDialectWithoutPostgresStringForms(true);
+  const everyEngine = sqlDialectEveryEngineQuotes(true);
+
+  // The union profile recognises both forms, so the assertions below are an asymmetry rather than
+  // a tokenizer that recognises nothing.
+  assert.equal(skipSqlQuotedOrCommented("$$a; DROP TABLE t$$", 0, everyEngine), 19);
+  assert.equal(skipSqlQuotedOrCommented("$tag$a; DROP TABLE t$tag$", 0, everyEngine), 25);
+  assert.equal(skipSqlQuotedOrCommented("E'a; DROP TABLE t'", 0, everyEngine), 18);
+
+  // And the withholding profile recognises neither, so the keyword scan reads the verb SQLite and
+  // libSQL will really execute. `0` is "nothing opens here", which is what makes the scan step one
+  // character and go on to read `DROP` as a token.
+  assert.equal(
+    skipSqlQuotedOrCommented("$$a; DROP TABLE t$$", 0, withheld),
+    0,
+    "the keyword scan's dialect learned dollar quoting — `SELECT $$a; DROP TABLE t$$ AS s` is now admitted on SQLite and libSQL",
+  );
+  assert.equal(
+    skipSqlQuotedOrCommented("$tag$a; DROP TABLE t$tag$", 0, withheld),
+    0,
+    "the keyword scan's dialect learned tagged dollar quoting",
+  );
+  assert.equal(
+    skipSqlQuotedOrCommented("E'a; DROP TABLE t'", 0, withheld),
+    0,
+    "the keyword scan's dialect learned E-strings",
+  );
+
+  // The scan is the consumer that has to ask for it, and the call site has to say so. A profile
+  // nothing asks for protects nothing.
+  const keywordScan = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "readSqlTokens");
+  assert.ok(keywordScan, "the keyword scan no longer travels into the bundle");
+  assert.match(
+    keywordScan.toString(),
+    /sqlDialectWithoutPostgresStringForms/,
+    "the keyword scan stopped naming the dialect it walks with, so a reader has to infer it again",
+  );
+});
+
+// One tokenizer, asserted by counting the copies rather than by trusting that the collapse was
+// complete. The ticket's warning is that a fix leaving a third copy in place has not removed the
+// class, and there were five copies: the two skippers, the trivia skipper and the two token
+// readers.
+//
+// Each fact below is a *terminator* rule — where a run ends — because that is the class. Every one
+// of the five defects was an end that moved. Where a run *begins* has never been the fault, and the
+// deliberate second reading in `sqlTheEnginesLexDifferently` is a nesting oracle that has to
+// disagree with the tokenizer to do its job, so it is not counted here.
+test("one tokenizer answers where a comment, a string or a quoted identifier ends", () => {
+  const facts = [
+    // The line-comment terminator: the edit that started this, applied to two functions because
+    // they looked like one.
+    ["a line comment's terminator", /lineCommentEndsAtCarriageReturn \? \/\[\\n\\r\]\/ : \/\\n\//],
+    // Postgres's dollar-quote delimiter, tag alphabet and all.
+    ["a dollar-quote delimiter", /\\\$\(\?:\[A-Za-z_/],
+    // The E-string, whose backslash escape regime is a second reading of the same `'…'` delimiter.
+    ["an E-string's opener", /sql\[index\] === "E" \|\| sql\[index\] === "e"/],
+    // `[…]` closing at `]` while every other quoting form closes at its own character.
+    ["a bracket-quoted identifier's close", /=== "\[" \? "\]"/],
+  ];
+
+  for (const [fact, pattern] of facts) {
+    const encoders = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => pattern.test(fn.toString())).map((fn) => fn.name);
+    assert.deepEqual(
+      encoders,
+      ["skipSqlQuotedOrCommented"],
+      `${fact} is encoded in ${encoders.length} runtime functions rather than one: ${encoders.join(", ")}`,
+    );
+  }
+
+  // The two functions the class came from are gone rather than left as aliases beside the
+  // tokenizer, and nothing still calls them.
+  const allSource = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => `${fn.name}\n${fn.toString()}`).join("\n");
+  for (const gone of ["skipSqlStringOrComment", "skipSqlLiteralOrComment"]) {
+    assert.equal(allSource.includes(gone), false, `${gone} still exists, so the pair was not collapsed`);
+  }
+
+  // Every consumer reaches the one tokenizer. Named individually rather than derived, because this
+  // is the list the ticket asked to be established: two skippers, a trivia skipper and two token
+  // readers, plus the walks each of them serves.
+  for (const consumer of [
+    "hasMultipleSqlStatements",
+    "isSafeInspectionPragma",
+    "sqlWithoutTrailingTerminator",
+    "sqlContentFingerprint",
+    "sqlTheEnginesLexDifferently",
+    "readSqlTokens",
+    "readSqlQuotedIdentifier",
+    "skipSqlTrivia",
+  ]) {
+    const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((each) => each.name === consumer);
+    assert.ok(fn, `${consumer} no longer travels into the bundle`);
+    assert.match(fn.toString(), /skipSqlQuotedOrCommented/, `${consumer} does not reach the one tokenizer`);
+  }
+});
+
 // The refusal is of the disputed shape, not of block comments. A comment both lexings close in the
 // same place is untouched, whatever it contains.
 test("an unambiguous block comment is still an ordinary comment", () => {
@@ -798,6 +927,17 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
               `a second statement reached the engine: ${JSON.stringify(sql)}`,
             );
 
+            // And the probe, which is the half a canary cannot see. A `CREATE TABLE` that ran leaves
+            // the canary intact, so without this the battery would be blind to every non-destructive
+            // first token the gate is equally supposed to exclude.
+            const probed = await adapter.runReadOnlyInspectionQuery(PROBE_TABLE_EXISTS[engine.name]);
+            assert.equal(probed.ok, true, probed.error?.message);
+            assert.deepEqual(
+              probed.data.rows.filter((row) => row.t),
+              [],
+              `a second statement created a table: ${JSON.stringify(sql)}`,
+            );
+
             assert.equal(result.ok, false, `an injection attempt was admitted: ${JSON.stringify(sql)}`);
             assert.equal(
               result.error.message,
@@ -812,9 +952,10 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
           assert.deepEqual(survivors.data.rows.map((row) => row.id), ["alive"]);
         } finally {
           await adapter.exec("DROP TABLE IF EXISTS sporades_injection_canary");
+          await adapter.exec("DROP TABLE IF EXISTS sporades_injection_probe");
         }
       },
-      { appTableNames: ["sporades_injection_canary"] },
+      { appTableNames: ["sporades_injection_canary", "sporades_injection_probe"] },
     );
   });
 }

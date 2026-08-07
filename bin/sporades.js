@@ -2487,8 +2487,16 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   logRedactedValue,
   sqlWithoutTrailingTerminator,
   // Reached from `sqlWithoutTrailingTerminator`, which the Postgres `columns()` primitive calls, so
-  // it has to be emitted into the Capsule bundle rather than left behind as a free binding.
-  skipSqlStringOrComment,
+  // it has to be emitted into the Capsule bundle rather than left behind as a free binding. The
+  // dialect profiles travel for the same reason and as functions rather than constants: a runtime
+  // function reaches the bundle as its own source text, so a constant it closed over would not
+  // follow it, while a function it calls is emitted beside it from this list.
+  skipSqlQuotedOrCommented,
+  sqlDialectEveryEngineQuotes,
+  sqlDialectWithoutPostgresStringForms,
+  sqlDialectCommentsOnly,
+  sqlDialectQuotedRunsOnly,
+  sqlDialectQuotedIdentifiersOnly,
   // The read-only gate `runReadOnlyInspectionQuery` opens with, and the whole tokeniser behind it.
   // Absent from here, the call threw inside that method's own `try`, so every DB inspection query
   // in a deployed Capsule came back as an ordinary "check the SQL syntax" failure instead of
@@ -2508,7 +2516,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   containsSideEffectSqlTokenUnder,
   readSqlTokens,
   readSqlTokenIdentifier,
-  skipSqlLiteralOrComment,
+  readSqlQuotedIdentifier,
   targetsInternalLogIndexTable,
   readSqlTableReference,
   skipSqlTrivia,
@@ -9904,9 +9912,10 @@ function sqlTheEnginesLexDifferently(sql) {
   if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
     return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
   }
+  const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
   while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
     if (skipped > index) {
       if (sql[index] === "/" && sql[index + 1] === "*") {
         let depth = 0;
@@ -9942,13 +9951,14 @@ function sqlTheEnginesLexDifferently(sql) {
   return null;
 }
 function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn);
+  const quotedRunsOnly = sqlDialectQuotedRunsOnly();
   let fingerprint = "";
   let index = 0;
   while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn);
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
     if (skipped > index) {
-      const isComment = sql[index] === "-" && sql[index + 1] === "-" || sql[index] === "/" && sql[index + 1] === "*";
-      if (!isComment) {
+      if (skipSqlQuotedOrCommented(sql, index, quotedRunsOnly) > index) {
         fingerprint += `q${index}-${skipped};`;
       }
       index = skipped;
@@ -9962,14 +9972,13 @@ function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
   return fingerprint;
 }
 function readFirstSqlToken(sql) {
-  const index = skipSqlTrivia(sql, 0);
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match?.[0] ?? null;
+  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0))?.value ?? null;
 }
 function hasMultipleSqlStatements(sql) {
+  const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
   while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
@@ -10000,8 +10009,9 @@ function isSafeInspectionPragma(sql, pragmaTokenLength) {
   if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
     return false;
   }
+  const dialect = sqlDialectEveryEngineQuotes(true);
   while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
@@ -10060,10 +10070,11 @@ var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
   "setval"
 ]);
 function readSqlTokens(sql, lineCommentEndsAtCarriageReturn = true) {
+  const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
   const tokens = [];
   let index = 0;
   while (index < sql.length) {
-    const skipped = skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn);
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
     if (skipped > index) {
       index = skipped;
       continue;
@@ -10083,63 +10094,81 @@ function readBareSqlIdentifier(sql, index) {
   return match ? { value: match[0], nextIndex: index + match[0].length } : null;
 }
 function readSqlTokenIdentifier(sql, index) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-  return readBareSqlIdentifier(sql, index);
+  return readSqlQuotedIdentifier(sql, index, '"`[');
 }
-function skipSqlLiteralOrComment(sql, index, lineCommentEndsAtCarriageReturn = true) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
+function readSqlQuotedIdentifier(sql, index, quotes) {
+  const end = skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedIdentifiersOnly(quotes));
+  if (end === index) {
+    return readBareSqlIdentifier(sql, index);
+  }
+  const closingQuote = sql[end - 1];
+  const value = sql.slice(index + 1, end - 1);
+  return {
+    value: closingQuote === sql[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
+    nextIndex: end
+  };
+}
+function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "'",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedRunsOnly() {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedIdentifiersOnly(quotes) {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes,
+    unterminatedQuotedRunReachesEndOfInput: false
+  };
+}
+function skipSqlQuotedOrCommented(sql, index, dialect) {
+  if (dialect.comments && sql[index] === "/" && sql[index + 1] === "*") {
     const end = sql.indexOf("*/", index + 2);
     return end === -1 ? sql.length : end + 2;
   }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
+  if (dialect.comments && sql[index] === "-" && sql[index + 1] === "-") {
+    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
     return end ? index + 2 + end.index + 1 : sql.length;
   }
-  if (sql[index] !== "'") {
-    return index;
-  }
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === "'") {
-      if (sql[cursor + 1] === "'") {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return sql.length;
-}
-function skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn = true) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
-    return end ? index + 2 + end.index + 1 : sql.length;
-  }
-  const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
-  if (sql[index] === "$" && opensToken) {
+  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
+  if (dialect.dollarQuoting && sql[index] === "$" && opensToken) {
     const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
     if (!delimiter) {
       return index;
@@ -10147,7 +10176,7 @@ function skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn = tr
     const end = sql.indexOf(delimiter, index + delimiter.length);
     return end === -1 ? index : end + delimiter.length;
   }
-  if ((sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+  if (dialect.escapeStrings && (sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
     let cursor2 = index + 2;
     while (cursor2 < sql.length) {
       if (sql[cursor2] === "\\") {
@@ -10167,7 +10196,7 @@ function skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn = tr
   }
   const quote = sql[index];
   const closingQuote = quote === "[" ? "]" : quote;
-  if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
+  if (quote === void 0 || !dialect.quotes.includes(quote)) {
     return index;
   }
   let cursor = index + 1;
@@ -10181,16 +10210,18 @@ function skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn = tr
     }
     cursor += 1;
   }
-  return sql.length;
+  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql.length : index;
 }
 function sqlWithoutTrailingTerminator(sql) {
   const text = String(sql ?? "");
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  const quotedRunsOnly = sqlDialectQuotedRunsOnly();
   let index = 0;
   let contentEnd = 0;
   while (index < text.length) {
-    const skipped = skipSqlStringOrComment(text, index);
+    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
     if (skipped > index) {
-      if (text[index] !== "-" && text[index] !== "/") {
+      if (skipSqlQuotedOrCommented(text, index, quotedRunsOnly) > index) {
         contentEnd = skipped;
       }
       index = skipped;
@@ -10240,6 +10271,7 @@ function readSqlTableReference(sql, startIndex) {
   return parts;
 }
 function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn = true) {
+  const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
   let index = startIndex;
   let advanced = true;
   while (advanced) {
@@ -10248,42 +10280,16 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn = true) 
       index += 1;
       advanced = true;
     }
-    if (sql[index] === "/" && sql[index + 1] === "*") {
-      const end = sql.indexOf("*/", index + 2);
-      index = end === -1 ? sql.length : end + 2;
-      advanced = true;
-      continue;
-    }
-    if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
-      index = end ? index + 2 + end.index + 1 : sql.length;
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
       advanced = true;
     }
   }
   return index;
 }
 function readSqlIdentifier(sql, index) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "'" || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (sql[cursor + 1] === closingQuote && quote !== "[") {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+  return readSqlQuotedIdentifier(sql, index, "'\"`[");
 }
 function isInternalLogIndexMetadataRow(row, sql = "") {
   const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
