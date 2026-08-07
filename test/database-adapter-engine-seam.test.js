@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  SERVER_RUNTIME_SOURCE_FUNCTIONS,
   createDatabaseDialect,
   createDatabaseNormalization,
   createSharedDatabaseAdapterMethods,
@@ -9,6 +10,10 @@ import {
   libsqlRowNormalization,
   postgresDatabaseDialect,
   postgresRowNormalization,
+  skipSqlQuotedOrCommented,
+  sqlContentFingerprint,
+  sqlDialectEveryEngineQuotes,
+  sqlDialectWithoutPostgresStringForms,
   sqlWithoutTrailingTerminator,
   sqliteDatabaseDialect,
   sqliteRowNormalization,
@@ -310,12 +315,730 @@ const INJECTION_ATTEMPTS = [
   "SELECT E'a\\'; DROP TABLE sporades_injection_canary' AS s",
 ];
 
+// A line comment ends at a carriage return as well as at a line feed, because that is where the
+// engine ends one: Postgres spells the body of a `--` comment `[^\n\r]`. The walk ended one at a
+// line feed alone, so everything after a bare CR was trivia to the walk and a fresh statement to
+// the engine — the walk saw one statement ending at the visible `;` and Postgres's simple query
+// protocol executed all of it. `TRUNCATE` and `DO` are the payloads here rather than `DROP`
+// because neither is in the side-effect keyword scan, which isolates the walk: with a `DROP` a
+// refusal could not tell you which of the two defences produced it, and the point of these is that
+// the second one has holes that no list will close.
+//
+// SQLite ends a line comment at a line feed alone, so the walk is now stricter than SQLite and
+// exactly as strict as Postgres. That is the direction one shared verdict has to take: the walk
+// takes the shortest comment any engine would take, so a `;` it admits is a `;` no engine can be
+// hiding.
+const LINE_ENDING_INJECTION_ATTEMPTS = [
+  "SELECT 1 AS s; -- x\r TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 AS s; -- x\r DELETE FROM sporades_injection_canary",
+  "SELECT 1 AS s; -- x\r SELECT 2",
+  "SELECT 1 AS s;\r-- x\r SELECT 2",
+  "SELECT 1 AS s; /* y */ -- x\r SELECT 2",
+  "SELECT 1 AS s; -- x\r DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "SELECT 1 AS s; -- x\r COMMENT ON TABLE sporades_injection_canary IS 'owned'",
+  // The comment need not be the trailing one, and the CR need not be the first line ending.
+  "SELECT 1 -- x\r AS s; -- y\r TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 AS s; -- x\n-- y\r TRUNCATE TABLE sporades_injection_canary",
+];
+
+// Postgres nests block comments. SQLite and libSQL close one at the first `*/` and read on, and so
+// did this walk — so the walk took its first token out of text Postgres was still commenting out.
+// `/*/* */ SELECT 1 */ TRUNCATE TABLE t` is a `SELECT` to the walk and a `TRUNCATE` to Postgres,
+// and every verb the keyword scan deliberately does not list rides the same shape.
+//
+// The statement-shape allowlist is the whole of what excludes those verbs, so a disagreement about
+// *where the first token is* defeats it completely. It was held shut only by the `columns()` wrap
+// failing to parse the admitted text, which is the accident this issue refused to rely on for the
+// surrogate case and must not rely on here either.
+//
+// Neither lexing can simply be adopted: nesting would open the mirror hole, where a `;` inside a
+// comment the walk swallowed is a real separator on the two engines that do not nest. So the
+// ambiguous shape is refused, with its own reason.
+const NESTED_BLOCK_COMMENT_ATTEMPTS = [
+  "/*/* */ SELECT 1 */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/* */ SELECT 1 */ DELETE FROM sporades_injection_canary",
+  "/*/* */ SELECT 1 */ DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "/*/* */ SELECT 1 */ SET x = 1",
+  "/*/* */ SELECT 1 */ COMMENT ON TABLE sporades_injection_canary IS 'owned'",
+  "/*/* */ SELECT 1 */ COPY sporades_injection_canary FROM PROGRAM 'x'",
+  "/*/* */ SELECT 1 */ CALL p()",
+  // The nested opener need not be adjacent, need not be at the start, and the comment need not be
+  // the first thing in the statement.
+  "/* a /* b */ SELECT 1 */ TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 /*/* */ AS s */ ; TRUNCATE TABLE sporades_injection_canary",
+  // The mirror hole, which is why nesting was not adopted instead: to SQLite and libSQL this is a
+  // real second statement, and a nesting walk would have read the whole tail as one comment.
+  "SELECT 1 /*/* */; DROP TABLE sporades_injection_canary /* */",
+
+  // The straddle. The nested opener's `*` is also the terminator's `*`, so `/*/` is one opener to
+  // Postgres — `scan.l` matches `{xcstart}` and `yyless(2)` back to just `/*` — and the first
+  // attempt to close this class asked whether the comment's body contained `/*` with the
+  // terminator trimmed off, which cut the string exactly through the opener it was looking for.
+  // These were admitted, and executed: `psql` run directly on the first one truncates the table.
+  //
+  // They are here rather than folded into the list above because the shape is the reason the test
+  // for nesting is now derived instead of described. A regression that reintroduces a substring
+  // rule will pass every case before this point and fail these.
+  "/* /*/ SELECT 1 */ */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/*/ SELECT 1 */ */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/*/ SELECT 1 */**/ TRUNCATE TABLE sporades_injection_canary",
+  "/* /*/ SELECT 1 */ */ DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "/* /*/ SELECT 1 */ */ DELETE FROM sporades_injection_canary",
+  "/*/*/ SELECT 1 */ */ SET x = 1",
+];
+
+// The line-comment terminator, which composes with the block-comment one and was the round-3
+// regression. Ending `--x<CR>` at the CR is right for Postgres and wrong for SQLite, and ending it
+// early *exposes* a `/*` that this walk then runs past the LF which would have closed SQLite's line
+// comment. The composed walk therefore skips more than SQLite does — the exact hazard the CR fix
+// was introduced to remove, reappearing one comment-kind over.
+//
+// These are second statements SQLite and libSQL genuinely execute: handed to `exec`, the first one
+// drops the table on both, while Postgres answers `syntax error at or near "AS"`. Nothing ran
+// through the adapter only because `node:sqlite`'s `prepare()` compiles the first statement of a
+// multi-statement string and silently discards the rest — another component's behaviour holding the
+// boundary shut, which is what this gate exists not to depend on.
+const LINE_COMMENT_COMPOSITION_ATTEMPTS = [
+  "SELECT 1 AS s --x\r/*y\n; DROP TABLE sporades_injection_canary --*/ AS z",
+  "SELECT 1 AS s --x\r/*y\n; TRUNCATE TABLE sporades_injection_canary --*/ AS z",
+  "SELECT 1 --x\r/*\n; DROP TABLE sporades_injection_canary /*\r*/ AS z",
+  // Without the block comment the disagreement is still a disagreement: the `;` is inside SQLite's
+  // line comment and outside Postgres's, so the two engines answer different statements.
+  "SELECT 1 AS s --x\r; DROP TABLE sporades_injection_canary",
+  "SELECT 1 AS s --x\r AS z",
+];
+
+// Which verbs are reachable through the dollar-quote route is a question with an executed answer,
+// it is only about which payloads belong in this battery. It is *not* a reason to relax anything:
+// the exploit is `DROP` and `CREATE`, both of which SQLite and libSQL have and both of which were
+// refused at the pre-work base and admitted at 80c14e4. The engines that read *inside* such a run
+// are SQLite and libSQL — Postgres reads a literal — and those two have no `TRUNCATE` and no `DO`,
+// so a payload built from those verbs would pass whatever the gate did. Measured with a canary on
+// all three:
+//
+//     DROP      SQLite=GONE     libSQL=GONE     Postgres=intact
+//     DELETE    SQLite=EMPTIED  libSQL=EMPTIED  Postgres=intact
+//     TRUNCATE  SQLite=intact   libSQL=intact   Postgres=intact
+//     DO        SQLite=intact   libSQL=intact   Postgres=intact
+//
+// So the belt has to cover every destructive verb SQLite and libSQL have, and it does. A `TRUNCATE`
+// payload here would be a test that passes for a reason that has nothing to do with the gate — this
+// battery had one until the canary said otherwise, and it was replaced with `DELETE` and `UPDATE`
+// rather than deleted, because the class needs more than one live witness.
+//
+// A destructive verb inside a dollar-quoted run. Three things line up, and the third was this
+// work's own regression.
+//
+// `$$…;…$$` genuinely is one statement to Postgres, so the separator walk is defeated legitimately
+// and `sqlContentFingerprint` sees one opaque quoted run under both line-comment rules. The only
+// cover is the side-effect keyword scan, which walks a deliberately different tokenizer that knows
+// nothing of dollar quoting and therefore reads the verb SQLite and libSQL will really execute.
+//
+// Round 1 gave that tokenizer the CR line-comment rule along with every other walk, which blinded
+// it by exactly the composition round 4 fixed elsewhere: the CR ends the `--`, exposing a `/*` that
+// swallows the verb past the LF. The scan now runs under both terminators and unions the hits.
+//
+// These are refused at the pre-work base and were admitted at 80c14e4 — the regression was
+// invisible to four rounds of round-over-round comparison, which is why the differential baseline is
+// now the base rather than the previous commit.
+const DOLLAR_QUOTE_BELT_ATTEMPTS = [
+  "SELECT $$a; --b\r/*\nDROP TABLE sporades_injection_canary;\n*/$$ AS s",
+  "SELECT $$a; --b\r/*\nDELETE FROM sporades_injection_canary;\n*/$$ AS s",
+  "SELECT $$a--\r/*\nDROP TABLE sporades_injection_canary;$$ AS s",
+  "SELECT $tag$a; --b\r/*\nDROP TABLE sporades_injection_canary;\n*/$tag$ AS s",
+  "SELECT $$a; --b\r/*\nUPDATE sporades_injection_canary SET id = 'x';\n*/$$ AS s",
+  // The same belt, without the comment trick: the scan has always caught these and must keep doing
+  // so, because the separator walk cannot.
+  "SELECT $$a; DROP TABLE sporades_injection_canary$$ AS s",
+  // The `CREATE TABLE` limb of the same shape, in both dollar-quote spellings. A canary row only
+  // witnesses a *destructive* first token; a second statement beginning `CREATE` leaves it alone
+  // and is still not a `SELECT`, so it needs the probe below to be observed at all. Running a
+  // canary and calling that an oracle is how an earlier sweep of this work reported clean for a
+  // whole class.
+  "SELECT $$a; CREATE TABLE sporades_injection_probe (id int)$$ AS s",
+  "SELECT $tag$a; CREATE TABLE sporades_injection_probe (id int)$tag$ AS s",
+  "SELECT $$a; --b\r/*\nCREATE TABLE sporades_injection_probe (id int);\n*/$$ AS s",
+];
+
+// Whether the table those payloads try to bring into existence exists. `to_regclass` answers NULL
+// rather than raising when it does not, and the two SQLite-family engines answer no rows.
+const PROBE_TABLE_EXISTS = {
+  Postgres: "SELECT to_regclass('sporades_injection_probe') AS t",
+  SQLite: "SELECT name AS t FROM sqlite_schema WHERE name = 'sporades_injection_probe'",
+  libSQL: "SELECT name AS t FROM sqlite_schema WHERE name = 'sporades_injection_probe'",
+};
+
+const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
+
+// The same species one level down: text the walk reads is not always the text the engine receives.
+// The dollar-quote tag alphabet is a UTF-16 code-unit range, so an unpaired surrogate counts as a
+// tag character — and Node folds every unpaired surrogate to U+FFFD on the wire, so two tags that
+// differ here are one tag to Postgres. The walk reads `$\ud800$a$\ud801$` as an open literal that
+// closes at the far `$\ud800$`, hiding both separators; Postgres reads `$�$a$�$` and
+// closes at the first one, leaving a second statement it will parse.
+//
+// These were already refused before this issue, but by accident: hiding a `;` makes the strip the
+// identity, and the raw multi-statement text then fails to parse inside the `columns()` wrap. The
+// refusal has to come from the validator, so the assertion is on the reason.
+const UNREPRESENTABLE_TEXT_ATTEMPTS = [
+  "SELECT $\ud800$a$\ud801$; TRUNCATE TABLE sporades_injection_canary; SELECT $\ud802$b$\ud800$",
+  "SELECT $\ud800$a$\ud801$; SELECT 2; SELECT $\ud802$b$\ud800$",
+  "SELECT $\udc00$a$\udc01$; TRUNCATE TABLE sporades_injection_canary; SELECT $\udc02$b$\udc00$",
+  // A NUL terminates the string Postgres reads off the wire, so the text after it is checked here
+  // and never seen there. Truncation cannot smuggle a statement, but validating text the engine
+  // will not receive is the same fault, and it is refused for the same reason.
+  "SELECT 1 AS s\0; TRUNCATE TABLE sporades_injection_canary",
+];
+
+const UNREPRESENTABLE_TEXT_MESSAGE = "Only SQL text the database receives unchanged is allowed.";
+
 test("no second statement hides inside a dollar-quoted or an E-string literal", () => {
-  for (const sql of INJECTION_ATTEMPTS) {
+  for (const sql of [...INJECTION_ATTEMPTS, ...DOLLAR_QUOTE_BELT_ATTEMPTS]) {
     const validation = validateReadOnlyInspectionSql(sql);
-    assert.equal(validation.ok, false, `a second statement was admitted: ${sql}`);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
     assert.equal(validation.error.message, "Only read-only SQL is allowed.");
   }
+
+  // The CR battery is refused one limb earlier than it used to be, and by a truer reason. Every one
+  // of these really is read differently by the two engine families — Postgres sees two statements
+  // where SQLite sees one and a trailing comment — so "the engines do not agree about this text" is
+  // the accurate answer, and its hint names the carriage return rather than suggesting a SELECT.
+  for (const sql of LINE_ENDING_INJECTION_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(validation.error.message, AMBIGUOUS_LEXING_MESSAGE, JSON.stringify(sql));
+  }
+
+  for (const sql of UNREPRESENTABLE_TEXT_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      UNREPRESENTABLE_TEXT_MESSAGE,
+      `refused for the wrong reason, which is the accident this issue exists to replace: ${JSON.stringify(sql)}`,
+    );
+  }
+
+  for (const sql of LINE_COMMENT_COMPOSITION_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a statement SQLite reads differently was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      AMBIGUOUS_LEXING_MESSAGE,
+      `refused for the wrong reason: ${JSON.stringify(sql)}`,
+    );
+    assert.match(validation.error.hint, /carriage return/);
+  }
+
+  for (const sql of NESTED_BLOCK_COMMENT_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a statement Postgres reads differently was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      AMBIGUOUS_LEXING_MESSAGE,
+      `refused for the wrong reason, which leaves the boundary resting on the columns() wrap: ${JSON.stringify(sql)}`,
+    );
+    assert.match(validation.error.hint, /nested/);
+  }
+});
+
+// Two rounds of this were closed by describing the dangerous text and both descriptions had a blind
+// spot, so this asserts the property instead of the pattern: everything the gate admits must close
+// its block comments where a *nesting* lexer closes them. The model below is written independently
+// of the runtime's — it hops between delimiters with `indexOf` where the runtime walks character by
+// character — so agreement between them is evidence rather than a tautology.
+//
+// The corpus is checked for adequacy before it is used. A sweep that cannot emit the dangerous shape
+// answers zero for the wrong reason, which is how both earlier rounds reported clean.
+//
+// One caveat on how much fidelity the model below carries: it is an independent *implementation* of
+// nesting, not an independent *model* of Postgres. It encodes the same reading the runtime does —
+// leftmost non-overlapping delimiters, left to right, quoting not special inside a comment — so
+// agreement between the two is a regression guard rather than evidence that either matches the
+// engine. What supplies that evidence is running the text against a live Postgres, which the
+// per-engine batteries and `scripts/inspection-lexing-sweep.mjs` do.
+function nestingBlockCommentEnd(sql, start) {
+  let depth = 0;
+  let cursor = start;
+  while (cursor < sql.length) {
+    const open = sql.indexOf("/*", cursor);
+    const close = sql.indexOf("*/", cursor);
+    if (close === -1) return sql.length;
+    if (open !== -1 && open < close) {
+      depth += 1;
+      cursor = open + 2;
+      continue;
+    }
+    depth -= 1;
+    cursor = close + 2;
+    if (depth === 0) return cursor;
+  }
+  return sql.length;
+}
+
+test("everything admitted closes its block comments where a nesting lexer does", () => {
+  // Two corpora, because one alphabet cannot serve both classes at a workable depth.
+  //
+  // The piece set is the part of this test that has been wrong four times: it could not reach
+  // nesting depth in round 2, could not reach the `/*/` straddle in round 3, had no `--`, `\r` or
+  // `\n` at all in round 4, and in round 5 had no quote characters and only ever *appended* the
+  // verb — so it could not express a verb hidden *inside* a quoted run, which is exactly the shape
+  // that regressed. Adding a rule without adding its alphabet here is how that keeps happening.
+  const commentPieces = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
+  const quotingPieces = ["/*", "*/", "--", "\r", "\n", " ", "$$", "'", '"', "E'"];
+
+  const corpus = [];
+  const build = (pieces, maxDepth, shapes) => {
+    const walk = (depth, acc) => {
+      if (depth === 0) {
+        for (const shape of shapes) corpus.push(shape(acc));
+        return;
+      }
+      for (const piece of pieces) walk(depth - 1, acc + piece);
+    };
+    for (let depth = 1; depth <= maxDepth; depth += 1) walk(depth, "");
+  };
+
+  // Appended: the verb follows whatever trivia the prefix turned out to be.
+  build(commentPieces, 5, [(acc) => `${acc} TRUNCATE TABLE t`, (acc) => `${acc}; DROP TABLE t`]);
+  // Surrounded: the verb sits inside a quoted run, which is where the separator walk and the
+  // keyword scan read the same bytes differently and only the scan can see it.
+  build(quotingPieces, 4, [
+    (acc) => `SELECT $$a${acc}DROP TABLE t;$$ AS s`,
+    (acc) => `SELECT 'a${acc}DROP TABLE t;' AS s`,
+    (acc) => `SELECT $$a${acc}TRUNCATE TABLE t;$$ AS s`,
+  ]);
+
+  // Corpus adequacy, asserted rather than assumed: the shape that defeated each previous round must
+  // be in here, or a clean result below means nothing. Every round so far reported clean from a
+  // corpus that could not emit the shape it was reporting clean about.
+  assert.ok(corpus.includes("/*/* SELECT 1 */*/ TRUNCATE TABLE t"), "corpus cannot emit a round-1 nesting shape");
+  assert.ok(corpus.includes("/*/*/ SELECT 1 */*/ TRUNCATE TABLE t"), "corpus cannot emit a round-2 straddle shape");
+  assert.ok(corpus.includes("-- SELECT 1 \r/*; DROP TABLE t"), "corpus cannot emit the round-3 line-comment composition");
+  assert.ok(
+    corpus.some((sql) => sql.includes("--") && sql.includes("\r") && sql.includes("/*")),
+    "corpus cannot compose a line comment, a carriage return and a block comment",
+  );
+  // Round 5's shape: a destructive verb inside a dollar-quoted run, hidden from the keyword scan by
+  // a `--<CR>/*<LF>` composition. One statement to Postgres, two to SQLite and libSQL.
+  assert.ok(
+    corpus.includes("SELECT $$a--\r/*\nDROP TABLE t;$$ AS s"),
+    "corpus cannot emit the round-5 dollar-quote-wrapped shape",
+  );
+  assert.ok(
+    corpus.some((sql) => /\$\$.*DROP/s.test(sql)),
+    "corpus cannot wrap a verb in a dollar quote at all",
+  );
+  assert.ok(corpus.length > 15000, `corpus is too small to be meaningful: ${corpus.length}`);
+
+  let admitted = 0;
+  for (const sql of corpus) {
+    if (!validateReadOnlyInspectionSql(sql).ok) continue;
+    admitted += 1;
+
+    // The line-comment rule, held to the same standard as the nesting one: what the gate admitted
+    // must read the same way under SQLite's terminator as under Postgres's.
+    assert.equal(
+      sqlContentFingerprint(sql, true),
+      sqlContentFingerprint(sql, false),
+      `admitted text the two line-comment rules read differently: ${JSON.stringify(sql)}`,
+    );
+    // The nesting property is checked on the quote-free half only. Stepping over both comment kinds
+    // is the whole of the traversal there; once a payload carries `'`, `$$` or `"`, deciding whether
+    // a `/*` opens a comment or sits inside a literal needs the runtime's own quoting walk, and
+    // reimplementing that here would be asserting this test against itself. The quoted half is
+    // covered by the fingerprint assertion above, by the batteries, and by the live sweep.
+    if (/['"$`[]|E'/.test(sql)) continue;
+    let index = 0;
+    while (index < sql.length) {
+      if (sql[index] === "-" && sql[index + 1] === "-") {
+        const found = /[\n\r]/.exec(sql.slice(index + 2));
+        index = found ? index + 2 + found.index + 1 : sql.length;
+        continue;
+      }
+      if (sql[index] === "/" && sql[index + 1] === "*") {
+        const found = sql.indexOf("*/", index + 2);
+        const nonNesting = found === -1 ? sql.length : found + 2;
+        assert.equal(
+          nestingBlockCommentEnd(sql, index),
+          nonNesting,
+          `admitted a comment the two lexings close in different places: ${JSON.stringify(sql)}`,
+        );
+        index = nonNesting;
+        continue;
+      }
+      index += 1;
+    }
+  }
+
+  // A refusal that refused everything would satisfy the loop above and be useless.
+  assert.ok(admitted > 500, `too few admitted for this to be evidence: ${admitted}`);
+});
+
+// The invariant that five rounds of defects were able to violate, written where an edit cannot
+// violate it quietly.
+//
+// The keyword scan must walk without knowing Postgres's dollar quoting or its E-strings. That is
+// not an oversight to be tidied up: `SELECT $$a; DROP TABLE t$$ AS s` is one literal to Postgres
+// and a real second statement to SQLite and libSQL, which have neither form and execute the `DROP`.
+// A walk that knew dollar quoting would skip the verb as literal content and admit it.
+//
+// Until now that asymmetry lived in a prose comment beside two near-identical functions, and a
+// change that was right for one of them and applied to both destroyed it without failing anything.
+// It is a named argument now, so widening it fails here — asked of the tokenizer rather than read
+// off the profile's fields, because a field can be renamed and a behaviour cannot.
+test("the dialect the keyword scan asks for withholds the two string forms only Postgres has", () => {
+  const withheld = sqlDialectWithoutPostgresStringForms(true);
+  const everyEngine = sqlDialectEveryEngineQuotes(true);
+
+  // The union profile recognises both forms, so the assertions below are an asymmetry rather than
+  // a tokenizer that recognises nothing.
+  assert.equal(skipSqlQuotedOrCommented("$$a; DROP TABLE t$$", 0, everyEngine), 19);
+  assert.equal(skipSqlQuotedOrCommented("$tag$a; DROP TABLE t$tag$", 0, everyEngine), 25);
+  assert.equal(skipSqlQuotedOrCommented("E'a; DROP TABLE t'", 0, everyEngine), 18);
+
+  // And the withholding profile recognises neither, so the keyword scan reads the verb SQLite and
+  // libSQL will really execute. `0` is "nothing opens here", which is what makes the scan step one
+  // character and go on to read `DROP` as a token.
+  assert.equal(
+    skipSqlQuotedOrCommented("$$a; DROP TABLE t$$", 0, withheld),
+    0,
+    "the keyword scan's dialect learned dollar quoting — `SELECT $$a; DROP TABLE t$$ AS s` is now admitted on SQLite and libSQL",
+  );
+  assert.equal(
+    skipSqlQuotedOrCommented("$tag$a; DROP TABLE t$tag$", 0, withheld),
+    0,
+    "the keyword scan's dialect learned tagged dollar quoting",
+  );
+  assert.equal(
+    skipSqlQuotedOrCommented("E'a; DROP TABLE t'", 0, withheld),
+    0,
+    "the keyword scan's dialect learned E-strings",
+  );
+
+  // The scan is the consumer that has to ask for it, and the call site has to say so. A profile
+  // nothing asks for protects nothing.
+  const keywordScan = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "readSqlTokens");
+  assert.ok(keywordScan, "the keyword scan no longer travels into the bundle");
+  assert.match(
+    keywordScan.toString(),
+    /sqlDialectWithoutPostgresStringForms/,
+    "the keyword scan stopped naming the dialect it walks with, so a reader has to infer it again",
+  );
+});
+
+// A tripwire for a second function that decides where a SQL comment or quoted run ends.
+//
+// **What it matches.** A runtime function is flagged when its source shows any one of:
+//
+//   1. a two-character comment delimiter — `--`, `/*` or `*/` — in a short string literal;
+//   2. one of those inside a regex or template literal body;
+//   3. a `-`, or both `*` and `/`, in short string literals;
+//   4. two or more of `'`, `"`, backtick, `[`, `$` in short string literals.
+//
+// **What it does not match.** A function whose source shows none of the four is not flagged. Some
+// examples, each planted and confirmed missed rather than reasoned about: one assembling its
+// delimiters at runtime with `String.fromCharCode(45) + String.fromCharCode(45)`; one comparing
+// `charCodeAt` values against 45 and 47; one whose only quoting alphabet lives in a regex body,
+// the way this file writes `/^['"\`[]/`. Reading quote characters out of pattern bodies would
+// catch that third one and was measured: it flags 87 runtime functions, which is not a census.
+//
+// So this is a tripwire for the likely spellings, not a proof that one tokenizer exists. Its value
+// is that the spellings this file actually uses are covered, and that a new match has to be
+// classified rather than absorbed. A future evasion is another example for the list above.
+//
+// **Why these four.** Signal 3 is the one that matters most and was the last to arrive. The first
+// version of this guard grepped for four source spellings unique to the collapsed body; a walker
+// written the way the pre-collapse ones were written — `char === "-" && next === "-"`, a line
+// comment ending at LF only, which is the historical defect — passed all four. The version after
+// that required a quote delimiter alongside a single comment character, and a walker whose
+// delimiter comparisons were copied character-for-character out of this file, taking its quote set
+// as a parameter instead of naming one, passed that too. Signal 3 standing alone is what catches
+// it, and it costs two rows that hold a `-` which is a hostname hyphen and a cron step.
+//
+// Signal 2 exists because omitting it missed the idiom this file uses most: `skipSqlQuotedOrCommented`
+// writes its own terminator rules as `/[\n\r]/ : /\n/` and `/^\$(?:…)\$/`, so the likeliest spelling
+// of the next run lexer here was exactly the one the earlier versions could not see.
+const shortStringLiterals = (source) => {
+  const found = new Set();
+  for (const match of source.matchAll(/"((?:[^"\\]|\\.){1,2})"|'((?:[^'\\]|\\.){1,2})'/g)) {
+    found.add(match[1] ?? match[2]);
+  }
+  return found;
+};
+
+// Regex and template literal bodies, backslashes removed so `\/\*` reads as the delimiter it
+// matches. Bodies only — including a regex's closing `/` makes every pattern ending in `*` look
+// like it names `*/`.
+const patternBodies = (source) => {
+  const bodies = [];
+  for (const match of source.matchAll(/\/(?![/*])((?:\[(?:[^\]\\]|\\.)*\]|[^/\\\n[]|\\.)+)\/[dgimsuvy]*/g)) {
+    bodies.push(match[1].replaceAll("\\", ""));
+  }
+  for (const match of source.matchAll(/`((?:[^`\\]|\\.)*)`/g)) {
+    bodies.push(match[1].replaceAll("\\", ""));
+  }
+  return bodies;
+};
+
+const namesRunDelimiters = (source) => {
+  const literals = shortStringLiterals(source);
+  const quotes = ["'", '"', "`", "[", "$"].filter((quote) => literals.has(quote));
+  // Only the two-character comment forms count inside a pattern: single characters are far too
+  // common there to mean anything, and reading every regex-body character flags 69 of these.
+  const commentDelimiterInAPattern = patternBodies(source).some(
+    (body) => body.includes("--") || body.includes("/*") || body.includes("*/"),
+  );
+  return (
+    literals.has("--") ||
+    literals.has("/*") ||
+    literals.has("*/") ||
+    commentDelimiterInAPattern ||
+    literals.has("-") ||
+    (literals.has("*") && literals.has("/")) ||
+    quotes.length >= 2
+  );
+};
+
+// The census, and the point of it: the detected set must equal this exactly. A new walker fails
+// because it is not listed; a listed one that disappears fails too, so the reasons below cannot
+// quietly go stale. Each entry says why it is not the one tokenizer.
+//
+// Four of the seven lex JavaScript rather than SQL. They are here because no detector working from
+// delimiter literals can tell the two apart — both spell a string run with the same three quote
+// characters — and listing them with the reason is honest where narrowing the detector to exclude
+// them would just be the spelling-coupled guard again under a new name.
+const RUN_LEXER_CENSUS = {
+  skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
+  // On the inspection path — every Postgres inspection query passes through it twice — and left
+  // uncollapsed deliberately. It is *not* inert there: a `?` inside a form it does not know makes it
+  // throw, which is a Postgres-only false rejection. It fails closed, and the property the gate
+  // depends on is asserted below. Collapsing it would change what a backslash means inside a
+  // literal on the write path, which is a larger surface than this gate.
+  postgresInterpolate: "recorded exception: on the inspection path, fails closed, see its comment",
+  // Off the inspection path: reached only from libSQL's `exec`, and `runReadOnlyInspectionQuery`
+  // goes through `prepare`. Latent duplication of the same class; has its own ticket.
+  splitSqlStatements: "recorded exception: reached only from libSQL exec, not from the inspection path",
+  extractObjectPropertySource: "lexes Capsule definition JavaScript, not SQL",
+  findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
+  findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
+  splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
+  // The nesting oracle. It lexes no quoted run — it counts block-comment depth and compares the end
+  // against the one tokenizer's — and it is *required* to disagree with it, which is the opposite of
+  // the property this census enforces. It is matched on its own code, `sql[cursor] === "*" &&
+  // sql[cursor + 1] === "/"`, which is asserted below: it used to be matched only on the `--x<CR>`
+  // examples in its prose, and a reworded comment would have dropped it out of the census silently.
+  sqlTheEnginesLexDifferently: "the nesting oracle, required to disagree with the one tokenizer",
+  // The rest hold a `-`, or a `*` and a `/`, that is not a SQL comment delimiter. Each was read to
+  // confirm it rather than assumed from the name.
+  beginOAuthSignIn: "not a lexer: `--client-id`, `--client-secret`, `--client-json` in CLI hint strings",
+  createSharedDatabaseAdapterMethods: "not a lexer: `sporades logs --json` in CLI hint strings",
+  buildSmtpMessage: "not a lexer: `--${boundary}` MIME multipart delimiters",
+  isSensitiveLogString: "not a lexer: the `-----BEGIN … PRIVATE KEY-----` PEM header pattern",
+  validateMailConfig: "not a lexer: a hostname label may not start or end with `-`",
+  parseScheduleExpression: "not a lexer: cron step syntax, `split(\"/\")` and `base === \"*\"`",
+};
+
+test("no second function decides where a SQL comment or quoted run ends", () => {
+  const detected = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => namesRunDelimiters(fn.toString()))
+    .map((fn) => fn.name)
+    .sort();
+
+  assert.deepEqual(
+    detected,
+    Object.keys(RUN_LEXER_CENSUS).sort(),
+    "the set of runtime functions that lex comment or quoted runs changed — add it to the census with the reason it is not the one tokenizer, or route it through",
+  );
+
+  // `postgresInterpolate` is on the inspection path, so what it does there is asserted rather than
+  // assumed — and it is not the identity, which an earlier draft of this test claimed.
+  //
+  // The property the gate depends on is narrower and is the one that holds: with no parameters, it
+  // either returns its input unchanged or it throws. There is no third case where it returns
+  // *different* text. That is what keeps "the text checked is the text executed" true across it; a
+  // silent rewrite would break the gate's whole claim, a throw only costs a false rejection.
+  //
+  // The alphabet below has `?` in it deliberately. It is the only character this function acts on,
+  // so a corpus without it reports inertness for the same reason a corpus without `\r` reported the
+  // line-comment class clean.
+  const interpolate = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "postgresInterpolate");
+  const identityOrThrow = (sql) => {
+    try {
+      return interpolate(sql) === sql ? "identity" : "REWROTE";
+    } catch {
+      return "threw";
+    }
+  };
+
+  let threw = 0;
+  const corpus = [];
+  for (const piece of ["", "?", "$$?$$", "'?'", '"?"', "E'?'", "[?]", "-- ?\r", "/* ? */", "$tag$?$tag$", "\\?"]) {
+    corpus.push(`SELECT ${piece} AS s`, `SELECT 1 AS s ${piece}`, `WITH t AS (SELECT ${piece} AS s) SELECT * FROM t`);
+  }
+  corpus.push(...INJECTION_ATTEMPTS, ...DOLLAR_QUOTE_BELT_ATTEMPTS);
+
+  for (const sql of corpus) {
+    for (const text of [sql, sqlWithoutTrailingTerminator(sql), `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS c LIMIT 0`]) {
+      const outcome = identityOrThrow(text);
+      assert.notEqual(
+        outcome,
+        "REWROTE",
+        `postgresInterpolate silently rewrote an inspection statement, so the text checked is not the text executed: ${JSON.stringify(text)}`,
+      );
+      if (outcome === "threw") threw += 1;
+    }
+  }
+
+  // And the corpus must actually be able to reach the throwing branch, or the assertion above is
+  // satisfied by a corpus that never exercises it.
+  assert.ok(threw > 0, "corpus cannot reach postgresInterpolate's throwing branch — it proves nothing");
+  assert.equal(identityOrThrow("SELECT $$?$$ AS s"), "threw", "the recorded Postgres-only false rejection changed");
+  assert.equal(identityOrThrow("SELECT '?' AS s"), "identity", "a `?` inside an ordinary literal stopped being protected");
+
+  // The nesting oracle is a census entry, and the only one whose disagreement with the tokenizer is
+  // the point rather than the defect: it counts block-comment depth and refuses every input the two
+  // readings close in different places. Being listed is not enough for it, because the census only
+  // asserts the *names* — so the property that makes it an oracle rather than a sixth walker is
+  // asserted here.
+  const oracle = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "sqlTheEnginesLexDifferently");
+  assert.ok(oracle, "the nesting oracle no longer travels into the bundle");
+  assert.match(oracle.toString(), /skipSqlQuotedOrCommented/, "the oracle stopped comparing against the one tokenizer");
+
+  // And it is in the census on its code rather than on its prose. It used to be matched only on the
+  // `--x<CR>` examples in its comments, which meant rewording a comment would have dropped the one
+  // entry whose disagreement with the tokenizer is deliberate — and the obvious response to a census
+  // failure naming it would have been to delete the row.
+  const withoutComments = oracle
+    .toString()
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.equal(
+    namesRunDelimiters(withoutComments),
+    true,
+    "the nesting oracle is in the census only because of its prose — reword a comment and it drops out silently",
+  );
+});
+
+// The spelling checks the first version of this guard consisted of, kept as a second and weaker
+// line: they cannot catch a walker written in a different style, but they do catch a copy that
+// reuses this one's, which is how a "just extract it for reuse" edit would look.
+test("no terminator rule of the one tokenizer is spelled twice", () => {
+  const facts = [
+    ["a line comment's terminator", /lineCommentEndsAtCarriageReturn \? \/\[\\n\\r\]\/ : \/\\n\//],
+    ["a dollar-quote delimiter", /\\\$\(\?:\[A-Za-z_/],
+    ["an E-string's opener", /sql\[index\] === "E" \|\| sql\[index\] === "e"/],
+    ["a bracket-quoted identifier's close", /=== "\[" \? "\]"/],
+  ];
+
+  for (const [fact, pattern] of facts) {
+    const encoders = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => pattern.test(fn.toString())).map((fn) => fn.name);
+    assert.deepEqual(
+      encoders,
+      ["skipSqlQuotedOrCommented"],
+      `${fact} is encoded in ${encoders.length} runtime functions rather than one: ${encoders.join(", ")}`,
+    );
+  }
+
+  // The two functions the class came from are gone rather than left as aliases beside the
+  // tokenizer, and nothing still calls them.
+  const allSource = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => `${fn.name}\n${fn.toString()}`).join("\n");
+  for (const gone of ["skipSqlStringOrComment", "skipSqlLiteralOrComment"]) {
+    assert.equal(allSource.includes(gone), false, `${gone} still exists, so the pair was not collapsed`);
+  }
+
+  // Every consumer reaches the one tokenizer. Named individually rather than derived, because this
+  // is the list the ticket asked to be established: two skippers, a trivia skipper and two token
+  // readers, plus the walks each of them serves.
+  for (const consumer of [
+    "hasMultipleSqlStatements",
+    "isSafeInspectionPragma",
+    "sqlWithoutTrailingTerminator",
+    "sqlContentFingerprint",
+    "sqlTheEnginesLexDifferently",
+    "readSqlTokens",
+    "readSqlQuotedIdentifier",
+    "skipSqlTrivia",
+  ]) {
+    const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((each) => each.name === consumer);
+    assert.ok(fn, `${consumer} no longer travels into the bundle`);
+    assert.match(fn.toString(), /skipSqlQuotedOrCommented/, `${consumer} does not reach the one tokenizer`);
+  }
+});
+
+// The refusal is of the disputed shape, not of block comments. A comment both lexings close in the
+// same place is untouched, whatever it contains.
+test("an unambiguous block comment is still an ordinary comment", () => {
+  for (const sql of [
+    "SELECT 1 /* why */ AS s",
+    "/* why */ SELECT 1 AS s",
+    "SELECT 1 AS s /* why */ ;",
+    "SELECT 1 /* a * b / c */ AS s",
+    // A `/*` that is inside a string literal is content, not a nested opener.
+    "SELECT '/*' AS s /* why */",
+    "SELECT $$/*$$ AS s",
+    // The closing delimiter's own `/` cannot be misread as opening a nested comment.
+    "SELECT 1 /* why/ */ AS s",
+  ]) {
+    assert.equal(validateReadOnlyInspectionSql(sql).ok, true, `an unambiguous comment was refused: ${JSON.stringify(sql)}`);
+  }
+});
+
+// Trivia is the other half of the same disagreement, and CR was not the only instance. The accepted
+// set below is measured rather than read off a grammar: `SELECT<c>1 AS a` is accepted for each of
+// space, tab, LF, CR and form feed on SQLite, libSQL and Postgres, and refused by all three for
+// vertical tab, which appears in Postgres's published `space` class and is a lexer error in
+// practice. Everything JavaScript's `\s` adds beyond those five is an identifier character to
+// Postgres, so a walk that skips one reports "nothing follows the terminator" about text the engine
+// reads on into.
+test("only the whitespace every engine calls whitespace is trivia", () => {
+  // `\v` sits at the head of this list deliberately: it was in the accepted set until the engines
+  // were asked, and it is the one character here that a grammar would have told you was fine.
+  for (const space of ["\v", "\u00a0", "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]) {
+    const escaped = JSON.stringify(space);
+    for (const sql of [`SELECT 1 AS s;${space}`, `${space}SELECT 1 AS s`, `SELECT${space}1 AS s`]) {
+      const validation = validateReadOnlyInspectionSql(sql);
+      assert.equal(validation.ok, false, `skipped as whitespace: ${escaped} in ${JSON.stringify(sql)}`);
+      // The operator is told what to take out. Told "not read-only" about their `SELECT`, they have
+      // no way to see an invisible character, and pasting from a document is how this arrives.
+      assert.equal(validation.error.message, AMBIGUOUS_LEXING_MESSAGE, escaped);
+      assert.match(validation.error.hint, /invisible character/);
+    }
+  }
+
+  for (const space of [" ", "\t", "\n", "\r", "\f"]) {
+    const escaped = JSON.stringify(space);
+    assert.equal(validateReadOnlyInspectionSql(`SELECT 1 AS s;${space}`).ok, true, `refused real whitespace: ${escaped}`);
+    assert.equal(validateReadOnlyInspectionSql(`${space}SELECT 1 AS s`).ok, true, `refused real whitespace: ${escaped}`);
+    assert.equal(validateReadOnlyInspectionSql(`SELECT${space}1 AS s`).ok, true, `refused real whitespace: ${escaped}`);
+  }
+
+  // Inside a quoted run it is content, not trivia, and the engines take it there.
+  assert.equal(validateReadOnlyInspectionSql("SELECT 'a\u00a0b' AS s").ok, true);
+  assert.equal(validateReadOnlyInspectionSql("SELECT 1 AS s -- a\u00a0b").ok, true);
+});
+
+// The refusal above is about surrogates that are *unpaired*. A paired one is an ordinary character
+// that survives the wire intact, and Postgres spells a tag with every non-ASCII character, so an
+// astral tag is a legal tag and must keep working.
+test("an astral dollar-quote tag is a tag, not unrepresentable text", () => {
+  assert.equal(validateReadOnlyInspectionSql("SELECT $\u{1f600}$a;b$\u{1f600}$ AS s").ok, true);
+  assert.equal(
+    sqlWithoutTrailingTerminator("SELECT $\u{1f600}$a--b$\u{1f600}$ AS s;"),
+    "SELECT $\u{1f600}$a--b$\u{1f600}$ AS s",
+  );
+  assert.equal(validateReadOnlyInspectionSql("SELECT $\u{1f600}$a$\u{1f601}$; SELECT 2").ok, false);
+});
+
+// The strip is the other caller of the same walk, so the terminator fix has to show up there too:
+// a bare CR ends the comment, and the text after it is content the strip must not swallow.
+test("a statement's text keeps what follows a carriage-return-ended comment", () => {
+  // The comment is interior once it ends at the CR, so the text after it is content the strip
+  // keeps — where before it read to the end of the input and cut the statement down to `SELECT 1`.
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r AS s"), "SELECT 1 -- why\r AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r\n"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1;\r-- why\r"), "SELECT 1");
 });
 
 // The strip's failure was never silent — a severed literal is a syntax error rather than a wrong
@@ -338,6 +1061,13 @@ test("Postgres describes a statement whose literal holds a comment marker", { sk
         ["SELECT $$a--b$$ AS s; -- keep this around", "a--b"],
         ["SELECT E'a\\'--b' AS s", "a'--b"],
         ["SELECT E'a\\';b' AS s;", "a';b"],
+        // A tag whose character is astral. The pair survives the wire intact, so this really is one
+        // tag to Postgres — which is what makes the unpaired case a refusal about representability
+        // rather than about non-ASCII tags.
+        ["SELECT $\u{1f600}$a--b$\u{1f600}$ AS s", "a--b"],
+        ["SELECT $\u{1f600}$a;b$\u{1f600}$ AS s;", "a;b"],
+        // A comment ended by a bare carriage return, answered rather than swallowed.
+        ["SELECT 1 AS s -- why\r", 1],
       ]) {
         const result = await adapter.runReadOnlyInspectionQuery(sql);
         assert.equal(result.ok, true, `${sql}: ${result.error?.message}`);
@@ -358,13 +1088,43 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
         await adapter.exec("CREATE TABLE sporades_injection_canary (id TEXT PRIMARY KEY)");
         try {
           await adapter.exec("INSERT INTO sporades_injection_canary (id) VALUES ('alive')");
-          for (const sql of INJECTION_ATTEMPTS) {
+          const attempts = [
+            ...INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
+            ...LINE_ENDING_INJECTION_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
+            ...UNREPRESENTABLE_TEXT_ATTEMPTS.map((sql) => [sql, UNREPRESENTABLE_TEXT_MESSAGE]),
+            ...NESTED_BLOCK_COMMENT_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
+            ...LINE_COMMENT_COMPOSITION_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
+            ...DOLLAR_QUOTE_BELT_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
+          ];
+          for (const [sql, message] of attempts) {
             const result = await adapter.runReadOnlyInspectionQuery(sql);
-            assert.equal(result.ok, false, `an injection attempt was admitted: ${sql}`);
+
+            // The canary is read back after every attempt rather than once at the end, so a failure
+            // names the attempt that emptied it instead of leaving the battery to be bisected.
+            const alive = await adapter.runReadOnlyInspectionQuery("SELECT id FROM sporades_injection_canary");
+            assert.equal(alive.ok, true, alive.error?.message);
+            assert.deepEqual(
+              alive.data.rows.map((row) => row.id),
+              ["alive"],
+              `a second statement reached the engine: ${JSON.stringify(sql)}`,
+            );
+
+            // And the probe, which is the half a canary cannot see. A `CREATE TABLE` that ran leaves
+            // the canary intact, so without this the battery would be blind to every non-destructive
+            // first token the gate is equally supposed to exclude.
+            const probed = await adapter.runReadOnlyInspectionQuery(PROBE_TABLE_EXISTS[engine.name]);
+            assert.equal(probed.ok, true, probed.error?.message);
+            assert.deepEqual(
+              probed.data.rows.filter((row) => row.t),
+              [],
+              `a second statement created a table: ${JSON.stringify(sql)}`,
+            );
+
+            assert.equal(result.ok, false, `an injection attempt was admitted: ${JSON.stringify(sql)}`);
             assert.equal(
               result.error.message,
-              "Only read-only SQL is allowed.",
-              `refused by the engine rather than by the validator, which is luck rather than a boundary: ${sql}`,
+              message,
+              `refused by the engine rather than by the validator, which is luck rather than a boundary: ${JSON.stringify(sql)}`,
             );
           }
 
@@ -374,12 +1134,69 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
           assert.deepEqual(survivors.data.rows.map((row) => row.id), ["alive"]);
         } finally {
           await adapter.exec("DROP TABLE IF EXISTS sporades_injection_canary");
+          await adapter.exec("DROP TABLE IF EXISTS sporades_injection_probe");
         }
       },
-      { appTableNames: ["sporades_injection_canary"] },
+      { appTableNames: ["sporades_injection_canary", "sporades_injection_probe"] },
     );
   });
 }
+
+// A canary says nothing ran. This says nothing was sent, which is the stronger claim and the one
+// that does not depend on the engine having refused what it was handed. libSQL is the engine whose
+// harness can see every statement text, so it is where the claim is made; what it is a claim about
+// is the shared method set, which is the same code on all three.
+//
+// Two things have to hold for it. The gate refuses the attempt, so no statement is prepared at all;
+// and for anything the gate does admit, `runReadOnlyInspectionQuery` prepares the statement the
+// gate accepted rather than the raw input, so a `;` the walk saw cannot be carried to the engine
+// even if a later change lets one past the verdict.
+test("no injection attempt is sent to the engine at all", async () => {
+  const sent = [];
+  const attempts = [
+    ...INJECTION_ATTEMPTS,
+    ...LINE_ENDING_INJECTION_ATTEMPTS,
+    ...UNREPRESENTABLE_TEXT_ATTEMPTS,
+    ...NESTED_BLOCK_COMMENT_ATTEMPTS,
+    ...LINE_COMMENT_COMPOSITION_ATTEMPTS,
+    ...DOLLAR_QUOTE_BELT_ATTEMPTS,
+  ];
+  const admitted = [];
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.exec("CREATE TABLE sporades_injection_canary (id TEXT PRIMARY KEY)");
+      await adapter.exec("INSERT INTO sporades_injection_canary (id) VALUES ('alive')");
+
+      // The recorder, proved against a query that does reach the engine, so an empty tape below is
+      // a refusal rather than a hook that never fired.
+      sent.length = 0;
+      await adapter.runReadOnlyInspectionQuery("SELECT id FROM sporades_injection_canary;  -- trailing");
+      assert.deepEqual(
+        sent,
+        ["SELECT id FROM sporades_injection_canary"],
+        "the engine is handed the statement the gate accepted, without the terminator or the trivia after it",
+      );
+
+      sent.length = 0;
+      for (const sql of attempts) {
+        if ((await adapter.runReadOnlyInspectionQuery(sql)).ok) {
+          admitted.push(sql);
+        }
+      }
+    },
+    {
+      appTableNames: ["sporades_injection_canary"],
+      service: {
+        beforeStatement(sql) {
+          sent.push(String(sql ?? ""));
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(admitted, [], "an injection attempt was admitted");
+  assert.deepEqual(sent, [], "an injection attempt was handed to the engine");
+});
 
 // The acceptance criterion asks for one answer on all three engines, or the difference recorded as
 // a genuine dialect divergence with its reason. It is the second, and unreachably so: dollar
