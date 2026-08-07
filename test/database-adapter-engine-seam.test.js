@@ -9,6 +9,7 @@ import {
   libsqlRowNormalization,
   postgresDatabaseDialect,
   postgresRowNormalization,
+  sqlContentFingerprint,
   sqlWithoutTrailingTerminator,
   sqliteDatabaseDialect,
   sqliteRowNormalization,
@@ -380,6 +381,27 @@ const NESTED_BLOCK_COMMENT_ATTEMPTS = [
   "/*/*/ SELECT 1 */ */ SET x = 1",
 ];
 
+// The line-comment terminator, which composes with the block-comment one and was the round-3
+// regression. Ending `--x<CR>` at the CR is right for Postgres and wrong for SQLite, and ending it
+// early *exposes* a `/*` that this walk then runs past the LF which would have closed SQLite's line
+// comment. The composed walk therefore skips more than SQLite does — the exact hazard the CR fix
+// was introduced to remove, reappearing one comment-kind over.
+//
+// These are second statements SQLite and libSQL genuinely execute: handed to `exec`, the first one
+// drops the table on both, while Postgres answers `syntax error at or near "AS"`. Nothing ran
+// through the adapter only because `node:sqlite`'s `prepare()` compiles the first statement of a
+// multi-statement string and silently discards the rest — another component's behaviour holding the
+// boundary shut, which is what this gate exists not to depend on.
+const LINE_COMMENT_COMPOSITION_ATTEMPTS = [
+  "SELECT 1 AS s --x\r/*y\n; DROP TABLE sporades_injection_canary --*/ AS z",
+  "SELECT 1 AS s --x\r/*y\n; TRUNCATE TABLE sporades_injection_canary --*/ AS z",
+  "SELECT 1 --x\r/*\n; DROP TABLE sporades_injection_canary /*\r*/ AS z",
+  // Without the block comment the disagreement is still a disagreement: the `;` is inside SQLite's
+  // line comment and outside Postgres's, so the two engines answer different statements.
+  "SELECT 1 AS s --x\r; DROP TABLE sporades_injection_canary",
+  "SELECT 1 AS s --x\r AS z",
+];
+
 const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
 
 // The same species one level down: text the walk reads is not always the text the engine receives.
@@ -405,10 +427,20 @@ const UNREPRESENTABLE_TEXT_ATTEMPTS = [
 const UNREPRESENTABLE_TEXT_MESSAGE = "Only SQL text the database receives unchanged is allowed.";
 
 test("no second statement hides inside a dollar-quoted or an E-string literal", () => {
-  for (const sql of [...INJECTION_ATTEMPTS, ...LINE_ENDING_INJECTION_ATTEMPTS]) {
+  for (const sql of INJECTION_ATTEMPTS) {
     const validation = validateReadOnlyInspectionSql(sql);
     assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
     assert.equal(validation.error.message, "Only read-only SQL is allowed.");
+  }
+
+  // The CR battery is refused one limb earlier than it used to be, and by a truer reason. Every one
+  // of these really is read differently by the two engine families — Postgres sees two statements
+  // where SQLite sees one and a trailing comment — so "the engines do not agree about this text" is
+  // the accurate answer, and its hint names the carriage return rather than suggesting a SELECT.
+  for (const sql of LINE_ENDING_INJECTION_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(validation.error.message, AMBIGUOUS_LEXING_MESSAGE, JSON.stringify(sql));
   }
 
   for (const sql of UNREPRESENTABLE_TEXT_ATTEMPTS) {
@@ -419,6 +451,17 @@ test("no second statement hides inside a dollar-quoted or an E-string literal", 
       UNREPRESENTABLE_TEXT_MESSAGE,
       `refused for the wrong reason, which is the accident this issue exists to replace: ${JSON.stringify(sql)}`,
     );
+  }
+
+  for (const sql of LINE_COMMENT_COMPOSITION_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a statement SQLite reads differently was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      AMBIGUOUS_LEXING_MESSAGE,
+      `refused for the wrong reason: ${JSON.stringify(sql)}`,
+    );
+    assert.match(validation.error.hint, /carriage return/);
   }
 
   for (const sql of NESTED_BLOCK_COMMENT_ATTEMPTS) {
@@ -441,6 +484,13 @@ test("no second statement hides inside a dollar-quoted or an E-string literal", 
 //
 // The corpus is checked for adequacy before it is used. A sweep that cannot emit the dangerous shape
 // answers zero for the wrong reason, which is how both earlier rounds reported clean.
+//
+// One caveat on how much fidelity the model below carries: it is an independent *implementation* of
+// nesting, not an independent *model* of Postgres. It encodes the same reading the runtime does —
+// leftmost non-overlapping delimiters, left to right, quoting not special inside a comment — so
+// agreement between the two is a regression guard rather than evidence that either matches the
+// engine. What supplies that evidence is running the text against a live Postgres, which the
+// per-engine batteries and `scripts/inspection-lexing-sweep.mjs` do.
 function nestingBlockCommentEnd(sql, start) {
   let depth = 0;
   let cursor = start;
@@ -465,34 +515,67 @@ test("everything admitted closes its block comments where a nesting lexer does",
   // shapes below are reachable within the depth bound. A first attempt at this generator used
   // single-token pieces and could not emit either of them at depth 5 — the assertions caught it,
   // which is the whole reason they are here.
-  const pieces = ["/*", "*/", "/*/", "**/", " ", " SELECT 1 "];
+  // `/*/` and `**/` are pieces in their own right, `--` and the two line endings are pieces because
+  // the line-comment terminator composes with block comments, and ` SELECT 1 ` carries its own
+  // spacing, so every shape asserted below is reachable within the depth bound.
+  //
+  // The piece set is the part of this test that has been wrong three times. It could not reach
+  // nesting depth in round 2, could not reach the `/*/` straddle in round 3, and in round 4 it had
+  // no `--`, `\r` or `\n` at all, so it reported clean about a class of disagreement it could not
+  // express. Adding a rule without adding its alphabet here is how that keeps happening.
+  //
+  // Depth is 5 rather than 6 because nine pieces at six deep is half a million strings for no new
+  // shape class. The two comment shapes asserted below are the five-piece spellings of the round-1
+  // and round-2 defects — `/*/* SELECT 1 */*/` nests and `/*/*/ SELECT 1 */*/` straddles, and both
+  // are refused for the same reason their longer cousins in the attempt lists above are.
+  const pieces = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
   const corpus = [];
   const build = (depth, acc) => {
     if (depth === 0) {
       corpus.push(`${acc} TRUNCATE TABLE t`);
+      corpus.push(`${acc}; DROP TABLE t`);
       return;
     }
     for (const piece of pieces) build(depth - 1, acc + piece);
   };
-  for (let depth = 1; depth <= 6; depth += 1) build(depth, "");
+  for (let depth = 1; depth <= 5; depth += 1) build(depth, "");
 
-  // Corpus adequacy, asserted rather than assumed: the shapes that defeated rounds one and two must
-  // both be in here, or a clean result below means nothing. Both rounds reported clean from a sweep
-  // that could not emit the shape it was reporting clean about.
-  assert.ok(corpus.includes("/*/* */ SELECT 1 */ TRUNCATE TABLE t"), "corpus cannot emit the round-1 shape");
-  assert.ok(corpus.includes("/*/*/ SELECT 1 */ */ TRUNCATE TABLE t"), "corpus cannot emit the round-2 straddle");
+  // Corpus adequacy, asserted rather than assumed: the shape that defeated each previous round must
+  // be in here, or a clean result below means nothing. Every round so far reported clean from a
+  // corpus that could not emit the shape it was reporting clean about.
+  assert.ok(corpus.includes("/*/* SELECT 1 */*/ TRUNCATE TABLE t"), "corpus cannot emit a round-1 nesting shape");
+  assert.ok(corpus.includes("/*/*/ SELECT 1 */*/ TRUNCATE TABLE t"), "corpus cannot emit a round-2 straddle shape");
+  assert.ok(corpus.includes("-- SELECT 1 \r/*; DROP TABLE t"), "corpus cannot emit the round-3 line-comment composition");
+  assert.ok(
+    corpus.some((sql) => sql.includes("--") && sql.includes("\r") && sql.includes("/*")),
+    "corpus cannot compose a line comment, a carriage return and a block comment",
+  );
   assert.ok(corpus.length > 15000, `corpus is too small to be meaningful: ${corpus.length}`);
 
   let admitted = 0;
   for (const sql of corpus) {
     if (!validateReadOnlyInspectionSql(sql).ok) continue;
     admitted += 1;
+
+    // The line-comment rule, held to the same standard as the nesting one: what the gate admitted
+    // must read the same way under SQLite's terminator as under Postgres's.
+    assert.equal(
+      sqlContentFingerprint(sql, true),
+      sqlContentFingerprint(sql, false),
+      `admitted text the two line-comment rules read differently: ${JSON.stringify(sql)}`,
+    );
     // Only comments the walk actually starts at count. Scanning every `/*` in the string would
     // examine positions inside a comment the walk had already stepped over, which is not a comment
-    // start on any engine — the corpus holds no quotes, so a jump to the non-nesting end is the
-    // whole of the traversal.
+    // start on any engine. The corpus holds no quotes, so stepping over both comment kinds is the
+    // whole of the traversal — and the line-comment step has to be here now that `--` is a piece,
+    // or a `/*` inside a line comment gets held to a rule that does not apply to it.
     let index = 0;
     while (index < sql.length) {
+      if (sql[index] === "-" && sql[index + 1] === "-") {
+        const found = /[\n\r]/.exec(sql.slice(index + 2));
+        index = found ? index + 2 + found.index + 1 : sql.length;
+        continue;
+      }
       if (sql[index] === "/" && sql[index + 1] === "*") {
         const found = sql.indexOf("*/", index + 2);
         const nonNesting = found === -1 ? sql.length : found + 2;
@@ -636,9 +719,10 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
           await adapter.exec("INSERT INTO sporades_injection_canary (id) VALUES ('alive')");
           const attempts = [
             ...INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
-            ...LINE_ENDING_INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
+            ...LINE_ENDING_INJECTION_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
             ...UNREPRESENTABLE_TEXT_ATTEMPTS.map((sql) => [sql, UNREPRESENTABLE_TEXT_MESSAGE]),
             ...NESTED_BLOCK_COMMENT_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
+            ...LINE_COMMENT_COMPOSITION_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
           ];
           for (const [sql, message] of attempts) {
             const result = await adapter.runReadOnlyInspectionQuery(sql);
@@ -690,6 +774,7 @@ test("no injection attempt is sent to the engine at all", async () => {
     ...LINE_ENDING_INJECTION_ATTEMPTS,
     ...UNREPRESENTABLE_TEXT_ATTEMPTS,
     ...NESTED_BLOCK_COMMENT_ATTEMPTS,
+    ...LINE_COMMENT_COMPOSITION_ATTEMPTS,
   ];
   const admitted = [];
   await withLibsqlAdapter(

@@ -93,19 +93,53 @@ shape of the mistake is the useful part — "we see more than the engine" sounds
 conservative right up to the point where what you do with what you see is decide
 which statement this is.
 
-Where the engines can be made to agree, the walk takes the *shortest* comment and
-the *narrowest* whitespace any of them would take. Where they cannot, the input is
-refused rather than guessed at — and whether they can is decided by computing both
-readings and comparing them, not by recognising the text that usually means they
-differ. Two attempts at the recognising version each shipped a hole.
+Whitespace can be made to agree, and does. Comments cannot: for both kinds there
+is no single reading that is right on every engine, so for both the input whose
+reading is in dispute is refused rather than guessed at — and whether it is in
+dispute is decided by computing both readings and comparing them, not by
+recognising the text that usually means they differ. Three attempts at the
+recognising version each shipped a hole.
 
-**Line comments — closed by agreeing.** A `--` comment was ended at a line feed,
-while Postgres ends one at a carriage return too; its lexer spells a comment's
-body `[^\n\r]`. Everything after a bare CR was trivia to the walk and a fresh
-statement to the engine, so `SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the
-gate and Postgres executed both halves; a canary table went from one row to zero.
-Ending it at CR costs a false reject on SQLite, which reads on to the next LF,
-and buys one verdict that is true on the strictest engine.
+An earlier draft of this section said the walk should take the *shortest* comment
+any engine would take, and that taking it was conservative. Both halves were
+wrong, and the line-comment case below is where that showed.
+
+**Line comments — closed by refusing, after "take the shortest" failed.** A `--`
+comment was ended at a line feed, while Postgres ends one at a carriage return
+too; its lexer spells a comment's body `[^\n\r]`. Everything after a bare CR was
+trivia to the walk and a fresh statement to the engine, so
+`SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the gate and Postgres executed
+both halves; a canary table went from one row to zero. Ending the comment at CR
+fixed that.
+
+It was then recorded here that ending at CR "costs a false reject on SQLite",
+which reads on to the next LF. It does not, and the reason is that comment
+terminators *compose*. Ending the line comment early **exposes** whatever follows
+the CR, and if that is a `/*` the walk opens a block comment and runs past the LF
+which would have closed SQLite's line comment. The composed walk therefore skips
+*more* than SQLite does, which is the hazard this section names, arrived at from
+the opposite direction:
+
+    SELECT 1 AS s --x<CR>/*y<LF>; DROP TABLE t --*/ AS z
+
+is a `SELECT` with a long block comment here, and to SQLite and libSQL one line
+comment followed by a real second statement — both of them execute the `DROP`,
+while Postgres answers `syntax error at or near "AS"`. Nothing reached an engine
+through the inspection path, but only because `node:sqlite`'s `prepare()` compiles
+the first statement of a multi-statement string and silently discards the rest:
+another component holding the boundary shut, which is the thing this ADR refuses
+to depend on.
+
+So the CR rule stays — Postgres is the engine that executes multi-statement
+strings, so its reading is the right default — but it is no longer asked to be
+safe on its own. `sqlContentFingerprint` runs the whole walk under each engine's
+line-comment terminator and the input is refused wherever the two draw different
+verdicts. What is compared is the content the verdict is drawn from, not the
+comment spans: spans differ for an ordinary `-- why<CR><LF>`, where the LF is
+inside the comment under one rule and whitespace under the other, and no consumer
+can tell those apart. Comparing spans would refuse every CRLF query with a comment
+in it; comparing content refuses only where a token, a separator or a literal
+boundary actually moves.
 
 **Whitespace — closed by agreeing, on a measured set rather than a documented
 one.** Whitespace was JavaScript's `\s`, which matches NBSP, U+1680, the U+2000
@@ -146,27 +180,44 @@ place; unequal means one does not, whatever the text looks like. That holds for
 shapes nobody wrote down, which is what a pattern cannot do. The counter is
 Postgres's own rule from `scan.l` — `{xcstart}` is `/*` and increments depth (the
 trailing `{op_chars}*` is undone by `yyless(2)`), `{xcstop}` is `\*+\/` and
-decrements it. An unterminated comment runs to end of input under both rules and
-is therefore not a disagreement; every engine either errors on it or comments to
-the end, so no second statement exists either way.
+decrements it. When neither rule terminates, both answer end-of-input and there is
+nothing to report; when only the nesting one is unterminated —
+`SELECT 1 /* /* */ ; X`, where the non-nesting walk stops at the first `*/` — they
+differ and the input is refused, which is correct, because that `;` is a separator
+to Postgres and inside a comment to nobody.
 
-Measured over 167,958 comment-shaped inputs, executed raw against a live Postgres
-past the `columns()` wrap, with both a canary table and a `CREATE TABLE` probe so
-that any non-`SELECT` first token is observable and not only a destructive one:
-the build before this change admitted 27,220, of which 268 had an effect a
-`SELECT` cannot have. None of those 268 is admitted now. Of the 18,148 admitted
-now, 2,646 are inputs the previous substring rule refused — the derived test is
-more precise rather than merely stricter — and all 2,646 were executed the same
-way with no observable effect.
+## How the numbers here were obtained, which matters more than the numbers
 
-That corpus was checked for adequacy before it was believed, and this is the part
-a later reader should copy rather than the numbers. Both earlier rounds reported
-zero findings from generators that could not emit the shape they were reporting
-zero about: the first could not reach nesting depth, the second could not reach
-the straddle. The generator is now asserted to contain the specific shapes that
-defeated each previous round before any result from it is read, in the sweep and
-in `test/database-adapter-engine-seam.test.js` alike. A sweep that cannot produce
-the dangerous input answers clean for the wrong reason, and it did so twice here.
+`scripts/inspection-lexing-sweep.mjs` is committed so that everything below can be
+re-run and disbelieved. It builds a corpus of comment- and whitespace-shaped
+prefixes, asserts the corpus can emit each shape that has previously defeated this
+gate, then executes every admitted candidate raw against all three engines — past
+the `columns()` wrap, with a canary row that must survive and a probe table that
+must never appear, so any non-`SELECT` first token is observable and not only a
+destructive one.
+
+Over 265,716 candidates, this build admits 31,614 and **none of them has an effect
+a `SELECT` cannot have, on any of the three engines**. The build before it admitted
+1,460 that are now refused; six of those really do drop a table or create one, on
+SQLite and libSQL. Nothing is admitted now that was not admitted then.
+
+Two methodology points are worth more than those figures, because each is a
+mistake this work actually made.
+
+**A generator that cannot emit the shape reports clean for the wrong reason.** It
+happened three times: the corpus could not reach nesting depth, then could not
+reach the `/*/` straddle, then had no `--`, `\r` or `\n` in its alphabet at all and
+so reported clean about a class of disagreement it could not express. The corpus is
+now asserted to contain each of those shapes before any result from it is read,
+in the sweep and in `test/database-adapter-engine-seam.test.js` alike. Adding a
+rule without adding its alphabet to the generator is how this keeps recurring.
+
+**An oracle that cannot observe the defect is the same failure.** The sweep first
+executed on Postgres alone and reported zero for the line-comment class — a class
+that exists precisely because SQLite and libSQL run the second statement where
+Postgres raises a syntax error. Six real findings were invisible until the sweep
+ran on every engine. Whichever engine is most convenient to automate is not
+necessarily the one that can see the bug.
 
 **Identifier alphabets — left open, deliberately.** The walk reads a bare
 identifier as `[A-Za-z_][A-Za-z0-9_]*` where Postgres includes `$` and every

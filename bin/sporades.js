@@ -2499,6 +2499,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   unrepresentableInspectionSqlError,
   ambiguousInspectionSqlError,
   sqlTheEnginesLexDifferently,
+  sqlContentFingerprint,
   readFirstSqlToken,
   hasMultipleSqlStatements,
   isSafeInspectionPragma,
@@ -9828,6 +9829,9 @@ function ambiguousInspectionSqlError(hint) {
   };
 }
 function sqlTheEnginesLexDifferently(sql) {
+  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
+    return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
+  }
   let index = 0;
   while (index < sql.length) {
     const skipped = skipSqlStringOrComment(sql, index);
@@ -9851,7 +9855,7 @@ function sqlTheEnginesLexDifferently(sql) {
           }
           cursor += 1;
         }
-        if (Math.min(cursor, sql.length) !== skipped) {
+        if (cursor !== skipped) {
           return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
         }
       }
@@ -9864,6 +9868,26 @@ function sqlTheEnginesLexDifferently(sql) {
     index += 1;
   }
   return null;
+}
+function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
+  let fingerprint = "";
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn);
+    if (skipped > index) {
+      const isComment = sql[index] === "-" && sql[index + 1] === "-" || sql[index] === "/" && sql[index + 1] === "*";
+      if (!isComment) {
+        fingerprint += `q${index}-${skipped};`;
+      }
+      index = skipped;
+      continue;
+    }
+    if (!/[ \t\n\r\f]/.test(sql[index])) {
+      fingerprint += `${index}:${sql[index]};`;
+    }
+    index += 1;
+  }
+  return fingerprint;
 }
 function readFirstSqlToken(sql) {
   const index = skipSqlTrivia(sql, 0);
@@ -10030,13 +10054,13 @@ function skipSqlLiteralOrComment(sql, index) {
   }
   return sql.length;
 }
-function skipSqlStringOrComment(sql, index) {
+function skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn = true) {
   if (sql[index] === "/" && sql[index + 1] === "*") {
     const end = sql.indexOf("*/", index + 2);
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
     return end ? index + 2 + end.index + 1 : sql.length;
   }
   const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");

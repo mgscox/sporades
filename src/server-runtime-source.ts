@@ -271,6 +271,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   unrepresentableInspectionSqlError,
   ambiguousInspectionSqlError,
   sqlTheEnginesLexDifferently,
+  sqlContentFingerprint,
   readFirstSqlToken,
   hasMultipleSqlStatements,
   isSafeInspectionPragma,
@@ -8648,6 +8649,23 @@ function ambiguousInspectionSqlError(hint: string) {
 // JavaScript's `\s` adds beyond those is an identifier character to Postgres. Skipping any of them
 // said a statement ended where the engine reads on.
 function sqlTheEnginesLexDifferently(sql: string) {
+  // The line-comment terminator, compared the same derived way the block-comment nesting is, and
+  // for a sharper reason: this one composes. Ending `--x<CR>` at the CR *exposes* a `/*` that the
+  // walk then runs past the following LF, so the composed walk skips more than SQLite does — the
+  // hazard this whole gate is built to avoid. `SELECT 1 AS s --x<CR>/*y<LF>; DROP TABLE t --*/ AS z`
+  // is one line comment and a real second statement to SQLite and libSQL, which execute the DROP,
+  // and a `SELECT` with a long block comment to Postgres. Ending the comment at CR alone is not the
+  // conservative direction an earlier version of this file claimed it was.
+  //
+  // What is compared is the content the verdict is drawn from, not the comment spans. Spans differ
+  // for `-- why<CR><LF>` — the LF is inside the comment under one rule and whitespace under the
+  // other — and no consumer can tell those apart, so comparing spans would refuse every CRLF query
+  // with a comment in it. Comparing content refuses only where a token, a separator or a literal
+  // boundary actually moves.
+  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
+    return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL — SQLite ends a line comment at a line feed and Postgres ends one at either.";
+  }
+
   let index = 0;
   while (index < sql.length) {
     const skipped = skipSqlStringOrComment(sql, index);
@@ -8671,9 +8689,13 @@ function sqlTheEnginesLexDifferently(sql: string) {
           }
           cursor += 1;
         }
-        // An unterminated comment runs to the end of the input under both rules, so the clamp makes
-        // the two agree there rather than differing by however far the last step overshot.
-        if (Math.min(cursor, sql.length) !== skipped) {
+        // `cursor` cannot pass `sql.length`: both steps advance only over characters that exist, so
+        // an unterminated comment lands exactly on it. When *neither* rule terminates, both answer
+        // `sql.length` and there is no disagreement to report. When only the nesting one is
+        // unterminated — `SELECT 1 /* /* */ ; X`, where the non-nesting walk stops at the first
+        // `*/` — they differ and the input is refused, which is the strict direction and correct:
+        // that `;` is a separator to Postgres and inside a comment to nobody.
+        if (cursor !== skipped) {
           return "Remove the nested `/* ... */` comment from the `sporades db query` SQL — Postgres and SQLite disagree about where it ends.";
         }
       }
@@ -8686,6 +8708,43 @@ function sqlTheEnginesLexDifferently(sql: string) {
     index += 1;
   }
   return null;
+}
+
+// Everything a verdict is drawn from, under one engine's line-comment rule, in a form two runs can
+// be compared with. Every consumer of the walk — the first token, the separator search, the safe
+// PRAGMA check, the keyword scan and the terminator strip — reads the same three things out of it,
+// so two runs that agree here cannot disagree downstream:
+//
+//   - **which characters are content**, position included, so a token that moves is a difference;
+//   - **which characters are trivia**, comment and whitespace collapsed together, because no
+//     consumer distinguishes them and keeping them apart would refuse every `-- why<CR><LF>`;
+//   - **where a quoted run starts and ends**, emitted opaquely, so that a `;` inside a literal under
+//     one rule and outside it under the other is a difference rather than the same character at the
+//     same offset.
+//
+// The comparison is derived rather than described, for the reason recorded on the block-comment
+// counter above and demonstrated twice there: a rule that recognises the dangerous text is a rule
+// with a blind spot in it somewhere nobody has looked yet.
+export function sqlContentFingerprint(sql: string, lineCommentEndsAtCarriageReturn: boolean) {
+  let fingerprint = "";
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlStringOrComment(sql, index, lineCommentEndsAtCarriageReturn);
+    if (skipped > index) {
+      const isComment =
+        (sql[index] === "-" && sql[index + 1] === "-") || (sql[index] === "/" && sql[index + 1] === "*");
+      if (!isComment) {
+        fingerprint += `q${index}-${skipped};`;
+      }
+      index = skipped;
+      continue;
+    }
+    if (!/[ \t\n\r\f]/.test(sql[index])) {
+      fingerprint += `${index}:${sql[index]};`;
+    }
+    index += 1;
+  }
+  return fingerprint;
 }
 
 function readFirstSqlToken(sql: string) {
@@ -8908,15 +8967,21 @@ function skipSqlLiteralOrComment(sql: string, index: number) {
 // comments, and Postgres's two extra string forms — dollar quoting (`$$…$$`, `$tag$…$tag$`) and
 // E-strings, where a backslash escapes the next character.
 //
-// Where the engines disagree about how far a comment runs, this walk takes the *shortest* run any
-// of them would take, because a shared verdict that skipped more than an engine does is a place to
-// hide a `;`. That is why a line comment ends at CR as well as LF: Postgres spells a comment's body
-// `non_newline`, which is `[^\n\r]`, while SQLite reads on to the next LF. Ending one at LF alone
-// made everything after a bare CR trivia here and a fresh statement there, so
+// A line comment ends at CR as well as LF, because Postgres spells a comment's body `non_newline`,
+// which is `[^\n\r]`, while SQLite reads on to the next LF. Ending one at LF alone made everything
+// after a bare CR trivia here and a fresh statement there, so
 // `SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the gate and Postgres's simple query protocol
-// executed both halves. Ending it at CR costs a conservative false reject on SQLite — text SQLite
-// would have treated as comment is read as content and, if it holds a `;`, refused — and buys the
-// one verdict the ability to be true on the strictest engine.
+// executed both halves.
+//
+// Taking the shorter of the two readings is *not* on its own the conservative direction, and an
+// earlier version of this comment said it was. Ending the comment early exposes whatever follows the
+// CR — and if that is a `/*`, this walk then runs past the LF that would have closed SQLite's line
+// comment, so the composed walk skips *more* than SQLite does and a `;` hides in the difference.
+// `SELECT 1 AS s --x<CR>/*y<LF>; DROP TABLE t --*/ AS z` is a `SELECT` here and a real second
+// statement on SQLite and libSQL, both of which execute the DROP. There is no single reading of a
+// line comment that is safe on every engine, which is why the CR rule is paired with
+// `sqlTheEnginesLexDifferently` refusing every input the two readings draw a different verdict from,
+// rather than left to lean.
 //
 // Block comments are deliberately not nested, though Postgres nests them, and that is *not* safe by
 // leaning — the earlier version of this comment claimed it was, and was wrong. A non-nesting walk
@@ -8940,13 +9005,16 @@ function skipSqlLiteralOrComment(sql: string, index: number) {
 // bundle is assembled from the source text of the functions in `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so
 // a helper this one called would have to travel with it or become a `ReferenceError` in a deployed
 // Capsule.
-function skipSqlStringOrComment(sql: string, index: number) {
+function skipSqlStringOrComment(sql: string, index: number, lineCommentEndsAtCarriageReturn = true) {
   if (sql[index] === "/" && sql[index + 1] === "*") {
     const end = sql.indexOf("*/", index + 2);
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    // The default is Postgres's rule. The parameter exists so `sqlContentFingerprint` can run this
+    // same walk under SQLite's, and is not a way for a caller to pick a lexing: by the time anything
+    // else calls this, an input the two rules read differently has already been refused.
+    const end = (lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
     return end ? index + 2 + end.index + 1 : sql.length;
   }
 
