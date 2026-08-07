@@ -19,6 +19,19 @@ type RuntimeSecurityPolicy = {
         directives: Record<string, string[] | string>;
     };
 };
+export declare const PRIVILEGED_AUTH_USER_ID = "__privileged__";
+export declare const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
+export declare const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS: number;
+export declare const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+export declare const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+export declare const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+export declare const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+export declare const PASSWORD_RESET_DEFAULT_TTL_MS: number;
+export declare const PASSWORD_RESET_MIN_TTL_MS: number;
+export declare const PASSWORD_RESET_MAX_TTL_MS: number;
+export declare const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+export declare const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export declare const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any): void;
@@ -188,6 +201,9 @@ export declare function createLibsqlDatabaseAdapter(options: {
         columns(): Promise<any>;
     };
 }>;
+export declare const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+export declare const PRIVILEGED_AUDIT_ACTOR_KINDS: Set<string>;
+export declare const PRIVILEGED_AUDIT_OUTCOMES: Set<string>;
 export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
     category: string;
     event: string;
@@ -282,6 +298,7 @@ export declare function completePendingFileUpload(database: LooseRecord, uploadI
 export declare function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any): Promise<any>;
 export declare function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options?: LooseRecord): Promise<any>;
 export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
+export declare const ACL_HELPER_STATE: unique symbol;
 export declare function listDatabaseTables(database: {
     adapter: any;
     sqlite: any;
