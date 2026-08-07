@@ -140,11 +140,15 @@ for (const engine of ENGINES) {
       await adapter.insertLogIndexEvent(logEvent("sequence-first", "2026-07-04T10:00:00.000Z"));
       await adapter.insertLogIndexEvent(logEvent("sequence-second", "2026-07-04T10:00:00.000Z"));
 
-      // Read back under the declared camelCase spelling. On Postgres the column is stored folded to
-      // `indexsequence` and the adapter restores the declared name on the way out, so this is the
-      // read path issue 03's missing `verifierHash` entry broke silently — asserted here rather
-      // than assumed.
-      const rows = await adapter.prepare("SELECT message, indexSequence FROM sporades_log_events ORDER BY indexSequence ASC").all();
+      // Read back under the declared camelCase spelling. Every identifier the runtime emits is
+      // quoted through the dialect (ADR-0039), so Postgres stores `"indexSequence"` case-preserved
+      // and hands it straight back — the read path issue 03's missing `verifierHash` entry broke
+      // silently, asserted here rather than assumed.
+      const rows = await adapter
+        .prepare(
+          adapter.dialect.sql("SELECT [message], [indexSequence] FROM [sporades_log_events] ORDER BY [indexSequence] ASC"),
+        )
+        .all();
       assert.deepEqual(rows.map((row) => row.message), ["sequence-first", "sequence-second"]);
 
       for (const row of rows) {

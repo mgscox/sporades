@@ -45,18 +45,26 @@ const ORDINARY_USER = {
 // adapter's own insert helpers refuse it, and the guards under test only mean something when
 // the row they are meant to suppress is actually stored.
 async function seedReservedAuthUser(adapter) {
+  const sql = adapter.dialect.sql;
   await adapter
     .prepare(
-      "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      sql(
+        "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], " +
+        "[isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ),
     )
     .run(RESERVED_AUTH_USER_ID, NOW, "Privileged", "reserved@example.com", null, 1, 0, "email");
   await adapter
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)")
+    .prepare(
+      sql("INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"),
+    )
     .run("session-reserved", RESERVED_AUTH_USER_ID, "email", NOW, FAR_FUTURE);
   await adapter
     .prepare(
-      "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+      sql(
+        "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) " +
+        "VALUES (?, ?, ?, ?, ?)",
+      ),
     )
     .run("reserved@example.com", RESERVED_AUTH_USER_ID, "hash", "salt", NOW);
 }

@@ -160,6 +160,7 @@ export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket,
     close(): void;
 };
 export declare function createDatabaseDialect(spec: LooseRecord): LooseRecord;
+export declare function quoteSqlIdentifiers(quoteIdentifier: (identifier: string) => string, statement: string): string;
 export declare function createDatabaseNormalization(spec: LooseRecord): LooseRecord;
 export declare function sqliteRowNormalization(): LooseRecord;
 export declare function postgresRowNormalization(): LooseRecord;

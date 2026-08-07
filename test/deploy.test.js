@@ -2046,7 +2046,7 @@ test("container server bundle reads injected service env and selects the libSQL 
         });
         assert.equal(health.status, 200, await health.text());
         assert(
-          requests.some((request) => request.requests?.some((entry) => entry.stmt?.sql === "SELECT 1 AS ok")),
+          requests.some((request) => request.requests?.some((entry) => entry.stmt?.sql === 'SELECT 1 AS "ok"')),
           JSON.stringify(requests),
         );
         const socket = await openSocket(`http://127.0.0.1:${port}`);

@@ -94,31 +94,38 @@ const TEN_MINUTES_AFTER_NOW = "2026-08-01T09:10:00.000Z";
 // the rows it is meant to suppress are actually stored. Every lookup that joins the Sporades
 // user table gets a reserved row to suppress.
 async function seedReservedAuthUser(adapter) {
+  const sql = adapter.dialect.sql;
   await adapter
     .prepare(
-      "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      sql(
+        "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], " +
+        "[isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ),
     )
     .run(RESERVED_AUTH_USER_ID, NOW, "Privileged", RESERVED_EMAIL, null, 1, 0, "email");
   await adapter
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)")
+    .prepare(
+      sql("INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"),
+    )
     .run("session-reserved", RESERVED_AUTH_USER_ID, "email", NOW, FAR_FUTURE);
   await adapter
     .prepare(
-      "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+      sql(
+        "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) " +
+        "VALUES (?, ?, ?, ?, ?)",
+      ),
     )
     .run(RESERVED_EMAIL, RESERVED_AUTH_USER_ID, "reserved-hash", "reserved-salt", NOW);
+  const insertIdentity = sql(
+    "INSERT INTO [sporades_auth_identities] " +
+    "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
   await adapter
-    .prepare(
-      "INSERT INTO sporades_auth_identities " +
-      "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
+    .prepare(insertIdentity)
     .run("identity-reserved", RESERVED_AUTH_USER_ID, "google", "reserved-subject", RESERVED_EMAIL, "Privileged", null, NOW, NOW);
   await adapter
-    .prepare(
-      "INSERT INTO sporades_auth_identities " +
-      "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
+    .prepare(insertIdentity)
     .run("identity-reserved-legacy", RESERVED_AUTH_USER_ID, "google", "legacy:reserved", RESERVED_EMAIL, "Privileged", null, NOW, NOW);
 }
 
@@ -126,7 +133,7 @@ async function seedReservedAuthUser(adapter) {
 // declines to return it. Without that, a guard that never fires and a seed that never landed
 // produce the same `null`.
 async function countRows(adapter, sql, ...params) {
-  const row = await adapter.prepare(sql).get(...params);
+  const row = await adapter.prepare(adapter.dialect.sql(sql)).get(...params);
   return Number(row?.count ?? 0);
 }
 
@@ -256,7 +263,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       );
 
       assert.equal(await adapter.readAuthSessionWithUser("session-forged"), null);
-      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE token = ?", "session-forged"), 0);
+      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [token] = ?", "session-forged"), 0);
     },
   },
   {
@@ -371,7 +378,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         );
       }
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE userId = ?", SWEPT_USER.id),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?", SWEPT_USER.id),
         3,
       );
 
@@ -381,7 +388,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         assert.equal(await adapter.readAuthSessionWithUser(token), null);
       }
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE userId = ?", SWEPT_USER.id),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?", SWEPT_USER.id),
         0,
       );
 
@@ -544,19 +551,19 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       // The guards are only meaningful if the rows they suppress are stored, so prove that first.
       // Otherwise a guard that never fires and a fixture that never seeded look identical.
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?", RESERVED_AUTH_USER_ID),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_users] WHERE [id] = ?", RESERVED_AUTH_USER_ID),
         1,
       );
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE token = ?", "session-reserved"),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [token] = ?", "session-reserved"),
         1,
       );
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_email_credentials WHERE email = ?", RESERVED_EMAIL),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_email_credentials] WHERE [email] = ?", RESERVED_EMAIL),
         1,
       );
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?", RESERVED_AUTH_USER_ID),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_identities] WHERE [userId] = ?", RESERVED_AUTH_USER_ID),
         2,
       );
 
@@ -745,7 +752,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         expiresAt: LONG_PAST_EXPIRED,
       });
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ?", SIGNED_IN_USER.email),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?", SIGNED_IN_USER.email),
         3,
       );
       assert.equal(await adapter.countPasswordResetCodesForEmail(SIGNED_IN_USER.email, NOW), 2);
@@ -924,9 +931,9 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
 
       // The reserved row really is stored, so the refusals above suppressed a write that would
       // otherwise have landed rather than failing over an absent row.
-      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?", RESERVED_AUTH_USER_ID), 1);
+      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_users] WHERE [id] = ?", RESERVED_AUTH_USER_ID), 1);
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ? AND displayName = ?", RESERVED_AUTH_USER_ID, "Privileged"),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_users] WHERE [id] = ? AND [displayName] = ?", RESERVED_AUTH_USER_ID, "Privileged"),
         1,
       );
     },
@@ -967,7 +974,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
 
       // Consuming spends the state, so the second read answers as it did before the state existed.
       assert.equal(await adapter.consumeOAuthState("oauth-state-explicit"), null);
-      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_oauth_states WHERE state = ?", "oauth-state-explicit"), 0);
+      assert.equal(await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_oauth_states] WHERE [state] = ?", "oauth-state-explicit"), 0);
 
       // The defaults the method fills in for an OAuth start that supplies neither: the provider,
       // an expiry ten minutes after creation, and null for the optional secrets.
@@ -1022,7 +1029,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       // Rows written by the cases above survive the second run, across each table the method owns.
       assert.equal((await adapter.readAuthSessionWithUser(REGISTERED_SESSION_TOKEN))?.userId, REGISTERED_USER.id);
       assert.equal(
-        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_oauth_states WHERE state = ?", "oauth-state-across-ensure"),
+        await countRows(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_auth_oauth_states] WHERE [state] = ?", "oauth-state-across-ensure"),
         1,
       );
       assert.equal((await adapter.consumeOAuthState("oauth-state-across-ensure"))?.returnTo, "/");
