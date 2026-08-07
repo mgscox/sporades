@@ -27,6 +27,7 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -35,7 +36,7 @@ import * as inspectionSqlModule from "../dist/inspection-sql.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { INSPECTION_SQL_SKEW_PROBE, createServerBundleSource, inspectionSqlBlockFrom } from "../dist/templates/server-bundle-template.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -1477,6 +1478,75 @@ test("both bundles answer the whole read-only inspection surface identically", a
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// While the CLI ships as a bundle there are two copies of `inspection-sql`: the one esbuild inlined
+// into `bin/sporades.js`, which is what `createServerBundleSource` imports, and `dist/inspection-sql.js`
+// on disk, which is what it reads the carried text from. A tree whose `dist/` and `bin/` came from
+// different builds would put the `dist/` gate inside a Capsule while every other runtime function in
+// that same Capsule came from `bin/`, and nothing in `scripts/` compares the two for freshness.
+//
+// So the builder compares them itself, and this is that check exercised against copies skewed on
+// purpose. Driven through `inspectionSqlBlockFrom` rather than by editing the tree the suite is
+// running out of.
+test("a carried copy of the inspection gate that disagrees with the running one fails the build", async () => {
+  const modulePath = fileURLToPath(new URL("../dist/inspection-sql.js", import.meta.url));
+  const compiled = await readFile(modulePath, "utf8");
+
+  // The honest copy builds, or every rejection below would be meaningless.
+  assert.match(inspectionSqlBlockFrom(compiled, modulePath), /function nestingBlockCommentEnd\(/);
+
+  // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
+  // allow-everything validator from the real one, which is the case this check exists for.
+  const refused = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === false);
+  const admitted = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === true);
+  assert.ok(refused.length >= 5, `the skew probe only refuses ${refused.length} statements — it cannot see a validator that admits everything`);
+  assert.ok(admitted.length >= 5, `the skew probe only admits ${admitted.length} statements — it cannot see a validator that refuses everything`);
+
+  const skews = [
+    // The one that was silent before this check existed: same exports, same names, a validator
+    // replaced by one that admits anything.
+    [
+      "a validator swapped for one that admits everything",
+      compiled.replace(
+        /export function validateReadOnlyInspectionSql\(sql\) \{/,
+        "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
+      ),
+      /answers the read-only inspection gate differently/,
+    ],
+    // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
+    // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
+    [
+      "a tokenizer whose line comment stops ending at a carriage return",
+      compiled.replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
+      /answers the read-only inspection gate differently/,
+    ],
+    // Structural skew: an export the running copy has and the carried one does not.
+    [
+      "a copy missing an export the running one has",
+      compiled.replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
+      /exports a different set of names.*missing skipSqlTrivia/s,
+    ],
+    // Truncation part-way through a function, which is what an interrupted write leaves behind.
+    [
+      "a copy truncated mid-function",
+      compiled.slice(0, compiled.indexOf("export function skipSqlQuotedOrCommented(") + 200),
+      /did not parse|did not evaluate|exports a different set of names/,
+    ],
+  ];
+
+  for (const [description, skewed, expected] of skews) {
+    assert.notEqual(skewed, compiled, `the ${description} case did not actually change the module`);
+    assert.throws(
+      () => inspectionSqlBlockFrom(skewed, modulePath),
+      (error) => {
+        assert.match(error.message, expected, `wrong rejection for ${description}: ${error.message}`);
+        assert.match(error.hint, /npm run build|reinstall the Sporades CLI/i, `no actionable hint for ${description}`);
+        return true;
+      },
+      `${description} was carried into the bundle instead of failing the build`,
+    );
   }
 });
 

@@ -47,16 +47,88 @@ import { databaseAdapterMethodNames, overriddenDatabaseAdapterMethodNames } from
 // `nestingBlockCommentEnd` is exactly that, and it is in the census below. Reading exports would
 // have made privacy a way to leave the census, which is the opposite of what this guard is for.
 //
-// `getStart` skips leading trivia, so a function's text here begins at its `function` keyword —
-// the same text `Function.prototype.toString()` gives for the entries that come from the list, and
-// notably not including the prose above it. Comments *inside* a body are included by both.
+// `getStart` returns the node's first token, which for an exported declaration is `export` rather
+// than `function`. That is a superset of what `Function.prototype.toString()` gives for the entries
+// that come from the emitted list, and the difference does not reach any detector below — none of
+// them can match on the word `export`. What matters is that the prose *above* a declaration is
+// excluded, which `getStart` does by skipping leading trivia, and that comments *inside* a body are
+// included, which both forms do.
+//
+// **Two declaration forms, because this file can now legally hold both.** A top-level
+// `const foo = (…) => {…}` is a `VariableStatement`, not a `FunctionDeclaration`, and reading only
+// the latter made it invisible here — a real second SQL walker written that way passed both guards
+// and reached both bundles. That form was not previously possible in this region: under the emitted
+// list a helper travelled as `fn.toString()`, which for an arrow produces an expression and no
+// top-level declaration, so `inspection-sql`'s predecessors were forced into `function` declarations
+// and the gap could not be reached. Carrying the module whole made the form legal here for the first
+// time and opened the gap in the same change, which is why it is closed in the same file.
+//
+// Still not a proof, and the misses are worth naming rather than leaving to be rediscovered: a
+// walker declared as a class method, one assigned to a property of an exported object, or one nested
+// inside another declaration is not collected in its own right — though the last is covered through
+// its enclosing declaration's text, which was confirmed by execution rather than assumed.
+function declaredFunctions(source, label) {
+  const parsed = ts.createSourceFile(label, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const declared = [];
+  for (const node of parsed.statements) {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      declared.push({ name: node.name.text, source: source.slice(node.getStart(parsed), node.getEnd()) });
+      continue;
+    }
+    if (!ts.isVariableStatement(node)) continue;
+    for (const declaration of node.declarationList.declarations) {
+      const initializer = declaration.initializer;
+      if (!ts.isIdentifier(declaration.name) || !initializer) continue;
+      if (!ts.isArrowFunction(initializer) && !ts.isFunctionExpression(initializer)) continue;
+      declared.push({
+        name: declaration.name.text,
+        source: source.slice(declaration.getStart(parsed), declaration.getEnd()),
+      });
+    }
+  }
+  return declared;
+}
+
+// The collector's own coverage, settled on source small enough to read rather than inferred from
+// the count of what it found in the real module. A collector that had quietly stopped seeing one of
+// the two forms would leave every guard below passing, and `declaredFunctions` returning plenty of
+// entries is exactly what that failure looks like from the outside.
+test("the walker guards' collector sees both forms a top-level function can take", () => {
+  // Each entry is a form and the body token that proves the body came with it. A collector that
+  // returned the right names with the wrong spans would pass a names-only check and then match
+  // nothing, which is the same silence as not collecting at all.
+  const forms = [
+    ["declaredAndExported", "BODY_ONE", "export function declaredAndExported(a) { return BODY_ONE; }"],
+    ["declaredPrivate", "BODY_TWO", "function declaredPrivate(a) { return BODY_TWO; }"],
+    ["conciseArrow", "BODY_THREE", "export const conciseArrow = (a) => BODY_THREE;"],
+    ["blockArrow", "BODY_FOUR", "const blockArrow = (a) => { return BODY_FOUR; };"],
+    ["functionExpression", "BODY_FIVE", "const functionExpression = function (a) { return BODY_FIVE; };"],
+  ];
+  const fixture = [
+    ...forms.map(([, , text]) => text),
+    "const notAFunction = 1;",
+    "export const alsoNotAFunction = new Set([1]);",
+  ].join("\n");
+
+  const collected = declaredFunctions(fixture, "fixture.js");
+  assert.deepEqual(
+    collected.map(({ name }) => name).sort(),
+    forms.map(([name]) => name).sort(),
+  );
+
+  for (const [name, body] of forms) {
+    assert.match(
+      collected.find((entry) => entry.name === name).source,
+      new RegExp(body),
+      `${name} was collected without its body`,
+    );
+  }
+});
+
 function inspectionSqlDeclaredFunctions() {
   const path = new URL("../dist/inspection-sql.js", import.meta.url);
   const source = readFileSync(path, "utf8");
-  const parsed = ts.createSourceFile("inspection-sql.js", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const declared = parsed.statements
-    .filter((node) => ts.isFunctionDeclaration(node) && node.name)
-    .map((node) => ({ name: node.name.text, source: source.slice(node.getStart(parsed), node.getEnd()) }));
+  const declared = declaredFunctions(source, "inspection-sql.js");
   // Guard the measurement before trusting it. A parse that had silently produced nothing — a moved
   // file, a changed compiler target, a module that stopped being top-level functions — would make
   // every guard below pass by having no subjects, which is indistinguishable from a clean census.

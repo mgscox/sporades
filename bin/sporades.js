@@ -14905,24 +14905,90 @@ function serializeRuntimeConstant(value) {
   return JSON.stringify(value);
 }
 var INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
+var INSPECTION_SQL_SKEW_PROBE = [
+  "DROP TABLE t",
+  "TRUNCATE TABLE t",
+  "SELECT 1 AS s; DROP TABLE t",
+  "/*/* */ SELECT 1 */ TRUNCATE TABLE t",
+  "SELECT 1 AS s --x\r/*y\n; DROP TABLE t --*/ AS z",
+  "SELECT $$a; DROP TABLE t$$ AS s",
+  "PRAGMA journal_mode = WAL",
+  "SELECT\xA01 AS a",
+  "SELECT 1 AS s\0",
+  "SELECT 1",
+  "SELECT * FROM posts;",
+  "PRAGMA table_info(posts)",
+  "WITH recent AS (SELECT 1 AS s) SELECT * FROM recent",
+  "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;"
+];
+function bundleTemplateError(message, hint) {
+  return Object.assign(new Error(message), { hint });
+}
+function evaluateInspectionSqlBlock(code) {
+  try {
+    return new Function(`${code}
+return ${INSPECTION_SQL_NAMESPACE};`)();
+  } catch (error) {
+    throw bundleTemplateError(
+      `Server bundle failed: the read-only inspection module did not evaluate: ${error?.message ?? error}`,
+      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
+    );
+  }
+}
+function describeInspectionSqlAnswers(module) {
+  return INSPECTION_SQL_SKEW_PROBE.map(
+    (sql) => JSON.stringify([sql, module.validateReadOnlyInspectionSql(sql), module.sqlWithoutTrailingTerminator(sql)])
+  );
+}
 function inspectionSqlModuleSource() {
   const modulePath = path4.join(resolveSporadesPackageRoot(), "dist", "inspection-sql.js");
   let compiled;
   try {
     compiled = readFileSync2(modulePath, "utf8");
   } catch (error) {
-    throw Object.assign(new Error(`Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`), {
-      hint: "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
-    });
+    throw bundleTemplateError(
+      `Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`,
+      "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
+    );
   }
-  const exported = Object.keys(inspection_sql_exports).sort();
-  const { code } = transformSync(compiled, {
-    loader: "js",
-    format: "iife",
-    globalName: INSPECTION_SQL_NAMESPACE,
-    platform: "node",
-    target: "node22"
-  });
+  return inspectionSqlBlockFrom(compiled, modulePath);
+}
+function inspectionSqlBlockFrom(compiled, modulePath) {
+  let code;
+  try {
+    ({ code } = transformSync(compiled, {
+      loader: "js",
+      format: "iife",
+      globalName: INSPECTION_SQL_NAMESPACE,
+      platform: "node",
+      target: "node22"
+    }));
+  } catch (error) {
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} did not parse: ${error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error)}`,
+      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
+    );
+  }
+  const carried = evaluateInspectionSqlBlock(code);
+  const exported = Object.keys(carried).sort();
+  const loaded = Object.keys(inspection_sql_exports).sort();
+  if (exported.join(",") !== loaded.join(",")) {
+    const missing = loaded.filter((name) => !exported.includes(name));
+    const extra = exported.filter((name) => !loaded.includes(name));
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} exports a different set of names than the running CLI's copy of it${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`,
+      "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI."
+    );
+  }
+  const carriedAnswers = describeInspectionSqlAnswers(carried);
+  const loadedAnswers = describeInspectionSqlAnswers(inspection_sql_exports);
+  const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
+  if (disagreement >= 0) {
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} answers the read-only inspection gate differently than the running CLI's copy of it, starting at ${JSON.stringify(INSPECTION_SQL_SKEW_PROBE[disagreement])}.`,
+      "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI."
+    );
+  }
   return `${code}
 const { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
 }

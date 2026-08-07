@@ -19,6 +19,51 @@ function serializeRuntimeConstant(value) {
     return JSON.stringify(value);
 }
 const INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
+// Statements the carried copy of the inspection gate and the loaded one must agree about, checked at
+// every bundle build. Half are refused by the gate and half admitted, and the refused half is what
+// gives the check its teeth: a carried copy whose validator had been replaced by one that admits
+// everything answers `ok` for all of them.
+//
+// The shapes are the ones ADR-0038 records as having defeated this gate — a bare destructive verb, a
+// second statement, a nested block comment, the composed line comment, a verb inside a dollar quote,
+// a PRAGMA assignment, whitespace no engine has, and text the wire cannot carry — so a carried copy
+// that differs in any limb this project has actually got wrong is caught rather than shipped.
+export const INSPECTION_SQL_SKEW_PROBE = [
+    "DROP TABLE t",
+    "TRUNCATE TABLE t",
+    "SELECT 1 AS s; DROP TABLE t",
+    "/*/* */ SELECT 1 */ TRUNCATE TABLE t",
+    "SELECT 1 AS s --x\r/*y\n; DROP TABLE t --*/ AS z",
+    "SELECT $$a; DROP TABLE t$$ AS s",
+    "PRAGMA journal_mode = WAL",
+    "SELECT\u00a01 AS a",
+    "SELECT 1 AS s\u0000",
+    "SELECT 1",
+    "SELECT * FROM posts;",
+    "PRAGMA table_info(posts)",
+    "WITH recent AS (SELECT 1 AS s) SELECT * FROM recent",
+    "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;",
+];
+function bundleTemplateError(message, hint) {
+    return Object.assign(new Error(message), { hint });
+}
+// The carried block, evaluated so it can be questioned rather than only pattern-matched.
+//
+// The input is this build's own output, produced two lines earlier from a file inside the Sporades
+// package — not Capsule code and not anything a Capsule author supplies. Evaluating it costs one
+// `new Function` and runs the module's top level, which builds three `Set`s and declares functions.
+function evaluateInspectionSqlBlock(code) {
+    try {
+        return new Function(`${code}\nreturn ${INSPECTION_SQL_NAMESPACE};`)();
+    }
+    catch (error) {
+        throw bundleTemplateError(`Server bundle failed: the read-only inspection module did not evaluate: ${error?.message ?? error}`, "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
+    }
+}
+// What the two copies of the inspection gate answer, as comparable text.
+function describeInspectionSqlAnswers(module) {
+    return INSPECTION_SQL_SKEW_PROBE.map((sql) => JSON.stringify([sql, module.validateReadOnlyInspectionSql(sql), module.sqlWithoutTrailingTerminator(sql)]));
+}
 // The read-only inspection validator and its tokenizer, carried into the bundle as `inspection-sql`'s
 // own compiled text rather than as `fn.toString()` over a list of its functions.
 //
@@ -32,10 +77,14 @@ const INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
 // through the list.
 //
 // The module is compiled to an IIFE by esbuild rather than concatenated with its `export` keywords
-// stripped, and the difference is not cosmetic. Concatenation would put every one of this module's
-// private helpers at the bundle's top level beside 500-odd runtime functions, where a name collision
-// is a silently shadowed function declaration rather than an error. Inside the IIFE the private names
-// are unreachable from the rest of the bundle, which is what "private" has to mean here too.
+// stripped, and the reason is privacy rather than safety. Concatenation would be *loud* if it
+// collided: the generated bundle is an ES module — it imports `node:crypto` and uses top-level
+// `await` — and a duplicate top-level `function` or `const` there is a load-time `SyntaxError`, which
+// is exactly what a duplicate entry in the emitted list produces and why none is left there. What
+// concatenation would cost is the thing this whole change is for: every one of this module's private
+// helpers would land at the bundle's top level, reachable from 500-odd runtime functions, so
+// "private" would stop meaning anything at the point it started to matter. Inside the IIFE it does.
+// Not stripping `export` keywords out of generated JavaScript by hand is the second reason.
 //
 // `transformSync`, not `build`: this is a format conversion of one already-compiled file, so nothing
 // is resolved and nothing is read except the file named below. `createServerBundleSource` is
@@ -47,30 +96,68 @@ function inspectionSqlModuleSource() {
         compiled = readFileSync(modulePath, "utf8");
     }
     catch (error) {
-        throw Object.assign(new Error(`Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`), {
-            hint: "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.",
-        });
+        throw bundleTemplateError(`Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`, "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.");
     }
-    // The names the rest of the bundle resolves against, derived from the module's own exports rather
-    // than written out here. Two hand-kept lists agreeing with each other is what the constant preamble
-    // used to be before it was serialized from the runtime source, and the failure mode is the same: a
-    // name spelled wrong here would declare a binding that is simply `undefined` at runtime, which the
-    // free-binding guard resolves exactly as cleanly as a correct one. Derived, a name that is not
-    // exported is not declared at all, so the guard sees the consumer's reference as unresolved and
-    // fails the build.
+    return inspectionSqlBlockFrom(compiled, modulePath);
+}
+// The block, and the checks that decide whether the copy it was built from is the copy this process
+// is running. Separated from the file read so that a test can drive it with a deliberately skewed
+// copy without touching the tree the suite is running out of.
+export function inspectionSqlBlockFrom(compiled, modulePath) {
+    let code;
+    try {
+        ({ code } = transformSync(compiled, {
+            loader: "js",
+            format: "iife",
+            globalName: INSPECTION_SQL_NAMESPACE,
+            platform: "node",
+            target: "node22",
+        }));
+    }
+    catch (error) {
+        // A file that will not parse — a truncated write is the ordinary way to get one. esbuild's own
+        // error names the position, and it is worth nothing to a person without the file it came from.
+        throw bundleTemplateError(`Server bundle failed: ${modulePath} did not parse: ${error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error)}`, "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
+    }
+    // **Two copies of this module exist while the CLI is a bundle, and they are checked against each
+    // other here.** `bin/sporades.js` is built by esbuild from `src/`, so the `inspectionSql` imported
+    // above is a copy inlined into `bin/`, while the text just read comes from `dist/` on disk. Running
+    // from `dist/` there is one copy and the question does not arise; running from `bin/` a tree whose
+    // `dist/` and `bin/` came from different builds would ship the `dist/` gate inside a Capsule while
+    // every other runtime function in that same Capsule came from `bin/`.
     //
-    // The names come from the loaded module and the text comes from the file, which are the same build
-    // in every layout that ships: `npm run build` writes `dist/` before `bin/`, `check-generated-bin`
-    // refuses a `bin/` older than its sources, and a published package carries both from one build. A
-    // tree where they disagreed would be one where `dist/` is stale, which breaks far more than this.
-    const exported = Object.keys(inspectionSql).sort();
-    const { code } = transformSync(compiled, {
-        loader: "js",
-        format: "iife",
-        globalName: INSPECTION_SQL_NAMESPACE,
-        platform: "node",
-        target: "node22",
-    });
+    // Nothing in `scripts/` compares those for freshness — `check-generated-bin.mjs` checks the
+    // shebang, the generated header and the absence of `../src/` imports, and an earlier version of
+    // this comment claimed a freshness check it does not perform. So the comparison is made here,
+    // against the copy that will actually be carried rather than against the file it came from.
+    const carried = evaluateInspectionSqlBlock(code);
+    // The names the rest of the bundle resolves against, taken from the carried namespace itself. A
+    // name that the block does not export cannot be destructured from it, so "declared here, absent
+    // there" is not a state this can reach. Written out by hand instead, a misspelling would declare a
+    // binding that is simply `undefined` at runtime, which the free-binding guard resolves exactly as
+    // cleanly as a correct one.
+    const exported = Object.keys(carried).sort();
+    const loaded = Object.keys(inspectionSql).sort();
+    if (exported.join(",") !== loaded.join(",")) {
+        const missing = loaded.filter((name) => !exported.includes(name));
+        const extra = exported.filter((name) => !loaded.includes(name));
+        throw bundleTemplateError(`Server bundle failed: ${modulePath} exports a different set of names than the running CLI's copy of it`
+            + `${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`, "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.");
+    }
+    // And the same names are not enough, because the shape that matters most keeps them: a carried copy
+    // whose validator body had been replaced would export exactly this list and admit everything. So
+    // the two copies are asked the same questions and must answer identically.
+    //
+    // This is a probe, not a proof, and the difference is worth stating rather than leaving to be
+    // discovered: two copies that agree on the export surface and on every statement below still ship,
+    // however else they differ. What it does close is the case that is otherwise silent.
+    const carriedAnswers = describeInspectionSqlAnswers(carried);
+    const loadedAnswers = describeInspectionSqlAnswers(inspectionSql);
+    const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
+    if (disagreement >= 0) {
+        throw bundleTemplateError(`Server bundle failed: ${modulePath} answers the read-only inspection gate differently than the running CLI's copy of it, `
+            + `starting at ${JSON.stringify(INSPECTION_SQL_SKEW_PROBE[disagreement])}.`, "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.");
+    }
     return `${code}\nconst { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
 }
 export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {

@@ -57,11 +57,29 @@ Two properties follow, and they are what the ticket asked for:
   against this module rather than asserted.
 
 An IIFE rather than concatenation with the `export` keywords stripped, and the
-difference is not cosmetic. Concatenating would put the module's private helpers
-at the bundle's top level beside five hundred other runtime functions, where a
-name collision is a silently shadowed function declaration rather than an error —
-so "private" would mean nothing at exactly the point it started to matter. Inside
-the IIFE the private names are unreachable from the rest of the bundle.
+reason is privacy rather than safety. An earlier version of this section said
+concatenation would risk "a silently shadowed function declaration rather than an
+error", and execution says otherwise: the generated bundle is unconditionally an
+ES module — it imports `node:crypto` and uses top-level `await` — and a duplicate
+top-level declaration there is a load-time `SyntaxError`.
+
+    duplicate function declaration  -> status 1, SyntaxError: Identifier
+                                       'skipSqlTrivia' has already been declared
+    duplicate preamble const        -> status 1, SyntaxError: Identifier
+                                       'PASSWORD_RESET_MIN_TTL_MS' has already been declared
+    the same written as var         -> status 0, boots
+
+Only `var` shadows silently, and `export function foo` strips to `function foo`,
+so a collision under concatenation would be loud. That is the same mechanism that
+makes a duplicate entry in the emitted list loud, which is why none is left there
+and why `server-runtime-source.ts` says so at the point the entries were removed.
+
+What concatenation would actually cost is the thing this change exists for: every
+one of the module's private helpers would land at the bundle's top level, reachable
+from five hundred other runtime functions, so "private" would stop meaning anything
+at exactly the point it started to matter. Inside the IIFE it means what it says.
+Not stripping `export` keywords out of generated JavaScript by hand is the second
+reason and the smaller one.
 
 The destructured names are **derived from the module's live exports**, not written
 out beside it. A hand-kept list here would have the failure mode the constant
@@ -74,19 +92,58 @@ rather than traded away.
 
 ## What this costs, stated rather than left to be found
 
-**The emitted-list builder now reads a file.** It did not before —
-concatenating source text resolves nothing, which is the property ADR-0040
-records as the reason the `toString()` mechanism satisfied self-containment by
-construction. `createServerBundleModuleSource` already had to locate its own
-entry, and the walk to the package root that ADR-0040 explains is now shared
-(`resolveSporadesPackageRoot`) rather than written twice. The failure mode is a
-thrown build error naming the missing path, not a Capsule that starts and then
-misbehaves; `dist/` is in `package.json`'s `files` and is committed.
+**The emitted-list builder now reads a file, and that splits the module in two.**
+It read none before — concatenating source text resolves nothing, which is the
+property ADR-0040 records as the reason the `toString()` mechanism satisfied
+self-containment by construction. `createServerBundleModuleSource` already had to
+locate its own entry, and the walk to the package root that ADR-0040 explains is
+now shared (`resolveSporadesPackageRoot`) rather than written twice.
+
+The split is the part that is easy to miss. While the CLI ships as
+`bin/sporades.js`, esbuild has inlined `inspection-sql` into that bundle — so the
+names come from the copy inside `bin/` while the carried text comes from
+`dist/inspection-sql.js` on disk. Running from `dist/` there is one copy and the
+question does not arise. Running from `bin/`, a tree whose `dist/` and `bin/` came
+from different builds would put the `dist/` gate inside a deployed Capsule while
+every other runtime function in that same Capsule came from `bin/`.
+
+**Nothing in `scripts/` compares them.** `check-generated-bin.mjs` checks the
+shebang, the generated-file header and the absence of `../src/` imports; it has no
+mtime, hash or freshness comparison, and an earlier version of this section and of
+the comment in `server-bundle-template.ts` both claimed a check it does not
+perform. The measured consequence was that a `dist/inspection-sql.js` whose
+validator had been replaced by one admitting everything built cleanly and shipped
+verbatim.
+
+So the builder compares the two copies itself, and the comparison is in two parts
+because the same names are not enough:
+
+- **The export surface**, taken from the carried block after evaluating it, must
+  equal the running module's. This also makes "declared in the block, absent from
+  the destructuring" unreachable, because the destructured names now come from the
+  block rather than from the import.
+- **The answers**, over a fixed probe of statements the gate refuses and admits,
+  drawn from the shapes ADR-0038 records as having defeated it. A carried copy
+  whose validator body differed would keep every export and still fail here.
+
+Four skews were executed rather than reasoned about — an allow-everything
+validator, a tokenizer whose line comment stops ending at a carriage return, a
+missing export, and a file truncated mid-function. Each is now a build error with
+an actionable hint; the first two were silent before.
+
+**This is a probe, not a proof, and the residual is stated rather than left to be
+found: two copies that agree on the export surface and on every statement in that
+probe still ship, however else they differ.** The probe is guarded in turn — a test
+asserts it both refuses and admits at least five statements, because a probe the
+gate admits in full could not see an allow-everything validator at all. The whole
+question disappears with the emitted list, which is when the disk read goes away.
 
 **The emitted-list builder now spawns esbuild.** `transformSync` runs the esbuild
-binary out of process. Measured rather than assumed: 52 ms on the first call in a
-process and 1.3 ms on every call after it, because esbuild's synchronous API reuses
-the process it started. That buys keeping `createServerBundleSource` synchronous,
+binary out of process. Measured rather than assumed: the steady state is 1.3 ms per
+call, because esbuild's synchronous API reuses the process it started, and the
+first call in a process pays for the spawn — 52 ms on the machine this was written
+on and 21.8 ms on a reviewer's, so treat the shape as the finding and not the
+figure. That buys keeping `createServerBundleSource` synchronous,
 which every caller and three test files expect. The alternative — making it
 `async` and using the esbuild service the bundle pipeline has already started for
 the Capsule module — is better on both counts and was not taken here, because
@@ -113,6 +170,24 @@ privacy became possible. `nestingBlockCommentEnd` is a private helper and is a
 census entry, and a planted private walker in that module was confirmed to fail
 the census rather than reasoned about.
 
+**Reading source text opened a gap in the same change that closed one, and the two
+are the same fact.** A collector that saw only `FunctionDeclaration` nodes could
+not see `const foo = (…) => {…}`, and a second SQL walker written that way passed
+both walker guards and reached both bundles. That form was not previously
+reachable in this region: under the emitted list a helper travelled as
+`fn.toString()`, which for an arrow yields an expression and no top-level
+declaration, so `inspection-sql`'s predecessors were forced into `function`
+declarations. Carrying the module whole made the form legal here for the first
+time, which is why closing it belongs to the same change. The collector now takes
+variable statements whose initializer is an arrow or function expression as well,
+and its own coverage is settled on a fixture rather than inferred from how many
+entries it found — a collector that had stopped seeing one form still returns
+plenty of entries, which is exactly what that failure looks like from outside.
+Known misses are named in the test rather than left implicit: a walker declared as
+a class method, or assigned to a property of an exported object, is not collected
+in its own right, while one nested inside another declaration is covered through
+its enclosing text.
+
 ## What is not decided here
 
 This says nothing about *which* regions move or in what order, and nothing about
@@ -121,8 +196,11 @@ the reading of `dist/` go with it, because the module-graph bundle imports the
 module directly and needs neither.
 
 It also does not claim the mechanism generalizes untested to every region. It is
-proven for one module that imports nothing. A region with imports of its own will
-need `build` rather than `transformSync`, and a region whose functions are called
+proven for one module that imports nothing, and the boundary of that has been
+executed: give `transformSync` a module with an import and it emits a `require(…)`
+into the IIFE, and the Capsule dies at boot with "Cannot determine intended module
+format". Loud rather than silent, but a region with imports of its own needs
+`build` rather than `transformSync`. A region whose functions are called
 from the still-monolithic runtime will keep needing exports for those names — which
 is what `skipSqlTrivia` and `readSqlQuotedIdentifier` are here, because the
 internal log-index table guard lexes SQL with this gate's tokenizer and did not
