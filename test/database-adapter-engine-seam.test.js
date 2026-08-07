@@ -334,6 +334,38 @@ const LINE_ENDING_INJECTION_ATTEMPTS = [
   "SELECT 1 AS s; -- x\n-- y\r TRUNCATE TABLE sporades_injection_canary",
 ];
 
+// Postgres nests block comments. SQLite and libSQL close one at the first `*/` and read on, and so
+// did this walk — so the walk took its first token out of text Postgres was still commenting out.
+// `/*/* */ SELECT 1 */ TRUNCATE TABLE t` is a `SELECT` to the walk and a `TRUNCATE` to Postgres,
+// and every verb the keyword scan deliberately does not list rides the same shape.
+//
+// The statement-shape allowlist is the whole of what excludes those verbs, so a disagreement about
+// *where the first token is* defeats it completely. It was held shut only by the `columns()` wrap
+// failing to parse the admitted text, which is the accident this issue refused to rely on for the
+// surrogate case and must not rely on here either.
+//
+// Neither lexing can simply be adopted: nesting would open the mirror hole, where a `;` inside a
+// comment the walk swallowed is a real separator on the two engines that do not nest. So the
+// ambiguous shape is refused, with its own reason.
+const NESTED_BLOCK_COMMENT_ATTEMPTS = [
+  "/*/* */ SELECT 1 */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/* */ SELECT 1 */ DELETE FROM sporades_injection_canary",
+  "/*/* */ SELECT 1 */ DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "/*/* */ SELECT 1 */ SET x = 1",
+  "/*/* */ SELECT 1 */ COMMENT ON TABLE sporades_injection_canary IS 'owned'",
+  "/*/* */ SELECT 1 */ COPY sporades_injection_canary FROM PROGRAM 'x'",
+  "/*/* */ SELECT 1 */ CALL p()",
+  // The nested opener need not be adjacent, need not be at the start, and the comment need not be
+  // the first thing in the statement.
+  "/* a /* b */ SELECT 1 */ TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 /*/* */ AS s */ ; TRUNCATE TABLE sporades_injection_canary",
+  // The mirror hole, which is why nesting was not adopted instead: to SQLite and libSQL this is a
+  // real second statement, and a nesting walk would have read the whole tail as one comment.
+  "SELECT 1 /*/* */; DROP TABLE sporades_injection_canary /* */",
+];
+
+const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
+
 // The same species one level down: text the walk reads is not always the text the engine receives.
 // The dollar-quote tag alphabet is a UTF-16 code-unit range, so an unpaired surrogate counts as a
 // tag character — and Node folds every unpaired surrogate to U+FFFD on the wire, so two tags that
@@ -372,33 +404,69 @@ test("no second statement hides inside a dollar-quoted or an E-string literal", 
       `refused for the wrong reason, which is the accident this issue exists to replace: ${JSON.stringify(sql)}`,
     );
   }
+
+  for (const sql of NESTED_BLOCK_COMMENT_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a statement Postgres reads differently was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      AMBIGUOUS_LEXING_MESSAGE,
+      `refused for the wrong reason, which leaves the boundary resting on the columns() wrap: ${JSON.stringify(sql)}`,
+    );
+    assert.match(validation.error.hint, /nested/);
+  }
 });
 
-// Trivia is the other half of the same disagreement, and CR was not the only instance. JavaScript's
-// `\s` matches NBSP, the Unicode spaces, the line and paragraph separators and the BOM; Postgres
-// spells its whitespace `[ \t\n\r\f\v]` and SQLite's `sqlite3Isspace` is the same six characters,
-// and every one of the wider set is an *identifier* character to Postgres. A walk that skips them
-// reports "nothing follows the terminator" about text the engine will try to parse.
+// The refusal is of the ambiguous shape, not of block comments. A comment with no `/*` in its body
+// reads identically under both lexings, so nothing about an ordinary one changes.
+test("an unambiguous block comment is still an ordinary comment", () => {
+  for (const sql of [
+    "SELECT 1 /* why */ AS s",
+    "/* why */ SELECT 1 AS s",
+    "SELECT 1 AS s /* why */ ;",
+    "SELECT 1 /* a * b / c */ AS s",
+    // A `/*` that is inside a string literal is content, not a nested opener.
+    "SELECT '/*' AS s /* why */",
+    "SELECT $$/*$$ AS s",
+    // The closing delimiter's own `/` cannot be misread as opening a nested comment.
+    "SELECT 1 /* why/ */ AS s",
+  ]) {
+    assert.equal(validateReadOnlyInspectionSql(sql).ok, true, `an unambiguous comment was refused: ${JSON.stringify(sql)}`);
+  }
+});
+
+// Trivia is the other half of the same disagreement, and CR was not the only instance. The accepted
+// set below is measured rather than read off a grammar: `SELECT<c>1 AS a` is accepted for each of
+// space, tab, LF, CR and form feed on SQLite, libSQL and Postgres, and refused by all three for
+// vertical tab, which appears in Postgres's published `space` class and is a lexer error in
+// practice. Everything JavaScript's `\s` adds beyond those five is an identifier character to
+// Postgres, so a walk that skips one reports "nothing follows the terminator" about text the engine
+// reads on into.
 test("only the whitespace every engine calls whitespace is trivia", () => {
-  for (const space of ["\u00a0", "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]) {
+  // `\v` sits at the head of this list deliberately: it was in the accepted set until the engines
+  // were asked, and it is the one character here that a grammar would have told you was fine.
+  for (const space of ["\v", "\u00a0", "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]) {
     const escaped = JSON.stringify(space);
-    assert.equal(
-      validateReadOnlyInspectionSql(`SELECT 1 AS s;${space}`).ok,
-      false,
-      `text after the terminator was skipped as whitespace: ${escaped}`,
-    );
-    assert.equal(
-      validateReadOnlyInspectionSql(`${space}SELECT 1 AS s`).ok,
-      false,
-      `text before the first token was skipped as whitespace: ${escaped}`,
-    );
+    for (const sql of [`SELECT 1 AS s;${space}`, `${space}SELECT 1 AS s`, `SELECT${space}1 AS s`]) {
+      const validation = validateReadOnlyInspectionSql(sql);
+      assert.equal(validation.ok, false, `skipped as whitespace: ${escaped} in ${JSON.stringify(sql)}`);
+      // The operator is told what to take out. Told "not read-only" about their `SELECT`, they have
+      // no way to see an invisible character, and pasting from a document is how this arrives.
+      assert.equal(validation.error.message, AMBIGUOUS_LEXING_MESSAGE, escaped);
+      assert.match(validation.error.hint, /invisible character/);
+    }
   }
 
-  for (const space of [" ", "\t", "\n", "\r", "\f", "\v"]) {
+  for (const space of [" ", "\t", "\n", "\r", "\f"]) {
     const escaped = JSON.stringify(space);
     assert.equal(validateReadOnlyInspectionSql(`SELECT 1 AS s;${space}`).ok, true, `refused real whitespace: ${escaped}`);
     assert.equal(validateReadOnlyInspectionSql(`${space}SELECT 1 AS s`).ok, true, `refused real whitespace: ${escaped}`);
+    assert.equal(validateReadOnlyInspectionSql(`SELECT${space}1 AS s`).ok, true, `refused real whitespace: ${escaped}`);
   }
+
+  // Inside a quoted run it is content, not trivia, and the engines take it there.
+  assert.equal(validateReadOnlyInspectionSql("SELECT 'a\u00a0b' AS s").ok, true);
+  assert.equal(validateReadOnlyInspectionSql("SELECT 1 AS s -- a\u00a0b").ok, true);
 });
 
 // The refusal above is about surrogates that are *unpaired*. A paired one is an ordinary character
@@ -475,6 +543,7 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
             ...INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
             ...LINE_ENDING_INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
             ...UNREPRESENTABLE_TEXT_ATTEMPTS.map((sql) => [sql, UNREPRESENTABLE_TEXT_MESSAGE]),
+            ...NESTED_BLOCK_COMMENT_ATTEMPTS.map((sql) => [sql, AMBIGUOUS_LEXING_MESSAGE]),
           ];
           for (const [sql, message] of attempts) {
             const result = await adapter.runReadOnlyInspectionQuery(sql);
@@ -521,7 +590,12 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
 // even if a later change lets one past the verdict.
 test("no injection attempt is sent to the engine at all", async () => {
   const sent = [];
-  const attempts = [...INJECTION_ATTEMPTS, ...LINE_ENDING_INJECTION_ATTEMPTS, ...UNREPRESENTABLE_TEXT_ATTEMPTS];
+  const attempts = [
+    ...INJECTION_ATTEMPTS,
+    ...LINE_ENDING_INJECTION_ATTEMPTS,
+    ...UNREPRESENTABLE_TEXT_ATTEMPTS,
+    ...NESTED_BLOCK_COMMENT_ATTEMPTS,
+  ];
   const admitted = [];
   await withLibsqlAdapter(
     async (adapter) => {

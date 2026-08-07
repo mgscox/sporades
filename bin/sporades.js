@@ -2497,6 +2497,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   validateReadOnlyInspectionSql,
   readOnlyInspectionSqlError,
   unrepresentableInspectionSqlError,
+  ambiguousInspectionSqlError,
+  sqlTheEnginesLexDifferently,
   readFirstSqlToken,
   hasMultipleSqlStatements,
   isSafeInspectionPragma,
@@ -9778,6 +9780,10 @@ function validateReadOnlyInspectionSql(sql) {
   if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
     return unrepresentableInspectionSqlError();
   }
+  const disagreement = sqlTheEnginesLexDifferently(text);
+  if (disagreement) {
+    return ambiguousInspectionSqlError(disagreement);
+  }
   const firstToken = readFirstSqlToken(text);
   if (!firstToken || hasMultipleSqlStatements(text)) {
     return readOnlyInspectionSqlError();
@@ -9810,6 +9816,37 @@ function unrepresentableInspectionSqlError() {
       hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL."
     }
   };
+}
+function ambiguousInspectionSqlError(hint) {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL the database reads the same way this check does is allowed.",
+      hint
+    }
+  };
+}
+function sqlTheEnginesLexDifferently(sql) {
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlStringOrComment(sql, index);
+    if (skipped > index) {
+      if (sql[index] === "/" && sql[index + 1] === "*") {
+        const bodyEnd = sql.slice(skipped - 2, skipped) === "*/" ? skipped - 2 : skipped;
+        if (sql.slice(index + 2, bodyEnd).includes("/*")) {
+          return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
+        }
+      }
+      index = skipped;
+      continue;
+    }
+    if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
+      return "Replace the invisible character outside quotes \u2014 a non-breaking space or a vertical tab, often pasted from a document \u2014 with an ordinary space.";
+    }
+    index += 1;
+  }
+  return null;
 }
 function readFirstSqlToken(sql) {
   const index = skipSqlTrivia(sql, 0);
@@ -10046,7 +10083,7 @@ function sqlWithoutTrailingTerminator(sql) {
     if (text[index] === ";") {
       break;
     }
-    if (!/[ \t\n\r\f\v]/.test(text[index])) {
+    if (!/[ \t\n\r\f]/.test(text[index])) {
       contentEnd = index + 1;
     }
     index += 1;
@@ -10091,7 +10128,7 @@ function skipSqlTrivia(sql, startIndex) {
   let advanced = true;
   while (advanced) {
     advanced = false;
-    while (/[ \t\n\r\f\v]/.test(sql[index] ?? "")) {
+    while (/[ \t\n\r\f]/.test(sql[index] ?? "")) {
       index += 1;
       advanced = true;
     }

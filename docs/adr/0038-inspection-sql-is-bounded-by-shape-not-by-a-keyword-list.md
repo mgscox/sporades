@@ -16,12 +16,20 @@ protocol executes every statement in a multi-statement string, so what stands
 between the shape rule and arbitrary execution is a tokenizer walk agreeing with
 the engines about where a comment, a literal and whitespace end.
 
-**Text the engine receives unchanged.** A validator can only make a claim about
-the text the engine will see. Where the string the runtime checks and the bytes
-the engine reads differ, the claim is void, so such a string is refused. The
-runtime also hands the engine the single statement the gate accepted —
-`sqlWithoutTrailingTerminator(sql)` — rather than the raw input, so a defect in
-the walk costs a wrong verdict rather than an executed second statement.
+**Text the engine receives unchanged, and read the same way.** A validator can
+only make a claim about the text the engine will see. Where the string the
+runtime checks and the bytes the engine reads differ, the claim is void, so such
+a string is refused. So is a string this walk and an engine would lex
+differently, for the same reason one step later: the two rules above are claims
+about tokens, and a claim about a token is worthless where the token boundary is
+in dispute. The runtime then hands the engine the single statement the gate
+accepted — `sqlWithoutTrailingTerminator(sql)` — rather than the raw input, so a
+defect in the walk costs a wrong verdict rather than an executed second
+statement.
+
+The third rule is what makes the first one true rather than merely intended, and
+it was added because the first one was measurably false without it. See "The
+disagreements the walk has to close" below.
 
 ## Why the keyword scan is demoted rather than completed or replaced
 
@@ -49,9 +57,12 @@ this work; naming it is the change.
 
 Two consequences follow, and both are deliberate. The verbs named in the issue
 that opened this — `TRUNCATE`, `DO`, `SET`, `COMMENT`, `COPY`, `CALL` — stay out
-of the keyword list. None can begin an admitted statement, so none is reachable
-through it; every one of them is a legal column or alias name *inside* one, so
-listing them would refuse `SELECT comment FROM posts` and buy nothing. And
+of the keyword list. Every one of them is a legal column or alias name *inside*
+an admitted statement, so listing them would refuse `SELECT comment FROM posts`
+and buy nothing, while none of them can *begin* one. That second half is a claim
+about where the first token is, it is worth exactly as much as the walk's
+agreement with the engines about where the first token is, and the section below
+is what makes it hold — it did not hold when this ADR was first written. And
 `merge` was added, because it closes the one limb of the scan that genuinely is a
 closed set: a data-modifying CTE, where Postgres allows exactly `INSERT`,
 `UPDATE`, `DELETE` and `MERGE` inside a `WITH`, and `MERGE` was the only one of
@@ -63,44 +74,87 @@ rediscovered: a side-effecting function reached from an expression inside an
 admitted `SELECT` is caught only by this list, and only if the function happens to
 be on it.
 
-## What the walk has to agree with, and which way it leans
+## The disagreements the walk has to close
 
-A tokenizer that models the engines' lexing is only as good as the model, and a
-disagreement in one direction is a security failure rather than a wrong answer.
-The direction matters: text the walk treats as trivia and the engine treats as
-content is a place to hide a `;`. Text the walk treats as content and the engine
-treats as trivia is a false reject.
+A tokenizer that models the engines' lexing is only as good as the model, and
+there are two ways a disagreement bites. Text the walk treats as trivia and the
+engine treats as content is a place to hide a `;`, which defeats the
+one-statement rule. Text the walk treats as *content* and the engine treats as
+*comment* is worse and less obvious: the walk then reads its first token out of
+text the engine is commenting out, which defeats the statement-shape rule
+outright. An earlier draft of this ADR asserted the second direction was merely a
+false reject. That was wrong, and the error is left visible here because the
+shape of the mistake is the useful part — "we see more than the engine" sounds
+conservative right up to the point where what you do with what you see is decide
+which statement this is.
 
-The rule is therefore that the walk takes the *shortest* comment and the
-*narrowest* whitespace any engine would take. One shared verdict cannot be
-correct on three engines any other way, and a false reject is a query a human
-retypes while the other direction is a table.
+Where the engines can be made to agree, the walk takes the *shortest* comment and
+the *narrowest* whitespace any of them would take. Where they cannot, the input
+is refused rather than guessed at.
 
-Two disagreements were live when this was written, and both were of the first
-kind. A `--` comment was ended at a line feed, while Postgres ends one at a
-carriage return too — its lexer spells a comment's body `[^\n\r]`. Everything
-after a bare CR was trivia to the walk and a fresh statement to the engine, so
-`SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the gate and Postgres executed
-both halves; a canary table went from one row to zero. And whitespace was
-JavaScript's `\s`, which matches NBSP, U+1680, the U+2000 block, the line and
-paragraph separators, U+3000 and the BOM. Postgres spells its whitespace
-`[ \t\n\r\f\v]` and SQLite's `sqlite3Isspace` is the same six characters, and
-every one of the wider set is an *identifier* character to Postgres, so skipping
-them answered "nothing follows the terminator" about text the engine reads on
-into.
+**Line comments — closed by agreeing.** A `--` comment was ended at a line feed,
+while Postgres ends one at a carriage return too; its lexer spells a comment's
+body `[^\n\r]`. Everything after a bare CR was trivia to the walk and a fresh
+statement to the engine, so `SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the
+gate and Postgres executed both halves; a canary table went from one row to zero.
+Ending it at CR costs a false reject on SQLite, which reads on to the next LF,
+and buys one verdict that is true on the strictest engine.
 
-Block comments are deliberately left non-nesting although Postgres nests them,
-because that leans the safe way on its own: a non-nesting walk always ends a
-comment at or before where Postgres ends one, so it can only ever see more
-content than the engine, never less.
+**Whitespace — closed by agreeing, on a measured set rather than a documented
+one.** Whitespace was JavaScript's `\s`, which matches NBSP, U+1680, the U+2000
+block, the line and paragraph separators, U+3000 and the BOM, every one of which
+is an *identifier* character to Postgres. It is now `[ \t\n\r\f]`. Those five are
+what the engines were observed to take: `SELECT<c>1 AS a` is accepted for each of
+them on SQLite, libSQL and Postgres, and refused by all three for vertical tab —
+`unrecognized token` on the first two, `syntax error at or near` on Postgres.
+`\v` appears in Postgres's published `space` class and is not whitespace in
+practice, so this set is the executed one and not the documented one. Getting
+that wrong put the walk one character wider than every engine, in the direction
+this section calls a security failure.
 
-The identifier alphabets disagree too and are deliberately not changed. The walk
-reads a bare identifier as `[A-Za-z_][A-Za-z0-9_]*` where Postgres includes `$`
-and every non-ASCII byte, so `select$x` is one identifier to the engine and the
-keyword `select` here. That leans the permissive way, but harmlessly: no SQL
-statement begins with a bare identifier, so what the engine parses instead is a
-syntax error rather than a command. Recorded so a later reader knows it was
-looked at.
+**Nested block comments — closed by refusing.** Postgres nests `/*` inside `/*`
+and closes at the matching `*/`; SQLite and libSQL close at the first `*/` and
+read on. The walk did not nest, so
+`/*/* */ SELECT 1 */ TRUNCATE TABLE t` was a `SELECT` to the walk and a
+`TRUNCATE` to Postgres, and all six of the verbs the section above says cannot
+begin an admitted statement began one this way. Neither lexing can be adopted:
+nesting opens the mirror hole, where a `;` inside a comment the walk swallows is a
+real separator on the two engines that do not nest. So the ambiguous shape — a
+`/*` inside a block comment's body — is refused, with its own message and hint,
+and a block comment with nothing ambiguous in it reads identically under both
+rules and is untouched.
+
+Measured over 174,760 comment-and-whitespace-shaped inputs: the build before this
+change admitted 73,176, of which 622 destroyed a live canary when executed past
+the `columns()` wrap — real `TRUNCATE`s and real `DO $z$ … EXECUTE 'DELETE' … $z$`
+blocks. After it, 47,248 are admitted, none of the 622 among them, and no input is
+admitted that was not admitted before.
+
+**Identifier alphabets — left open, deliberately.** The walk reads a bare
+identifier as `[A-Za-z_][A-Za-z0-9_]*` where Postgres includes `$` and every
+non-ASCII byte, so `select$x` is one identifier to the engine and the keyword
+`select` here. That leans the permissive way, but the walk's token is always a
+prefix of the engine's, and no SQL statement begins with a bare identifier, so
+what the engine parses instead is a syntax error rather than a command. Recorded
+so a later reader knows it was looked at rather than missed.
+
+## Why refusing beats guessing
+
+Three of the rules above are agreements and two are refusals, and the refusals are
+the load-bearing idea rather than a fallback. The gate's verdict is a claim about
+tokens. Where two engines put the token boundary in different places, there is no
+verdict that is true of both, so answering at all is answering wrongly on one of
+them. Refusing says so.
+
+It also removes a dependence on luck that this ADR had already argued against in
+one place and then quietly relied on in another. The nested-comment shape was not
+executing before this change, because the Postgres `columns()` probe runs first
+and its `SELECT * FROM (…) LIMIT 0` wrap fails to parse the admitted text. That is
+the same accident the surrogate-fold case was refused for depending on — *a
+boundary held shut by another component's syntax error is not a boundary* — and
+it survives exactly as long as the two calls stay in that order, `columns()` keeps
+wrapping, and no engine arrives with a native one. None of those three is a
+property anybody promised.
 
 ## Why unrepresentable text is refused rather than tokenized around
 
