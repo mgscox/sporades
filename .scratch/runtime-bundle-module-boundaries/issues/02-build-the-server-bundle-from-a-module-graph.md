@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Build The Server Bundle From A Module Graph
 
