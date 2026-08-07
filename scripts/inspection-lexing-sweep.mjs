@@ -28,9 +28,14 @@
 //   export SPORADES_POSTGRES_TEST_URL="postgres://sporades:sporades@127.0.0.1:55432/sporades_w17"
 //   node scripts/inspection-lexing-sweep.mjs
 //
-// Optional: SPORADES_SWEEP_BASELINE=/abs/path/to/another/server-runtime-source.js compares verdicts
-// against a second build and executes what only the baseline admitted, which is how a fix is shown
-// to close a class rather than merely to refuse the one payload in the bug report.
+// SPORADES_SWEEP_BASELINE=/abs/path/to/another/server-runtime-source.js compares verdicts against a
+// second build and executes both what only the baseline admitted and what only this build admits.
+//
+// **The baseline is the pre-work base, not the previous commit.** Four consecutive rounds of this
+// work compared each round against the one before it, correctly reported "0 newly admitted" every
+// time, and were all wrong about the thing that mattered: measured against the base, 1,170
+// destructive payloads had been newly admitted and no round-over-round comparison could ever have
+// shown it. A monotonicity claim names its baseline or it means nothing.
 
 import { pathToFileURL } from "node:url";
 
@@ -44,24 +49,45 @@ const baseline = process.env.SPORADES_SWEEP_BASELINE
   ? await import(pathToFileURL(process.env.SPORADES_SWEEP_BASELINE).href)
   : null;
 
-const PIECES = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
+// Two alphabets and two shape families, because one of each cannot cover both classes at a workable
+// depth — and because a corpus that only ever *appends* the verb cannot express the defect that is
+// hidden by *surrounding* it. That gap hid a regression from every corpus built for this work,
+// including one whose alphabet did contain quote characters: appending was the flaw, not the
+// letters.
+const COMMENT_PIECES = ["/*", "*/", "/*/", "**/", "--", "\r", "\n", " ", " SELECT 1 "];
+const QUOTING_PIECES = ["/*", "*/", "--", "\r", "\n", " ", "$$", "'", '"', "E'"];
 const MAX_DEPTH = Number(process.env.SPORADES_SWEEP_DEPTH ?? 5);
-const TAILS = [
-  " TRUNCATE TABLE sporades_sweep_canary",
-  " DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_sweep_canary'; END $z$",
-  " CREATE TABLE sporades_sweep_probe (id int)",
-  "; DROP TABLE sporades_sweep_canary",
+
+const APPENDED = [
+  (acc) => `${acc} TRUNCATE TABLE sporades_sweep_canary`,
+  (acc) => `${acc} DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_sweep_canary'; END $z$`,
+  (acc) => `${acc} CREATE TABLE sporades_sweep_probe (id int)`,
+  (acc) => `${acc}; DROP TABLE sporades_sweep_canary`,
+];
+
+// The verb surrounded rather than appended. Postgres reads these as one literal; SQLite and libSQL
+// have no dollar quoting and read a real second statement, which is why the keyword scan is the only
+// cover and why its tokenizer must not depend on a line-comment reading.
+const SURROUNDED = [
+  (acc) => `SELECT $$a${acc}DROP TABLE sporades_sweep_canary;$$ AS s`,
+  (acc) => `SELECT $$a${acc}CREATE TABLE sporades_sweep_probe (id int);$$ AS s`,
+  (acc) => `SELECT 'a${acc}DROP TABLE sporades_sweep_canary;' AS s`,
+  (acc) => `SELECT $tag$a${acc}DROP TABLE sporades_sweep_canary;$tag$ AS s`,
 ];
 
 const corpus = [];
-const build = (depth, acc) => {
-  if (depth === 0) {
-    for (const tail of TAILS) corpus.push(acc + tail);
-    return;
-  }
-  for (const piece of PIECES) build(depth - 1, acc + piece);
+const build = (pieces, maxDepth, shapes) => {
+  const walk = (depth, acc) => {
+    if (depth === 0) {
+      for (const shape of shapes) corpus.push(shape(acc));
+      return;
+    }
+    for (const piece of pieces) walk(depth - 1, acc + piece);
+  };
+  for (let depth = 1; depth <= maxDepth; depth += 1) walk(depth, "");
 };
-for (let depth = 1; depth <= MAX_DEPTH; depth += 1) build(depth, "");
+build(COMMENT_PIECES, MAX_DEPTH, APPENDED);
+build(QUOTING_PIECES, Math.max(1, MAX_DEPTH - 1), SURROUNDED);
 
 // Adequacy, before anything is believed. Each entry is the shape of a defect this gate has actually
 // shipped; if the generator stops being able to express one, that is a broken sweep, not a pass.
@@ -70,6 +96,8 @@ const MUST_EMIT = [
   ["a `/*/` straddle shape", (sql) => sql.startsWith("/*/*/ SELECT 1 */*/")],
   ["a line comment closed by a bare CR", (sql) => /--[^\n]*\r/.test(sql)],
   ["a line comment composed with a block comment", (sql) => sql.includes("--") && sql.includes("\r") && sql.includes("/*")],
+  ["a verb wrapped in a dollar quote", (sql) => /\$\$.*DROP/s.test(sql)],
+  ["a verb wrapped in a dollar quote behind a CR-ended line comment", (sql) => /\$\$[^$]*--[^\n]*\r[^$]*\/\*/s.test(sql)],
 ];
 for (const [description, matches] of MUST_EMIT) {
   const found = corpus.find(matches);

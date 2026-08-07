@@ -277,6 +277,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   isSafeInspectionPragma,
   readBareSqlIdentifier,
   containsSideEffectSqlToken,
+  containsSideEffectSqlTokenUnder,
   readSqlTokens,
   readSqlTokenIdentifier,
   skipSqlLiteralOrComment,

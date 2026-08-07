@@ -235,6 +235,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     isSafeInspectionPragma,
     readBareSqlIdentifier,
     containsSideEffectSqlToken,
+    containsSideEffectSqlTokenUnder,
     readSqlTokens,
     readSqlTokenIdentifier,
     skipSqlLiteralOrComment,

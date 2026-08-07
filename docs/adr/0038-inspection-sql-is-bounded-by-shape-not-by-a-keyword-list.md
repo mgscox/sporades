@@ -79,6 +79,31 @@ rediscovered: a side-effecting function reached from an expression inside an
 admitted `SELECT` is caught only by this list, and only if the function happens to
 be on it.
 
+Demoted is not the same as dispensable, and there is one place this scan is the
+*only* cover. A dollar-quoted run is one statement to Postgres and two to SQLite
+and libSQL, which have no such quoting — so the separator rule is defeated
+legitimately, and the fingerprint below sees one opaque literal under either
+reading. The scan is the only walk that looks inside, precisely because it is the
+one that does not know dollar quoting. That is why it walks a different tokenizer
+from everything else here, and why giving that tokenizer a single line-comment
+terminator blinded it: a `--<CR>` exposed a `/*` that swallowed the verb past the
+LF, and `SELECT $$a; --b<CR>/*<LF>DROP TABLE t;<LF>*/$$ AS s` was admitted and
+dropped the table on both engines. It now runs under both terminators and unions
+the hits.
+
+Union, not refuse-on-disagreement, and the difference is worth holding onto: the
+other walks answer *which statement is this*, where two readings disagreeing means
+there is no single answer and the input must be refused; this one answers *is a
+destructive verb anywhere in here*, where a verb one reading hides and the other
+exposes is simply a verb.
+
+Which verbs that route can reach also has an executed answer, and it is a second
+independent reason the six Postgres-only verbs stay off the list. The engines that
+read inside such a run are SQLite and libSQL, and neither has `TRUNCATE` or `DO`
+at all — measured with a canary, `DROP` and `DELETE` destroy it on both while
+`TRUNCATE` and `DO` leave every engine intact. Every verb reachable this way is
+one those two engines have, and all of those are listed.
+
 ## The disagreements the walk has to close
 
 A tokenizer that models the engines' lexing is only as good as the model, and
@@ -196,10 +221,21 @@ the `columns()` wrap, with a canary row that must survive and a probe table that
 must never appear, so any non-`SELECT` first token is observable and not only a
 destructive one.
 
-Over 265,716 candidates, this build admits 31,614 and **none of them has an effect
-a `SELECT` cannot have, on any of the three engines**. The build before it admitted
-1,460 that are now refused; six of those really do drop a table or create one, on
-SQLite and libSQL. Nothing is admitted now that was not admitted then.
+**The baseline is the pre-work base, and naming it is not a formality.** Over
+310,156 candidates measured against the commit this work started from: this gate
+admits 59,818, **none of which has an effect a `SELECT` cannot have on any of the
+three engines**, and **nothing is admitted that the pre-work base did not also
+admit**. The base admitted 8,691 that are now refused, 291 of which really do
+truncate a table or run a `DO` block on Postgres.
+
+That baseline was wrong for four consecutive rounds, and the way it was wrong is
+the most transferable thing in this document. Each round compared itself against
+the round before it, correctly reported "0 newly admitted", and was measuring the
+wrong interval: underneath, 1,170 destructive payloads had been newly admitted
+relative to the base — introduced by an early round and preserved by every
+comparison after it. A round-over-round check cannot see a regression that a
+round introduced and later rounds left alone. Any monotonicity claim about this
+gate names the pre-work base or it means nothing.
 
 Two methodology points are worth more than those figures, because each is a
 mistake this work actually made.
