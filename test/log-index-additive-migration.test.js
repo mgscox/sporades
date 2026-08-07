@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqliteAdapter } from "./support/database-adapter-engines.js";
 
 // The upgrade path for ADR-0036's ordering column, exercised from the table shape that existed
@@ -74,9 +74,12 @@ function logIndexBootstrapStatements() {
       statements.push(String(sql));
       return { all: () => [], run: () => undefined };
     },
+    // A real dialect, so the recorded statements are the ones an engine would actually receive —
+    // including the identifier quoting every emitted statement now goes through (ADR-0039).
     dialect: {
+      ...sqliteDatabaseDialect(),
       addMissingColumn: (_adapter, table, column, type) => {
-        statements.push(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        statements.push(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`);
       },
     },
   };
@@ -148,9 +151,14 @@ async function seedLegacyRows(adapter) {
   }
 }
 
+// Read through the dialect's quoting, like the runtime reads it. The additive migration declares
+// the column as `"indexSequence"`, so Postgres stores the declared spelling and a bare
+// `indexSequence` here would fold to `indexsequence` and find nothing (ADR-0039).
 async function readIndexedRows(adapter) {
   return await adapter
-    .prepare(`SELECT id, message, indexSequence FROM ${LOG_INDEX_TABLE} ORDER BY indexSequence ASC`)
+    .prepare(
+      adapter.dialect.sql(`SELECT [id], [message], [indexSequence] FROM [${LOG_INDEX_TABLE}] ORDER BY [indexSequence] ASC`),
+    )
     .all();
 }
 
@@ -165,7 +173,9 @@ for (const engine of ENGINES) {
         // assumed, because a fixture that quietly included it would make everything below pass
         // while testing nothing.
         assert.match(
-          String(await rejectionMessage(adapter, `SELECT indexSequence FROM ${LOG_INDEX_TABLE}`)),
+          String(
+            await rejectionMessage(adapter, adapter.dialect.sql(`SELECT [indexSequence] FROM [${LOG_INDEX_TABLE}]`)),
+          ),
           /indexsequence/i,
           `${engine.name} answered the ordering column before the upgrade, so the fixture is not a pre-change shape`,
         );

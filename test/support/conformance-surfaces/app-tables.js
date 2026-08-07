@@ -74,6 +74,24 @@ const STANDALONE_TABLE = {
 
 const STANDALONE_ALIAS_TABLE_NAME = "conformance_standalone_alias";
 
+// A Capsule table whose fields are named exactly the way the deleted Postgres column-name table
+// used to rename them. Created from inside a case rather than declared in the base schema, so the
+// inspection cases' exact table dump is unaffected.
+//
+// The camelCase spellings these used to be renamed to are deliberately not declared alongside them.
+// SQLite and libSQL compare identifiers case-insensitively even when they are quoted, so a table
+// carrying both `errorcode` and `errorCode` is a duplicate-column error there — an engine
+// difference in what a schema may declare, which is not what this case is about. The exact key set
+// is asserted instead, and a read that renamed `errorcode` to `errorCode` fails it just as
+// squarely.
+const COLLIDING_NAMES_TABLE = {
+  name: "conformance_collisions",
+  fields: [
+    { name: "errorcode", kind: "String", sqliteType: "TEXT" },
+    { name: "jobid", kind: "String", sqliteType: "TEXT" },
+  ],
+};
+
 const MIGRATED_STANDALONE_TABLE = {
   ...STANDALONE_TABLE,
   fields: [...STANDALONE_TABLE.fields, { name: "state", kind: "String", sqliteType: "TEXT", defaultValue: "unset" }],
@@ -162,7 +180,10 @@ function orderedLogEvent(message, timestamp) {
 async function insertLogRowWithoutSequence(adapter, id, message, timestamp) {
   await adapter
     .prepare(
-      "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      adapter.dialect.sql(
+        "INSERT INTO [sporades_log_events] ([id], [timestamp], [category], [event], [level], [message], [payload]) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ),
     )
     .run(id, timestamp, "app", "ctx.log", "info", message, JSON.stringify(orderedLogEvent(message, timestamp)));
 }
@@ -827,6 +848,61 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    // The names that used to be renamed on the way out. The Postgres adapter restored the runtime's
+    // declared spellings through a table of them, applied per result key with no table provenance,
+    // so a Capsule field literally called `errorcode` or `jobid` came back as `errorCode` or
+    // `jobId` — a field the Capsule wrote and could not read. Nothing forbade such a field.
+    //
+    // ADR-0039 removed the table rather than narrowing it, so this asserts the property that
+    // replaces it: an app column round-trips under its own declared name whatever it is called.
+    // Written as a conformance case rather than a Postgres test because the claim is that every
+    // engine answers the same, and only one of them ever answered differently.
+    name: "an app column keeps its own declared name, including the names that used to be renamed",
+    async run(adapter) {
+      await adapter.createAppTable(COLLIDING_NAMES_TABLE);
+
+      assert.equal(
+        (await adapter.insertAppRow(COLLIDING_NAMES_TABLE, {
+          id: "collision-1",
+          createdAt: NOW,
+          updatedAt: NOW,
+          errorcode: "E_LOWER",
+          jobid: "J_LOWER",
+        })).changes,
+        1,
+      );
+
+      // The whole key set, not a field-by-field check: `errorcode` renamed to `errorCode` on the
+      // way out satisfies any assertion that reads the field it was renamed to, and leaves the
+      // Capsule a field it wrote and cannot read.
+      const stored = await adapter.selectAppRowById(COLLIDING_NAMES_TABLE, "collision-1");
+      assert.deepEqual(Object.keys(stored).sort(), ["createdAt", "errorcode", "id", "jobid", "updatedAt"]);
+      assert.deepEqual(pick(stored, ["errorcode", "jobid"]), { errorcode: "E_LOWER", jobid: "J_LOWER" });
+
+      // And the names work as predicates and as projections, not only as keys of `SELECT *`, so
+      // every statement that asks for them names them the way the table was created with.
+      assert.deepEqual(
+        (await adapter.selectAppRows(COLLIDING_NAMES_TABLE, {
+          columns: ["errorcode", "jobid"],
+          where: { fieldName: "errorcode", value: "E_LOWER" },
+        })).map((row) => pick(row, ["errorcode", "jobid"])),
+        [{ errorcode: "E_LOWER", jobid: "J_LOWER" }],
+      );
+      assert.deepEqual(await adapter.selectAppRows(COLLIDING_NAMES_TABLE, { where: { fieldName: "errorcode", value: "E_OTHER" } }), []);
+
+      assert.equal(
+        (await adapter.updateAppRow(COLLIDING_NAMES_TABLE, "collision-1", { errorcode: "E_UPDATED" })).changes,
+        1,
+      );
+      assert.deepEqual(
+        pick(await adapter.selectAppRowById(COLLIDING_NAMES_TABLE, "collision-1"), ["errorcode", "jobid"]),
+        { errorcode: "E_UPDATED", jobid: "J_LOWER" },
+      );
+
+      await adapter.deleteAppRow(COLLIDING_NAMES_TABLE, "collision-1");
+    },
+  },
+  {
     name: "migrateExistingAppTable adds a field with its default to an existing table and keeps stored rows",
     async run(adapter) {
       assert.equal((await adapter.selectAppRowById(STANDALONE_TABLE, "standalone-kept")).state, undefined);
@@ -941,6 +1017,7 @@ export const CONFORMANCE_SURFACE = {
     ARCHIVE_TABLE.name,
     STANDALONE_TABLE.name,
     STANDALONE_ALIAS_TABLE_NAME,
+    COLLIDING_NAMES_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,

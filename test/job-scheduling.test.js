@@ -592,7 +592,12 @@ test("Postgres persists Schedule state through the configured adapter", { skip: 
   const database = await openDevDatabase("unused.db", "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
   try {
     await database.init();
-    assert.equal((await database.adapter.prepare("SELECT nextOccurrence FROM sporades_schedules WHERE name=?").get("durable")).nextOccurrence, "2030-01-01T00:01:00.000Z");
+    assert.equal(
+      (await database.adapter
+        .prepare(database.adapter.dialect.sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?"))
+        .get("durable")).nextOccurrence,
+      "2030-01-01T00:01:00.000Z",
+    );
   } finally { await database.shutdown(); await database.close(); }
 });
 
@@ -602,13 +607,13 @@ test("Scheduled provenance is present at the atomic enqueue boundary", async () 
   let database;
   let observed;
   database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
-    jobs: { inspect: job(() => { observed = database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs").get(); return null; }) },
+    jobs: { inspect: job(() => { observed = database.adapter.prepare(database.adapter.dialect.sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_jobs]")).get(); return null; }) },
     schedules: { atomic: schedule({ expression: "* * * * *", job: "inspect" }) },
   }, { clock });
   try {
     const originalPrepare = database.adapter.prepare.bind(database.adapter);
     database.adapter.prepare = (sql) => {
-      if (String(sql).startsWith("UPDATE sporades_jobs SET scheduleName=")) throw new Error("post-enqueue provenance write is forbidden");
+      if (String(sql).startsWith('UPDATE "sporades_jobs" SET "scheduleName"=')) throw new Error("post-enqueue provenance write is forbidden");
       return originalPrepare(sql);
     };
     await database.init();
@@ -781,7 +786,7 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
     let rejectOnce = true;
     database.adapter.prepare = (sql) => {
       const statement = originalPrepare(sql);
-      if (rejectOnce && String(sql).startsWith("INSERT INTO sporades_jobs")) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
+      if (rejectOnce && String(sql).startsWith('INSERT INTO "sporades_jobs"')) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
       return statement;
     };
     await database.init();

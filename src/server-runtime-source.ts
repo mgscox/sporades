@@ -117,6 +117,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   appendVaryHeader,
   sanitizeResponseHeaders,
   createDatabaseDialect,
+  quoteSqlIdentifiers,
   sqliteDatabaseDialect,
   postgresDatabaseDialect,
   createDatabaseNormalization,
@@ -189,7 +190,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   postgresRowCountFromCommand,
   postgresErrorFromBody,
   postgresRowsFromResult,
-  postgresRuntimeColumnName,
   libsqlPipelineUrl,
   assertLibsqlOpen,
   libsqlHasMultipleStatements,
@@ -2323,15 +2323,35 @@ function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: st
 }
 
 async function ensureScheduleStorage(sqlite: LooseRecord) {
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT)");
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)");
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor)");
+  const sql = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, " +
+      "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
+      "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
+      "[latestJobId] TEXT, [latestErrorCode] TEXT)",
+    ),
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
+      "[scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
+      "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
+    ),
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
+      "ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])",
+    ),
+  );
 }
 
 async function reconcileSchedules(database: LooseRecord) {
   const now = database.clock.now();
+  const sql = database.adapter.dialect.sql;
   const declaredNames = new Set(database.schedules.map((definition: any) => definition.name));
-  const persisted = await database.adapter.prepare("SELECT * FROM sporades_schedules").all();
+  const persisted = await database.adapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
   const plans = [];
   for (const definition of database.schedules) {
     const row = persisted.find((candidate: any) => candidate.name === definition.name);
@@ -2357,17 +2377,21 @@ async function reconcileSchedules(database: LooseRecord) {
   // Every declaration, including calendars with no possible future instant,
   // has now been evaluated without mutating durable state.
   for (const row of persisted) {
-    if (!declaredNames.has(String(row.name))) await database.adapter.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
+    if (!declaredNames.has(String(row.name))) await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
   }
+  const updateScheduleSql = sql(
+    "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [expression]=?, [effectiveTimezone]=?, " +
+    "[missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?",
+  );
   for (const { definition, row, nextOccurrence } of plans) {
-    if (row) await database.adapter.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+    if (row) await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
     else {
       try {
-        await database.adapter.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+        await database.adapter.prepare(sql("INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?)")).run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
       } catch (error) {
-        const concurrent = await database.adapter.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
+        const concurrent = await database.adapter.prepare(sql("SELECT [name] FROM [sporades_schedules] WHERE [name]=?")).get(definition.name);
         if (!concurrent) throw error;
-        await database.adapter.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+        await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
       }
     }
     definition.nextOccurrence = nextOccurrence;
@@ -2410,13 +2434,15 @@ async function finishFailedScheduledOccurrence(database: LooseRecord, definition
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
-  await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
+  const sql = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
 }
 
 async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
+  const sql = database.adapter.dialect.sql;
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
   if (!claim) {
     // Another runtime owns this exact occurrence. Advance only this runtime's
@@ -2428,11 +2454,11 @@ async function recordScheduledOccurrence(database: LooseRecord, definition: any,
   const state = await enqueueScheduledOccurrence(database, definition, occurrence);
   if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
   const completedAt = database.clock.now().toISOString();
-  await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [claimToken]=?")).run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
   if (database.__scheduleStopped) return state;
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
   return state;
 }
 
@@ -2447,29 +2473,31 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + 30_000).toISOString();
+  const sql = database.adapter.dialect.sql;
   try {
-    await database.adapter.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
+    await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
     return { id, token };
   } catch (error) {
-    const existing = await database.adapter.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
+    const existing = await database.adapter.prepare(sql("SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
     if (!existing) throw error;
     if (existing.status !== "pending") return null;
     if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
       schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
       return null;
     }
-    const result = await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
+    const result = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, nowIso);
     return Number(result.changes) === 1 ? { id, token } : null;
   }
 }
 
 async function recoverPendingScheduleOccurrences(database: LooseRecord) {
-  const rows = await database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?) ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all(database.clock.now().toISOString());
   for (const row of rows) {
     const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
     if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
   }
-  const next = await database.adapter.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
+  const next = await database.adapter.prepare(sql("SELECT [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [claimExpiresAt] IS NOT NULL ORDER BY [claimExpiresAt] ASC LIMIT 1")).get();
   if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
 }
 
@@ -2588,8 +2616,9 @@ function abortSchedulePayloadFactories(database: LooseRecord) {
 
 async function recoverExpiredJobLeases(database: LooseRecord) {
   const recoveredAt = database.clock.now(); const recoveredIso = recoveredAt.toISOString();
-  const rows = await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
-  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.adapter.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.adapter.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
+  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
   if(rows.some((row: any) => Number(row.attempts) < JSON.parse(row.retryJson||'{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
 }
 
@@ -2682,21 +2711,34 @@ function jobHandlersFromCapsuleDefinition(capsuleDefinition: any) {
 }
 
 async function ensureJobStorage(sqlite: LooseRecord) {
+  const sql = sqlite.dialect.sql;
   await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_jobs (" +
-      "id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, actorProvider TEXT, " +
-      "payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, " +
-      "idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)"
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_jobs] (" +
+      "[id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, " +
+      "[actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, " +
+      "[attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, " +
+      "[startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)",
+    ),
   );
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
-  await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] " +
+      "ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL",
+    ),
+  );
+  await sqlite.exec(
+    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])"),
+  );
   // The columns added to the Job queue after its first release are declared through the dialect's
   // add-missing-column strategy rather than probed for first. `PRAGMA table_info` is SQLite's
   // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
   // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
   // "PRAGMA"` before the Job queue existed.
   for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
-  await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
+  await sqlite.exec(
+    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"),
+  );
 }
 
 async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
@@ -3102,7 +3144,28 @@ export function createDatabaseDialect(spec: LooseRecord): LooseRecord {
       "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry.",
     );
   }
-  return { ...spec };
+  // `sql` is derived from `quoteIdentifier` rather than supplied, for the same reason normalization
+  // derives `row` from `columnName` and `value`: an engine that answered the quoting entry and then
+  // received statement text that had bypassed it would fold anyway. ADR-0039 records why every
+  // identifier goes through it.
+  return { ...spec, sql: (statement: string) => quoteSqlIdentifiers(spec.quoteIdentifier, statement) };
+}
+
+// The runtime writes every identifier in its own statement text as `[name]`, and this is where the
+// marker becomes the engine's quoting. Postgres folds an unquoted identifier to lower case, so a
+// half-quoted codebase asks a `"ownerId"` column for `ownerid` and errors outright; routing the
+// whole of a statement's identifiers through the dialect is what stops the two halves disagreeing.
+//
+// The marker is deliberately not the answer. Writing `"ownerId"` in the statement text would be
+// correct on all three engines this runtime speaks and would silently bypass the dialect entry that
+// exists for the engine whose quoting differs, which is exactly the bypass this function removes.
+//
+// It is a substitution rather than a parse. The runtime's statement text is authored here, and no
+// Capsule value or inspection query reaches it — parameters are bound, never interpolated — so the
+// marker means an identifier wherever it appears and there is no literal for it to hide inside.
+// `test/postgres-emitted-sql-quoting.test.js` is what keeps that true.
+export function quoteSqlIdentifiers(quoteIdentifier: (identifier: string) => string, statement: string) {
+  return String(statement).replace(/\[([A-Za-z_][A-Za-z0-9_]*)\]/g, (_marker, identifier) => quoteIdentifier(identifier));
 }
 
 // The third thing an engine supplies: how a result row maps back to the names and values the
@@ -3143,8 +3206,14 @@ export function sqliteRowNormalization() {
 export function postgresRowNormalization() {
   return createDatabaseNormalization({
     name: "postgres",
-    // Postgres folds an unquoted identifier to lower case; the declared spelling is restored here.
-    columnName: postgresRuntimeColumnName,
+    // The identity, like the other two engines. Postgres folds an unquoted identifier to lower
+    // case, and a hand-maintained table of declared spellings used to fold it back — a registry
+    // nothing failed for omitting, which is how a missing `verifierHash` entry rejected every valid
+    // password Reset code here while presenting an ordinary "invalid code". Because that table was
+    // applied per result key with no table provenance, it also renamed a Capsule field literally
+    // called `errorcode` or `jobid`. ADR-0039 removed both by quoting every identifier the runtime
+    // emits: nothing folds, so there is nothing to restore and no name to collide with.
+    columnName: (name: string) => name,
     // Values are already coerced by the wire parser, which reads each column's type oid from the
     // row description. The row does not carry the oid, so the per-value entry cannot repeat that
     // work and does not need to.
@@ -3172,15 +3241,22 @@ export function sqliteDatabaseDialect() {
     // and an engine whose type names differ maps them here rather than in a copy of every DDL
     // method.
     columnType: (field: LooseRecord) => field.sqliteType,
-    // Write-or-replace a row identified by its key columns. The names are emitted unquoted because
-    // the runtime-owned tables are declared unquoted; issue 12 owns settling that, and the upsert
-    // has to ask for the columns in the style its table was created with.
+    // Write-or-replace a row identified by its key columns. Table and column names arrive
+    // unquoted and are quoted here, so the upsert asks for the columns in the style every other
+    // statement names them.
     upsertSql: (table: string, columns: string[], _conflictColumns: string[]) =>
-      `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+      `INSERT OR REPLACE INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+      `VALUES (${columns.map(() => "?").join(", ")})`,
     // The catalog. Both entries answer rows carrying a `name`, whatever the engine's catalog calls
     // the column, so the shared inspection methods read one shape.
     listTables: (adapter: LooseRecord) =>
-      adapter.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+      adapter
+        .prepare(
+          `SELECT ${quoteIdentifier("name")} FROM ${quoteIdentifier("sqlite_schema")} ` +
+          `WHERE ${quoteIdentifier("type")} = 'table' AND ${quoteIdentifier("name")} NOT LIKE 'sqlite_%' ` +
+          `ORDER BY ${quoteIdentifier("name")}`,
+        )
+        .all(),
     describeColumns: (adapter: LooseRecord, tableName: string) =>
       adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
     // Declare a column that an older database may not have. SQLite has no
@@ -3188,7 +3264,10 @@ export function sqliteDatabaseDialect() {
     // Probing `PRAGMA table_info` first would work here and nowhere else, which is exactly why the
     // strategy is a dialect entry rather than a line in a shared body.
     addMissingColumn: (adapter: LooseRecord, table: string, column: string, type: string) =>
-      runSchemaExecIgnoringDuplicateColumn(adapter, `ALTER TABLE ${table} ADD COLUMN ${column} ${type}`),
+      runSchemaExecIgnoringDuplicateColumn(
+        adapter,
+        `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN ${quoteIdentifier(column)} ${type}`,
+      ),
   });
 }
 
@@ -3206,9 +3285,10 @@ export function postgresDatabaseDialect() {
     upsertSql: (table: string, columns: string[], conflictColumns: string[]) => {
       const updated = columns.filter((column) => !conflictColumns.includes(column));
       return (
-        `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
-        `ON CONFLICT (${conflictColumns.join(", ")}) DO UPDATE SET ` +
-        updated.map((column) => `${column} = EXCLUDED.${column}`).join(", ")
+        `INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+        `VALUES (${columns.map(() => "?").join(", ")}) ` +
+        `ON CONFLICT (${conflictColumns.map(quoteIdentifier).join(", ")}) DO UPDATE SET ` +
+        updated.map((column) => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`).join(", ")
       );
     },
     // `sqlite_schema` and `PRAGMA table_info` are SQLite's alone; `information_schema` is the
@@ -3217,15 +3297,19 @@ export function postgresDatabaseDialect() {
     listTables: (adapter: LooseRecord) =>
       adapter
         .prepare(
-          "SELECT table_name AS name FROM information_schema.tables " +
-          "WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
+          `SELECT ${quoteIdentifier("table_name")} AS ${quoteIdentifier("name")} ` +
+          `FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("tables")} ` +
+          `WHERE ${quoteIdentifier("table_schema")} = current_schema() ` +
+          `AND ${quoteIdentifier("table_type")} = 'BASE TABLE' ORDER BY ${quoteIdentifier("table_name")}`,
         )
         .all(),
     describeColumns: (adapter: LooseRecord, tableName: string) =>
       adapter
         .prepare(
-          "SELECT column_name AS name FROM information_schema.columns " +
-          "WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position",
+          `SELECT ${quoteIdentifier("column_name")} AS ${quoteIdentifier("name")} ` +
+          `FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("columns")} ` +
+          `WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_name")} = ? ` +
+          `ORDER BY ${quoteIdentifier("ordinal_position")}`,
         )
         .all(tableName),
     // Postgres has `ADD COLUMN IF NOT EXISTS`, and using it is not merely tidier than swallowing a
@@ -3234,7 +3318,9 @@ export function postgresDatabaseDialect() {
     // outside the migration transaction to keep that hazard out of reach; asking the engine not to
     // raise the error in the first place removes it.
     addMissingColumn: (adapter: LooseRecord, table: string, column: string, type: string) =>
-      adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`),
+      adapter.exec(
+        `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN IF NOT EXISTS ${quoteIdentifier(column)} ${type}`,
+      ),
   });
 }
 
@@ -3242,12 +3328,16 @@ export function postgresDatabaseDialect() {
 // adapter by spreading, so each method is an own enumerable property and the conformance coverage
 // gate's enumeration sees the same names on every engine.
 export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
+  // Every identifier below is written as `[name]` and quoted through the dialect here. ADR-0039
+  // records why: a statement that names a column in a style its table was not created with errors
+  // outright on Postgres, and the runtime's own DDL goes through the same call so nothing folds.
+  const sql = dialect.sql;
   return {
     ensureSystemTable() {
-      return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
     },
     readSystemMetadata(key: string) {
-      return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
+      return this.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
     },
     writeSystemMetadata(key: string, value: any) {
       return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
@@ -3283,10 +3373,12 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return createFileStorageTables(this);
     },
     findFileBucket(ownerId: any, name: any) {
-      return this.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(ownerId, name) ?? null;
+      return this.prepare(sql("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name) ?? null;
     },
     createFileBucket(row: { id: any; ownerId: any; name: any; createdAt: any; }) {
-      return this.prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)").run(
+      return this.prepare(
+        sql("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)"),
+      ).run(
         row.id,
         row.ownerId,
         row.name,
@@ -3295,9 +3387,11 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     insertFileRow(row: { id: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; createdAt: any; updatedAt: any; }) {
       return this.prepare(
-        "INSERT INTO sporades_files " +
-        "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        sql(
+          "INSERT INTO [sporades_files] " +
+          "([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        ),
       ).run(
         row.id,
         row.ownerId,
@@ -3315,14 +3409,19 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     updatePendingFileRow(row: { bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; updatedAt: any; id: any; }) {
       return this.prepare(
-        "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
+        sql(
+          "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
+          "[version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?",
+        ),
       ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
     },
     insertFileUpload(row: { id: any; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; version: any; expectedSize: any; createdAt: any; }) {
       return this.prepare(
-        "INSERT INTO sporades_file_uploads " +
-        "(id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_file_uploads] " +
+          "([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ),
       ).run(
         row.id,
         row.fileId,
@@ -3338,13 +3437,17 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     selectFileById(fileId: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
+      return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
     selectLiveFileByPath(path: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path, "uploaded");
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?"),
+      ).all(path, "uploaded");
     },
     selectActiveFileByPath(path: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)"),
+      ).all(
         path,
         "pending",
         "uploaded",
@@ -3352,15 +3455,17 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     selectPendingFileUploadByPath(path: any) {
       return (
-        this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path) ?? null
+        this.prepare(
+          sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"),
+        ).get(path) ?? null
       );
     },
     selectFileUpload(uploadId: any) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
+      return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
     },
     completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
       return thenIfPromise(
-        this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
+        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
           upload.id,
           upload.fileId,
           upload.version,
@@ -3375,7 +3480,10 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
                 return { changes: 0 };
               }
               return this.prepare(
-                "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL",
+                sql(
+                  "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, " +
+                  "[version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL",
+                ),
               ).run(
                 upload.bucketId,
                 upload.bucketName,
@@ -3408,48 +3516,60 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     deleteFileUploadsForPath(path: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path);
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path);
     },
     deleteFileUploadsForFile(ownerId: any, fileId: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
     },
     deleteFileUpload(uploadId: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
     },
     selectPublicFileRow(publicUrlId: any) {
       return (
         this.prepare(
-          "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
-          "f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
-          "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
-          "WHERE p.id = ?",
+          sql(
+            "SELECT [p].[id] AS [publicUrlId], [p].[fileId], [p].[version] AS [publicVersion], [p].[expiresAt], [p].[revokedAt], " +
+            "[f].[id], [f].[ownerId], [f].[bucketId], [f].[bucketName], [f].[path], [f].[name], [f].[type], [f].[size], " +
+            "[f].[version], [f].[status], [f].[createdAt], [f].[updatedAt], [f].[deletedAt] " +
+            "FROM [sporades_file_public_urls] [p] JOIN [sporades_files] [f] ON [f].[id] = [p].[fileId] " +
+            "WHERE [p].[id] = ?",
+          ),
         ).get(publicUrlId) ?? null
       );
     },
     insertPublicFileUrl(row: { id: any; fileId: any; ownerId: any; version: any; expiresAt: any; createdAt: any; }) {
       return this.prepare(
-        "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+        sql(
+          "INSERT INTO [sporades_file_public_urls] ([id], [fileId], [ownerId], [version], [expiresAt], [createdAt], [revokedAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+        ),
       ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
     },
     revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL").run(
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL"),
+      ).run(
         revokedAt,
         publicUrlId,
         ownerId,
       );
     },
     revokePublicFileUrlsForFile(fileId: any, revokedAt: any) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL").run(
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL"),
+      ).run(
         revokedAt,
         fileId,
       );
     },
     markFileDeleted(fileId: any, deletedAt: any) {
-      return this.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(deletedAt, deletedAt, fileId);
+      return this.prepare(sql("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
     },
     fileRowForOwner(fileId: any, ownerId: any) {
       return (
-        this.prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?").get(
+        this.prepare(
+          sql("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?"),
+        ).get(
           fileId,
           ownerId,
           "uploaded",
@@ -3463,7 +3583,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       return createUserPreferencesTables(this);
     },
     readUserPreferences(userId: any) {
-      return this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
+      return this.prepare(
+        sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?"),
+      ).get(userId) ?? null;
     },
     saveUserPreferences(row: { userId: any; value: any; updatedAt: any; }) {
       return this.prepare(
@@ -3472,53 +3594,76 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     findAuthIdentityByProviderSubject(provider: any, subject: any) {
       const row = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
-        "FROM sporades_auth_identities WHERE provider = ? AND subject = ?",
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] " +
+          "FROM [sporades_auth_identities] WHERE [provider] = ? AND [subject] = ?",
+        ),
       ).get(provider, subject) ?? null;
       return authIdentityRowUnlessReserved(row);
     },
     findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any) {
       const rows = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
-        "FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id",
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] " +
+          "FROM [sporades_auth_identities] WHERE [provider] = ? AND [email] = ? AND [subject] LIKE 'legacy:%' " +
+          "ORDER BY [createdAt], [id]",
+        ),
       ).all(provider, email);
       return authIdentityRowsUnlessReserved(rows);
     },
     insertAuthIdentity(row: { id: any; userId: any; provider: any; subject: any; email: any; displayName: any; picture: any; createdAt: any; updatedAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        "INSERT INTO sporades_auth_identities " +
-        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_auth_identities] " +
+          "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ),
       ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
     },
     updateAuthIdentity(row: { id: any; subject: any; email: any; displayName: any; picture: any; updatedAt: any; }) {
       return this.prepare(
-        "UPDATE sporades_auth_identities SET subject = ?, email = ?, displayName = ?, picture = ?, updatedAt = ? WHERE id = ?",
+        sql(
+          "UPDATE [sporades_auth_identities] SET [subject] = ?, [email] = ?, [displayName] = ?, [picture] = ?, " +
+          "[updatedAt] = ? WHERE [id] = ?",
+        ),
       ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
     },
     insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
-        "INSERT INTO sporades_auth_users " +
-        "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_auth_users] " +
+          "([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ),
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
     },
     updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?",
+        ),
       ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
     },
     linkAuthUser(row: { displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; id: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, " +
+          "[isGuest] = ? WHERE [id] = ?",
+        ),
       ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
     },
     insertAuthSession(row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)").run(
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) " +
+          "VALUES (?, ?, ?, ?, ?)",
+        ),
+      ).run(
         row.token,
         row.userId,
         row.provider,
@@ -3527,17 +3672,22 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     deleteAuthSession(token: any) {
-      return this.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(token);
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
     },
     refreshAuthSession(token: any, expiresAt: any) {
-      return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
     },
     setAuthSessionProvider(token: any, provider: any) {
-      return this.prepare("UPDATE sporades_auth_sessions SET provider = ? WHERE token = ?").run(provider, token);
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
     },
     rotateAuthSession(previousToken: any, row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, provider = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, " +
+          "[expiresAt] = ? WHERE [token] = ?",
+        ),
+      ).run(
         row.token,
         row.userId,
         row.provider,
@@ -3549,11 +3699,13 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     readAuthSessionWithUser(token: any) {
       return thenIfPromise(
         this.prepare(
-          "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
-          "s.provider AS provider " +
-          "FROM sporades_auth_sessions s " +
-          "JOIN sporades_auth_users u ON u.id = s.userId " +
-          "WHERE s.token = ?",
+          sql(
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], " +
+            "[u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] " +
+            "FROM [sporades_auth_sessions] [s] " +
+            "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
+            "WHERE [s].[token] = ?",
+          ),
         ).get(token),
         (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
       );
@@ -3562,9 +3714,11 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       const provider = row.provider ?? "google";
       const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
       return this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_auth_oauth_states] " +
+          "([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ),
       ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
@@ -3575,69 +3729,85 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     consumeOAuthState(state: any) {
       return thenIfPromise(
         this.prepare(
-          "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
-          "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier",
+          sql(
+            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? " +
+            "RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], " +
+            "[nonce], [pkceVerifier]",
+          ),
         ).get(state),
         (row: any) => row ?? null,
       );
     },
     emailCredentialExists(email: any) {
       return thenIfPromise(
-        this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email),
+        this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
         (row: any) => Boolean(row),
       );
     },
     insertEmailCredential(row: { email: any; userId: any; passwordHash: any; passwordSalt: any; createdAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) " +
+          "VALUES (?, ?, ?, ?, ?)",
+        ),
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any) {
       return this.prepare(
-        "UPDATE sporades_auth_email_credentials SET passwordHash = ?, passwordSalt = ? WHERE email = ?",
+        sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?"),
       ).run(passwordHash, passwordSalt, email);
     },
     findEmailCredentialWithUser(email: any) {
       return thenIfPromise(
         this.prepare(
-          "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest " +
-          "FROM sporades_auth_email_credentials c " +
-          "JOIN sporades_auth_users u ON u.id = c.userId " +
-          "WHERE c.email = ?",
+          sql(
+            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], " +
+            "[u].[isAuthenticated], [u].[isGuest] " +
+            "FROM [sporades_auth_email_credentials] [c] " +
+            "JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] " +
+            "WHERE [c].[email] = ?",
+          ),
         ).get(email),
         (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
       );
     },
     deleteAuthSessionsForUser(userId: any) {
-      return this.prepare("DELETE FROM sporades_auth_sessions WHERE userId = ?").run(userId);
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
     },
     insertPasswordResetCode(row: LooseRecord) {
       assertNotReservedAuthUserId(row.userId);
       return this.prepare(
-        "INSERT INTO sporades_auth_password_reset_codes " +
-        "(selector, verifierHash, email, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
+        sql(
+          "INSERT INTO [sporades_auth_password_reset_codes] " +
+          "([selector], [verifierHash], [email], [userId], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)",
+        ),
       ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
     },
     findPasswordResetCode(selector: any) {
       return this.prepare(
-        "SELECT selector, verifierHash, email, userId, createdAt, expiresAt " +
-        "FROM sporades_auth_password_reset_codes WHERE selector = ?",
+        sql(
+          "SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] " +
+          "FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?",
+        ),
       ).get(selector) ?? null;
     },
     countPasswordResetCodesForEmail(email: any, now: any) {
       return thenIfPromise(
         this.prepare(
-          "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?",
+          sql(
+            "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] " +
+            "WHERE [email] = ? AND [expiresAt] > ?",
+          ),
         ).get(email, now),
         (row: any) => Number(row?.count ?? 0),
       );
     },
     deletePasswordResetCodesForUser(userId: any) {
-      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE userId = ?").run(userId);
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
     },
     prunePasswordResetCodes(now: any) {
-      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE expiresAt <= ?").run(now);
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now);
     },
     // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
     // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
@@ -3657,7 +3827,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     referenceExists(field: { targetTable: any; }, value: any) {
       return thenIfPromise(
-        this.prepare(`SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
+        this.prepare(
+          `SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE ${dialect.quoteIdentifier("id")} = ? LIMIT 1`,
+        ).get(String(value)),
         (row: any) => Boolean(row),
       );
     },
@@ -3670,16 +3842,25 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       ).run(...columns.map((column) => row[column]));
     },
     selectAppRowById(table: { name: any; }, id: any) {
-      return this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
+      return (
+        this.prepare(
+          `SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`,
+        ).get(String(id)) ?? null
+      );
     },
     updateAppRow(table: { name: any; }, id: any, values: { [x: string]: any; }, options: LooseRecord = {}) {
       const columns = Object.keys(values);
       if (columns.length === 0) {
         return { changes: 0 };
       }
+      // The owner-scope predicate is quoted like every other identifier here. Emitted bare it
+      // folded to `ownerid` on Postgres against a column `appFieldColumnDefinition` had created as
+      // `"ownerId"`, so every owner-scoped update on an app table — the tables Capsule code reaches
+      // through `ctx.db` — failed outright with `column "ownerid" does not exist`.
       return this.prepare(
-        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
-        (options.ownerId === undefined ? "" : " AND ownerId = ?"),
+        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} ` +
+        `WHERE ${dialect.quoteIdentifier("id")} = ?` +
+        (options.ownerId === undefined ? "" : ` AND ${dialect.quoteIdentifier("ownerId")} = ?`),
       ).run(
         ...columns.map((column) => values[column]),
         String(id),
@@ -3687,7 +3868,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       );
     },
     deleteAppRow(table: { name: any; }, id: any) {
-      return this.prepare(`DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
+      return this.prepare(
+        `DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`,
+      ).run(String(id));
     },
     selectAppRows(table: { name: any; }, query: LooseRecord = {}) {
       const columns = query.columns ?? ["*"];
@@ -3797,7 +3980,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       // that had just failed — and escape the rejection as an unhandled one. Both engines carried
       // an await-shim over this; with the rejection handled here they no longer need one.
       try {
-        const probe: any = this.prepare("SELECT 1 AS ok").get();
+        const probe: any = this.prepare(sql("SELECT 1 AS [ok]")).get();
         return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
       } catch {
         return { ok: false };
@@ -4460,109 +4643,6 @@ function postgresRowsFromResult(normalization: LooseRecord, result: { fields?: a
   return result.rows.map((row: LooseRecord) => normalization.row(row));
 }
 
-// Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
-// `createdAt TEXT NOT NULL` is stored as `createdat` and hands that name back on every read. Code
-// above the Database adapter reads `row.createdAt`, so the declared spelling is restored here.
-//
-// A spelling missing from this list is not an error on any engine. The read simply answers
-// `undefined` for that field and the runtime carries on with it — which is how a missing
-// `verifierHash` entry rejected every valid password Reset code on Postgres while presenting an
-// ordinary "invalid code", and how every field on the Job queue and Schedule tables read back
-// empty there. Review has no way to notice an absent entry, so completeness is not left to it:
-// `test/postgres-runtime-column-names.test.js` bootstraps every runtime-owned table on an engine
-// that preserves declared case, enumerates the columns those tables actually declare, and fails
-// on any camelCase column this function cannot restore. A runtime table gaining a camelCase
-// column without a spelling here is an ordinary test failure rather than a silent wrong answer in
-// a Hosted Capsule.
-//
-// Each spelling is written once, in its declared form, and lowered to build the lookup. A
-// hand-written `verifierhash: "verifierHash"` pair has two places to mistype and only one of them
-// fails visibly.
-//
-// App table columns are absent on purpose. `postgresAppTableColumnDefinitions` quotes them, so
-// Postgres preserves their declared case and there is nothing to restore; only the runtime's own
-// unquoted DDL folds.
-//
-// Absent is not the same as exempt, and this map is not scoped to runtime tables. Normalization is
-// applied per result key with no table provenance, because `postgresParseRowDescription` discards
-// the tableOID bytes, so an app table column whose declared name happens to match a lowered
-// spelling here is renamed too. A Capsule field literally named `errorcode` or `jobid` comes back
-// as `errorCode` or `jobId`. Nothing forbids such a field today. The collision is tracked on issue
-// 12, whose remit — settling identifier casing so this map can be deleted — is the only fix that
-// removes it rather than narrowing it.
-function postgresRuntimeColumnName(name: string) {
-  const restore = ((postgresRuntimeColumnName as LooseRecord).declaredColumnNames ??= new Map(
-    [
-      // Shared across the runtime-owned tables.
-      "createdAt",
-      "updatedAt",
-      "deletedAt",
-      "expiresAt",
-      "userId",
-      "ownerId",
-      // sporades_auth_users, sporades_auth_sessions, sporades_auth_identities.
-      "displayName",
-      "isAuthenticated",
-      "isGuest",
-      // sporades_auth_email_credentials, sporades_auth_password_reset_codes.
-      "passwordHash",
-      "passwordSalt",
-      "verifierHash",
-      // sporades_auth_oauth_states.
-      "sessionToken",
-      "returnTo",
-      "redirectUri",
-      "pkceVerifier",
-      // sporades_log_events.
-      "capsuleName",
-      "capsuleId",
-      "releaseId",
-      "requestId",
-      "correlationId",
-      "indexSequence",
-      // sporades_files, sporades_file_buckets, sporades_file_uploads, sporades_file_public_urls,
-      // including the `publicUrlId` and `publicVersion` aliases the public URL join selects.
-      "bucketId",
-      "bucketName",
-      "fileId",
-      "expectedSize",
-      "revokedAt",
-      "publicUrlId",
-      "publicVersion",
-      // sporades_jobs.
-      "enqueuedByUserId",
-      "actorUserId",
-      "actorProvider",
-      "availableAt",
-      "idempotencyKey",
-      "startedAt",
-      "completedAt",
-      "failedAt",
-      "retryJson",
-      "attemptHistory",
-      "cancelRequestedAt",
-      "leaseExpiresAt",
-      // sporades_schedules.
-      "definitionFingerprint",
-      "effectiveTimezone",
-      "missedRunPolicy",
-      "nextOccurrence",
-      "latestScheduledFor",
-      "latestOutcome",
-      "latestJobId",
-      "latestErrorCode",
-      // sporades_schedule_occurrences, and the two columns it shares with sporades_jobs.
-      "scheduleName",
-      "scheduledFor",
-      "claimToken",
-      "claimExpiresAt",
-      "jobId",
-      "errorCode",
-    ].map((declared) => [declared.toLowerCase(), declared]),
-  )) as Map<string, string>;
-  return restore.get(name) ?? name;
-}
-
 export async function createLibsqlDatabaseAdapter(options: { url: any; authToken: any; }) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
@@ -5193,12 +5273,12 @@ function createPrivilegedScheduleApi(database: LooseRecord, contextGetter: () =>
     async get(name: any) {
       assertActivePrivilegedJobAccess(contextGetter);
       if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare("SELECT * FROM sporades_schedules WHERE name=?").get(name);
+      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
       return row ? await scheduleSummary(sqlite(), row) : null;
     },
     async list() {
       assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
+      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
       const summaries = [];
       for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
       return summaries;
@@ -5225,7 +5305,7 @@ async function scheduleSummary(sqlite: LooseRecord, row: any) {
   if (latestOutcome === "enqueued") {
     if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
     if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
-    const job = await sqlite.prepare("SELECT id FROM sporades_jobs WHERE id=? AND scheduleName=? AND scheduledFor=?").get(row.latestJobId, row.name, row.latestScheduledFor);
+    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
     if (!job) throw invalid("latestOccurrence.jobId");
     latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
   } else if (latestOutcome === "payload-failed") {
@@ -5582,8 +5662,7 @@ function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
 // generator's state hangs off the generator instead of living at module scope. That is not style:
 // the generated server bundle is assembled from the source text of the functions in
 // `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so a module-level binding one of them closes over does not
-// travel with it and becomes a `ReferenceError` the first time a deployed Capsule boots. The same
-// constraint is why `postgresRuntimeColumnName` keeps its restoration table on itself.
+// travel with it and becomes a `ReferenceError` the first time a deployed Capsule boots.
 
 // Nanoseconds since the epoch is around 1.76e18 today, so the 20-digit width below reaches the year
 // 5138. The width is fixed rather than natural because the values are compared as text: a value
@@ -5634,21 +5713,23 @@ function createLogIndexTables(sqlite: LooseRecord) {
   // there.
   let chain = chainSchemaOperation(undefined, () =>
     sqlite.exec(
-      "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-      "id TEXT PRIMARY KEY, " +
-      "timestamp TEXT NOT NULL, " +
-      "category TEXT NOT NULL, " +
-      "event TEXT NOT NULL, " +
-      "level TEXT NOT NULL, " +
-      "message TEXT NOT NULL, " +
-      "capsuleName TEXT, " +
-      "capsuleId TEXT, " +
-      "releaseId TEXT, " +
-      "requestId TEXT, " +
-      "correlationId TEXT, " +
-      "indexSequence TEXT, " +
-      "payload TEXT NOT NULL" +
-      ")",
+      sqlite.dialect.sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_log_events] (" +
+        "[id] TEXT PRIMARY KEY, " +
+        "[timestamp] TEXT NOT NULL, " +
+        "[category] TEXT NOT NULL, " +
+        "[event] TEXT NOT NULL, " +
+        "[level] TEXT NOT NULL, " +
+        "[message] TEXT NOT NULL, " +
+        "[capsuleName] TEXT, " +
+        "[capsuleId] TEXT, " +
+        "[releaseId] TEXT, " +
+        "[requestId] TEXT, " +
+        "[correlationId] TEXT, " +
+        "[indexSequence] TEXT, " +
+        "[payload] TEXT NOT NULL" +
+        ")",
+      ),
     ),
   );
   // The additive migration for a Log index table that already exists. Declaring a column an older
@@ -5667,7 +5748,10 @@ function backfillLogIndexSequences(sqlite: LooseRecord) {
   return thenIfPromise(
     sqlite
       .prepare(
-        "SELECT id, timestamp FROM sporades_log_events WHERE indexSequence IS NULL ORDER BY timestamp ASC, id ASC",
+        sqlite.dialect.sql(
+          "SELECT [id], [timestamp] FROM [sporades_log_events] WHERE [indexSequence] IS NULL " +
+          "ORDER BY [timestamp] ASC, [id] ASC",
+        ),
       )
       .all(),
     (rows: { id: any; timestamp: any; }[]) => {
@@ -5682,7 +5766,9 @@ function backfillLogIndexSequences(sqlite: LooseRecord) {
         previous = derived > previous ? derived : previous + 1n;
         const sequence = formatLogIndexSequence(previous);
         chain = chainSchemaOperation(chain, () =>
-          sqlite.prepare("UPDATE sporades_log_events SET indexSequence = ? WHERE id = ?").run(sequence, row.id),
+          sqlite
+            .prepare(sqlite.dialect.sql("UPDATE [sporades_log_events] SET [indexSequence] = ? WHERE [id] = ?"))
+            .run(sequence, row.id),
         );
       }
       return chain;
@@ -5697,9 +5783,12 @@ function insertLogIndexEvent(sqlite: LooseRecord, event: LooseRecord) {
   // index caller's `isPromiseLike` probe can never fire.
   return sqlite
     .prepare(
-      "INSERT INTO sporades_log_events " +
-      "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, indexSequence, payload) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      sqlite.dialect.sql(
+        "INSERT INTO [sporades_log_events] " +
+        "([id], [timestamp], [category], [event], [level], [message], [capsuleName], [capsuleId], [releaseId], " +
+        "[requestId], [correlationId], [indexSequence], [payload]) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ),
     )
     .run(
       randomUUID(),
@@ -5735,11 +5824,13 @@ function pruneLogIndex(sqlite: LooseRecord, limit: any) {
   // key and never null, so the `NOT IN` has no null to be confused by.
   return sqlite
     .prepare(
-      "DELETE FROM sporades_log_events WHERE id NOT IN (" +
-      "SELECT id FROM (" +
-      "SELECT id FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?" +
-      ") AS retained" +
-      ")",
+      sqlite.dialect.sql(
+        "DELETE FROM [sporades_log_events] WHERE [id] NOT IN (" +
+        "SELECT [id] FROM (" +
+        "SELECT [id] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?" +
+        ") AS [retained]" +
+        ")",
+      ),
     )
     .run(limit);
 }
@@ -5754,7 +5845,7 @@ function readRecentLogEvents(sqlite: LooseRecord, limit = 200) {
   // order to a tie-break that differed by engine.
   return thenIfPromise(
     sqlite
-      .prepare("SELECT payload FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?")
+      .prepare(sqlite.dialect.sql("SELECT [payload] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?"))
       .all(safeLimit),
     (rows: { payload: string; }[]) => rows.reverse().map((row) => JSON.parse(row.payload)),
   );
@@ -6747,72 +6838,86 @@ export async function checkRuntimeFileStorage(database: LooseRecord) {
 // The one definition of the File metadata storage bootstrap, for every engine. Chained rather than
 // fired, and outside any transaction, for the reasons `createAnonymousAuthTables` records.
 function createFileStorageTables(sqlite: LooseRecord) {
+  const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "UNIQUE(ownerId, name)" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[ownerId] TEXT NOT NULL, " +
+          "[name] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "UNIQUE([ownerId], [name])" +
+          ")",
+        ),
       ),
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "size INTEGER NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "status TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "deletedAt TEXT" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_files] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[ownerId] TEXT NOT NULL, " +
+          "[bucketId] TEXT NOT NULL, " +
+          "[bucketName] TEXT NOT NULL, " +
+          "[path] TEXT NOT NULL, " +
+          "[name] TEXT NOT NULL, " +
+          "[type] TEXT NOT NULL, " +
+          "[size] INTEGER NOT NULL, " +
+          "[version] TEXT NOT NULL, " +
+          "[status] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[updatedAt] TEXT NOT NULL, " +
+          "[deletedAt] TEXT" +
+          ")",
+        ),
       ),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
-    () => sqlite.exec(filePathBackfillSql()),
-    () => sqlite.exec(activeFilePathDedupeSql()),
-    () => sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)"),
+    () => sqlite.exec(sql(filePathBackfillSql())),
+    () => sqlite.exec(sql(activeFilePathDedupeSql())),
     () =>
       sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
+        sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])"),
       ),
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expectedSize INTEGER NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
+        sql(
+          "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +
+          "ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')",
+        ),
+      ),
+    () =>
+      sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[fileId] TEXT NOT NULL, " +
+          "[ownerId] TEXT NOT NULL, " +
+          "[bucketId] TEXT NOT NULL, " +
+          "[bucketName] TEXT NOT NULL, " +
+          "[path] TEXT NOT NULL, " +
+          "[name] TEXT NOT NULL, " +
+          "[type] TEXT NOT NULL, " +
+          "[version] TEXT NOT NULL, " +
+          "[expectedSize] INTEGER NOT NULL, " +
+          "[createdAt] TEXT NOT NULL" +
+          ")",
+        ),
       ),
     () => ensureFileUploadTargetColumns(sqlite),
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expiresAt TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "revokedAt TEXT" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[fileId] TEXT NOT NULL, " +
+          "[ownerId] TEXT NOT NULL, " +
+          "[version] TEXT NOT NULL, " +
+          "[expiresAt] TEXT, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[revokedAt] TEXT" +
+          ")",
+        ),
       ),
   ]);
 }
@@ -7413,28 +7518,30 @@ function isUniqueConstraintError(error: any) {
   return /unique constraint|duplicate key|constraint failed/i.test(text);
 }
 
+// Both of these answer statement text carrying identifier markers, which their caller quotes
+// through the dialect before emitting.
 function filePathBackfillSql() {
   return (
-    "UPDATE sporades_files SET path = CASE " +
-    "WHEN (SELECT COUNT(*) FROM sporades_files AS matching " +
-    "WHERE matching.ownerId = sporades_files.ownerId " +
-    "AND matching.bucketName = sporades_files.bucketName " +
-    "AND matching.name = sporades_files.name " +
-    "AND matching.deletedAt IS NULL " +
-    "AND matching.status IN ('pending', 'uploaded')) = 1 " +
-    "THEN '/' || bucketName || '/' || name " +
-    "ELSE '/' || bucketName || '/' || id || '/' || name END " +
-    "WHERE path IS NULL OR path = ''"
+    "UPDATE [sporades_files] SET [path] = CASE " +
+    "WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] " +
+    "WHERE [matching].[ownerId] = [sporades_files].[ownerId] " +
+    "AND [matching].[bucketName] = [sporades_files].[bucketName] " +
+    "AND [matching].[name] = [sporades_files].[name] " +
+    "AND [matching].[deletedAt] IS NULL " +
+    "AND [matching].[status] IN ('pending', 'uploaded')) = 1 " +
+    "THEN '/' || [bucketName] || '/' || [name] " +
+    "ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END " +
+    "WHERE [path] IS NULL OR [path] = ''"
   );
 }
 
 function activeFilePathDedupeSql() {
   return (
-    "UPDATE sporades_files SET deletedAt = COALESCE(deletedAt, updatedAt), updatedAt = updatedAt " +
-    "WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') AND id NOT IN (" +
-    "SELECT MAX(id) FROM sporades_files " +
-    "WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') " +
-    "GROUP BY path" +
+    "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] " +
+    "WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (" +
+    "SELECT MAX([id]) FROM [sporades_files] " +
+    "WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') " +
+    "GROUP BY [path]" +
     ")"
   );
 }
@@ -7448,22 +7555,22 @@ function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
     ["type", "TEXT"],
   ];
   const statements = [
-    "UPDATE sporades_file_uploads SET " +
-    "bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) " +
-    "WHERE path IS NULL OR path = ''",
-    "DELETE FROM sporades_file_uploads WHERE id NOT IN (" +
-    "SELECT MAX(id) FROM sporades_file_uploads GROUP BY path" +
+    "UPDATE [sporades_file_uploads] SET " +
+    "[bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
+    "[bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
+    "[path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
+    "[name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
+    "[type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) " +
+    "WHERE [path] IS NULL OR [path] = ''",
+    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (" +
+    "SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path]" +
     ")",
-    "CREATE INDEX IF NOT EXISTS sporades_file_uploads_path ON sporades_file_uploads (path)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_path_unique ON sporades_file_uploads (path)",
+    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
+    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])",
   ];
   return chainMaybePromise([
     ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
-    ...statements.map((statement) => () => sqlite.exec(statement)),
+    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement))),
   ]);
 }
 
@@ -12078,8 +12185,11 @@ async function enqueueRuntimeJob(database: LooseRecord, handlerName: string, pay
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await queueDatabase.adapter.prepare(
-    "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) " +
-    "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)",
+    queueDatabase.adapter.dialect.sql(
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
+      "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)",
+    ),
   ).run(
     randomUUID(),
     handlerName,
@@ -12480,29 +12590,34 @@ function emailAuthDisabledError() {
 // error at all, but storage bootstrap still runs before the migration transaction opens; it has to
 // stay there.
 function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
+  const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-        "id TEXT PRIMARY KEY, " +
-        "createdAt TEXT NOT NULL, " +
-        "displayName TEXT NOT NULL, " +
-        "email TEXT, " +
-        "picture TEXT, " +
-        "isAuthenticated INTEGER NOT NULL, " +
-        "isGuest INTEGER NOT NULL, " +
-        "provider TEXT NOT NULL" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_users] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[displayName] TEXT NOT NULL, " +
+          "[email] TEXT, " +
+          "[picture] TEXT, " +
+          "[isAuthenticated] INTEGER NOT NULL, " +
+          "[isGuest] INTEGER NOT NULL, " +
+          "[provider] TEXT NOT NULL" +
+          ")",
+        ),
       ),
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-        "token TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] (" +
+          "[token] TEXT PRIMARY KEY, " +
+          "[userId] TEXT NOT NULL, " +
+          "[provider] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[expiresAt] TEXT NOT NULL" +
+          ")",
+        ),
       ),
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
@@ -12511,46 +12626,53 @@ function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord 
       ? [
         () =>
           sqlite.exec(
-            "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-            "email TEXT PRIMARY KEY, " +
-            "userId TEXT NOT NULL, " +
-            "passwordHash TEXT NOT NULL, " +
-            "passwordSalt TEXT NOT NULL, " +
-            "createdAt TEXT NOT NULL" +
-            ")",
+            sql(
+              "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
+              "[email] TEXT PRIMARY KEY, " +
+              "[userId] TEXT NOT NULL, " +
+              "[passwordHash] TEXT NOT NULL, " +
+              "[passwordSalt] TEXT NOT NULL, " +
+              "[createdAt] TEXT NOT NULL" +
+              ")",
+            ),
           ),
         () =>
           sqlite.exec(
-            "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
-            "selector TEXT PRIMARY KEY, " +
-            "verifierHash TEXT NOT NULL, " +
-            "email TEXT NOT NULL, " +
-            "userId TEXT NOT NULL, " +
-            "createdAt TEXT NOT NULL, " +
-            "expiresAt TEXT NOT NULL" +
-            ")",
+            sql(
+              "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] (" +
+              "[selector] TEXT PRIMARY KEY, " +
+              "[verifierHash] TEXT NOT NULL, " +
+              "[email] TEXT NOT NULL, " +
+              "[userId] TEXT NOT NULL, " +
+              "[createdAt] TEXT NOT NULL, " +
+              "[expiresAt] TEXT NOT NULL" +
+              ")",
+            ),
           ),
       ]
       : []),
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-        "state TEXT PRIMARY KEY, " +
-        "provider TEXT NOT NULL, " +
-        "sessionToken TEXT NOT NULL, " +
-        "returnTo TEXT NOT NULL, " +
-        "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL, " +
-        "nonce TEXT, " +
-        "pkceVerifier TEXT" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] (" +
+          "[state] TEXT PRIMARY KEY, " +
+          "[provider] TEXT NOT NULL, " +
+          "[sessionToken] TEXT NOT NULL, " +
+          "[returnTo] TEXT NOT NULL, " +
+          "[redirectUri] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[expiresAt] TEXT NOT NULL, " +
+          "[nonce] TEXT, " +
+          "[pkceVerifier] TEXT" +
+          ")",
+        ),
       ),
     () => ensureOAuthStateColumns(sqlite),
   ]);
 }
 
 function ensureOAuthStateColumns(sqlite: LooseRecord) {
+  const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     ...[
       ["provider", "TEXT"],
@@ -12558,46 +12680,55 @@ function ensureOAuthStateColumns(sqlite: LooseRecord) {
       ["nonce", "TEXT"],
       ["pkceVerifier", "TEXT"],
     ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
-    () => sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL"),
-    () => sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL"),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),
   ]);
 }
 
 function createProviderIdentityTables(sqlite: LooseRecord) {
+  const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     () =>
       sqlite.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-        "id TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "subject TEXT NOT NULL, " +
-        "email TEXT, " +
-        "displayName TEXT, " +
-        "picture TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "UNIQUE(provider, subject)" +
-        ")",
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] (" +
+          "[id] TEXT PRIMARY KEY, " +
+          "[userId] TEXT NOT NULL, " +
+          "[provider] TEXT NOT NULL, " +
+          "[subject] TEXT NOT NULL, " +
+          "[email] TEXT, " +
+          "[displayName] TEXT, " +
+          "[picture] TEXT, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[updatedAt] TEXT NOT NULL, " +
+          "UNIQUE([provider], [subject])" +
+          ")",
+        ),
       ),
     () =>
       sqlite.exec(
-        "INSERT INTO sporades_auth_identities " +
-        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-        "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-        "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-        "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
+        sql(
+          "INSERT INTO [sporades_auth_identities] " +
+          "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
+          "SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], " +
+          "[createdAt], [createdAt] " +
+          "FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' " +
+          "AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] " +
+          "WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])",
+        ),
       ),
   ]);
 }
 
 function createUserPreferencesTables(sqlite: LooseRecord) {
   return sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_user_preferences (" +
-    "userId TEXT PRIMARY KEY, " +
-    "value TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL" +
-    ")",
+    sqlite.dialect.sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_user_preferences] (" +
+      "[userId] TEXT PRIMARY KEY, " +
+      "[value] TEXT NOT NULL, " +
+      "[updatedAt] TEXT NOT NULL" +
+      ")",
+    ),
   );
 }
 
@@ -12610,7 +12741,7 @@ function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
     () =>
       sqlite
-        .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
+        .prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL"))
         .run(sessionExpiresAt(new Date().toISOString())),
   ]);
 }
@@ -12620,9 +12751,12 @@ function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
     () =>
       sqlite.exec(
-        "UPDATE sporades_auth_sessions SET provider = " +
-        "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-        "WHERE provider IS NULL",
+        sqlite.dialect.sql(
+          "UPDATE [sporades_auth_sessions] SET [provider] = " +
+          "COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] " +
+          "WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') " +
+          "WHERE [provider] IS NULL",
+        ),
       ),
   ]);
 }
@@ -13343,7 +13477,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         const pending = (context.__jobParentContext ?? context).__pendingJobEnqueues?.find((candidate: any) =>
           candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
@@ -13364,20 +13498,21 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         return jobState(row, true);
       }
       try {
-        await queueDatabase.adapter.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error: any) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         }
         throw error;
       }
       scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+      return jobState(await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id: any) {
       const context = contextGetter();
-      const row = await (database.__rootDatabase ?? database).adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async cancel(id: any) { return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id); },
@@ -13388,7 +13523,8 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const queueDatabase = database.__rootDatabase ?? database;
-      const clauses=["actorUserId = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("status = ?");params.push(options.status)} if(options.handler){clauses.push("handler = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("createdAt >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("createdAt <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.adapter.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params,limit+1);
+      const sql = queueDatabase.adapter.dialect.sql;
+      const clauses=["[actorUserId] = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.adapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
@@ -13443,7 +13579,7 @@ export async function inspectRuntimeJobs(adapter: LooseRecord) {
   const read = async (tx: LooseRecord) => {
     let rows: LooseRecord[];
     try {
-      rows = await tx.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt DESC, id DESC").all();
+      rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_jobs] ORDER BY [createdAt] DESC, [id] DESC")).all();
     } catch (error) {
       const message = String((error as any)?.message ?? error);
       if (/no such table|does not exist|unknown table/i.test(message)) return [];
@@ -13472,7 +13608,7 @@ export async function inspectRuntimeSchedules(adapter: LooseRecord) {
   const read = async (tx: LooseRecord) => {
     let rows: LooseRecord[];
     try {
-      rows = await tx.prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
+      rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
     } catch (error) {
       const message = String((error as any)?.message ?? error);
       if (/no such table|does not exist|unknown table/i.test(message)) return [];
@@ -13487,7 +13623,7 @@ export async function inspectRuntimeSchedules(adapter: LooseRecord) {
 }
 
 function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
-async function cancelJob(database: LooseRecord, context: any, id: any) { const row = context.__privilegedJobAccess ? await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId); if (!row) return null; const now=database.clock.now().toISOString(); if (["queued","delayed"].includes(row.status)) { await database.adapter.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now,id); return jobState({...row,status:"cancelled",completedAt:now},true); } if(row.status==="running"){ database.__jobAbortControllers?.get(id)?.abort(); await database.adapter.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now,id); return jobState({...row,cancelRequestedAt:now},true);} throw jobError("INVALID_JOB_STATE","Job cannot be cancelled from its current state.","Only queued, delayed, or running Jobs can be cancelled."); }
+async function cancelJob(database: LooseRecord, context: any, id: any) { const sql = database.adapter.dialect.sql; const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId); if (!row) return null; const now=database.clock.now().toISOString(); if (["queued","delayed"].includes(row.status)) { await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now,id); return jobState({...row,status:"cancelled",completedAt:now},true); } if(row.status==="running"){ database.__jobAbortControllers?.get(id)?.abort(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now,id); return jobState({...row,cancelRequestedAt:now},true);} throw jobError("INVALID_JOB_STATE","Job cannot be cancelled from its current state.","Only queued, delayed, or running Jobs can be cancelled."); }
 
 function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 
@@ -13497,7 +13633,8 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
     async enqueue(handler: any, payload: any, options: any = {}) { assertActivePrivilegedJobAccess(contextGetter); return await current.enqueue(handler, payload, options); },
     async get(id: any) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const row = await (database.__rootDatabase ?? database).adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id);
       return row ? jobState(row, true) : null;
     },
     async list(options: LooseRecord = {}) {
@@ -13507,7 +13644,8 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const sqlite = (database.__rootDatabase ?? database).adapter;
-      const clauses:string[]=[]; const params:any[]=[]; if(options.status){clauses.push("status = ?");params.push(options.status)} if(options.handler){clauses.push("handler = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("createdAt >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("createdAt <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await sqlite.prepare(`SELECT * FROM sporades_jobs${clauses.length?` WHERE ${clauses.join(" AND ")}`:""} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params,limit+1);
+      const sql = sqlite.dialect.sql;
+      const clauses:string[]=[]; const params:any[]=[]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await sqlite.prepare(sql(`SELECT * FROM [sporades_jobs]${clauses.length?` WHERE ${clauses.join(" AND ")}`:""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
@@ -13535,7 +13673,7 @@ async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.adapter.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+    await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -13550,7 +13688,7 @@ function scheduleCurrentUserJobWorker(database: LooseRecord) {
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
-  const row = await database.adapter.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
+  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
   if (!row) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => { database.__jobWakeTimer = null; scheduleCurrentUserJobWorker(database); }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
@@ -13559,13 +13697,14 @@ async function scheduleNextDelayedJob(database: LooseRecord) {
 async function runCurrentUserJobWorker(database: LooseRecord) {
   if (database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
+  const sql = database.adapter.dialect.sql;
   try {
     while (true) {
-      await database.adapter.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
-      const row = await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
+      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
       if (!row) { await scheduleNextDelayedJob(database); return; }
       const startedAt = database.clock.now().toISOString();
-      const claimed = await database.adapter.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), row.id);
+      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, abortController);
@@ -13577,7 +13716,10 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, (privilegedCtx: any) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
           const user = await database.adapter.prepare(
-            "SELECT id, displayName, email, picture, isAuthenticated, isGuest FROM sporades_auth_users WHERE id = ?",
+            sql(
+              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] " +
+              "FROM [sporades_auth_users] WHERE [id] = ?",
+            ),
           ).get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = {
@@ -13593,10 +13735,10 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
           result = await handler.handler(context, JSON.parse(row.payload));
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
-        const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.adapter.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
+        const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
       } catch (error: any) {
         const failure = safeJobFailure(error);
-        const failedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const abortError=error?.cause ?? error; const cancelled=abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:failedAt}); if(cancelled) await database.adapter.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure),failedAt,JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(database.clock.now().getTime()+retry.delayMs).toISOString(); await database.adapter.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.adapter.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt,JSON.stringify(history), row.id);
+        const failedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const abortError=error?.cause ?? error; const cancelled=abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:failedAt}); if(cancelled) await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify(failure),failedAt,JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(database.clock.now().getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt,JSON.stringify(history), row.id);
       } finally { database.__jobAbortControllers?.delete(row.id);
       }
     }

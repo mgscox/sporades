@@ -102,6 +102,8 @@ for (const engine of ENGINES) {
   });
 }
 
+const BACKTICK = String.fromCharCode(96);
+
 test("SQLite is an engine like the others, not the set the others borrow from", async () => {
   await withSqliteAdapter(async (adapter) => {
     assert.equal(adapter.dialect.name, "sqlite");
@@ -474,8 +476,30 @@ test("every dialect answers the whole seam", () => {
     "listTables",
     "name",
     "quoteIdentifier",
+    "sql",
     "upsertSql",
   ]);
+
+  // `sql` is derived from `quoteIdentifier` rather than supplied, so an engine cannot answer the
+  // quoting entry and then receive statement text that bypassed it. It is the entry every emitted
+  // identifier goes through (ADR-0039).
+  assert.equal(
+    sqliteDatabaseDialect().sql("SELECT [ownerId] FROM [notes] WHERE [id] = ?"),
+    'SELECT "ownerId" FROM "notes" WHERE "id" = ?',
+  );
+  assert.equal(
+    postgresDatabaseDialect().sql("SELECT [ownerId] FROM [notes] WHERE [id] = ?"),
+    'SELECT "ownerId" FROM "notes" WHERE "id" = ?',
+  );
+
+  // A dialect built with a different quoting answer routes the same statement through its own,
+  // which is the point of the derivation: the marker is not the answer.
+  const backtickDialect = createDatabaseDialect({
+    ...sqliteDatabaseDialect(),
+    name: "mysql",
+    quoteIdentifier: (identifier) => BACKTICK + identifier + BACKTICK,
+  });
+  assert.equal(backtickDialect.sql("SELECT [ownerId] FROM [notes]"), "SELECT " + BACKTICK + "ownerId" + BACKTICK + " FROM " + BACKTICK + "notes" + BACKTICK);
 });
 
 test("every normalization answers the whole seam", () => {
@@ -486,10 +510,18 @@ test("every normalization answers the whole seam", () => {
 
   // `row` is derived from `columnName` and `value` rather than supplied, so an engine cannot apply
   // one and forget the other.
-  assert.deepEqual(postgresRowNormalization().row({ verifierhash: "hashed", selector: "abc" }), {
+  //
+  // Postgres's `columnName` is the identity, like the other two engines'. It used to be a table of
+  // declared spellings folded back after Postgres lower-cased the runtime's unquoted DDL; ADR-0039
+  // quoted that DDL, so nothing folds and there is nothing to restore. A row therefore arrives
+  // under the names the statement asked for, whatever their case.
+  assert.deepEqual(postgresRowNormalization().row({ verifierHash: "hashed", selector: "abc" }), {
     verifierHash: "hashed",
     selector: "abc",
   });
+  // And a column whose declared name is already lower case is left alone rather than guessed at —
+  // the collision that renamed a Capsule field called `errorcode` to `errorCode`.
+  assert.deepEqual(postgresRowNormalization().row({ errorcode: "E1", jobid: "J1" }), { errorcode: "E1", jobid: "J1" });
   assert.deepEqual(libsqlRowNormalization().row({ attempts: { type: "integer", value: "3" } }), { attempts: 3 });
   assert.deepEqual(sqliteRowNormalization().row({ verifierHash: "hashed" }), { verifierHash: "hashed" });
 });
