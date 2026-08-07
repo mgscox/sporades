@@ -308,12 +308,120 @@ const INJECTION_ATTEMPTS = [
   "SELECT E'a\\'; DROP TABLE sporades_injection_canary' AS s",
 ];
 
+// A line comment ends at a carriage return as well as at a line feed, because that is where the
+// engine ends one: Postgres spells the body of a `--` comment `[^\n\r]`. The walk ended one at a
+// line feed alone, so everything after a bare CR was trivia to the walk and a fresh statement to
+// the engine — the walk saw one statement ending at the visible `;` and Postgres's simple query
+// protocol executed all of it. `TRUNCATE` and `DO` are the payloads here rather than `DROP`
+// because neither is in the side-effect keyword scan, which isolates the walk: with a `DROP` a
+// refusal could not tell you which of the two defences produced it, and the point of these is that
+// the second one has holes that no list will close.
+//
+// SQLite ends a line comment at a line feed alone, so the walk is now stricter than SQLite and
+// exactly as strict as Postgres. That is the direction one shared verdict has to take: the walk
+// takes the shortest comment any engine would take, so a `;` it admits is a `;` no engine can be
+// hiding.
+const LINE_ENDING_INJECTION_ATTEMPTS = [
+  "SELECT 1 AS s; -- x\r TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 AS s; -- x\r DELETE FROM sporades_injection_canary",
+  "SELECT 1 AS s; -- x\r SELECT 2",
+  "SELECT 1 AS s;\r-- x\r SELECT 2",
+  "SELECT 1 AS s; /* y */ -- x\r SELECT 2",
+  "SELECT 1 AS s; -- x\r DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "SELECT 1 AS s; -- x\r COMMENT ON TABLE sporades_injection_canary IS 'owned'",
+  // The comment need not be the trailing one, and the CR need not be the first line ending.
+  "SELECT 1 -- x\r AS s; -- y\r TRUNCATE TABLE sporades_injection_canary",
+  "SELECT 1 AS s; -- x\n-- y\r TRUNCATE TABLE sporades_injection_canary",
+];
+
+// The same species one level down: text the walk reads is not always the text the engine receives.
+// The dollar-quote tag alphabet is a UTF-16 code-unit range, so an unpaired surrogate counts as a
+// tag character — and Node folds every unpaired surrogate to U+FFFD on the wire, so two tags that
+// differ here are one tag to Postgres. The walk reads `$\ud800$a$\ud801$` as an open literal that
+// closes at the far `$\ud800$`, hiding both separators; Postgres reads `$�$a$�$` and
+// closes at the first one, leaving a second statement it will parse.
+//
+// These were already refused before this issue, but by accident: hiding a `;` makes the strip the
+// identity, and the raw multi-statement text then fails to parse inside the `columns()` wrap. The
+// refusal has to come from the validator, so the assertion is on the reason.
+const UNREPRESENTABLE_TEXT_ATTEMPTS = [
+  "SELECT $\ud800$a$\ud801$; TRUNCATE TABLE sporades_injection_canary; SELECT $\ud802$b$\ud800$",
+  "SELECT $\ud800$a$\ud801$; SELECT 2; SELECT $\ud802$b$\ud800$",
+  "SELECT $\udc00$a$\udc01$; TRUNCATE TABLE sporades_injection_canary; SELECT $\udc02$b$\udc00$",
+  // A NUL terminates the string Postgres reads off the wire, so the text after it is checked here
+  // and never seen there. Truncation cannot smuggle a statement, but validating text the engine
+  // will not receive is the same fault, and it is refused for the same reason.
+  "SELECT 1 AS s\0; TRUNCATE TABLE sporades_injection_canary",
+];
+
+const UNREPRESENTABLE_TEXT_MESSAGE = "Only SQL text the database receives unchanged is allowed.";
+
 test("no second statement hides inside a dollar-quoted or an E-string literal", () => {
-  for (const sql of INJECTION_ATTEMPTS) {
+  for (const sql of [...INJECTION_ATTEMPTS, ...LINE_ENDING_INJECTION_ATTEMPTS]) {
     const validation = validateReadOnlyInspectionSql(sql);
-    assert.equal(validation.ok, false, `a second statement was admitted: ${sql}`);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
     assert.equal(validation.error.message, "Only read-only SQL is allowed.");
   }
+
+  for (const sql of UNREPRESENTABLE_TEXT_ATTEMPTS) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    assert.equal(validation.ok, false, `a second statement was admitted: ${JSON.stringify(sql)}`);
+    assert.equal(
+      validation.error.message,
+      UNREPRESENTABLE_TEXT_MESSAGE,
+      `refused for the wrong reason, which is the accident this issue exists to replace: ${JSON.stringify(sql)}`,
+    );
+  }
+});
+
+// Trivia is the other half of the same disagreement, and CR was not the only instance. JavaScript's
+// `\s` matches NBSP, the Unicode spaces, the line and paragraph separators and the BOM; Postgres
+// spells its whitespace `[ \t\n\r\f\v]` and SQLite's `sqlite3Isspace` is the same six characters,
+// and every one of the wider set is an *identifier* character to Postgres. A walk that skips them
+// reports "nothing follows the terminator" about text the engine will try to parse.
+test("only the whitespace every engine calls whitespace is trivia", () => {
+  for (const space of ["\u00a0", "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]) {
+    const escaped = JSON.stringify(space);
+    assert.equal(
+      validateReadOnlyInspectionSql(`SELECT 1 AS s;${space}`).ok,
+      false,
+      `text after the terminator was skipped as whitespace: ${escaped}`,
+    );
+    assert.equal(
+      validateReadOnlyInspectionSql(`${space}SELECT 1 AS s`).ok,
+      false,
+      `text before the first token was skipped as whitespace: ${escaped}`,
+    );
+  }
+
+  for (const space of [" ", "\t", "\n", "\r", "\f", "\v"]) {
+    const escaped = JSON.stringify(space);
+    assert.equal(validateReadOnlyInspectionSql(`SELECT 1 AS s;${space}`).ok, true, `refused real whitespace: ${escaped}`);
+    assert.equal(validateReadOnlyInspectionSql(`${space}SELECT 1 AS s`).ok, true, `refused real whitespace: ${escaped}`);
+  }
+});
+
+// The refusal above is about surrogates that are *unpaired*. A paired one is an ordinary character
+// that survives the wire intact, and Postgres spells a tag with every non-ASCII character, so an
+// astral tag is a legal tag and must keep working.
+test("an astral dollar-quote tag is a tag, not unrepresentable text", () => {
+  assert.equal(validateReadOnlyInspectionSql("SELECT $\u{1f600}$a;b$\u{1f600}$ AS s").ok, true);
+  assert.equal(
+    sqlWithoutTrailingTerminator("SELECT $\u{1f600}$a--b$\u{1f600}$ AS s;"),
+    "SELECT $\u{1f600}$a--b$\u{1f600}$ AS s",
+  );
+  assert.equal(validateReadOnlyInspectionSql("SELECT $\u{1f600}$a$\u{1f601}$; SELECT 2").ok, false);
+});
+
+// The strip is the other caller of the same walk, so the terminator fix has to show up there too:
+// a bare CR ends the comment, and the text after it is content the strip must not swallow.
+test("a statement's text keeps what follows a carriage-return-ended comment", () => {
+  // The comment is interior once it ends at the CR, so the text after it is content the strip
+  // keeps — where before it read to the end of the input and cut the statement down to `SELECT 1`.
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r AS s"), "SELECT 1 -- why\r AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why\r\n"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1;\r-- why\r"), "SELECT 1");
 });
 
 // The strip's failure was never silent — a severed literal is a syntax error rather than a wrong
@@ -336,6 +444,13 @@ test("Postgres describes a statement whose literal holds a comment marker", { sk
         ["SELECT $$a--b$$ AS s; -- keep this around", "a--b"],
         ["SELECT E'a\\'--b' AS s", "a'--b"],
         ["SELECT E'a\\';b' AS s;", "a';b"],
+        // A tag whose character is astral. The pair survives the wire intact, so this really is one
+        // tag to Postgres — which is what makes the unpaired case a refusal about representability
+        // rather than about non-ASCII tags.
+        ["SELECT $\u{1f600}$a--b$\u{1f600}$ AS s", "a--b"],
+        ["SELECT $\u{1f600}$a;b$\u{1f600}$ AS s;", "a;b"],
+        // A comment ended by a bare carriage return, answered rather than swallowed.
+        ["SELECT 1 AS s -- why\r", 1],
       ]) {
         const result = await adapter.runReadOnlyInspectionQuery(sql);
         assert.equal(result.ok, true, `${sql}: ${result.error?.message}`);
@@ -356,13 +471,29 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
         await adapter.exec("CREATE TABLE sporades_injection_canary (id TEXT PRIMARY KEY)");
         try {
           await adapter.exec("INSERT INTO sporades_injection_canary (id) VALUES ('alive')");
-          for (const sql of INJECTION_ATTEMPTS) {
+          const attempts = [
+            ...INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
+            ...LINE_ENDING_INJECTION_ATTEMPTS.map((sql) => [sql, "Only read-only SQL is allowed."]),
+            ...UNREPRESENTABLE_TEXT_ATTEMPTS.map((sql) => [sql, UNREPRESENTABLE_TEXT_MESSAGE]),
+          ];
+          for (const [sql, message] of attempts) {
             const result = await adapter.runReadOnlyInspectionQuery(sql);
-            assert.equal(result.ok, false, `an injection attempt was admitted: ${sql}`);
+
+            // The canary is read back after every attempt rather than once at the end, so a failure
+            // names the attempt that emptied it instead of leaving the battery to be bisected.
+            const alive = await adapter.runReadOnlyInspectionQuery("SELECT id FROM sporades_injection_canary");
+            assert.equal(alive.ok, true, alive.error?.message);
+            assert.deepEqual(
+              alive.data.rows.map((row) => row.id),
+              ["alive"],
+              `a second statement reached the engine: ${JSON.stringify(sql)}`,
+            );
+
+            assert.equal(result.ok, false, `an injection attempt was admitted: ${JSON.stringify(sql)}`);
             assert.equal(
               result.error.message,
-              "Only read-only SQL is allowed.",
-              `refused by the engine rather than by the validator, which is luck rather than a boundary: ${sql}`,
+              message,
+              `refused by the engine rather than by the validator, which is luck rather than a boundary: ${JSON.stringify(sql)}`,
             );
           }
 
@@ -378,6 +509,55 @@ for (const engine of [{ name: "SQLite", skip: false, withAdapter: withSqliteAdap
     );
   });
 }
+
+// A canary says nothing ran. This says nothing was sent, which is the stronger claim and the one
+// that does not depend on the engine having refused what it was handed. libSQL is the engine whose
+// harness can see every statement text, so it is where the claim is made; what it is a claim about
+// is the shared method set, which is the same code on all three.
+//
+// Two things have to hold for it. The gate refuses the attempt, so no statement is prepared at all;
+// and for anything the gate does admit, `runReadOnlyInspectionQuery` prepares the statement the
+// gate accepted rather than the raw input, so a `;` the walk saw cannot be carried to the engine
+// even if a later change lets one past the verdict.
+test("no injection attempt is sent to the engine at all", async () => {
+  const sent = [];
+  const attempts = [...INJECTION_ATTEMPTS, ...LINE_ENDING_INJECTION_ATTEMPTS, ...UNREPRESENTABLE_TEXT_ATTEMPTS];
+  const admitted = [];
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.exec("CREATE TABLE sporades_injection_canary (id TEXT PRIMARY KEY)");
+      await adapter.exec("INSERT INTO sporades_injection_canary (id) VALUES ('alive')");
+
+      // The recorder, proved against a query that does reach the engine, so an empty tape below is
+      // a refusal rather than a hook that never fired.
+      sent.length = 0;
+      await adapter.runReadOnlyInspectionQuery("SELECT id FROM sporades_injection_canary;  -- trailing");
+      assert.deepEqual(
+        sent,
+        ["SELECT id FROM sporades_injection_canary"],
+        "the engine is handed the statement the gate accepted, without the terminator or the trivia after it",
+      );
+
+      sent.length = 0;
+      for (const sql of attempts) {
+        if ((await adapter.runReadOnlyInspectionQuery(sql)).ok) {
+          admitted.push(sql);
+        }
+      }
+    },
+    {
+      appTableNames: ["sporades_injection_canary"],
+      service: {
+        beforeStatement(sql) {
+          sent.push(String(sql ?? ""));
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(admitted, [], "an injection attempt was admitted");
+  assert.deepEqual(sent, [], "an injection attempt was handed to the engine");
+});
 
 // The acceptance criterion asks for one answer on all three engines, or the difference recorded as
 // a genuine dialect divergence with its reason. It is the second, and unreachably so: dollar

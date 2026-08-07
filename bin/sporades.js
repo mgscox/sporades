@@ -2496,6 +2496,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // reach the bundle through the template's preamble instead of through this list.
   validateReadOnlyInspectionSql,
   readOnlyInspectionSqlError,
+  unrepresentableInspectionSqlError,
   readFirstSqlToken,
   hasMultipleSqlStatements,
   isSafeInspectionPragma,
@@ -5673,7 +5674,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
             }
           };
         }
-        const statement = this.prepare(String(sql ?? ""));
+        const statement = this.prepare(sqlWithoutTrailingTerminator(sql));
         const result = thenIfPromise(
           statement.columns(),
           (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
@@ -9774,6 +9775,9 @@ async function runReadOnlyQuery(database, sql) {
 }
 function validateReadOnlyInspectionSql(sql) {
   const text = String(sql ?? "");
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+    return unrepresentableInspectionSqlError();
+  }
   const firstToken = readFirstSqlToken(text);
   if (!firstToken || hasMultipleSqlStatements(text)) {
     return readOnlyInspectionSqlError();
@@ -9794,6 +9798,16 @@ function readOnlyInspectionSqlError() {
     error: {
       message: "Only read-only SQL is allowed.",
       hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
+    }
+  };
+}
+function unrepresentableInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL text the database receives unchanged is allowed.",
+      hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL."
     }
   };
 }
@@ -9880,6 +9894,7 @@ var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
   "detach",
   "drop",
   "insert",
+  "merge",
   "reindex",
   "replace",
   "update",
@@ -9942,8 +9957,8 @@ function skipSqlLiteralOrComment(sql, index) {
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
+    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
   }
   if (sql[index] !== "'") {
     return index;
@@ -9967,8 +9982,8 @@ function skipSqlStringOrComment(sql, index) {
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
+    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
   }
   const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
   if (sql[index] === "$" && opensToken) {
@@ -10031,7 +10046,7 @@ function sqlWithoutTrailingTerminator(sql) {
     if (text[index] === ";") {
       break;
     }
-    if (!/\s/.test(text[index])) {
+    if (!/[ \t\n\r\f\v]/.test(text[index])) {
       contentEnd = index + 1;
     }
     index += 1;
@@ -10076,7 +10091,7 @@ function skipSqlTrivia(sql, startIndex) {
   let advanced = true;
   while (advanced) {
     advanced = false;
-    while (/\s/.test(sql[index] ?? "")) {
+    while (/[ \t\n\r\f\v]/.test(sql[index] ?? "")) {
       index += 1;
       advanced = true;
     }
@@ -10087,8 +10102,8 @@ function skipSqlTrivia(sql, startIndex) {
       continue;
     }
     if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = sql.indexOf("\n", index + 2);
-      index = end === -1 ? sql.length : end + 1;
+      const end = /[\n\r]/.exec(sql.slice(index + 2));
+      index = end ? index + 2 + end.index + 1 : sql.length;
       advanced = true;
     }
   }

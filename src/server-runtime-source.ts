@@ -268,6 +268,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // reach the bundle through the template's preamble instead of through this list.
   validateReadOnlyInspectionSql,
   readOnlyInspectionSqlError,
+  unrepresentableInspectionSqlError,
   readFirstSqlToken,
   hasMultipleSqlStatements,
   isSafeInspectionPragma,
@@ -3766,7 +3767,14 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
             },
           };
         }
-        const statement = this.prepare(String(sql ?? ""));
+        // The engine is handed the one statement the gate accepted, not the text the human typed.
+        // `sqlWithoutTrailingTerminator` stops at the first separator the walk sees, so what
+        // reaches `all()` cannot be a multi-statement string unless the walk failed to see the
+        // separator at all — and it is the same text `columns()` already embeds, so the two reads
+        // stop being able to describe and answer different statements. Left raw, the validator was
+        // the only thing between `sporades db query` and Postgres's simple query protocol; this
+        // makes a walk defect cost a wrong verdict rather than an executed second statement.
+        const statement = this.prepare(sqlWithoutTrailingTerminator(sql));
         const result = thenIfPromise(statement.columns(), (columnMetadata: any[]) =>
           thenIfPromise(statement.all(), (allRows: any[]) => ({
             ok: true,
@@ -8501,8 +8509,40 @@ export async function runReadOnlyQuery(database: { adapter: any; sqlite: any; },
   return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
 }
 
+// The read-only inspection gate for `sporades db query`. What it is a boundary *by* is worth being
+// explicit about, because a reader who takes the keyword scan below for the boundary will keep
+// trying to complete a list that cannot be completed (ADR-0038):
+//
+//   1. A **statement-shape allowlist**. The first token must be `SELECT`, `WITH`, or one of the
+//      eight safe metadata PRAGMAs. Every destructive verb — `TRUNCATE`, `DO`, `DROP`, `SET`,
+//      `COMMENT`, `COPY`, `CALL`, and whatever the next dialect adds — is out here, not because it
+//      was remembered but because it is not one of the three shapes admitted.
+//   2. **One statement**, which is what makes (1) mean anything: a second statement is a second
+//      first token that nothing checked. Postgres's simple query protocol executes a
+//      multi-statement string, so this rests on `hasMultipleSqlStatements` agreeing with the
+//      engines about where a comment, a literal and whitespace end. A disagreement there is the
+//      whole boundary, which is how a line comment ending at LF where Postgres ends one at CR came
+//      to be a live `TRUNCATE`.
+//   3. **The text checked is the text executed.** A string this validator can read but the wire
+//      cannot carry unchanged is refused, and `runReadOnlyInspectionQuery` hands the engine the one
+//      statement this gate accepted rather than the raw input.
+//
+// The side-effect keyword scan is not on that list. It is defence in depth over what (1) and (2)
+// already exclude, and ADR-0038 records why it cannot be promoted.
 export function validateReadOnlyInspectionSql(sql: any) {
   const text = String(sql ?? "");
+
+  // A validator can only promise something about text the engine will actually receive. Node
+  // encodes an unpaired surrogate as U+FFFD, so `$\ud800$` and `$\ud801$` are one delimiter to
+  // Postgres and two here — enough for the walk to read one literal spanning a `;` that Postgres
+  // closes before. A NUL is the same fault from the other side: it terminates the string Postgres
+  // reads off the wire, so everything checked after it is never seen there. Neither can occur in a
+  // query a human meant to write, and refusing both is what keeps the rest of this gate a claim
+  // about the statement the engine runs.
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+    return unrepresentableInspectionSqlError();
+  }
+
   const firstToken = readFirstSqlToken(text);
   if (!firstToken || hasMultipleSqlStatements(text)) {
     return readOnlyInspectionSqlError();
@@ -8527,6 +8567,17 @@ function readOnlyInspectionSqlError() {
     error: {
       message: "Only read-only SQL is allowed.",
       hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
+    },
+  };
+}
+
+function unrepresentableInspectionSqlError() {
+  return {
+    ok: false as const,
+    data: null as any,
+    error: {
+      message: "Only SQL text the database receives unchanged is allowed.",
+      hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL.",
     },
   };
 }
@@ -8616,6 +8667,24 @@ function containsSideEffectSqlToken(sql: string) {
   return false;
 }
 
+// Defence in depth, not the boundary — ADR-0038 demotes this scan deliberately, and the demotion
+// is the point rather than an admission. The boundary is the statement-shape allowlist and the
+// one-statement rule on `validateReadOnlyInspectionSql`; a verb here is only reachable at all
+// *inside* an admitted `SELECT`, `WITH` or safe PRAGMA.
+//
+// `TRUNCATE`, `DO`, `SET`, `COMMENT`, `COPY` and `CALL` are absent on purpose and adding them would
+// make this list worse. None can begin an admitted statement, so none is reachable; every one of
+// them is a legal column or alias name inside one, so listing them would refuse
+// `SELECT comment FROM posts` to buy nothing. A destructive verb is excluded by not being one of
+// the three admitted shapes, which is a closed rule, rather than by being remembered here, which is
+// not.
+//
+// What this list does close is the one limb that *is* a closed set: a data-modifying CTE, where
+// Postgres allows exactly `INSERT`, `UPDATE`, `DELETE` and `MERGE` inside a `WITH`. `merge` was the
+// only one of the four missing. What no list can close is a side-effecting *function* reached from
+// an expression — `nextval` and `set_config` below are two of an open set that grows with every
+// extension installed — which is why this is where the scan stops being a boundary and starts being
+// a belt.
 export const SIDE_EFFECT_SQL_KEYWORDS = new Set([
   "alter",
   "analyze",
@@ -8625,6 +8694,7 @@ export const SIDE_EFFECT_SQL_KEYWORDS = new Set([
   "detach",
   "drop",
   "insert",
+  "merge",
   "reindex",
   "replace",
   "update",
@@ -8692,8 +8762,10 @@ function skipSqlLiteralOrComment(sql: string, index: number) {
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
+    // A line comment ends at CR as well as LF, because Postgres spells a comment's body
+    // `[^\n\r]`. See `skipSqlStringOrComment` for why every walk in this file has to agree.
+    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
   }
   if (sql[index] !== "'") {
     return index;
@@ -8720,6 +8792,20 @@ function skipSqlLiteralOrComment(sql: string, index: number) {
 // comments, and Postgres's two extra string forms — dollar quoting (`$$…$$`, `$tag$…$tag$`) and
 // E-strings, where a backslash escapes the next character.
 //
+// Where the engines disagree about how far a comment runs, this walk takes the *shortest* run any
+// of them would take, because a shared verdict that skipped more than an engine does is a place to
+// hide a `;`. That is why a line comment ends at CR as well as LF: Postgres spells a comment's body
+// `non_newline`, which is `[^\n\r]`, while SQLite reads on to the next LF. Ending one at LF alone
+// made everything after a bare CR trivia here and a fresh statement there, so
+// `SELECT 1 AS s; -- x<CR> TRUNCATE TABLE t` passed the gate and Postgres's simple query protocol
+// executed both halves. Ending it at CR costs a conservative false reject on SQLite — text SQLite
+// would have treated as comment is read as content and, if it holds a `;`, refused — and buys the
+// one verdict the ability to be true on the strictest engine.
+//
+// Block comments are deliberately not nested, though Postgres nests them. That leans the same way:
+// a non-nesting walk always ends a comment at or before where Postgres ends one, so it can only
+// see more content than the engine does, never less.
+//
 // `skipSqlLiteralOrComment`, which the side-effect keyword scan walks with, is deliberately left
 // knowing neither of the two Postgres forms. Widening it would let `SELECT $$a; DROP TABLE t$$ AS s`
 // through as one literal — true of Postgres, and false of the two engines that have no dollar
@@ -8736,8 +8822,8 @@ function skipSqlStringOrComment(sql: string, index: number) {
     return end === -1 ? sql.length : end + 2;
   }
   if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
+    const end = /[\n\r]/.exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
   }
 
   // Postgres's two forms are recognised only where Postgres's own longest-match lexer would
@@ -8821,6 +8907,10 @@ function skipSqlStringOrComment(sql: string, index: number) {
 // Trailing trivia goes with the terminator because a line comment is the worse of the two. A
 // semicolon makes the embedding a syntax error, which is at least loud; an unterminated line
 // comment silently eats whatever the embedder appends.
+//
+// Whitespace is spelled `[ \t\n\r\f\v]` rather than `\s` for the reason given on `skipSqlTrivia`:
+// those six characters are what the engines call whitespace, and every wider character JavaScript
+// would have matched is content to them.
 export function sqlWithoutTrailingTerminator(sql: any) {
   const text = String(sql ?? "");
   let index = 0;
@@ -8839,7 +8929,7 @@ export function sqlWithoutTrailingTerminator(sql: any) {
     if (text[index] === ";") {
       break;
     }
-    if (!/\s/.test(text[index])) {
+    if (!/[ \t\n\r\f\v]/.test(text[index])) {
       contentEnd = index + 1;
     }
     index += 1;
@@ -8883,12 +8973,23 @@ function readSqlTableReference(sql: string, startIndex: number) {
   return parts;
 }
 
+// Whitespace and comments, skipped the way the engines skip them rather than the way JavaScript
+// would. Both halves of that mattered, and both were wrong in the same direction — treating as
+// trivia what the engine treats as content, which is how "nothing follows the terminator" gets
+// answered about a second statement.
+//
+// Whitespace is `[ \t\n\r\f\v]`: Postgres spells its `space` those six characters and SQLite's
+// `sqlite3Isspace` is the same six. JavaScript's `\s` also matches NBSP, U+1680, the U+2000 block,
+// the line and paragraph separators, U+3000 and the BOM — and every one of those is an *identifier*
+// character to Postgres, so skipping them said a query ended where the engine reads on.
+//
+// A line comment ends at CR as well as LF, for the reason set out on `skipSqlStringOrComment`.
 function skipSqlTrivia(sql: string, startIndex: any) {
   let index = startIndex;
   let advanced = true;
   while (advanced) {
     advanced = false;
-    while (/\s/.test(sql[index] ?? "")) {
+    while (/[ \t\n\r\f\v]/.test(sql[index] ?? "")) {
       index += 1;
       advanced = true;
     }
@@ -8899,8 +9000,8 @@ function skipSqlTrivia(sql: string, startIndex: any) {
       continue;
     }
     if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = sql.indexOf("\n", index + 2);
-      index = end === -1 ? sql.length : end + 1;
+      const end = /[\n\r]/.exec(sql.slice(index + 2));
+      index = end ? index + 2 + end.index + 1 : sql.length;
       advanced = true;
     }
   }
