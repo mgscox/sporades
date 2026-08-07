@@ -64,9 +64,14 @@ about where the first token is, it is worth exactly as much as the walk's
 agreement with the engines about where the first token is, and the section below
 is what makes it hold — it did not hold when this ADR was first written. And
 `merge` was added, because it closes the one limb of the scan that genuinely is a
-closed set: a data-modifying CTE, where Postgres allows exactly `INSERT`,
-`UPDATE`, `DELETE` and `MERGE` inside a `WITH`, and `MERGE` was the only one of
-the four missing.
+closed set: a data-modifying CTE, where Postgres allows `INSERT`, `UPDATE`,
+`DELETE` and — from version 17 — `MERGE` inside a `WITH`, and `MERGE` was the only
+one of the four missing. The version qualifier is load-bearing and was checked:
+the conformance container is PostgreSQL 16.14, which answers `syntax error at or
+near "RETURNING"` for a data-modifying `MERGE` CTE, so the limb is closed there
+already and `merge` is protection against the engine a Hosted Capsule may be on
+rather than the one the suite runs against. Adding it only ever refuses more, so
+being early costs nothing but a column named `merge`.
 
 What remains is defence in depth over what the three rules above already exclude.
 The residual it does not close, stated plainly rather than left to be
@@ -89,8 +94,10 @@ conservative right up to the point where what you do with what you see is decide
 which statement this is.
 
 Where the engines can be made to agree, the walk takes the *shortest* comment and
-the *narrowest* whitespace any of them would take. Where they cannot, the input
-is refused rather than guessed at.
+the *narrowest* whitespace any of them would take. Where they cannot, the input is
+refused rather than guessed at — and whether they can is decided by computing both
+readings and comparing them, not by recognising the text that usually means they
+differ. Two attempts at the recognising version each shipped a hole.
 
 **Line comments — closed by agreeing.** A `--` comment was ended at a line feed,
 while Postgres ends one at a carriage return too; its lexer spells a comment's
@@ -112,23 +119,54 @@ practice, so this set is the executed one and not the documented one. Getting
 that wrong put the walk one character wider than every engine, in the direction
 this section calls a security failure.
 
-**Nested block comments — closed by refusing.** Postgres nests `/*` inside `/*`
-and closes at the matching `*/`; SQLite and libSQL close at the first `*/` and
-read on. The walk did not nest, so
+**Nested block comments — closed by refusing, on a derived test rather than a
+described one.** Postgres nests `/*` inside `/*` and closes at the matching `*/`;
+SQLite and libSQL close at the first `*/` and read on. The walk did not nest, so
 `/*/* */ SELECT 1 */ TRUNCATE TABLE t` was a `SELECT` to the walk and a
 `TRUNCATE` to Postgres, and all six of the verbs the section above says cannot
 begin an admitted statement began one this way. Neither lexing can be adopted:
 nesting opens the mirror hole, where a `;` inside a comment the walk swallows is a
-real separator on the two engines that do not nest. So the ambiguous shape — a
-`/*` inside a block comment's body — is refused, with its own message and hint,
-and a block comment with nothing ambiguous in it reads identically under both
-rules and is untouched.
+real separator on the two engines that do not nest — confirmed by execution, those
+two run the second statement while Postgres answers `unterminated /* comment`. So
+the disputed input is refused.
 
-Measured over 174,760 comment-and-whitespace-shaped inputs: the build before this
-change admitted 73,176, of which 622 destroyed a live canary when executed past
-the `columns()` wrap — real `TRUNCATE`s and real `DO $z$ … EXECUTE 'DELETE' … $z$`
-blocks. After it, 47,248 are admitted, none of the 622 among them, and no input is
-admitted that was not admitted before.
+*How* it is detected is the part worth recording, because two attempts to describe
+the dangerous text both had blind spots. The first asked whether the comment
+contained a `/*` at all. The second asked the same with the terminator trimmed
+off, and missed `/*/` — where the nested opener's `*` is also the terminator's
+`*`, so the opener straddles the point the string was cut at. `/* /*/ SELECT 1 */
+*/ TRUNCATE TABLE t` was admitted by that rule and truncates the table when run.
+A third description would very likely have had a third blind spot, and neither
+reviewer nor author could enumerate the space.
+
+So the test is derived from the property instead: run a nesting lexer over the
+comment and compare where it ends against where the non-nesting walk ended, and
+refuse when they differ. Equal means every engine closes the comment in the same
+place; unequal means one does not, whatever the text looks like. That holds for
+shapes nobody wrote down, which is what a pattern cannot do. The counter is
+Postgres's own rule from `scan.l` — `{xcstart}` is `/*` and increments depth (the
+trailing `{op_chars}*` is undone by `yyless(2)`), `{xcstop}` is `\*+\/` and
+decrements it. An unterminated comment runs to end of input under both rules and
+is therefore not a disagreement; every engine either errors on it or comments to
+the end, so no second statement exists either way.
+
+Measured over 167,958 comment-shaped inputs, executed raw against a live Postgres
+past the `columns()` wrap, with both a canary table and a `CREATE TABLE` probe so
+that any non-`SELECT` first token is observable and not only a destructive one:
+the build before this change admitted 27,220, of which 268 had an effect a
+`SELECT` cannot have. None of those 268 is admitted now. Of the 18,148 admitted
+now, 2,646 are inputs the previous substring rule refused — the derived test is
+more precise rather than merely stricter — and all 2,646 were executed the same
+way with no observable effect.
+
+That corpus was checked for adequacy before it was believed, and this is the part
+a later reader should copy rather than the numbers. Both earlier rounds reported
+zero findings from generators that could not emit the shape they were reporting
+zero about: the first could not reach nesting depth, the second could not reach
+the straddle. The generator is now asserted to contain the specific shapes that
+defeated each previous round before any result from it is read, in the sweep and
+in `test/database-adapter-engine-seam.test.js` alike. A sweep that cannot produce
+the dangerous input answers clean for the wrong reason, and it did so twice here.
 
 **Identifier alphabets — left open, deliberately.** The walk reads a bare
 identifier as `[A-Za-z_][A-Za-z0-9_]*` where Postgres includes `$` and every

@@ -7849,9 +7849,25 @@ function ambiguousInspectionSqlError(hint) {
 // is a `SELECT` to the two and a `TRUNCATE` to Postgres — and the walk, which does not nest, took
 // its first token from inside what Postgres was treating as a comment. Neither lexing can be
 // chosen: nesting opens the mirror hole, where a `;` inside a comment this walk swallows is a real
-// separator to SQLite. Refusing the input is the only reading that is right about all three. A
-// block comment with no `/*` in its body reads identically under both rules, which is why nothing
-// but the ambiguous shape is lost.
+// separator to SQLite. Refusing the disputed input is the only reading right about all three.
+//
+// The test for "disputed" is *derived rather than described*, and that is the point of it. Two
+// earlier versions asked what the comment's text looked like — first "does it contain a `/*`", then
+// the same with the terminator trimmed off — and each missed a shape the other did not. The second
+// missed `/*/`, where the nested opener's `*` is also the terminator's `*`, so the opener straddled
+// the boundary the substring was cut at and `/* /*/ SELECT 1 */ */ TRUNCATE TABLE t` was admitted
+// and ran. A third guess at that substring would have had a third blind spot.
+//
+// So the question is asked directly instead: run a nesting lexer over the same comment and compare
+// where it ends against where the non-nesting walk ended. Equal means every engine closes the
+// comment in the same place and the walk's reading is nobody's guess; unequal means at least one
+// engine disagrees, whatever the text happens to look like. That is true by construction for shapes
+// nobody thought to write down, which a pattern cannot be.
+//
+// The counter is Postgres's own rule from `scan.l`: `{xcstart}` is `/*` and increments the depth
+// (its trailing `{op_chars}*` is undone by `yyless(2)`, so only `/*` is consumed), `{xcstop}` is
+// `\*+\/` and decrements it. Counting `*/` rather than `\*+\/` reaches the same end index, because a
+// run of asterisks before the slash only moves where the token starts, not where it stops.
 //
 // **Whitespace no engine has.** All three engines take space, tab, LF, CR and form feed and no
 // others — vertical tab included, which is a lexer error on every one of them, and every character
@@ -7863,8 +7879,27 @@ function sqlTheEnginesLexDifferently(sql) {
         const skipped = skipSqlStringOrComment(sql, index);
         if (skipped > index) {
             if (sql[index] === "/" && sql[index + 1] === "*") {
-                const bodyEnd = sql.slice(skipped - 2, skipped) === "*/" ? skipped - 2 : skipped;
-                if (sql.slice(index + 2, bodyEnd).includes("/*")) {
+                let depth = 0;
+                let cursor = index;
+                while (cursor < sql.length) {
+                    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+                        depth += 1;
+                        cursor += 2;
+                        continue;
+                    }
+                    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+                        depth -= 1;
+                        cursor += 2;
+                        if (depth === 0) {
+                            break;
+                        }
+                        continue;
+                    }
+                    cursor += 1;
+                }
+                // An unterminated comment runs to the end of the input under both rules, so the clamp makes
+                // the two agree there rather than differing by however far the last step overshot.
+                if (Math.min(cursor, sql.length) !== skipped) {
                     return "Remove the nested `/* ... */` comment from the `sporades db query` SQL — Postgres and SQLite disagree about where it ends.";
                 }
             }
@@ -7872,7 +7907,7 @@ function sqlTheEnginesLexDifferently(sql) {
             continue;
         }
         if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
-            return "Replace the invisible character outside quotes — a non-breaking space or a vertical tab, often pasted from a document — with an ordinary space.";
+            return "Replace the invisible character outside quotes — a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace — with an ordinary space.";
         }
         index += 1;
     }
@@ -7967,14 +8002,19 @@ function containsSideEffectSqlToken(sql) {
 // shapes, which is a closed rule, rather than by being remembered here, which is not.
 //
 // That second half is a claim about where the first token is, and it is only worth as much as the
-// walk's agreement with the engines about where the first token is. It was false as recently as the
-// commit before this one, when a nested block comment let all six of them begin a statement the
-// walk had read a `SELECT` out of; `sqlTheEnginesLexDifferently` is what makes it true, and it is
-// the thing to check first if it ever looks false again.
+// walk's agreement with the engines about where the first token is. It has been false twice: a
+// nested block comment let all six of them begin a statement the walk had read a `SELECT` out of,
+// and the first attempt to close that missed the `/*/` straddle and left the same six reachable.
+// `sqlTheEnginesLexDifferently` is what makes it true, and it is the thing to check first if it ever
+// looks false again — the reason its nesting test is derived rather than described is that the two
+// described versions were the two failures.
 //
 // What this list does close is the one limb that *is* a closed set: a data-modifying CTE, where
-// Postgres allows exactly `INSERT`, `UPDATE`, `DELETE` and `MERGE` inside a `WITH`. `merge` was the
-// only one of the four missing. What no list can close is a side-effecting *function* reached from
+// Postgres allows `INSERT`, `UPDATE`, `DELETE` and — from version 17 — `MERGE` inside a `WITH`.
+// `merge` was the only one of the four missing. The version qualifier is checked rather than
+// assumed: PostgreSQL 16.14 answers `syntax error at or near "RETURNING"` for a data-modifying
+// `MERGE` CTE, so listing it guards the engine a Hosted Capsule may run rather than the one the
+// suite runs. What no list can close is a side-effecting *function* reached from
 // an expression — `nextval` and `set_config` below are two of an open set that grows with every
 // extension installed — which is why this is where the scan stops being a boundary and starts being
 // a belt.
@@ -8094,8 +8134,11 @@ function skipSqlLiteralOrComment(sql, index) {
 // and `readFirstSqlToken` then takes the statement's first token from inside a Postgres comment:
 // `/*/* */ SELECT 1 */ TRUNCATE TABLE t` read as a `SELECT` here and a `TRUNCATE` there. Nesting
 // instead would open the mirror hole on the engines that do not nest. Neither reading is right about
-// all three, so `sqlTheEnginesLexDifferently` refuses the ambiguous shape before this walk runs, and
-// what remains — a block comment with no `/*` in its body — reads identically under both rules.
+// all three, so `sqlTheEnginesLexDifferently` runs first and refuses every comment whose non-nesting
+// end differs from where a nesting lexer would end it. What reaches this walk is therefore only
+// comments the two rules close in the same place — which is a derived property rather than a claim
+// about how the text looks, because the two attempts to describe that shape in text each missed a
+// case.
 //
 // `skipSqlLiteralOrComment`, which the side-effect keyword scan walks with, is deliberately left
 // knowing neither of the two Postgres forms. Widening it would let `SELECT $$a; DROP TABLE t$$ AS s`

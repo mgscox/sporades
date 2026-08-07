@@ -362,6 +362,22 @@ const NESTED_BLOCK_COMMENT_ATTEMPTS = [
   // The mirror hole, which is why nesting was not adopted instead: to SQLite and libSQL this is a
   // real second statement, and a nesting walk would have read the whole tail as one comment.
   "SELECT 1 /*/* */; DROP TABLE sporades_injection_canary /* */",
+
+  // The straddle. The nested opener's `*` is also the terminator's `*`, so `/*/` is one opener to
+  // Postgres — `scan.l` matches `{xcstart}` and `yyless(2)` back to just `/*` — and the first
+  // attempt to close this class asked whether the comment's body contained `/*` with the
+  // terminator trimmed off, which cut the string exactly through the opener it was looking for.
+  // These were admitted, and executed: `psql` run directly on the first one truncates the table.
+  //
+  // They are here rather than folded into the list above because the shape is the reason the test
+  // for nesting is now derived instead of described. A regression that reintroduces a substring
+  // rule will pass every case before this point and fail these.
+  "/* /*/ SELECT 1 */ */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/*/ SELECT 1 */ */ TRUNCATE TABLE sporades_injection_canary",
+  "/*/*/ SELECT 1 */**/ TRUNCATE TABLE sporades_injection_canary",
+  "/* /*/ SELECT 1 */ */ DO $z$ BEGIN EXECUTE 'DELETE FROM sporades_injection_canary'; END $z$",
+  "/* /*/ SELECT 1 */ */ DELETE FROM sporades_injection_canary",
+  "/*/*/ SELECT 1 */ */ SET x = 1",
 ];
 
 const AMBIGUOUS_LEXING_MESSAGE = "Only SQL the database reads the same way this check does is allowed.";
@@ -417,8 +433,87 @@ test("no second statement hides inside a dollar-quoted or an E-string literal", 
   }
 });
 
-// The refusal is of the ambiguous shape, not of block comments. A comment with no `/*` in its body
-// reads identically under both lexings, so nothing about an ordinary one changes.
+// Two rounds of this were closed by describing the dangerous text and both descriptions had a blind
+// spot, so this asserts the property instead of the pattern: everything the gate admits must close
+// its block comments where a *nesting* lexer closes them. The model below is written independently
+// of the runtime's — it hops between delimiters with `indexOf` where the runtime walks character by
+// character — so agreement between them is evidence rather than a tautology.
+//
+// The corpus is checked for adequacy before it is used. A sweep that cannot emit the dangerous shape
+// answers zero for the wrong reason, which is how both earlier rounds reported clean.
+function nestingBlockCommentEnd(sql, start) {
+  let depth = 0;
+  let cursor = start;
+  while (cursor < sql.length) {
+    const open = sql.indexOf("/*", cursor);
+    const close = sql.indexOf("*/", cursor);
+    if (close === -1) return sql.length;
+    if (open !== -1 && open < close) {
+      depth += 1;
+      cursor = open + 2;
+      continue;
+    }
+    depth -= 1;
+    cursor = close + 2;
+    if (depth === 0) return cursor;
+  }
+  return sql.length;
+}
+
+test("everything admitted closes its block comments where a nesting lexer does", () => {
+  // `/*/` and `**/` are pieces in their own right, and ` SELECT 1 ` carries its own spacing, so the
+  // shapes below are reachable within the depth bound. A first attempt at this generator used
+  // single-token pieces and could not emit either of them at depth 5 — the assertions caught it,
+  // which is the whole reason they are here.
+  const pieces = ["/*", "*/", "/*/", "**/", " ", " SELECT 1 "];
+  const corpus = [];
+  const build = (depth, acc) => {
+    if (depth === 0) {
+      corpus.push(`${acc} TRUNCATE TABLE t`);
+      return;
+    }
+    for (const piece of pieces) build(depth - 1, acc + piece);
+  };
+  for (let depth = 1; depth <= 6; depth += 1) build(depth, "");
+
+  // Corpus adequacy, asserted rather than assumed: the shapes that defeated rounds one and two must
+  // both be in here, or a clean result below means nothing. Both rounds reported clean from a sweep
+  // that could not emit the shape it was reporting clean about.
+  assert.ok(corpus.includes("/*/* */ SELECT 1 */ TRUNCATE TABLE t"), "corpus cannot emit the round-1 shape");
+  assert.ok(corpus.includes("/*/*/ SELECT 1 */ */ TRUNCATE TABLE t"), "corpus cannot emit the round-2 straddle");
+  assert.ok(corpus.length > 15000, `corpus is too small to be meaningful: ${corpus.length}`);
+
+  let admitted = 0;
+  for (const sql of corpus) {
+    if (!validateReadOnlyInspectionSql(sql).ok) continue;
+    admitted += 1;
+    // Only comments the walk actually starts at count. Scanning every `/*` in the string would
+    // examine positions inside a comment the walk had already stepped over, which is not a comment
+    // start on any engine — the corpus holds no quotes, so a jump to the non-nesting end is the
+    // whole of the traversal.
+    let index = 0;
+    while (index < sql.length) {
+      if (sql[index] === "/" && sql[index + 1] === "*") {
+        const found = sql.indexOf("*/", index + 2);
+        const nonNesting = found === -1 ? sql.length : found + 2;
+        assert.equal(
+          nestingBlockCommentEnd(sql, index),
+          nonNesting,
+          `admitted a comment the two lexings close in different places: ${JSON.stringify(sql)}`,
+        );
+        index = nonNesting;
+        continue;
+      }
+      index += 1;
+    }
+  }
+
+  // A refusal that refused everything would satisfy the loop above and be useless.
+  assert.ok(admitted > 500, `too few admitted for this to be evidence: ${admitted}`);
+});
+
+// The refusal is of the disputed shape, not of block comments. A comment both lexings close in the
+// same place is untouched, whatever it contains.
 test("an unambiguous block comment is still an ordinary comment", () => {
   for (const sql of [
     "SELECT 1 /* why */ AS s",

@@ -9833,8 +9833,25 @@ function sqlTheEnginesLexDifferently(sql) {
     const skipped = skipSqlStringOrComment(sql, index);
     if (skipped > index) {
       if (sql[index] === "/" && sql[index + 1] === "*") {
-        const bodyEnd = sql.slice(skipped - 2, skipped) === "*/" ? skipped - 2 : skipped;
-        if (sql.slice(index + 2, bodyEnd).includes("/*")) {
+        let depth = 0;
+        let cursor = index;
+        while (cursor < sql.length) {
+          if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+            depth += 1;
+            cursor += 2;
+            continue;
+          }
+          if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+            depth -= 1;
+            cursor += 2;
+            if (depth === 0) {
+              break;
+            }
+            continue;
+          }
+          cursor += 1;
+        }
+        if (Math.min(cursor, sql.length) !== skipped) {
           return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
         }
       }
@@ -9842,7 +9859,7 @@ function sqlTheEnginesLexDifferently(sql) {
       continue;
     }
     if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
-      return "Replace the invisible character outside quotes \u2014 a non-breaking space or a vertical tab, often pasted from a document \u2014 with an ordinary space.";
+      return "Replace the invisible character outside quotes \u2014 a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace \u2014 with an ordinary space.";
     }
     index += 1;
   }
