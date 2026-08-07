@@ -736,25 +736,66 @@ test("the dialect the keyword scan asks for withholds the two string forms only 
 // defect — passes all four. A guard has to be coupled to the thing it guards, and the thing here is
 // "a second function decides where a run ends", not "a second function is spelled like this one".
 //
-// So the detector asks what delimiters the source mentions at all. Any walk that decides where a
-// comment or a quoted run ends has to name the characters that open and close one, whatever
-// comparison it writes them into: `indexOf("*/")`, `slice(i, i + 2) === "--"` and
-// `char === "-" && next === "-"` all name the same alphabet.
-const namesRunDelimiters = (source) => {
-  const literals = new Set();
+// So the detector asks which delimiters the source names, over the spellings listed below. Any walk
+// that decides where a comment or a quoted run ends has to name the characters that open and close
+// one, and `indexOf("*/")`, `slice(i, i + 2) === "--"`, `char === "-" && next === "-"` and
+// `/^--/` all name the same alphabet.
+//
+// **What it does not see, stated rather than left to be discovered.** This is a source-text
+// heuristic and every source-text heuristic is evadable. It reads short string literals, regex
+// literal bodies and template literal bodies. A walker that assembles its delimiters at runtime —
+// `String.fromCharCode(45) + String.fromCharCode(45)` — or compares `charCodeAt` values is
+// invisible to it, and both were planted and confirmed missed. The claim here is therefore "no
+// walker spelling its delimiters in the ways this runtime spells them", not "no walker".
+//
+// Regex and template literals are read because omitting them missed the idiom this file uses most:
+// `skipSqlQuotedOrCommented` writes its own terminator rules as `/[\n\r]/ : /\n/` and
+// `/^\$(?:…)\$/`, so the likeliest spelling of the next run lexer here was exactly the spelling the
+// first version could not see. A complete second lexer written that way passed both guards.
+const shortStringLiterals = (source) => {
+  const found = new Set();
   for (const match of source.matchAll(/"((?:[^"\\]|\\.){1,2})"|'((?:[^'\\]|\\.){1,2})'/g)) {
-    literals.add(match[1] ?? match[2]);
+    found.add(match[1] ?? match[2]);
   }
+  return found;
+};
+
+// Regex and template literal bodies, backslashes removed so `\/\*` reads as the delimiter it
+// matches. Bodies only — including a regex's closing `/` makes every pattern ending in `*` look
+// like it names `*/`.
+const patternBodies = (source) => {
+  const bodies = [];
+  for (const match of source.matchAll(/\/(?![/*])((?:\[(?:[^\]\\]|\\.)*\]|[^/\\\n[]|\\.)+)\/[dgimsuvy]*/g)) {
+    bodies.push(match[1].replaceAll("\\", ""));
+  }
+  for (const match of source.matchAll(/`((?:[^`\\]|\\.)*)`/g)) {
+    bodies.push(match[1].replaceAll("\\", ""));
+  }
+  return bodies;
+};
+
+const namesRunDelimiters = (source) => {
+  const literals = shortStringLiterals(source);
   const twoCharCommentDelimiter = literals.has("--") || literals.has("/*") || literals.has("*/");
   const commentCharacters = literals.has("-") || (literals.has("*") && literals.has("/"));
   const quotes = ["'", '"', "`", "[", "$"].filter((quote) => literals.has(quote));
-  // Three independent signals, because a walker needs only one of the two halves to be a walker.
-  // A two-character comment delimiter is enough on its own — nothing else in this runtime spells
-  // one. Single comment characters are ambiguous (a date separator, a CSP wildcard), so they need a
-  // quote delimiter alongside. And a quoting alphabet on its own is enough: the first draft of this
-  // detector required a comment signal, and a planted walker that lexed quoted runs and no comments
-  // walked straight past it.
-  return twoCharCommentDelimiter || (commentCharacters && quotes.length > 0) || quotes.length >= 2;
+  // A comment delimiter written into a pattern. Only the two-character forms count there: single
+  // characters are far too common inside patterns to mean anything, and a naive widening to every
+  // regex-body character detects 69 of these functions and is useless.
+  const commentDelimiterInAPattern = patternBodies(source).some(
+    (body) => body.includes("--") || body.includes("/*") || body.includes("*/"),
+  );
+  // Four independent signals, because a walker needs only one of the two halves to be a walker.
+  // A two-character comment delimiter is enough on its own. Single comment characters are ambiguous
+  // (a date separator, a CSP wildcard), so they need a quote delimiter alongside. A quoting alphabet
+  // on its own is enough: the first draft required a comment signal, and a planted walker that
+  // lexed quoted runs and no comments walked straight past it.
+  return (
+    twoCharCommentDelimiter ||
+    commentDelimiterInAPattern ||
+    (commentCharacters && quotes.length > 0) ||
+    quotes.length >= 2
+  );
 };
 
 // The census, and the point of it: the detected set must equal this exactly. A new walker fails
@@ -780,6 +821,16 @@ const RUN_LEXER_CENSUS = {
   findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
   splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
+  // The nesting oracle. It lexes no quoted run — it counts block-comment depth and compares the end
+  // against the one tokenizer's — and it is *required* to disagree with it, which is the opposite of
+  // the property this census enforces. Matched here on the `--x<CR>` examples in its own prose.
+  sqlTheEnginesLexDifferently: "the nesting oracle, required to disagree with the one tokenizer",
+  // The remaining four hold a `--` that is not a SQL comment delimiter. Each was read to confirm it,
+  // rather than assumed from the name.
+  beginOAuthSignIn: "not a lexer: `--client-id` and `--client-secret` in CLI hint strings",
+  createSharedDatabaseAdapterMethods: "not a lexer: `sporades logs --json` in CLI hint strings",
+  buildSmtpMessage: "not a lexer: `--${boundary}` MIME multipart delimiters",
+  isSensitiveLogString: "not a lexer: the `-----BEGIN … PRIVATE KEY-----` PEM header pattern",
 };
 
 test("no second function decides where a SQL comment or quoted run ends", () => {
@@ -838,10 +889,11 @@ test("no second function decides where a SQL comment or quoted run ends", () => 
   assert.equal(identityOrThrow("SELECT $$?$$ AS s"), "threw", "the recorded Postgres-only false rejection changed");
   assert.equal(identityOrThrow("SELECT '?' AS s"), "identity", "a `?` inside an ordinary literal stopped being protected");
 
-  // The nesting oracle is not in the census because it lexes no quoted run — it counts block-comment
-  // depth and nothing else. It is *required* to disagree with the tokenizer, which is the opposite
-  // of the property this test enforces, so it is named here rather than left to look like an
-  // omission.
+  // The nesting oracle is a census entry, and the only one whose disagreement with the tokenizer is
+  // the point rather than the defect: it counts block-comment depth and refuses every input the two
+  // readings close in different places. Being listed is not enough for it, because the census only
+  // asserts the *names* — so the property that makes it an oracle rather than a sixth walker is
+  // asserted here.
   const oracle = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "sqlTheEnginesLexDifferently");
   assert.ok(oracle, "the nesting oracle no longer travels into the bundle");
   assert.match(oracle.toString(), /skipSqlQuotedOrCommented/, "the oracle stopped comparing against the one tokenizer");

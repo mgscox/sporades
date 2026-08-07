@@ -9903,7 +9903,7 @@ function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
   return fingerprint;
 }
 function readFirstSqlToken(sql) {
-  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0))?.value ?? null;
+  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0, true))?.value ?? null;
 }
 function hasMultipleSqlStatements(sql) {
   const dialect = sqlDialectEveryEngineQuotes(true);
@@ -9915,27 +9915,27 @@ function hasMultipleSqlStatements(sql) {
       continue;
     }
     if (sql[index] === ";") {
-      return skipSqlTrivia(sql, index + 1) < sql.length;
+      return skipSqlTrivia(sql, index + 1, true) < sql.length;
     }
     index += 1;
   }
   return false;
 }
 function isSafeInspectionPragma(sql, pragmaTokenLength) {
-  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0) + pragmaTokenLength);
+  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0, true) + pragmaTokenLength, true);
   let identifier = readBareSqlIdentifier(sql, index);
   if (!identifier) {
     return false;
   }
   let pragmaName = identifier.value.toLowerCase();
-  index = skipSqlTrivia(sql, identifier.nextIndex);
+  index = skipSqlTrivia(sql, identifier.nextIndex, true);
   if (sql[index] === ".") {
-    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1));
+    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1, true));
     if (!identifier) {
       return false;
     }
     pragmaName = identifier.value.toLowerCase();
-    index = skipSqlTrivia(sql, identifier.nextIndex);
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
   }
   if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
     return false;
@@ -10181,10 +10181,10 @@ function targetsInternalLogIndexTable(sql) {
   return false;
 }
 function readSqlTableReference(sql, startIndex) {
-  let index = skipSqlTrivia(sql, startIndex);
+  let index = skipSqlTrivia(sql, startIndex, true);
   while (sql[index] === "(") {
     index += 1;
-    index = skipSqlTrivia(sql, index);
+    index = skipSqlTrivia(sql, index, true);
   }
   const parts = [];
   while (index < sql.length) {
@@ -10193,15 +10193,15 @@ function readSqlTableReference(sql, startIndex) {
       break;
     }
     parts.push(identifier.value);
-    index = skipSqlTrivia(sql, identifier.nextIndex);
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
     if (sql[index] !== ".") {
       break;
     }
-    index = skipSqlTrivia(sql, index + 1);
+    index = skipSqlTrivia(sql, index + 1, true);
   }
   return parts;
 }
-function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn = true) {
+function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
   let index = startIndex;
   let advanced = true;

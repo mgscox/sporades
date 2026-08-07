@@ -139,14 +139,33 @@ and one of them is on this path:
   off this path — inspection goes through `prepare`, not `exec` — and is latent
   duplication of the same class, with its own ticket.
 
-A census test enumerates every emitted runtime function that names comment or
-quote delimiters and requires each to be either the one tokenizer or a listed
-exception carrying its reason. It is deliberately coupled to the delimiter
-*alphabet* rather than to source spellings: the first version grepped for four
-idioms unique to the collapsed body, and a walker written the way the pre-collapse
-ones were written — `char === "-" && next === "-"`, a line comment ending at LF —
-passed all four. Three planted walkers in that style, one comment-only, one
-quoting-only, are what the current version was tuned against.
+A census test enumerates the emitted runtime functions that name comment or quote
+delimiters *in the spellings this runtime uses*, and requires each to be either
+the one tokenizer or a listed exception carrying its reason. It is coupled to the
+delimiter *alphabet* rather than to source spellings of a comparison: the first
+version grepped for four idioms unique to the collapsed body, and a walker written
+the way the pre-collapse ones were written — `char === "-" && next === "-"`, a
+line comment ending at LF — passed all four.
+
+**What that census does not cover is worth stating, because two earlier drafts of
+this paragraph claimed a completeness that execution falsifies.** It reads short
+string literals, regex literal bodies and template literal bodies. It does not see
+a walker that assembles its delimiters at runtime or compares `charCodeAt` values;
+both were planted and confirmed missed. So the claim is "no second walker spelling
+its delimiters the way this runtime spells them", not "no second walker" — every
+source-text guard is evadable, and the useful thing is knowing which evasions.
+
+Five planted walkers are what it was tuned against: the historical style above, a
+comment-only one, a quoting-only one, a regex-literal one and a computed one. The
+regex-literal plant is why pattern bodies are read at all. It was missed by the
+first two versions, and it is the *likeliest* spelling here rather than an exotic
+one — `skipSqlQuotedOrCommented` writes its own terminator rules as
+`/[\n\r]/ : /\n/` and `/^\$(?:…)\$/`, so a second lexer in this file would most
+naturally be written in the idiom the guard could not see. Reading pattern bodies
+costs four census rows that hold a `--` which is not a SQL comment delimiter: two
+sets of CLI hint strings, MIME multipart boundaries, and the
+`-----BEGIN … PRIVATE KEY-----` header. Each was read to confirm it rather than
+assumed from the name.
 
 Union, not refuse-on-disagreement, and the difference is worth holding onto: the
 other walks answer *which statement is this*, where two readings disagreeing means
@@ -277,6 +296,15 @@ gate, then executes every admitted candidate raw against all three engines — p
 the `columns()` wrap, with a canary row that must survive and a probe table that
 must never appear, so any non-`SELECT` first token is observable and not only a
 destructive one.
+
+`scripts/inspection-lexing-differential.mjs` is committed for the same reason and
+answers the two questions either side of it, which a live sweep is the wrong
+instrument for: whether a refactor changed any verdict, refusal reason, terminator
+strip or internal walk against another build, and whether any *realistic* query is
+newly refused — the sweep's corpus being attack-shaped by construction and
+structurally unable to answer that. It was added when the figures behind a
+"behaviour-preserving" claim turned out to live in an uncommitted harness, which is
+this section's own policy being broken by the commit that wrote this section.
 
 **The baseline is the pre-work base, and naming it is not a formality.** Over
 310,156 candidates measured against the commit this work started from: this gate
