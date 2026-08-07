@@ -321,8 +321,12 @@ async function bootBundle({ source, dir, env = {} }) {
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const TIMESTAMP_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z/g;
 // `randomBytes(24|32).toString("base64url")` — session tokens, connection tokens, reset codes.
-// Thirty-two characters and no separators: long enough that no runtime message, error code or
-// constant in this Capsule reaches it.
+//
+// Thirty-two characters and no separators. That is long enough that nothing *this* Capsule's
+// responses carry reaches it, which is a narrower claim than it looks: the runtime does contain
+// codes at or past that length — `UNSUPPORTED_PRIVILEGED_FILE_OPERATION` is 37 — so a script that
+// provoked one would have it erased, and a difference in it would be hidden. None of the responses
+// compared here contain one; a new step that might should widen the guard rather than trust this.
 const OPAQUE_PATTERN = /[A-Za-z0-9_-]{32,}/g;
 
 function normalizeString(value, context) {
@@ -362,7 +366,10 @@ const COMPARED_HEADERS = [
   "access-control-allow-methods",
   "access-control-allow-headers",
   "vary",
+  // Both spellings. The runtime picks the header name from `security.csp.mode`, and the default is
+  // `report-only` — comparing only the enforce spelling silently compared nothing at all.
   "content-security-policy",
+  "content-security-policy-report-only",
   "x-content-type-options",
   "x-frame-options",
   "referrer-policy",
@@ -676,6 +683,17 @@ function bundleImportSpecifiers(source) {
   return specifiers;
 }
 
+// A Schedule row the inspection path accepts, for the engines whose fixtures are seeded by hand.
+// Mirrors the runtime's own DDL. `latestOutcome` and every `latest*` column stay null so the
+// summary needs no matching Job row.
+const SCHEDULES_DDL =
+  "CREATE TABLE [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, " +
+  "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
+  "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
+  "[latestJobId] TEXT, [latestErrorCode] TEXT)";
+const SCHEDULES_INSERT = "INSERT INTO [sporades_schedules] VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+const schedulesRow = (name) => [name, "fingerprint-1", "*/5 * * * *", "UTC", "skip", 1, "2026-01-01T00:00:00.000Z", null, null, null, null];
+
 function runBundleAction(bundlePath, action, { cwd, env = {} }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bundlePath, "--sporades-action", action], {
@@ -923,6 +941,8 @@ test("both bundles read the same Postgres state through the inspection adapter",
       "pg-equivalence", "tally", "user-1", "__privileged__", '{"secret":true}', "queued", "2026-01-01T00:00:00.000Z", 0,
       "an-idempotency-key", null, null, "2026-01-01T00:00:00.000Z", null, null, null, '{"maxAttempts":3,"delayMs":25}', "[]", null, null,
     );
+    await adapter.exec(sql(SCHEDULES_DDL));
+    await adapter.prepare(sql(SCHEDULES_INSERT)).run(...schedulesRow("pg-schedule"));
 
     const config = capsuleConfig({ services: { database: { engine: "postgres" } } });
     const { emitted, graph } = await buildBundlePair({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
@@ -953,6 +973,11 @@ test("both bundles read the same Postgres state through the inspection adapter",
     assert.equal(emittedJobs.data.jobs[0].actor.mode, "privileged-server-role");
     assert.equal("payload" in emittedJobs.data.jobs[0], false);
 
+    const emittedSchedules = JSON.parse(runs[0].schedules.stdout);
+    assert.equal(emittedSchedules.ok, true, runs[0].schedules.stdout + runs[0].schedules.stderr);
+    assert.equal(emittedSchedules.data.schedules.length, 1, runs[0].schedules.stdout);
+    assert.equal(emittedSchedules.data.schedules[0].name, "pg-schedule");
+
     assert.equal(runs[1].jobs.stdout, runs[0].jobs.stdout, "Postgres jobs.inspect differs between the two bundles");
     assert.equal(runs[1].jobs.status, runs[0].jobs.status);
     assert.equal(runs[1].schedules.stdout, runs[0].schedules.stdout, "Postgres schedules.inspect differs between the two bundles");
@@ -979,6 +1004,8 @@ test("both bundles read the same libSQL state through the inspection adapter", a
           "libsql-equivalence", "tally", "user-1", "__privileged__", '{"secret":true}', "queued", "2026-01-01T00:00:00.000Z", 0,
           "an-idempotency-key", null, null, "2026-01-01T00:00:00.000Z", null, null, null, '{"maxAttempts":3,"delayMs":25}', "[]", null, null,
         );
+        await seed.exec(SCHEDULES_DDL.replace(/[[\]]/g, ""));
+        await seed.prepare(SCHEDULES_INSERT.replace(/[[\]]/g, "")).run(...schedulesRow("libsql-schedule"));
       } finally {
         await seed.close();
       }
@@ -1005,6 +1032,11 @@ test("both bundles read the same libSQL state through the inspection adapter", a
       assert.equal(emittedJobs.data.jobs.length, 1, runs[0].jobs.stdout);
       assert.equal(emittedJobs.data.jobs[0].id, "libsql-equivalence");
       assert.equal("payload" in emittedJobs.data.jobs[0], false);
+      const emittedSchedules = JSON.parse(runs[0].schedules.stdout);
+      assert.equal(emittedSchedules.ok, true, runs[0].schedules.stdout + runs[0].schedules.stderr);
+      assert.equal(emittedSchedules.data.schedules.length, 1, runs[0].schedules.stdout);
+      assert.equal(emittedSchedules.data.schedules[0].name, "libsql-schedule");
+
       assert.equal(runs[1].jobs.stdout, runs[0].jobs.stdout, "libSQL jobs.inspect differs between the two bundles");
       assert.equal(runs[1].schedules.stdout, runs[0].schedules.stdout, "libSQL schedules.inspect differs between the two bundles");
     });
@@ -1279,20 +1311,42 @@ process.exit(0);
   }
 });
 
-test("the module-graph builder refuses a bundle that would need node_modules at runtime", async () => {
-  // The guard that keeps the deployment constraint true by construction. A Capsule runs with
-  // `server.mjs` mounted read-only into an image that has no `node_modules`, so an unresolved bare
-  // specifier has to fail the build rather than the container.
+function moduleGraphBundleWith(epilogue) {
+  return createServerBundleModuleSource({
+    config: capsuleConfig(),
+    serverEnv: {},
+    serverSource: "",
+    serverModuleSource: "export default {};",
+    epilogue,
+  });
+}
+
+test("the module-graph builder rejects an import esbuild cannot resolve", async () => {
+  // The resolver's own refusal, before the self-containment guard is reached. Distinct from the
+  // test below, which is the one that exercises the guard.
   await assert.rejects(
-    createServerBundleModuleSource({
-      config: capsuleConfig(),
-      serverEnv: {},
-      serverSource: "",
-      serverModuleSource: "export default {};",
-      epilogue: `import { createRequire as __probeRequire } from "definitely-not-a-real-package";\nglobalThis.__probe = __probeRequire;`,
-    }),
+    moduleGraphBundleWith(`import { createRequire as __probeRequire } from "definitely-not-a-real-package";\nglobalThis.__probe = __probeRequire;`),
     (error) => {
-      assert.match(error.message, /Server bundle failed/);
+      assert.match(error.message, /Could not resolve "definitely-not-a-real-package"/);
+      return true;
+    },
+  );
+});
+
+test("the self-containment guard refuses a bundle that would resolve anything at runtime", async () => {
+  // The guard itself, and the reason it cannot be replaced by the resolver check above. A URL
+  // specifier *resolves* — esbuild builds happily and marks it external — so nothing fails until
+  // something asks what the finished bundle would still reach for. In a deployed Capsule that
+  // import is a fetch from a read-only container with no network guarantee and no `node_modules`;
+  // it has to be a build error.
+  //
+  // Asserted on the guard's own wording, because a test that only matched "Server bundle failed"
+  // would pass just as well with the guard deleted.
+  await assert.rejects(
+    moduleGraphBundleWith(`import __probeRemote from "https://example.com/not-bundled.js";\nglobalThis.__probe = __probeRemote;`),
+    (error) => {
+      assert.match(error.message, /the bundle would import https:\/\/example\.com\/not-bundled\.js at runtime/);
+      assert.match(error.hint, /A deployed Capsule has no node_modules/);
       return true;
     },
   );

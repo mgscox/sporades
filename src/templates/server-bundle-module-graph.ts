@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import path from "node:path";
@@ -9,8 +10,12 @@ export type ServerBundleModuleGraphOptions = {
   sealedServerEnv?: any;
   serverSource: string;
   serverModuleSource: string;
-  // Appended to the entry before it is bundled. Used by the equivalence harness to read values out
-  // of a built bundle; a shipping build never passes it.
+  // Appended to the entry before it is bundled, so a test can read values out of a bundle that was
+  // built and booted rather than out of its text. `createBundle` never passes it.
+  //
+  // This is a seam that exists for the equivalence proof, and it should not outlive it: once the
+  // emitted-list builder is gone there is nothing left to prove equivalent, and this option should
+  // go with it rather than settle into the shipping API.
   epilogue?: string;
 };
 
@@ -32,6 +37,40 @@ function bundleModuleGraphError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
 
+// Where the boot entry lives, found by walking from this module up to the package root and then
+// down the known `dist/` path.
+//
+// Not `new URL("./server-bundle-entry.js", import.meta.url)`. That sibling lookup is right only
+// while this module is being executed from `dist/templates/`, and the CLI is not executed from
+// there: `scripts/build-bin.mjs` bundles `src/cli/sporades.ts` into `bin/sporades.js`, and esbuild
+// rewrites `import.meta.url` for the entry point only. Every other module in the graph inherits the
+// entry's, so a sibling lookup inside a bundled CLI resolves next to `bin/` and fails with ENOENT.
+// `CLI_ROOT` in `src/cli/sporades.ts` survives bundling for precisely the opposite reason — that
+// file *is* the entry point.
+//
+// Walking to the package root is correct under both layouts, because `<root>/dist/templates/…` and
+// `<root>/bin/sporades.js` sit inside the same package. This is the one path resolution the
+// `toString()` mechanism never had to make, since concatenating source text reads no files.
+function resolveServerBundleEntry() {
+  let directory = path.dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    if (existsSync(path.join(directory, "package.json"))) {
+      return {
+        packageRoot: directory,
+        entryPath: path.join(directory, "dist", "templates", "server-bundle-entry.js"),
+      };
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) {
+      throw bundleModuleGraphError(
+        "Server bundle failed: could not locate the Sporades package root.",
+        "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.",
+      );
+    }
+    directory = parent;
+  }
+}
+
 // Builds the deployed Capsule's server bundle from an ordinary module graph.
 //
 // This is the same program `createServerBundleSource` produces, resolved by esbuild from real
@@ -40,8 +79,10 @@ function bundleModuleGraphError(message: string, hint: string) {
 // shown equivalent to it first.
 //
 // The graph is rooted at the compiled entry in `dist/`, not at the TypeScript source, because a
-// published Sporades CLI ships `dist/` and not `src/`. esbuild is a direct dependency and already
-// builds the Capsule module and the client pipeline, so nothing new is required at bundle time.
+// published Sporades CLI ships `dist/` and not `src/` — see `package.json`'s `files`. How that path
+// is found matters more than it looks; `resolveServerBundleEntryPath` records why. esbuild is a
+// direct dependency and already builds the Capsule module and the client pipeline, so nothing new
+// is required at bundle time.
 //
 // There is a real self-containment requirement behind the original `toString()` approach, and it is
 // the one thing about that approach that must survive: a deployed Capsule cannot resolve a bare
@@ -59,7 +100,7 @@ function bundleModuleGraphError(message: string, hint: string) {
 // unevaluated rather than on how the runtime got there.
 export async function createServerBundleModuleSource(options: ServerBundleModuleGraphOptions) {
   const { build } = await import("esbuild");
-  const entryPath = fileURLToPath(new URL("./server-bundle-entry.js", import.meta.url));
+  const { packageRoot, entryPath } = resolveServerBundleEntry();
   const entrySource = await readFile(entryPath, "utf8");
   const inputsModule = createBundleInputsModule(options);
 
@@ -73,6 +114,12 @@ export async function createServerBundleModuleSource(options: ServerBundleModule
       write: false,
       metafile: true,
       logLevel: "silent",
+      // esbuild labels every inlined module with its path relative to the working directory. Pinned
+      // to the package root so those labels read `dist/templates/…` instead of wherever the CLI
+      // happens to have been invoked from: otherwise the person's absolute filesystem path is
+      // written into the Capsule bundle that ships, and the same inputs build differently on two
+      // machines. The emitted-list bundle has neither problem, and neither should this one.
+      absWorkingDir: packageRoot,
       stdin: {
         contents: options.epilogue ? `${entrySource}\n${options.epilogue}\n` : entrySource,
         sourcefile: entryPath,
