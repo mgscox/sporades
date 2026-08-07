@@ -139,33 +139,53 @@ and one of them is on this path:
   off this path — inspection goes through `prepare`, not `exec` — and is latent
   duplication of the same class, with its own ticket.
 
-A census test enumerates the emitted runtime functions that name comment or quote
-delimiters *in the spellings this runtime uses*, and requires each to be either
-the one tokenizer or a listed exception carrying its reason. It is coupled to the
-delimiter *alphabet* rather than to source spellings of a comparison: the first
-version grepped for four idioms unique to the collapsed body, and a walker written
-the way the pre-collapse ones were written — `char === "-" && next === "-"`, a
-line comment ending at LF — passed all four.
+A census test is the tripwire for a third. It flags an emitted runtime function
+when its source shows any one of four things: a two-character comment delimiter
+(`--`, `/*`, `*/`) in a short string literal; one of those inside a regex or
+template literal body; a `-`, or both `*` and `/`, in short string literals; or
+two or more of `'`, `"`, backtick, `[`, `$` in short string literals. Every
+flagged function must be either the one tokenizer or a listed exception carrying
+its reason, and the detected set must *equal* the census — so a new match has to
+be classified, and a row that stops matching fails too rather than going stale.
 
-**What that census does not cover is worth stating, because two earlier drafts of
-this paragraph claimed a completeness that execution falsifies.** It reads short
-string literals, regex literal bodies and template literal bodies. It does not see
-a walker that assembles its delimiters at runtime or compares `charCodeAt` values;
-both were planted and confirmed missed. So the claim is "no second walker spelling
-its delimiters the way this runtime spells them", not "no second walker" — every
-source-text guard is evadable, and the useful thing is knowing which evasions.
+A function whose source shows none of the four is not flagged. Some examples, each
+planted and confirmed missed rather than reasoned about: one assembling its
+delimiters with `String.fromCharCode(45) + String.fromCharCode(45)`; one comparing
+`charCodeAt` values against 45 and 47; one whose only quoting alphabet lives in a
+regex body the way this file writes `/^['"`[]/`. Reading quote characters out of
+pattern bodies would catch that third one and was measured: it flags 87 runtime
+functions, which is not a census. **This is a tripwire for the likely spellings,
+not a proof that one tokenizer exists.** A future evasion is another example for
+that list.
 
-Five planted walkers are what it was tuned against: the historical style above, a
-comment-only one, a quoting-only one, a regex-literal one and a computed one. The
-regex-literal plant is why pattern bodies are read at all. It was missed by the
-first two versions, and it is the *likeliest* spelling here rather than an exotic
-one — `skipSqlQuotedOrCommented` writes its own terminator rules as
-`/[\n\r]/ : /\n/` and `/^\$(?:…)\$/`, so a second lexer in this file would most
-naturally be written in the idiom the guard could not see. Reading pattern bodies
-costs four census rows that hold a `--` which is not a SQL comment delimiter: two
-sets of CLI hint strings, MIME multipart boundaries, and the
-`-----BEGIN … PRIVATE KEY-----` header. Each was read to confirm it rather than
-assumed from the name.
+Saying that plainly took three attempts, and the failure is the transferable part.
+Each earlier version wrote a *universal negative* — "enumerates every", "mentions
+delimiters at all", "spelling them the way this runtime spells them" — and each
+was refuted by one more plant style. A universal negative about a source-text
+detector is unprovable and permanently falsifiable; describing the mechanism and
+listing known misses is neither.
+
+Seven plants tuned it. Two are worth recording because each cost a signal. The
+regex-literal plant is why pattern bodies are read at all: it is the *likeliest*
+spelling here rather than an exotic one, because `skipSqlQuotedOrCommented` writes
+its own terminator rules as `/[\n\r]/ : /\n/` and `/^\$(?:…)\$/`. And a plant whose
+delimiter comparisons were copied character-for-character out of this file —
+`sql[index] === "-" && sql[index + 1] === "-"`, a line comment ending at LF, the
+quote set taken as a parameter rather than named — is why a single comment
+character now stands alone as a signal, where it previously needed a quote
+delimiter beside it.
+
+Those two signals cost six census rows holding a `-`, or a `*` and a `/`, that is
+not a SQL comment delimiter: two sets of CLI hint strings, MIME multipart
+boundaries, the `-----BEGIN … PRIVATE KEY-----` header, a hostname label rule, and
+cron step syntax. Each was read to confirm it rather than assumed from the name.
+
+The nesting oracle is in the census on its own code — it closes a block comment
+with `sql[cursor] === "*" && sql[cursor + 1] === "/"` — and a test asserts that,
+because it was previously matched only on the `--x<CR>` examples in its prose.
+Rewording a comment would have dropped out the one entry whose disagreement with
+the tokenizer is deliberate, and the obvious response to that failure would have
+been to delete the row.
 
 Union, not refuse-on-disagreement, and the difference is worth holding onto: the
 other walks answer *which statement is this*, where two readings disagreeing means

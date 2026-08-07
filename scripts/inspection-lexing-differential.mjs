@@ -83,6 +83,13 @@ build(QUOTING_PIECES, Math.max(1, MAX_DEPTH - 1), SURROUNDED);
 
 // Adequacy, before any result is believed. Each entry is a shape this gate has actually shipped a
 // defect in, or a form the collapse touched.
+//
+// These pin *shapes*, not alphabets, and the difference is a real limit on them. Several shapes are
+// supplied by the templates above rather than by the piece alphabets, so removing `\r` from
+// `COMMENT_PIECES`, or `[` and `]` from `QUOTING_PIECES`, still reports all classes emitted while
+// the corpus has become materially weaker. What they do catch is a depth too small to compose a
+// shape — which is how three rounds of this work reported clean for the wrong reason. Widening an
+// alphabet is not protected by them; check it by hand.
 const MUST_EMIT = [
   ["a nesting block comment", (sql) => sql.startsWith("/*/* SELECT 1 */*/")],
   ["a `/*/` straddle", (sql) => sql.startsWith("/*/*/ SELECT 1 */*/")],
