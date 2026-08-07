@@ -1391,6 +1391,38 @@ process.exit(0);
 `;
 }
 
+// Boot one probe bundle and insist it exited cleanly.
+//
+// The retry is for `spawnSync` failing to *start* a process — `result.error` set and `result.status`
+// null, which is what an `EAGAIN` under a loaded suite looks like — and for nothing else. A bundle
+// that started and exited non-zero is a real answer and is never retried, because retrying a real
+// failure is how a flake becomes a silence. Both branches report the whole outcome: an earlier
+// version printed only `stderr`, which is `null` in exactly the case that needed explaining.
+function runInspectionProbe(label, dir, bundlePath, attempt = 1) {
+  const result = spawnSync(process.execPath, [bundlePath], {
+    cwd: dir,
+    // `PORT=0` so the kernel picks the port. Nothing here connects to these bundles — the probe
+    // writes its report and exits — so a port is only something to fail on.
+    env: { ...process.env, PORT: "0" },
+    encoding: "utf8",
+  });
+  if (result.error && attempt < 3) {
+    return runInspectionProbe(label, dir, bundlePath, attempt + 1);
+  }
+  assert.equal(
+    result.status,
+    0,
+    [
+      `${label} inspection probe did not exit cleanly on attempt ${attempt}`,
+      `  status: ${result.status}`,
+      `  signal: ${result.signal}`,
+      `  spawn error: ${result.error ? `${result.error.code ?? ""} ${result.error.message}` : "none"}`,
+      `  stdout: ${String(result.stdout ?? "").slice(-2000)}`,
+      `  stderr: ${String(result.stderr ?? "").slice(-2000)}`,
+    ].join("\n"),
+  );
+}
+
 test("both bundles answer the whole read-only inspection surface identically", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-inspection-"));
   try {
@@ -1418,13 +1450,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
       await mkdir(dir, { recursive: true });
       const bundlePath = path.join(dir, "server.mjs");
       await writeFile(bundlePath, source);
-      const port = await reserveFreePort();
-      const result = spawnSync(process.execPath, [bundlePath], {
-        cwd: dir,
-        env: { ...process.env, PORT: String(port) },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, `${label} inspection probe failed: ${result.stderr}`);
+      runInspectionProbe(label, dir, bundlePath);
     }
 
     const emittedReport = JSON.parse(await readFile(reportPath("emitted"), "utf8"));

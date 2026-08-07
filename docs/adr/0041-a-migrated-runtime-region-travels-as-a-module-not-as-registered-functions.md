@@ -83,6 +83,16 @@ entry, and the walk to the package root that ADR-0040 explains is now shared
 thrown build error naming the missing path, not a Capsule that starts and then
 misbehaves; `dist/` is in `package.json`'s `files` and is committed.
 
+**The emitted-list builder now spawns esbuild.** `transformSync` runs the esbuild
+binary out of process. Measured rather than assumed: 52 ms on the first call in a
+process and 1.3 ms on every call after it, because esbuild's synchronous API reuses
+the process it started. That buys keeping `createServerBundleSource` synchronous,
+which every caller and three test files expect. The alternative — making it
+`async` and using the esbuild service the bundle pipeline has already started for
+the Capsule module — is better on both counts and was not taken here, because
+changing the shipping builder's signature is a wider change than this batch should
+make and the whole carrier disappears when the emitted list does.
+
 **The bundle's self-containment is unchanged.** `transformSync` resolves nothing:
 it is a format conversion of one already-compiled file, and the module imports
 nothing. The output is still a program whose only external imports are Node
