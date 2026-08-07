@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import ts from "typescript";
 
 import {
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
@@ -26,6 +29,59 @@ import {
   withSqliteAdapter,
 } from "./support/database-adapter-engines.js";
 import { databaseAdapterMethodNames, overriddenDatabaseAdapterMethodNames } from "./support/database-adapter-method-coverage.js";
+
+// ---------------------------------------------------------------------------------------------
+// What the walker guards below read.
+//
+// They used to read `SERVER_RUNTIME_SOURCE_FUNCTIONS` alone, because that list was both how the
+// generated Capsule bundle was assembled and where every SQL walker in the runtime lived. The
+// read-only inspection gate is a module now (ADR-0041) and reaches both bundles whole rather than
+// one registered function at a time, so none of its functions is in that list any more — and a
+// guard that kept reading only the list would have gone quiet about the one tokenizer while
+// reporting success.
+//
+// So the subject set is the union: the emitted list, plus every function `inspection-sql` declares.
+// Those are read out of the module's compiled *source text* rather than out of its exports, and that
+// is the load-bearing half. A module's whole point here is that a helper needs no registration to
+// survive, so the census has to be able to see a helper that is exported from nothing —
+// `nestingBlockCommentEnd` is exactly that, and it is in the census below. Reading exports would
+// have made privacy a way to leave the census, which is the opposite of what this guard is for.
+//
+// `getStart` skips leading trivia, so a function's text here begins at its `function` keyword —
+// the same text `Function.prototype.toString()` gives for the entries that come from the list, and
+// notably not including the prose above it. Comments *inside* a body are included by both.
+function inspectionSqlDeclaredFunctions() {
+  const path = new URL("../dist/inspection-sql.js", import.meta.url);
+  const source = readFileSync(path, "utf8");
+  const parsed = ts.createSourceFile("inspection-sql.js", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const declared = parsed.statements
+    .filter((node) => ts.isFunctionDeclaration(node) && node.name)
+    .map((node) => ({ name: node.name.text, source: source.slice(node.getStart(parsed), node.getEnd()) }));
+  // Guard the measurement before trusting it. A parse that had silently produced nothing — a moved
+  // file, a changed compiler target, a module that stopped being top-level functions — would make
+  // every guard below pass by having no subjects, which is indistinguishable from a clean census.
+  assert.ok(
+    declared.length > 15,
+    `expected the inspection module's functions, saw ${declared.length} — the walker guards would be reading nothing`,
+  );
+  assert.ok(
+    declared.some(({ name }) => name === "skipSqlQuotedOrCommented"),
+    "the one tokenizer is not among the functions read out of dist/inspection-sql.js",
+  );
+  return declared;
+}
+
+// Every function the walker guards below consider, as `{ name, source }`.
+function walkerGuardSubjects() {
+  return [
+    ...SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => ({ name: fn.name, source: fn.toString() })),
+    ...inspectionSqlDeclaredFunctions(),
+  ];
+}
+
+function walkerGuardSubject(name) {
+  return walkerGuardSubjects().find((entry) => entry.name === name);
+}
 
 // The engine seam, asserted as a property rather than counted once in a commit message (ADR-0037).
 //
@@ -718,10 +774,10 @@ test("the dialect the keyword scan asks for withholds the two string forms only 
 
   // The scan is the consumer that has to ask for it, and the call site has to say so. A profile
   // nothing asks for protects nothing.
-  const keywordScan = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "readSqlTokens");
+  const keywordScan = walkerGuardSubject("readSqlTokens");
   assert.ok(keywordScan, "the keyword scan no longer travels into the bundle");
   assert.match(
-    keywordScan.toString(),
+    keywordScan.source,
     /sqlDialectWithoutPostgresStringForms/,
     "the keyword scan stopped naming the dialect it walks with, so a reader has to infer it again",
   );
@@ -823,12 +879,23 @@ const RUN_LEXER_CENSUS = {
   findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
   splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
-  // The nesting oracle. It lexes no quoted run — it counts block-comment depth and compares the end
-  // against the one tokenizer's — and it is *required* to disagree with it, which is the opposite of
-  // the property this census enforces. It is matched on its own code, `sql[cursor] === "*" &&
-  // sql[cursor + 1] === "/"`, which is asserted below: it used to be matched only on the `--x<CR>`
-  // examples in its prose, and a reworded comment would have dropped it out of the census silently.
+  // The nesting oracle, in two parts since the counter was extracted into a helper. Neither lexes a
+  // quoted run — together they count block-comment depth and compare the end against the one
+  // tokenizer's — and both are *required* to disagree with it, which is the opposite of the property
+  // this census enforces.
+  //
+  // The oracle is matched on its own code, `sql[index] === "/" && sql[index + 1] === "*"`, which is
+  // asserted below: it used to be matched only on the `--x<CR>` examples in its prose, and a reworded
+  // comment would have dropped it out of the census silently. That test is why the block-comment
+  // check stayed at the call site when the counter moved out, rather than going with it.
   sqlTheEnginesLexDifferently: "the nesting oracle, required to disagree with the one tokenizer",
+  // The counter itself, and the reason this census reads source text rather than a list. It is a
+  // private helper of `inspection-sql`: exported from nothing, registered in nothing, and reaching
+  // both generated bundles anyway because that module travels whole (ADR-0041). Under the emitted-list
+  // mechanism it could not have existed as a function at all — its caller travels as source text, so
+  // an unregistered helper was a `ReferenceError` in a deployed Capsule. Being here is the evidence
+  // that privacy is not a way out of this guard.
+  nestingBlockCommentEnd: "the nesting oracle's counter, required to disagree with the one tokenizer",
   // The rest hold a `-`, or a `*` and a `/`, that is not a SQL comment delimiter. Each was read to
   // confirm it rather than assumed from the name.
   beginOAuthSignIn: "not a lexer: `--client-id`, `--client-secret`, `--client-json` in CLI hint strings",
@@ -840,8 +907,9 @@ const RUN_LEXER_CENSUS = {
 };
 
 test("no second function decides where a SQL comment or quoted run ends", () => {
-  const detected = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => namesRunDelimiters(fn.toString()))
-    .map((fn) => fn.name)
+  const detected = walkerGuardSubjects()
+    .filter(({ source }) => namesRunDelimiters(source))
+    .map(({ name }) => name)
     .sort();
 
   assert.deepEqual(
@@ -900,24 +968,34 @@ test("no second function decides where a SQL comment or quoted run ends", () => 
   // readings close in different places. Being listed is not enough for it, because the census only
   // asserts the *names* — so the property that makes it an oracle rather than a sixth walker is
   // asserted here.
-  const oracle = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "sqlTheEnginesLexDifferently");
+  const oracle = walkerGuardSubject("sqlTheEnginesLexDifferently");
   assert.ok(oracle, "the nesting oracle no longer travels into the bundle");
-  assert.match(oracle.toString(), /skipSqlQuotedOrCommented/, "the oracle stopped comparing against the one tokenizer");
+  assert.match(oracle.source, /skipSqlQuotedOrCommented/, "the oracle stopped comparing against the one tokenizer");
 
-  // And it is in the census on its code rather than on its prose. It used to be matched only on the
-  // `--x<CR>` examples in its comments, which meant rewording a comment would have dropped the one
-  // entry whose disagreement with the tokenizer is deliberate — and the obvious response to a census
-  // failure naming it would have been to delete the row.
-  const withoutComments = oracle
-    .toString()
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("//"))
-    .join("\n");
-  assert.equal(
-    namesRunDelimiters(withoutComments),
-    true,
-    "the nesting oracle is in the census only because of its prose — reword a comment and it drops out silently",
-  );
+  // The counter is a separate function now, so the oracle's comparison against it is asserted too.
+  // Extracting it was only possible because the gate is a module: the counter is exported from
+  // nothing and registered in nothing.
+  const counter = walkerGuardSubject("nestingBlockCommentEnd");
+  assert.ok(counter, "the nesting oracle's counter no longer travels into the bundle");
+  assert.match(oracle.source, /nestingBlockCommentEnd/, "the oracle stopped comparing against a nesting reading");
+
+  // And both are in the census on their code rather than on their prose. The oracle used to be
+  // matched only on the `--x<CR>` examples in its comments, which meant rewording a comment would
+  // have dropped the one entry whose disagreement with the tokenizer is deliberate — and the obvious
+  // response to a census failure naming it would have been to delete the row. The counter carries the
+  // `*/` comparison and the oracle kept the `/*` one for exactly this reason.
+  const withoutComments = (source) =>
+    source
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+  for (const { name, source } of [oracle, counter]) {
+    assert.equal(
+      namesRunDelimiters(withoutComments(source)),
+      true,
+      `${name} is in the census only because of its prose — reword a comment and it drops out silently`,
+    );
+  }
 });
 
 // The spelling checks the first version of this guard consisted of, kept as a second and weaker
@@ -931,8 +1009,9 @@ test("no terminator rule of the one tokenizer is spelled twice", () => {
     ["a bracket-quoted identifier's close", /=== "\[" \? "\]"/],
   ];
 
+  const subjects = walkerGuardSubjects();
   for (const [fact, pattern] of facts) {
-    const encoders = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => pattern.test(fn.toString())).map((fn) => fn.name);
+    const encoders = subjects.filter(({ source }) => pattern.test(source)).map(({ name }) => name);
     assert.deepEqual(
       encoders,
       ["skipSqlQuotedOrCommented"],
@@ -942,14 +1021,16 @@ test("no terminator rule of the one tokenizer is spelled twice", () => {
 
   // The two functions the class came from are gone rather than left as aliases beside the
   // tokenizer, and nothing still calls them.
-  const allSource = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => `${fn.name}\n${fn.toString()}`).join("\n");
+  const allSource = subjects.map(({ name, source }) => `${name}\n${source}`).join("\n");
   for (const gone of ["skipSqlStringOrComment", "skipSqlLiteralOrComment"]) {
     assert.equal(allSource.includes(gone), false, `${gone} still exists, so the pair was not collapsed`);
   }
 
   // Every consumer reaches the one tokenizer. Named individually rather than derived, because this
   // is the list the ticket asked to be established: two skippers, a trivia skipper and two token
-  // readers, plus the walks each of them serves.
+  // readers, plus the walks each of them serves. `opensQuotedRun` joined it when the two copies of
+  // the literal-or-comment test were factored into it — a private helper of the inspection module,
+  // which is the extraction the emitted-list mechanism used to forbid.
   for (const consumer of [
     "hasMultipleSqlStatements",
     "isSafeInspectionPragma",
@@ -959,11 +1040,26 @@ test("no terminator rule of the one tokenizer is spelled twice", () => {
     "readSqlTokens",
     "readSqlQuotedIdentifier",
     "skipSqlTrivia",
+    "opensQuotedRun",
   ]) {
-    const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((each) => each.name === consumer);
+    const fn = subjects.find((each) => each.name === consumer);
     assert.ok(fn, `${consumer} no longer travels into the bundle`);
-    assert.match(fn.toString(), /skipSqlQuotedOrCommented/, `${consumer} does not reach the one tokenizer`);
+    assert.match(fn.source, /skipSqlQuotedOrCommented/, `${consumer} does not reach the one tokenizer`);
   }
+
+  // And the literal-or-comment test is asked in one place now rather than two. `sqlContentFingerprint`
+  // and `sqlWithoutTrailingTerminator` each spelled `skipSqlQuotedOrCommented(…, quotedRunsOnly)` out
+  // in full — two copies of a rule about where a literal ends, one of them on the write path, which
+  // is the shape ADR-0038's defect history is made of.
+  const asksForQuotedRunsOnly = subjects
+    .filter(({ name, source }) => name !== "sqlDialectQuotedRunsOnly" && /sqlDialectQuotedRunsOnly\(\)/.test(source))
+    .map(({ name }) => name)
+    .sort();
+  assert.deepEqual(
+    asksForQuotedRunsOnly,
+    ["opensQuotedRun"],
+    `the literal-or-comment test is spelled in ${asksForQuotedRunsOnly.length} places rather than one: ${asksForQuotedRunsOnly.join(", ")}`,
+  );
 });
 
 // The refusal is of the disputed shape, not of block comments. A comment both lexings close in the

@@ -113,9 +113,22 @@ the one tokenizer too — a fix that had left any of them in place would not hav
 removed the class.
 
 The bundling constraint is what shaped the answer rather than something worked
-around: a runtime function reaches the generated Capsule bundle as its own source
-text, so it cannot close over a module constant, and the profiles are functions
+around: a runtime function reached the generated Capsule bundle as its own source
+text, so it could not close over a module constant, and the profiles are functions
 emitted alongside it rather than constants it would have to restate.
+
+**That constraint no longer binds this region, and saying so is part of the
+record.** The gate is a module now — `src/inspection-sql.ts` — and both bundlers
+carry it whole rather than one registered function at a time, so a helper here
+needs no registration to survive into a deployed Capsule and a module constant
+travels as ordinary lexical scope. ADR-0041 records the mechanism. What that
+changes about this document is narrow and worth being exact about: the *reasons*
+below are unchanged, every rule still holds, and the collapse to one tokenizer was
+correct design independent of bundling. What changes is that the duplication this
+document is a history of is no longer the price of shipping. Two helpers have since
+been extracted on those terms — `nestingBlockCommentEnd`, the nesting counter this
+document describes at length, and `opensQuotedRun`, which was the same two lines
+written out in two walks — and neither is exported or listed anywhere.
 
 **"One tokenizer" is a claim about that region and not about the runtime, and the
 difference matters enough to spell out, because the first draft of this section
@@ -139,7 +152,12 @@ and one of them is on this path:
   off this path — inspection goes through `prepare`, not `exec` — and is latent
   duplication of the same class, with its own ticket.
 
-A census test is the tripwire for a third. It flags an emitted runtime function
+A census test is the tripwire for a third. Its subjects are every function in the
+emitted list *and* every function `inspection-sql` declares, the private ones
+included, parsed out of that module's compiled source text rather than read off its
+exports. Reading exports would have been easier and would have made privacy a way
+to leave the census at the moment privacy became possible; `nestingBlockCommentEnd`
+is exported from nothing and is a census entry. It flags a function
 when its source shows any one of four things: a two-character comment delimiter
 (`--`, `/*`, `*/`) in a short string literal; one of those inside a regex or
 template literal body; a `-`, or both `*` and `/`, in short string literals; or
@@ -147,6 +165,10 @@ two or more of `'`, `"`, backtick, `[`, `$` in short string literals. Every
 flagged function must be either the one tokenizer or a listed exception carrying
 its reason, and the detected set must *equal* the census — so a new match has to
 be classified, and a row that stops matching fails too rather than going stale.
+
+That the module is not a hiding place was measured rather than argued: a private
+walker planted in `inspection-sql`, spelled the way the pre-collapse ones were
+spelled and exported from nothing, fails the census by name.
 
 A function whose source shows none of the four is not flagged. Some examples, each
 planted and confirmed missed rather than reasoned about: one assembling its
@@ -180,12 +202,19 @@ not a SQL comment delimiter: two sets of CLI hint strings, MIME multipart
 boundaries, the `-----BEGIN … PRIVATE KEY-----` header, a hostname label rule, and
 cron step syntax. Each was read to confirm it rather than assumed from the name.
 
-The nesting oracle is in the census on its own code — it closes a block comment
-with `sql[cursor] === "*" && sql[cursor + 1] === "/"` — and a test asserts that,
+The nesting oracle is in the census on its own code, and a test asserts that,
 because it was previously matched only on the `--x<CR>` examples in its prose.
 Rewording a comment would have dropped out the one entry whose disagreement with
 the tokenizer is deliberate, and the obvious response to that failure would have
 been to delete the row.
+
+It is two entries now: `nestingBlockCommentEnd` closes a block comment with
+`sql[cursor] === "*" && sql[cursor + 1] === "/"` and `sqlTheEnginesLexDifferently`
+opens the question with `sql[index] === "/" && sql[index + 1] === "*"`. The
+counter was extracted into a helper once that became possible, and the opening
+test deliberately did *not* go with it — it is what keeps the oracle matched on
+its own code rather than on its prose, and moving both would have dropped the
+oracle out of the census while looking like tidying.
 
 Union, not refuse-on-disagreement, and the difference is worth holding onto: the
 other walks answer *which statement is this*, where two readings disagreeing means

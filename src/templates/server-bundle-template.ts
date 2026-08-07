@@ -1,3 +1,10 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+import { transformSync } from "esbuild";
+
+import * as inspectionSql from "../inspection-sql.js";
+import { resolveSporadesPackageRoot } from "../package-root.js";
 import {
   ACL_HELPER_STATE,
   EMAIL_SIGN_IN_FAILURE_LIMIT,
@@ -16,10 +23,7 @@ import {
   PRIVILEGED_AUDIT_SCHEMA,
   PRIVILEGED_AUTH_USER_ID,
   RESERVED_JOB_NAME_PREFIX,
-  SAFE_INSPECTION_PRAGMAS,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
-  SIDE_EFFECT_SQL_FUNCTIONS,
-  SIDE_EFFECT_SQL_KEYWORDS,
 } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 
@@ -33,6 +37,63 @@ function serializeRuntimeConstant(value: unknown): string {
   if (typeof value === "symbol") return `Symbol(${JSON.stringify(value.description)})`;
   if (value instanceof Set) return `new Set(${JSON.stringify([...value])})`;
   return JSON.stringify(value);
+}
+
+const INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
+
+// The read-only inspection validator and its tokenizer, carried into the bundle as `inspection-sql`'s
+// own compiled text rather than as `fn.toString()` over a list of its functions.
+//
+// **Why this one region is carried differently.** A stringified function reaches the bundle without
+// anything it closes over, so under the emitted-list mechanism a helper had to be registered in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS` to survive — and the inspection gate paid for that in five
+// duplicated copies of one set of comment and quoting rules, four independent reviews and five
+// rounds of fixes (ADR-0038). Carrying the module whole removes the registration step for that
+// region: a private helper travels because it is in the file, not because someone remembered it.
+// ADR-0041 records the decision. Nothing else has moved; every other runtime function still travels
+// through the list.
+//
+// The module is compiled to an IIFE by esbuild rather than concatenated with its `export` keywords
+// stripped, and the difference is not cosmetic. Concatenation would put every one of this module's
+// private helpers at the bundle's top level beside 500-odd runtime functions, where a name collision
+// is a silently shadowed function declaration rather than an error. Inside the IIFE the private names
+// are unreachable from the rest of the bundle, which is what "private" has to mean here too.
+//
+// `transformSync`, not `build`: this is a format conversion of one already-compiled file, so nothing
+// is resolved and nothing is read except the file named below. `createServerBundleSource` is
+// synchronous and every caller expects it to stay that way.
+function inspectionSqlModuleSource() {
+  const modulePath = path.join(resolveSporadesPackageRoot(), "dist", "inspection-sql.js");
+  let compiled: string;
+  try {
+    compiled = readFileSync(modulePath, "utf8");
+  } catch (error: any) {
+    throw Object.assign(new Error(`Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`), {
+      hint: "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.",
+    });
+  }
+
+  // The names the rest of the bundle resolves against, derived from the module's own exports rather
+  // than written out here. Two hand-kept lists agreeing with each other is what the constant preamble
+  // used to be before it was serialized from the runtime source, and the failure mode is the same: a
+  // name spelled wrong here would declare a binding that is simply `undefined` at runtime, which the
+  // free-binding guard resolves exactly as cleanly as a correct one. Derived, a name that is not
+  // exported is not declared at all, so the guard sees the consumer's reference as unresolved and
+  // fails the build.
+  //
+  // The names come from the loaded module and the text comes from the file, which are the same build
+  // in every layout that ships: `npm run build` writes `dist/` before `bin/`, `check-generated-bin`
+  // refuses a `bin/` older than its sources, and a published package carries both from one build. A
+  // tree where they disagreed would be one where `dist/` is stale, which breaks far more than this.
+  const exported = Object.keys(inspectionSql).sort();
+  const { code } = transformSync(compiled, {
+    loader: "js",
+    format: "iife",
+    globalName: INSPECTION_SQL_NAMESPACE,
+    platform: "node",
+    target: "node22",
+  });
+  return `${code}\nconst { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
 }
 
 export function createServerBundleSource({
@@ -56,17 +117,14 @@ export function createServerBundleSource({
     normalizePublicTreePath.toString(),
     publicTreePathFromRequest.toString(),
   ].join("\n\n");
-  // The read-only inspection gate's keyword tables. A runtime function reaches the bundle as its
-  // own source text and a module-level binding it closes over does not follow, so these are
-  // written out here — serialized from the real Sets rather than restated, which is the same thing
-  // `PUBLIC_TREE_LIMITS` above does and leaves nothing that can drift from the runtime source.
-  const readOnlyInspectionKeywords = ([
-    ["SAFE_INSPECTION_PRAGMAS", SAFE_INSPECTION_PRAGMAS],
-    ["SIDE_EFFECT_SQL_KEYWORDS", SIDE_EFFECT_SQL_KEYWORDS],
-    ["SIDE_EFFECT_SQL_FUNCTIONS", SIDE_EFFECT_SQL_FUNCTIONS],
-  ] as [string, Set<string>][])
-    .map(([name, values]) => `const ${name} = new Set(${JSON.stringify([...values])});`)
-    .join("\n");
+  // The read-only inspection gate's three keyword tables used to be serialized into a preamble here,
+  // because a runtime function reaches the bundle as its own source text and a module-level binding
+  // it closes over does not follow. They are declarations inside `inspectionSqlModule` now, and the
+  // gate's own functions close over them there exactly as they do in `dist/`, so serializing them
+  // again would declare each name twice. They are still reachable by name at the bundle's top level
+  // through the destructuring that module block ends with, which is what the constant probe in
+  // `test/server-bundle-module-graph.test.js` reads them through.
+  const inspectionSqlModule = inspectionSqlModuleSource();
   // The runtime's module-level constants, for the same reason as the keyword tables above: a
   // runtime function reaches the bundle as its own source text and a module-level binding it closes
   // over does not follow. Each is serialized from the runtime source's own declaration rather than
@@ -113,7 +171,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeConstants}
-${readOnlyInspectionKeywords}
+${inspectionSqlModule}
 ${runtimeFunctions}
 ${publicTreeContract}
 

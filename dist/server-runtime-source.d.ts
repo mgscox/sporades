@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PathLike, PathOrFileDescriptor } from "node:fs";
 import { Duplex } from "stream";
+export * from "./inspection-sql.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -312,62 +313,6 @@ export declare function runReadOnlyQuery(database: {
     adapter: any;
     sqlite: any;
 }, sql: any): Promise<any>;
-export declare function validateReadOnlyInspectionSql(sql: any): {
-    ok: false;
-    data: any;
-    error: {
-        message: string;
-        hint: string;
-    };
-} | {
-    ok: true;
-};
-export declare function sqlContentFingerprint(sql: string, lineCommentEndsAtCarriageReturn: boolean): string;
-export declare const SAFE_INSPECTION_PRAGMAS: Set<string>;
-export declare const SIDE_EFFECT_SQL_KEYWORDS: Set<string>;
-export declare const SIDE_EFFECT_SQL_FUNCTIONS: Set<string>;
-export declare function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn: boolean): {
-    comments: boolean;
-    lineCommentEndsAtCarriageReturn: boolean;
-    dollarQuoting: boolean;
-    escapeStrings: boolean;
-    quotes: string;
-    unterminatedQuotedRunReachesEndOfInput: boolean;
-};
-export declare function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn: boolean): {
-    comments: boolean;
-    lineCommentEndsAtCarriageReturn: boolean;
-    dollarQuoting: boolean;
-    escapeStrings: boolean;
-    quotes: string;
-    unterminatedQuotedRunReachesEndOfInput: boolean;
-};
-export declare function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn: boolean): {
-    comments: boolean;
-    lineCommentEndsAtCarriageReturn: boolean;
-    dollarQuoting: boolean;
-    escapeStrings: boolean;
-    quotes: string;
-    unterminatedQuotedRunReachesEndOfInput: boolean;
-};
-export declare function sqlDialectQuotedRunsOnly(): {
-    comments: boolean;
-    lineCommentEndsAtCarriageReturn: boolean;
-    dollarQuoting: boolean;
-    escapeStrings: boolean;
-    quotes: string;
-    unterminatedQuotedRunReachesEndOfInput: boolean;
-};
-export declare function sqlDialectQuotedIdentifiersOnly(quotes: string): {
-    comments: boolean;
-    lineCommentEndsAtCarriageReturn: boolean;
-    dollarQuoting: boolean;
-    escapeStrings: boolean;
-    quotes: string;
-    unterminatedQuotedRunReachesEndOfInput: boolean;
-};
-export declare function skipSqlQuotedOrCommented(sql: string, index: number, dialect: any): number;
-export declare function sqlWithoutTrailingTerminator(sql: any): string;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 type TrustedRefreshTransport = {
     subscribeType: "dev.refresh.subscribe";
@@ -510,5 +455,4 @@ export declare function runMutation(database: LooseRecord, auth: any, mutationNa
 export declare function inspectRuntimeJobs(adapter: LooseRecord): Promise<any>;
 /** Read the bounded operator view of every Schedule in one adapter snapshot. */
 export declare function inspectRuntimeSchedules(adapter: LooseRecord): Promise<any>;
-export {};
 //# sourceMappingURL=server-runtime-source.d.ts.map

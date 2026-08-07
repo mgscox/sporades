@@ -154,7 +154,15 @@ for (const [kind, sql, was, now] of examples) {
 
 // 2. The internal walks. A verdict can agree while one of these disagrees, because several of them
 // feed limbs that answer with the same message.
-const pick = (mod, name) => mod.SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === name);
+// The emitted list first, then the module's own exports. Both are needed because the two builds
+// being compared may sit either side of the inspection gate becoming a module: before that, every
+// walk below was an entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS`; after it, most of them are exports
+// of `inspection-sql`, re-exported from the runtime module so this comparison still reaches them.
+// Falling back rather than choosing lets one run compare a build from either side against the other,
+// which is the whole point of naming the *pre-work base* as the baseline.
+const pick = (mod, name) =>
+  mod.SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === name) ??
+  (typeof mod[name] === "function" ? mod[name] : undefined);
 const INTERNAL = [
   ["targetsInternalLogIndexTable", (fn, sql) => String(fn(sql))],
   ["containsSideEffectSqlToken", (fn, sql) => String(fn(sql))],

@@ -31,6 +31,8 @@ import path from "node:path";
 import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
+import * as inspectionSqlModule from "../dist/inspection-sql.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
@@ -1282,6 +1284,215 @@ test("every constant the preamble serializes carries the same value and the same
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The read-only inspection surface, in both bundles.
+//
+// This is the first region of the runtime to have left `server-runtime-source.ts`, and the two
+// bundles now reach it by genuinely different routes: the module-graph bundle imports
+// `inspection-sql` and lets esbuild resolve the names, while the emitted-list bundle carries that
+// module's compiled text as one block and destructures its exports at the bundle's top level
+// (ADR-0041). Everything else about this file compares *behaviour over a Capsule*; the inspection
+// gate is not reachable that way, because `sporades db query` goes through the CLI rather than
+// through HTTP or the WebSocket transport. So it is compared directly, inside each booted bundle.
+//
+// The corpus is asserted to contain every shape this gate has actually shipped a defect in before
+// any result from it is read. ADR-0038 records why: three separate rounds of this work reported
+// clean from a corpus that could not express the class it was reporting about.
+const INSPECTION_SURFACE_CORPUS = (() => {
+  const pieces = ["", " ", "\n", "\r", "--x\r", "--x\n", "/*y*/", "/*/", "*/", "$$", "'", '"', "`", "[", "]", "E'", "\\", ";", "\u00a0", "\v"];
+  const shapes = [
+    (piece) => `SELECT 1 AS s${piece}`,
+    (piece) => `SELECT 1 AS s ${piece} TRUNCATE TABLE sporades_canary`,
+    (piece) => `SELECT 1 AS s ${piece}; DROP TABLE sporades_canary`,
+    (piece) => `/*${piece}/* SELECT 1 */ ${piece}*/ TRUNCATE TABLE t`,
+    (piece) => `SELECT $$a${piece}DROP TABLE t;$$ AS s`,
+    (piece) => `SELECT 'a${piece}drop' AS s`,
+    (piece) => `SELECT "a${piece}drop" AS s`,
+    (piece) => `SELECT E'a${piece}DROP TABLE t;' AS s`,
+    (piece) => `PRAGMA table_info(t)${piece}`,
+    (piece) => `PRAGMA ${piece} journal_mode = WAL`,
+    (piece) => `WITH t AS (SELECT 1 AS s${piece}) SELECT * FROM t`,
+    (piece) => `SELECT * FROM sporades_log_events ${piece}`,
+  ];
+  const corpus = [];
+  for (const shape of shapes) for (const piece of pieces) corpus.push(shape(piece));
+  // Realistic queries, so a difference in what an operator would actually type is visible here too
+  // and not only a difference over attack shapes.
+  corpus.push(
+    "SELECT 1",
+    "SELECT * FROM posts;",
+    "select id, title from posts where id = 3",
+    "SELECT id FROM posts WHERE title = 'it''s fine'",
+    "SELECT id FROM posts -- why\r\nORDER BY id",
+    "SELECT /* why */ COUNT(*) AS n FROM users",
+    "SELECT \"group\" FROM t",
+    "PRAGMA table_list",
+    "PRAGMA main.table_info(posts)",
+    "WITH recent AS (SELECT * FROM posts LIMIT 5) SELECT * FROM recent",
+    "SELECT comment FROM posts",
+    "SELECT * FROM t WHERE s = '\u0000'",
+    "SELECT $\ud800$ AS s",
+  );
+  return corpus;
+})();
+
+for (const [shape, matches] of [
+  ["a nesting block comment", (sql) => sql.startsWith("/*/* SELECT 1 */")],
+  ["a `/*/` straddle", (sql) => sql.includes("/*/")],
+  ["a line comment closed by a bare CR", (sql) => /--[^\n]*\r/.test(sql)],
+  ["a verb wrapped in a dollar quote", (sql) => /\$\$a.*DROP/s.test(sql)],
+  ["a verb behind a CR-ended line comment inside a dollar quote", (sql) => /\$\$a--x\r/.test(sql)],
+  ["an E-string with a backslash in it", (sql) => /E'a\\/.test(sql)],
+  ["whitespace no engine has", (sql) => /[\u00a0\v]/.test(sql)],
+  ["text the wire cannot carry", (sql) => /[\u0000]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(sql)],
+  ["a safe metadata PRAGMA", (sql) => sql.startsWith("PRAGMA table_info")],
+  ["a PRAGMA assignment", (sql) => sql.includes("journal_mode = WAL")],
+  ["an unterminated quoted run", (sql) => (sql.match(/"/g) ?? []).length % 2 === 1],
+  ["a log-index table reference", (sql) => sql.includes("sporades_log_events")],
+  ["an ordinary query a person would type", (sql) => sql === "SELECT * FROM posts;"],
+]) {
+  if (!INSPECTION_SURFACE_CORPUS.some(matches)) {
+    throw new Error(`the inspection-surface corpus cannot emit ${shape} — this comparison would be clean for the wrong reason`);
+  }
+}
+
+// Identical in both bundles. Each resolves the names in its own top-level scope: the emitted-list
+// bundle's destructuring of the inspection module block, the module-graph bundle's imports.
+function inspectionSurfaceReport(outputPath) {
+  return `
+import { writeFileSync as __probeWriteFileSync } from "node:fs";
+const __probeCorpus = ${JSON.stringify(INSPECTION_SURFACE_CORPUS)};
+const __probeCall = (fn, ...args) => {
+  try { return { ok: true, value: fn(...args) }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+};
+__probeWriteFileSync(${JSON.stringify(outputPath)}, JSON.stringify(__probeCorpus.map((sql) => ({
+  sql,
+  validate: __probeCall(validateReadOnlyInspectionSql, sql),
+  strip: __probeCall(sqlWithoutTrailingTerminator, sql),
+  disagreement: __probeCall(sqlTheEnginesLexDifferently, sql),
+  fingerprintCr: __probeCall(sqlContentFingerprint, sql, true),
+  fingerprintLf: __probeCall(sqlContentFingerprint, sql, false),
+  firstToken: __probeCall(readFirstSqlToken, sql),
+  multiple: __probeCall(hasMultipleSqlStatements, sql),
+  sideEffect: __probeCall(containsSideEffectSqlToken, sql),
+  tokensCr: __probeCall(readSqlTokens, sql, true),
+  tokensLf: __probeCall(readSqlTokens, sql, false),
+  trivia: __probeCall(skipSqlTrivia, sql, 0, true),
+  quotedIdentifier: __probeCall(readSqlQuotedIdentifier, sql, 0, "'\\"\`["),
+  bareIdentifier: __probeCall(readBareSqlIdentifier, sql, 0),
+  pragma: __probeCall(isSafeInspectionPragma, sql, 6),
+  skipEveryEngine: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectEveryEngineQuotes(true)),
+  skipWithheld: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectWithoutPostgresStringForms(true)),
+})), null, 2));
+process.exit(0);
+`;
+}
+
+test("both bundles answer the whole read-only inspection surface identically", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-inspection-"));
+  try {
+    const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
+    const reportPath = (label) => path.join(root, `${label}.json`);
+    const bundles = [
+      ["emitted", createServerBundleSource(inputs) + inspectionSurfaceReport(reportPath("emitted"))],
+      [
+        "graph",
+        await createServerBundleModuleSource({
+          ...inputs,
+          // The module under test, imported by name. The emitted-list bundle reaches the same names
+          // through the destructuring its inspection module block ends with, and that difference in
+          // how the names resolve is the thing this test exists to find nothing wrong with.
+          epilogue: [
+            `import { readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens, containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma, skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes, sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "../inspection-sql.js";`,
+            inspectionSurfaceReport(reportPath("graph")),
+          ].join("\n"),
+        }),
+      ],
+    ];
+
+    for (const [label, source] of bundles) {
+      const dir = path.join(root, label);
+      await mkdir(dir, { recursive: true });
+      const bundlePath = path.join(dir, "server.mjs");
+      await writeFile(bundlePath, source);
+      const port = await reserveFreePort();
+      const result = spawnSync(process.execPath, [bundlePath], {
+        cwd: dir,
+        env: { ...process.env, PORT: String(port) },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, `${label} inspection probe failed: ${result.stderr}`);
+    }
+
+    const emittedReport = JSON.parse(await readFile(reportPath("emitted"), "utf8"));
+    const graphReport = JSON.parse(await readFile(reportPath("graph"), "utf8"));
+
+    // Guard the measurement before trusting it. Two reports of refusals-for-everything, or of a
+    // gate that answered nothing, would compare equal and prove nothing.
+    assert.equal(emittedReport.length, INSPECTION_SURFACE_CORPUS.length);
+    const admitted = emittedReport.filter((entry) => entry.validate.value?.ok === true).length;
+    const refused = emittedReport.filter((entry) => entry.validate.value?.ok === false).length;
+    assert.ok(admitted > 20, `the corpus admits ${admitted} statements — too few to be comparing an inspection gate`);
+    assert.ok(refused > 20, `the corpus refuses ${refused} statements — too few to be comparing an inspection gate`);
+    assert.ok(
+      new Set(emittedReport.map((entry) => entry.validate.value?.error?.message)).size >= 4,
+      "the corpus does not reach every refusal limb, so a limb that changed would be invisible here",
+    );
+
+    for (const [index, entry] of emittedReport.entries()) {
+      assert.deepEqual(
+        graphReport[index],
+        entry,
+        `the two bundles answer differently for ${JSON.stringify(entry.sql)}`,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the emitted-list bundle carries the inspection module's private helpers, which no list registers", () => {
+  // Criterion 2 of the ticket this landed under, asserted rather than described. A private helper of
+  // `inspection-sql` is exported from nothing and appears in no emitted list, and it still reaches
+  // the bundle that ships — because that bundle carries the module whole rather than one registered
+  // function at a time.
+  //
+  // Under the old mechanism this was impossible: a runtime function reached the bundle as its own
+  // source text, so a helper it called and nobody registered was a `ReferenceError` the first time a
+  // deployed Capsule executed that path, invisible to a green suite. Four names shipped that way.
+  const bundle = createServerBundleSource({
+    config: capsuleConfig(),
+    serverEnv: {},
+    serverSource: "",
+    serverModuleSource: "export default {};",
+  });
+
+  for (const helper of ["nestingBlockCommentEnd", "opensQuotedRun"]) {
+    assert.equal(
+      Object.keys(inspectionSqlModule).includes(helper),
+      false,
+      `${helper} is exported, so it is not the private helper this asserts`,
+    );
+    assert.equal(
+      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === helper),
+      false,
+      `${helper} is registered in the emitted list, so it is not travelling on the module's terms`,
+    );
+    assert.match(bundle, new RegExp(`function ${helper}\\(`), `${helper} did not reach the emitted-list bundle`);
+  }
+
+  // And the gate's own entry points are no longer in the emitted list either — the whole region
+  // travels as the module rather than as the twenty-three registrations it used to need.
+  for (const moved of ["validateReadOnlyInspectionSql", "skipSqlQuotedOrCommented", "sqlWithoutTrailingTerminator"]) {
+    assert.equal(
+      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),
+      false,
+      `${moved} is still registered in the emitted list as well as living in the module, which would declare it twice`,
+    );
+    assert.match(bundle, new RegExp(`function ${moved}\\(`), `${moved} did not reach the emitted-list bundle`);
   }
 });
 
