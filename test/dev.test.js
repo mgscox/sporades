@@ -1320,6 +1320,70 @@ async function withAppleHttpsTunnel(upstreamUrl, publicPort, fn) {
   }
 }
 
+// The module-graph server bundle, driven the way a released CLI drives it.
+//
+// `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` swaps in the builder added alongside the emitted-list one;
+// with the variable unset every other test in this file still exercises the shipping path, so this
+// changes nothing about what deploys.
+//
+// It runs through `bin/sporades.js` on purpose. That file is what `scripts/build-bin.mjs` produces,
+// and esbuild rewrites `import.meta.url` for the bundle's entry point only — so a module-graph
+// builder that located its entry relative to its own `import.meta.url` would resolve next to `bin/`
+// and die with ENOENT here, while passing every test that imported it from `dist/`. Calling the
+// builder directly cannot catch that; running the CLI can.
+test("sporades dev bundles and serves a Capsule built from the runtime module graph", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "graph-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "graph-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], {
+      cwd: projectDir,
+      env: { SPORADES_SERVER_BUNDLE_MODULE_GRAPH: "1" },
+    });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(started.data.event, "started");
+
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      // esbuild labels each inlined module; the emitted-list bundle opens with its own banner and
+      // has no such labels. This is the cheapest honest check that the gate actually took effect.
+      assert.match(serverBundle, /\/\/ dist\/templates\/server-bundle-entry\.js/);
+      assert.doesNotMatch(serverBundle, /^\/\/ Sporades server bundle/);
+      assert.match(serverBundle, /graph-island/);
+
+      const rootResponse = await fetch(started.data.url);
+      assert.equal(rootResponse.status, 200);
+      assert.match(await rootResponse.text(), /<script type="module" src="\/client\.js"><\/script>/);
+
+      // `sporades dev` serves from an in-process runtime, so the assertions above prove the CLI
+      // *built* the module-graph bundle, not that it runs. `sporades jobs` against a live Dev
+      // session is the CLI path that executes the built artifact: it spawns
+      // `.sporades/build/server.mjs --sporades-action jobs.inspect`. A bundle that could not boot
+      // answers nothing here.
+      const jobs = await runCli(["jobs"], { cwd: projectDir });
+      assert.equal(jobs.code, 0, jobs.stderr || jobs.stdout);
+      assert.deepEqual(JSON.parse(jobs.stdout), {
+        ok: true,
+        data: { capsule: { name: "graph-island" }, jobs: [] },
+        error: null,
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev bundles and serves a scaffolded React todo capsule", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

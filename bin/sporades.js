@@ -6,13 +6,13 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
-import path9 from "node:path";
-import { fileURLToPath } from "node:url";
+import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import path10 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat4, mkdir as mkdir3, readFile as readFile4, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
-import path4 from "node:path";
+import { lstat as lstat4, mkdir as mkdir3, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import path5 from "node:path";
 
 // src/client-toolchain.ts
 import path from "node:path";
@@ -3728,26 +3728,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path10) => {
+  const normalize = (candidate, path11) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path11} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path10).map((entry, index) => normalize(entry, `${path10}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path11).map((entry, index) => normalize(entry, `${path11}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path11} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path10, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path11, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path10}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path11}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path10} is not JSON-compatible`);
+    throw new Error(`${path11} is not JSON-compatible`);
   };
   let json;
   try {
@@ -4200,7 +4200,7 @@ function encodeMimeBase64(value) {
   return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
 }
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
-  const path10 = await import("node:path");
+  const path11 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
   const mail = createMailRuntime(mailConfig, serverEnv, {
@@ -4319,7 +4319,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path10.dirname(databasePath)
+    dataDir: path11.dirname(databasePath)
   });
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
@@ -4820,7 +4820,7 @@ async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, conf
   return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
 }
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path10 = await import("node:path");
+  const path11 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -4832,7 +4832,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path10.join(path10.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path11.join(path11.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -4848,8 +4848,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile8(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
-      const { readFile: readFile9 } = await import("node:fs/promises");
-      return await readFile9(localFileVersionPath(storagePath, fileId, version));
+      const { readFile: readFile10 } = await import("node:fs/promises");
+      return await readFile10(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm7 } = await import("node:fs/promises");
@@ -4857,9 +4857,9 @@ function createLocalFileStorageAdapter({ storagePath }) {
     },
     async checkHealth() {
       const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
-      const path10 = await import("node:path");
-      const probeDirectory = path10.join(storagePath, ".sporades-health");
-      const probeFile = path10.join(probeDirectory, `${randomUUID()}.tmp`);
+      const path11 = await import("node:path");
+      const probeDirectory = path11.join(storagePath, ".sporades-health");
+      const probeFile = path11.join(probeDirectory, `${randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
         await writeFile8(probeFile, "");
@@ -5337,24 +5337,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
     selectFileById(fileId) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
-    selectLiveFileByPath(path10) {
+    selectLiveFileByPath(path11) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).all(path10, "uploaded");
+      ).all(path11, "uploaded");
     },
-    selectActiveFileByPath(path10) {
+    selectActiveFileByPath(path11) {
       return this.prepare(
         sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
       ).all(
-        path10,
+        path11,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path10) {
+    selectPendingFileUploadByPath(path11) {
       return this.prepare(
         sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
-      ).get(path10) ?? null;
+      ).get(path11) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
@@ -5410,8 +5410,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
         }
       );
     },
-    deleteFileUploadsForPath(path10) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path10);
+    deleteFileUploadsForPath(path11) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path11);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
@@ -5824,8 +5824,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path10 = await import("node:path");
-  if (!options.readOnly) mkdirSync(path10.dirname(String(databasePath)), { recursive: true });
+  const path11 = await import("node:path");
+  if (!options.readOnly) mkdirSync(path11.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
   const adapter = {
@@ -6687,9 +6687,9 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 function createRuntimeLogSink(options) {
-  const path10 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path10.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path10.dirname(logPath), { recursive: true });
+  const path11 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path11.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path11.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     emit(input) {
@@ -8733,9 +8733,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path10, fn) {
+async function withFileUploadPathLock(path11, fn) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path10);
+  const key = String(path11);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current = new Promise((resolve) => {
@@ -8756,11 +8756,11 @@ async function withFileUploadPathLock(path10, fn) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path10 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path10.split("/").filter(Boolean)[0] ?? "default";
+  const path11 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path11.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
-  return { bucket, path: path10 };
+  return { bucket, path: path11 };
 }
 async function ensureFileBucket(database, ownerId, name, now) {
   const existing = await database.adapter.findFileBucket(ownerId, name);
@@ -8799,13 +8799,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path10;
+    let path11;
     try {
-      path10 = normalizeAbsoluteFilePath(value);
+      path11 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path10);
+    const resolved = await singleLiveFileRowByPath(database, path11);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -8816,13 +8816,13 @@ async function resolveLiveFileReference(database, ownerId, reference) {
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path10;
+    let path11;
     try {
-      path10 = normalizeAbsoluteFilePath(value);
+      path11 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path10);
+    const resolved = await singleLiveFileRowByPath(database, path11);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -8834,14 +8834,14 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
   }
   return { ok: true, row };
 }
-function singleLiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path10), (rows) => {
+function singleLiveFileRowByPath(database, path11) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path11), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path10), (rows) => {
+function singleActiveFileRowByPath(database, path11) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path11), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -9429,13 +9429,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, state, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path10;
+    let path11;
     try {
-      path10 = normalizeAbsoluteFilePath(value);
+      path11 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.adapter.selectLiveFileByPath(path10);
+    const selected2 = database.adapter.selectLiveFileByPath(path11);
     if (markAsyncAclHelperRead(state, selected2)) {
       return null;
     }
@@ -15093,12 +15093,113 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 `;
 }
 
+// src/templates/server-bundle-module-graph.ts
+import { existsSync as existsSync2 } from "node:fs";
+import { readFile as readFile3 } from "node:fs/promises";
+import { isBuiltin } from "node:module";
+import path3 from "node:path";
+import { fileURLToPath } from "node:url";
+function createBundleInputsModule(options) {
+  const capsuleModuleDataUrl = `data:text/javascript;base64,${Buffer.from(options.serverModuleSource, "utf8").toString("base64")}`;
+  return [
+    `export const sporadesConfig = ${JSON.stringify(options.config, null, 2)};`,
+    `export const sporadesServerEnv = ${JSON.stringify(options.serverEnv, null, 2)};`,
+    `export const sporadesSealedServerEnv = ${JSON.stringify(options.sealedServerEnv ?? { enabled: false }, null, 2)};`,
+    `export const sporadesServerSource = ${JSON.stringify(options.serverSource)};`,
+    `export const sporadesCapsuleModuleUrl = ${JSON.stringify(capsuleModuleDataUrl)};`
+  ].join("\n");
+}
+function bundleModuleGraphError(message, hint) {
+  return Object.assign(new Error(message), { hint });
+}
+function resolveServerBundleEntry() {
+  let directory = path3.dirname(fileURLToPath(import.meta.url));
+  for (; ; ) {
+    if (existsSync2(path3.join(directory, "package.json"))) {
+      return {
+        packageRoot: directory,
+        entryPath: path3.join(directory, "dist", "templates", "server-bundle-entry.js")
+      };
+    }
+    const parent = path3.dirname(directory);
+    if (parent === directory) {
+      throw bundleModuleGraphError(
+        "Server bundle failed: could not locate the Sporades package root.",
+        "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
+      );
+    }
+    directory = parent;
+  }
+}
+async function createServerBundleModuleSource(options) {
+  const { build } = await import("esbuild");
+  const { packageRoot, entryPath } = resolveServerBundleEntry();
+  const entrySource = await readFile3(entryPath, "utf8");
+  const inputsModule = createBundleInputsModule(options);
+  let result;
+  try {
+    result = await build({
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node22",
+      write: false,
+      metafile: true,
+      logLevel: "silent",
+      // esbuild labels every inlined module with its path relative to the working directory. Pinned
+      // to the package root so those labels read `dist/templates/…` instead of wherever the CLI
+      // happens to have been invoked from: otherwise the person's absolute filesystem path is
+      // written into the Capsule bundle that ships, and the same inputs build differently on two
+      // machines. The emitted-list bundle has neither problem, and neither should this one.
+      absWorkingDir: packageRoot,
+      stdin: {
+        contents: options.epilogue ? `${entrySource}
+${options.epilogue}
+` : entrySource,
+        sourcefile: entryPath,
+        resolveDir: path3.dirname(entryPath),
+        loader: "js"
+      },
+      plugins: [
+        {
+          name: "sporades-server-bundle-inputs",
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /^sporades:server-bundle-inputs$/ }, () => ({
+              path: "sporades:server-bundle-inputs",
+              namespace: "sporades-bundle-inputs"
+            }));
+            pluginBuild.onLoad({ filter: /.*/, namespace: "sporades-bundle-inputs" }, () => ({
+              loader: "js",
+              contents: inputsModule
+            }));
+          }
+        }
+      ]
+    });
+  } catch (error) {
+    const message = error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error);
+    throw bundleModuleGraphError(`Server bundle failed: ${message}`, "Report this: the Sporades runtime module graph did not build.");
+  }
+  const output = result.outputFiles?.[0];
+  if (!output) {
+    throw bundleModuleGraphError("Server bundle failed: esbuild returned no output.", "Report this: the Sporades runtime module graph produced no bundle.");
+  }
+  const unresolved = Object.values(result.metafile.outputs).flatMap((entry) => entry.imports).filter((entry) => entry.external && !isBuiltin(entry.path) && !entry.path.startsWith("data:")).map((entry) => entry.path);
+  if (unresolved.length > 0) {
+    throw bundleModuleGraphError(
+      `Server bundle failed: the bundle would import ${[...new Set(unresolved)].sort().join(", ")} at runtime.`,
+      "A deployed Capsule has no node_modules. Every dependency must be inlined into the bundle."
+    );
+  }
+  return output.text;
+}
+
 // src/public-tree.ts
-import { lstat as lstat3, mkdir as mkdir2, readdir, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat3, mkdir as mkdir2, readdir, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import path3 from "node:path";
+import path4 from "node:path";
 var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
 var OWNER_HEARTBEATS = /* @__PURE__ */ new Map();
 var execFileAsync = promisify(execFile);
@@ -15107,9 +15208,9 @@ var OWNER_HEARTBEAT_INTERVAL_MS = 1e4;
 var OWNER_CLOCK_SKEW_MS = 5e3;
 async function createPublicTree(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${randomBytes3(8).toString("hex")}`;
-  const treesDir = path3.join(buildDir, ".public-trees");
-  const stagingDir = path3.join(treesDir, `.staging-${nonce}`);
-  const publicDir = path3.join(treesDir, nonce);
+  const treesDir = path4.join(buildDir, ".public-trees");
+  const stagingDir = path4.join(treesDir, `.staging-${nonce}`);
+  const publicDir = path4.join(treesDir, nonce);
   const normalizedFiles = normalizePublicFiles(files);
   await mkdir2(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
@@ -15119,8 +15220,8 @@ async function createPublicTree(buildDir, files, options = {}) {
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1, fault: options.cleanupFault });
     await mkdir2(stagingDir, { recursive: false });
     for (const file of normalizedFiles) {
-      const destination = path3.join(stagingDir, ...file.path.split("/"));
-      await mkdir2(path3.dirname(destination), { recursive: true });
+      const destination = path4.join(stagingDir, ...file.path.split("/"));
+      await mkdir2(path4.dirname(destination), { recursive: true });
       await writeFile2(destination, file.contents);
     }
     await validatePublicTree(stagingDir);
@@ -15144,11 +15245,11 @@ async function createPublicTree(buildDir, files, options = {}) {
   }
 }
 async function discardPublicTree(tree) {
-  const treesDir = path3.dirname(tree.root);
+  const treesDir = path4.dirname(tree.root);
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     const activeReference = await readActivePublicTreeReference(treesDir);
-    if (activeReference === path3.basename(tree.root)) {
+    if (activeReference === path4.basename(tree.root)) {
       throw publicTreeError(
         "Active public tree cannot be discarded.",
         "Preserve the referenced candidate until the active public tree reference is repaired.",
@@ -15162,19 +15263,19 @@ async function discardPublicTree(tree) {
   }
 }
 async function releasePublicTreeLease(tree) {
-  const treesDir = path3.dirname(tree.root);
+  const treesDir = path4.dirname(tree.root);
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     await removePublicTreeLease(tree.lease);
-    await cleanupPublicTreesUnlocked(path3.dirname(treesDir), { maxCompleted: 1 });
+    await cleanupPublicTreesUnlocked(path4.dirname(treesDir), { maxCompleted: 1 });
   } finally {
     await releaseLock();
   }
 }
 async function readPublicTreeConsumer(buildDir, consumer) {
   validateConsumerName(consumer);
-  const recordPath = path3.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
-  const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch((error) => {
+  const recordPath = path4.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
+  const record = await readFile4(recordPath, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -15182,20 +15283,20 @@ async function readPublicTreeConsumer(buildDir, consumer) {
 }
 async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
-  if (path3.dirname(treeRoot) !== treesDir || !isPublicTreeName(path3.basename(treeRoot))) {
+  const treesDir = path4.join(buildDir, ".public-trees");
+  if (path4.dirname(treeRoot) !== treesDir || !isPublicTreeName(path4.basename(treeRoot))) {
     throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
   }
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const consumersDir = path3.join(treesDir, ".consumers");
+    const consumersDir = path4.join(treesDir, ".consumers");
     await mkdir2(consumersDir, { recursive: true });
-    const recordPath = path3.join(consumersDir, `${consumer}.json`);
+    const recordPath = path4.join(consumersDir, `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     await validatePublicTree(treeRoot);
     const record = {
       consumer,
-      tree: path3.basename(treeRoot),
+      tree: path4.basename(treeRoot),
       identity,
       token: randomBytes3(16).toString("hex"),
       createdAt: Date.now()
@@ -15209,11 +15310,11 @@ async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, e
 }
 async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
+  const treesDir = path4.join(buildDir, ".public-trees");
   await mkdir2(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
+    const recordPath = path4.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     if (record === null) {
       await rm2(recordPath, { recursive: true, force: true });
@@ -15222,9 +15323,9 @@ async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCur
     if (!validConsumerRecord(record, consumer)) {
       throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
     }
-    const root = path3.join(treesDir, record.tree);
+    const root = path4.join(treesDir, record.tree);
     await validatePublicTree(root);
-    await mkdir2(path3.dirname(recordPath), { recursive: true });
+    await mkdir2(path4.dirname(recordPath), { recursive: true });
     await replaceStateFile(recordPath, `${JSON.stringify(record)}
 `);
   } finally {
@@ -15233,11 +15334,11 @@ async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCur
 }
 async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
+  const treesDir = path4.join(buildDir, ".public-trees");
   await mkdir2(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
+    const recordPath = path4.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     await rm2(recordPath, { recursive: true, force: true });
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
@@ -15246,7 +15347,7 @@ async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   }
 }
 async function verifyConsumerExpectation(recordPath, consumer, expected) {
-  const raw = await readFile3(recordPath, "utf8").catch((error) => {
+  const raw = await readFile4(recordPath, "utf8").catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -15285,7 +15386,7 @@ async function validatePublicTree(root) {
         );
       }
       canonicalPaths.set(canonicalPath, relativePath);
-      const absolutePath = path3.join(directory, entry.name);
+      const absolutePath = path4.join(directory, entry.name);
       const stats = await lstat3(absolutePath);
       if (stats.isSymbolicLink()) {
         throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
@@ -15312,7 +15413,7 @@ async function validatePublicTree(root) {
     }
   }
   await visit(root);
-  const indexStats = await lstat3(path3.join(root, "index.html")).catch(() => null);
+  const indexStats = await lstat3(path4.join(root, "index.html")).catch(() => null);
   if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
@@ -15339,7 +15440,7 @@ async function validateActivePublicTreeReference(treesDir, raw) {
   if (!(typeof tree === "string" && isPublicTreeName(tree))) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
   }
-  const root = path3.join(treesDir, tree);
+  const root = path4.join(treesDir, tree);
   const stats = await lstat3(root).catch(() => null);
   if (!stats?.isDirectory() || stats.isSymbolicLink()) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
@@ -15348,12 +15449,12 @@ async function validateActivePublicTreeReference(treesDir, raw) {
   return tree;
 }
 async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
-  const treesDir = path3.join(buildDir, ".public-trees");
+  const treesDir = path4.join(buildDir, ".public-trees");
   const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
-  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path3.dirname(root) === treesDir).map((root) => path3.basename(root)));
+  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path4.dirname(root) === treesDir).map((root) => path4.basename(root)));
   const activeReference = await readActivePublicTreeReference(treesDir);
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
@@ -15362,7 +15463,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const now = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
-  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path3.join(treesDir, entry.name))).mtimeMs })));
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path4.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
   let recoverableCount = 0;
   for (const item of completed) {
@@ -15376,7 +15477,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   for (const entry of entries) {
     if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
     if (keepNames.has(entry.name)) continue;
-    const entryPath = path3.join(treesDir, entry.name);
+    const entryPath = path4.join(treesDir, entry.name);
     try {
       options.fault?.("before-remove", entryPath);
       await rm2(entryPath, { recursive: true, force: true });
@@ -15431,7 +15532,7 @@ function publicAsset(relativePath, contents) {
   };
 }
 function publicContentType(relativePath) {
-  switch (path3.extname(relativePath).toLowerCase()) {
+  switch (path4.extname(relativePath).toLowerCase()) {
     case ".html":
       return "text/html; charset=utf-8";
     case ".js":
@@ -15466,10 +15567,10 @@ function publicContentType(relativePath) {
   }
 }
 async function createPublicTreeLease(treesDir, treeName) {
-  const leasesDir = path3.join(treesDir, ".leases");
+  const leasesDir = path4.join(treesDir, ".leases");
   await mkdir2(leasesDir, { recursive: true });
   const token = randomBytes3(16).toString("hex");
-  const leasePath = path3.join(leasesDir, `${treeName}.json`);
+  const leasePath = path4.join(leasesDir, `${treeName}.json`);
   const processStart = await getProcessStartIdentity(process.pid);
   const record = {
     tree: treeName,
@@ -15487,7 +15588,7 @@ async function createPublicTreeLease(treesDir, treeName) {
 }
 async function removePublicTreeLease(lease) {
   await stopOwnerHeartbeat(lease.token);
-  const record = await readFile3(lease.path, "utf8").then(JSON.parse).catch((error) => {
+  const record = await readFile4(lease.path, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -15499,7 +15600,7 @@ async function removePublicTreeLease(lease) {
   LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
 }
 async function publicTreeLeaseStates(treesDir, now) {
-  const leasesDir = path3.join(treesDir, ".leases");
+  const leasesDir = path4.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
@@ -15508,9 +15609,9 @@ async function publicTreeLeaseStates(treesDir, now) {
   const stale = /* @__PURE__ */ new Set();
   for (const entry of entries) {
     try {
-      const lease = JSON.parse(await readFile3(path3.join(leasesDir, entry), "utf8"));
+      const lease = JSON.parse(await readFile4(path4.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
-        if (await leaseIsLive(lease, path3.join(leasesDir, entry), now)) live.add(lease.tree);
+        if (await leaseIsLive(lease, path4.join(leasesDir, entry), now)) live.add(lease.tree);
         else stale.add(lease.tree);
       } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
     } catch {
@@ -15520,16 +15621,16 @@ async function publicTreeLeaseStates(treesDir, now) {
   return { live, stale };
 }
 async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
-  const leasesDir = path3.join(treesDir, ".leases");
+  const leasesDir = path4.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
   for (const entry of entries) {
-    const leasePath = path3.join(leasesDir, entry);
+    const leasePath = path4.join(leasesDir, entry);
     let lease = null;
     try {
-      lease = JSON.parse(await readFile3(leasePath, "utf8"));
+      lease = JSON.parse(await readFile4(leasePath, "utf8"));
     } catch {
     }
     if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
@@ -15552,7 +15653,7 @@ async function leaseIsLive(lease, recordPath, now) {
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
-    return await validateActivePublicTreeReference(treesDir, await readFile3(path3.join(treesDir, "active.json"), "utf8"));
+    return await validateActivePublicTreeReference(treesDir, await readFile4(path4.join(treesDir, "active.json"), "utf8"));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw publicTreeError(
@@ -15566,11 +15667,11 @@ function isPublicTreeName(value) {
   return /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(value);
 }
 async function acquirePublicTreeLock(treesDir) {
-  const lockDir = path3.join(treesDir, ".lifecycle-lock");
+  const lockDir = path4.join(treesDir, ".lifecycle-lock");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir2(lockDir);
-      const ownerPath = path3.join(lockDir, "owner.json");
+      const ownerPath = path4.join(lockDir, "owner.json");
       const token = randomBytes3(16).toString("hex");
       const processStart = await getProcessStartIdentity(process.pid);
       const owner = {
@@ -15585,7 +15686,7 @@ async function acquirePublicTreeLock(treesDir) {
       if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
       return async () => {
         await stopOwnerHeartbeat(token);
-        const currentOwner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch((error) => {
+        const currentOwner = await readFile4(ownerPath, "utf8").then(JSON.parse).catch((error) => {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
           throw error;
         });
@@ -15597,8 +15698,8 @@ async function acquirePublicTreeLock(treesDir) {
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile3(path3.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
-      if (owner !== null && !await ownerIdentityIsLive(owner, path3.join(lockDir, "owner.json"))) {
+      const owner = await readFile4(path4.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      if (owner !== null && !await ownerIdentityIsLive(owner, path4.join(lockDir, "owner.json"))) {
         await rm2(lockDir, { recursive: true, force: true });
         continue;
       }
@@ -15631,7 +15732,7 @@ function startOwnerHeartbeat(recordPath, record) {
   let inFlight = Promise.resolve();
   const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
   const refresh = async () => {
-    const current = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const current = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(current) || current.token !== record.token) {
       stopped = true;
       clearInterval(timer);
@@ -15655,13 +15756,13 @@ function startOwnerHeartbeat(recordPath, record) {
 }
 async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {}) {
   const heartbeatPath = ownerHeartbeatPath(recordPath, token);
-  await mkdir2(path3.dirname(heartbeatPath), { recursive: true });
-  const temporaryPath = path3.join(path3.dirname(heartbeatPath), `${token}.${randomBytes3(8).toString("hex")}.tmp`);
+  await mkdir2(path4.dirname(heartbeatPath), { recursive: true });
+  const temporaryPath = path4.join(path4.dirname(heartbeatPath), `${token}.${randomBytes3(8).toString("hex")}.tmp`);
   try {
     await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
 `, { flag: "wx" });
     await options.afterTempWrite?.();
-    const currentOwner = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const currentOwner = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
       throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
     }
@@ -15671,13 +15772,13 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
   }
 }
 function ownerHeartbeatPath(recordPath, token) {
-  const ownerDir = path3.dirname(recordPath);
-  const treesDir = [".leases", ".lifecycle-lock"].includes(path3.basename(ownerDir)) ? path3.dirname(ownerDir) : ownerDir;
-  return path3.join(treesDir, ".owner-heartbeats", `${token}.json`);
+  const ownerDir = path4.dirname(recordPath);
+  const treesDir = [".leases", ".lifecycle-lock"].includes(path4.basename(ownerDir)) ? path4.dirname(ownerDir) : ownerDir;
+  return path4.join(treesDir, ".owner-heartbeats", `${token}.json`);
 }
 async function readOwnerHeartbeat(recordPath, owner) {
   try {
-    const heartbeat = JSON.parse(await readFile3(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
+    const heartbeat = JSON.parse(await readFile4(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
     if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
     return heartbeat.heartbeatAt;
   } catch (error) {
@@ -15692,17 +15793,17 @@ async function stopOwnerHeartbeat(token) {
 }
 async function removeOrphanedOwnerHeartbeats(treesDir) {
   const retained = /* @__PURE__ */ new Set();
-  const leaseFiles = await readdir(path3.join(treesDir, ".leases")).catch(() => []);
+  const leaseFiles = await readdir(path4.join(treesDir, ".leases")).catch(() => []);
   for (const entry of leaseFiles) {
-    const lease = await readFile3(path3.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    const lease = await readFile4(path4.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
     if (validLeaseRecord(lease)) retained.add(lease.token);
   }
-  const lock = await readFile3(path3.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  const lock = await readFile4(path4.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
   if (validOwnerRecord(lock)) retained.add(lock.token);
-  const heartbeatDir = path3.join(treesDir, ".owner-heartbeats");
+  const heartbeatDir = path4.join(treesDir, ".owner-heartbeats");
   const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
   for (const entry of heartbeatFiles) {
-    const entryPath = path3.join(heartbeatDir, entry);
+    const entryPath = path4.join(heartbeatDir, entry);
     if (entry.endsWith(".tmp")) {
       const age = Date.now() - await lstat3(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
       if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
@@ -15715,18 +15816,18 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   }
 }
 async function publicTreeConsumerNames(treesDir) {
-  const consumersDir = path3.join(treesDir, ".consumers");
+  const consumersDir = path4.join(treesDir, ".consumers");
   const entries = await readdir(consumersDir).catch(() => []);
   const trees = /* @__PURE__ */ new Set();
   for (const entry of entries) {
-    const recordPath = path3.join(consumersDir, entry);
+    const recordPath = path4.join(consumersDir, entry);
     const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const record = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validConsumerRecord(record, consumer)) {
       await rm2(recordPath, { recursive: true, force: true });
       continue;
     }
-    const root = path3.join(treesDir, record.tree);
+    const root = path4.join(treesDir, record.tree);
     try {
       await validatePublicTree(root);
       trees.add(record.tree);
@@ -15760,7 +15861,7 @@ async function getProcessStartIdentity(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   if (platform === "linux") {
     try {
-      const stat = await readFile3(`/proc/${pid}/stat`, "utf8");
+      const stat = await readFile4(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
       return fields[19] ? `linux:${fields[19]}` : null;
     } catch {
@@ -15803,15 +15904,15 @@ var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "goo
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
-  const buildDir = path4.join(projectDir, ".sporades", "build");
+  const buildDir = path5.join(projectDir, ".sporades", "build");
   const paths = {
-    config: path4.join(projectDir, "sporades.json"),
-    serverEntry: path4.join(projectDir, "server", "index.ts"),
-    clientEntry: path4.join(projectDir, "client", frameworkBundleConfig.entry),
-    indexHtml: path4.join(projectDir, "index.html"),
-    serverEnv: path4.join(projectDir, ".env.sporades.server"),
-    serverBundle: path4.join(buildDir, "server.mjs"),
-    clientBundle: path4.join(buildDir, "client.js")
+    config: path5.join(projectDir, "sporades.json"),
+    serverEntry: path5.join(projectDir, "server", "index.ts"),
+    clientEntry: path5.join(projectDir, "client", frameworkBundleConfig.entry),
+    indexHtml: path5.join(projectDir, "index.html"),
+    serverEnv: path5.join(projectDir, ".env.sporades.server"),
+    serverBundle: path5.join(buildDir, "server.mjs"),
+    clientBundle: path5.join(buildDir, "client.js")
   };
   const indexHtml = await readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.").catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
@@ -15853,13 +15954,16 @@ async function createBundle(projectDir, config, options = {}) {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
   });
   const clientBundle = clientOutput.legacyClientBundle;
-  const serverBundle = createServerBundleSource({
+  const serverBundleInputs = {
     config,
     serverEnv: sealedEnvelope ? {} : serverEnv,
     sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
     serverSource,
     serverModuleSource: serverCapsuleModule
-  });
+  };
+  const serverBundle = process.env.SPORADES_SERVER_BUNDLE_MODULE_GRAPH === "1" ? await createServerBundleModuleSource(serverBundleInputs).catch((error) => {
+    throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
+  }) : createServerBundleSource(serverBundleInputs);
   await mkdir3(buildDir, { recursive: true });
   const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles).catch((error) => {
     throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain);
@@ -15874,18 +15978,18 @@ async function createBundle(projectDir, config, options = {}) {
       throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework, toolchain);
     }
     let previous;
-    const activeTreePath = path4.join(buildDir, ".public-trees", "active.json");
-    const candidateTreeName = path4.basename(publicTree.root);
+    const activeTreePath = path5.join(buildDir, ".public-trees", "active.json");
+    const candidateTreeName = path5.basename(publicTree.root);
     let previousActiveTree;
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
         target: file.target,
-        contents: await readFile4(file.target).catch((error) => {
+        contents: await readFile5(file.target).catch((error) => {
           if (errorDetails2(error).code === "ENOENT") return null;
           throw error;
         })
       })));
-      previousActiveTree = await readFile4(activeTreePath).catch((error) => {
+      previousActiveTree = await readFile5(activeTreePath).catch((error) => {
         if (errorDetails2(error).code === "ENOENT") return null;
         throw error;
       });
@@ -15898,7 +16002,7 @@ async function createBundle(projectDir, config, options = {}) {
         options.activeReferenceFault?.("after-active-write");
       } catch (error) {
         const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path4.dirname(activeTreePath));
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path5.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
         await restoreLegacyBundleFiles(buildDir, previous);
         throw error;
@@ -15915,7 +16019,7 @@ async function createBundle(projectDir, config, options = {}) {
         options.activeReferenceFault?.("after-active-restore");
       } catch {
         const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path4.dirname(activeTreePath));
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path5.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
       }
       await restoreLegacyBundleFiles(buildDir, previous);
@@ -15951,8 +16055,8 @@ async function createBundle(projectDir, config, options = {}) {
     staticFiles: {
       publicTree,
       publicDir: publicTree.root,
-      indexHtml: path4.join(publicTree.root, "index.html"),
-      clientBundle: clientBundle === null ? null : path4.join(publicTree.root, "client.js")
+      indexHtml: path5.join(publicTree.root, "index.html"),
+      clientBundle: clientBundle === null ? null : path5.join(publicTree.root, "client.js")
     },
     containerMounts: {
       files: [
@@ -15975,7 +16079,7 @@ async function restoreLegacyBundleFiles(buildDir, previous) {
 }
 async function inspectActiveTreeState(filePath) {
   try {
-    return await parseActiveTreeState(await readFile4(filePath, "utf8"), path4.dirname(filePath));
+    return await parseActiveTreeState(await readFile5(filePath, "utf8"), path5.dirname(filePath));
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") return { kind: "missing" };
     return { kind: "invalid" };
@@ -16010,7 +16114,7 @@ async function replaceBundleStateFile(filePath, contents) {
 }
 async function publishLegacyBundles(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const stagingDir = path4.join(buildDir, `.legacy-staging-${nonce}`);
+  const stagingDir = path5.join(buildDir, `.legacy-staging-${nonce}`);
   const states = [];
   let preserveStaging = false;
   await mkdir3(stagingDir, { recursive: false });
@@ -16023,9 +16127,9 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
         throw commandError2("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
       }
-      const candidate = path4.join(stagingDir, `candidate-${index}`);
+      const candidate = path5.join(stagingDir, `candidate-${index}`);
       await writeFile3(candidate, file.contents);
-      states.push({ target: file.target, candidate, backup: path4.join(stagingDir, `backup-${index}`), moved: false, published: false });
+      states.push({ target: file.target, candidate, backup: path5.join(stagingDir, `backup-${index}`), moved: false, published: false });
     }
     try {
       for (const state of states) {
@@ -16056,8 +16160,8 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
         preserveStaging = true;
         throw commandError2(
           "Legacy Bundle recovery is incomplete.",
-          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path4.basename(stagingDir)}.`,
-          { failedFiles: recoveryFailures.length, recoveryDirectory: path4.basename(stagingDir) }
+          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path5.basename(stagingDir)}.`,
+          { failedFiles: recoveryFailures.length, recoveryDirectory: path5.basename(stagingDir) }
         );
       }
       throw error;
@@ -16089,7 +16193,7 @@ async function bundleServerCapsuleModule(options) {
       stdin: {
         contents: options.serverSource,
         sourcefile: options.serverSourcePath,
-        resolveDir: path4.dirname(options.serverSourcePath),
+        resolveDir: path5.dirname(options.serverSourcePath),
         loader: "ts"
       },
       plugins: [sporadesServerPlugin()]
@@ -16106,7 +16210,7 @@ async function bundleServerCapsuleModule(options) {
 }
 async function readServerEnvFile(envPath) {
   try {
-    const raw = await readFile4(envPath, "utf8");
+    const raw = await readFile5(envPath, "utf8");
     if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
       throw commandError2("Invalid server env file.", ".env.sporades.server must be 64KB or smaller.");
     }
@@ -16339,7 +16443,7 @@ function providerConfigurationHint(provider) {
 }
 async function readRequiredFile(filePath, message, hint) {
   try {
-    return await readFile4(filePath, "utf8");
+    return await readFile5(filePath, "utf8");
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       throw commandError2(message, hint);
@@ -16413,7 +16517,7 @@ function tagBuildError(error, phase, framework, toolchain) {
 // src/file-transaction.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
 import { lstat as lstat5, rename as rename4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
-import path5 from "node:path";
+import path6 from "node:path";
 var defaultExecutor = async (_operation, action) => action();
 async function replaceFilesAtomically(replacements, options = {}) {
   if (replacements.length === 0) {
@@ -16425,9 +16529,9 @@ async function replaceFilesAtomically(replacements, options = {}) {
   const entries = [];
   try {
     for (const [index, replacement] of replacements.entries()) {
-      const directory = path5.dirname(replacement.path);
-      const basename = path5.basename(replacement.path);
-      const artifactStem = path5.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
+      const directory = path6.dirname(replacement.path);
+      const basename = path6.basename(replacement.path);
+      const artifactStem = path6.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
       const entry = {
         ...replacement,
         temporaryPath: `${artifactStem}.tmp`,
@@ -16625,7 +16729,7 @@ function recoveryFailure(action, label, cause) {
 function validateDistinctTargets(replacements) {
   const identities = /* @__PURE__ */ new Set();
   for (const replacement of replacements) {
-    const identity = path5.resolve(replacement.path);
+    const identity = path6.resolve(replacement.path);
     if (identities.has(identity)) {
       throw transactionError({
         operation: {
@@ -19596,8 +19700,8 @@ function escapeHtml(value) {
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes5 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
-import path6 from "node:path";
+import { mkdir as mkdir4, readFile as readFile6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import path7 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -19609,9 +19713,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path6.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path6.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path6.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path7.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path7.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path7.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -19636,13 +19740,13 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path6.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path7.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm5(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir4(path6.dirname(composePath), { recursive: true });
+  await mkdir4(path7.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
@@ -19658,10 +19762,10 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path6.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path7.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
-    const parsed = JSON.parse(await readFile5(credentialsPath, "utf8"));
+    const parsed = JSON.parse(await readFile6(credentialsPath, "utf8"));
     if (isRecord3(parsed)) {
       existing = parsed;
     }
@@ -19674,7 +19778,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
     storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes5(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir4(path6.dirname(credentialsPath), { recursive: true });
+    await mkdir4(path7.dirname(credentialsPath), { recursive: true });
     await writeFile5(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
@@ -19722,7 +19826,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path7.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -19740,7 +19844,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path7.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -20438,9 +20542,9 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat6, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat6, readFile as readFile8, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
-import path8 from "node:path";
+import path9 from "node:path";
 
 // src/cli/cli-support.ts
 function errorDetails3(error) {
@@ -20478,8 +20582,8 @@ function writeResult(result, failed = false) {
 
 // src/cli/project-config.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile6 } from "node:fs/promises";
-import path7 from "node:path";
+import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
+import path8 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -20513,7 +20617,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "template"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path7.join(projectDir, "sporades.json");
+  const configPath = path8.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -20689,8 +20793,8 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path7.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path7.join(sshDir, "authorized_keys");
+  const sshDir = path8.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path8.join(sshDir, "authorized_keys");
   await mkdir5(sshDir, { recursive: true });
   await writeFile6(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
@@ -20757,7 +20861,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile6(filePath, "utf8");
+    return await readFile7(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -20767,7 +20871,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile6(filePath, "utf8");
+    return await readFile7(filePath, "utf8");
   } catch {
     throw commandError4(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -20779,13 +20883,13 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path7.join(home, filePath.slice(2));
+      return path8.join(home, filePath.slice(2));
     }
   }
-  if (path7.isAbsolute(filePath)) {
+  if (path8.isAbsolute(filePath)) {
     return filePath;
   }
-  return path7.join(projectDir, filePath);
+  return path8.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
@@ -21043,7 +21147,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile8(path9.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -21099,9 +21203,9 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path8.join(projectDir, "server", "index.ts");
+  const serverEntry = path9.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile7(serverEntry, "utf8");
+    const serverSource = await readFile8(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -21291,7 +21395,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile8(path9.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -21565,7 +21669,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path8.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path9.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -21578,7 +21682,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path8.join(".sporades", "dev-session.json"),
+          bindingPath: path9.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -21607,7 +21711,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path8.join(".sporades", "dev-session.json"),
+        bindingPath: path9.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -21632,7 +21736,7 @@ async function devSessionChecks(options) {
   ];
 }
 async function localContainerChecks(options) {
-  const bindingPath = path8.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path9.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -21646,7 +21750,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path8.join(".sporades", "binding.json"),
+          bindingPath: path9.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -21663,7 +21767,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path8.join(".sporades", "binding.json"),
+        bindingPath: path9.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -21778,7 +21882,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path8.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path9.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -21807,7 +21911,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path8.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path9.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
@@ -21924,16 +22028,16 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile7(composePath, "utf8");
+    raw = await readFile8(composePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") {
       throw error;
@@ -21984,7 +22088,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path8.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: volumeExists
       },
       containerName: service.name,
@@ -22083,13 +22187,13 @@ function dockerStatus(args, cwd) {
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile7(filePath, "utf8"));
+    return JSON.parse(await readFile8(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError4(`Invalid Runtime metadata: ${path8.basename(filePath)}`, `Delete or fix ${path8.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError4(`Invalid Runtime metadata: ${path9.basename(filePath)}`, `Delete or fix ${path9.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
@@ -22402,11 +22506,11 @@ var CLI_VERSION = "0.6.6";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path9.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path9.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path10.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path10.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path9.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path9.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path10.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path10.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -22418,7 +22522,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path9.resolve(path9.dirname(fileURLToPath(import.meta.url)), "..");
+var CLI_ROOT = path10.resolve(path10.dirname(fileURLToPath2(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -22642,7 +22746,7 @@ function parseCreateArgs(args) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError4(details.message, details.hint);
   }
-  const localTemplateDir = isLocalTemplateReference(template) ? path9.resolve(process.cwd(), template) : null;
+  const localTemplateDir = isLocalTemplateReference(template) ? path10.resolve(process.cwd(), template) : null;
   if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
@@ -22655,11 +22759,11 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path9.resolve(process.cwd(), name)
+    projectDir: path10.resolve(process.cwd(), name)
   };
 }
 function isLocalTemplateReference(value) {
-  return path9.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+  return path10.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 function parseDevArgs(args) {
   const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "reset"]);
@@ -23423,7 +23527,7 @@ function parseHostArgs(args) {
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  const resolvedPath = path9.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path10.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
@@ -23600,8 +23704,8 @@ async function createProject(options) {
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path9.join(options.projectDir, relativePath);
-      await mkdir6(path9.dirname(filePath), { recursive: true });
+      const filePath = path10.join(options.projectDir, relativePath);
+      await mkdir6(path10.dirname(filePath), { recursive: true });
       await writeFile7(filePath, contents);
     })
   );
@@ -23613,8 +23717,8 @@ async function createProject(options) {
   }
 }
 async function createProjectFromLocalTemplate(options) {
-  const sourceDir = path9.resolve(options.localTemplateDir);
-  const projectDir = path9.resolve(options.projectDir);
+  const sourceDir = path10.resolve(options.localTemplateDir);
+  const projectDir = path10.resolve(options.projectDir);
   let sourceStat;
   try {
     sourceStat = await lstat7(sourceDir);
@@ -23624,8 +23728,8 @@ async function createProjectFromLocalTemplate(options) {
   if (!sourceStat.isDirectory()) {
     throw commandError4(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
   }
-  const relativeDestination = path9.relative(sourceDir, projectDir);
-  if (!relativeDestination || !relativeDestination.startsWith("..") && !path9.isAbsolute(relativeDestination)) {
+  const relativeDestination = path10.relative(sourceDir, projectDir);
+  if (!relativeDestination || !relativeDestination.startsWith("..") && !path10.isAbsolute(relativeDestination)) {
     throw commandError4("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
   }
   const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
@@ -23650,7 +23754,7 @@ async function createProjectFromLocalTemplate(options) {
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile8(path9.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile9(path10.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -23663,7 +23767,7 @@ async function readLocalTemplateIgnoreRules(sourceDir) {
   });
 }
 function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
-  const relative = path9.relative(sourceDir, sourcePath).split(path9.sep).join("/");
+  const relative = path10.relative(sourceDir, sourcePath).split(path10.sep).join("/");
   if (!relative) return true;
   const first = relative.split("/")[0];
   if (first === ".git" || first === "node_modules" || first === ".sporades") return false;
@@ -23675,13 +23779,13 @@ function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
   return !ignored;
 }
 async function finalizeLocalTemplateProject(options, projectDir) {
-  const packagePath = path9.join(projectDir, "package.json");
-  const configPath = path9.join(projectDir, "sporades.json");
+  const packagePath = path10.join(projectDir, "package.json");
+  const configPath = path10.join(projectDir, "sporades.json");
   let packageJson;
   let projectConfig;
   try {
-    packageJson = JSON.parse(await readFile8(packagePath, "utf8"));
-    projectConfig = JSON.parse(await readFile8(configPath, "utf8"));
+    packageJson = JSON.parse(await readFile9(packagePath, "utf8"));
+    projectConfig = JSON.parse(await readFile9(configPath, "utf8"));
   } catch {
     throw commandError4(
       "Local template must include valid package.json and sporades.json files.",
@@ -23726,7 +23830,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path9.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path10.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -23828,11 +23932,11 @@ async function inspectDevJobs(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path10.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path10.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -23844,17 +23948,17 @@ async function inspectDevSchedules(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path10.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path10.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile8(path9.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile9(path10.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -23867,9 +23971,9 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path9.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir6(path9.dirname(filePath), { recursive: true });
-  const previous = await readFile8(filePath).catch((error) => {
+  const filePath = path10.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir6(path10.dirname(filePath), { recursive: true });
+  const previous = await readFile9(filePath).catch((error) => {
     if (errorDetails3(error).code === "ENOENT") return null;
     throw error;
   });
@@ -24007,8 +24111,8 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const sessionFilePath = path9.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path9.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path10.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path10.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
     databasePath,
     serverSource: bundle.serverRuntime.source,
@@ -24443,7 +24547,7 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm6(path9.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm6(path10.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     await runtime.shutdown();
@@ -24561,11 +24665,11 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    { path: path9.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path9.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path9.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path9.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path9.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path10.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path10.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path10.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path10.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path10.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -24664,7 +24768,7 @@ function collectPathSignature(filePath, entries) {
       return;
     }
     for (const child of children) {
-      collectPathSignature(path9.join(filePath, child), entries);
+      collectPathSignature(path10.join(filePath, child), entries);
     }
     return;
   }
@@ -24727,7 +24831,7 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath2 = path9.join(options.projectDir, ".env.sporades.server");
+      const envPath2 = path10.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
       const status2 = authStatus2(config2, serverEnv);
       if (options.json) {
@@ -24790,7 +24894,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path9.join(options.projectDir, "sporades.json");
+  const configPath = path10.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
   const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
@@ -24831,7 +24935,7 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  const envPath = path9.join(options.projectDir, ".env.sporades.server");
+  const envPath = path10.join(options.projectDir, ".env.sporades.server");
   await writeAuthConfiguration(configPath, envPath, config, envValues);
   const status = authStatus2(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
@@ -24881,7 +24985,7 @@ async function manageEnv(options) {
           }
           values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
         } else {
-          values = parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server")));
+          values = parseServerEnv(await readServerEnvFile(path10.join(options.projectDir, ".env.sporades.server")));
           keyPair = await ensureSealedServerEnvKeyPair(paths);
         }
         values[options.name] = value;
@@ -24905,7 +25009,7 @@ async function manageEnv(options) {
     case "has": {
       const envelope = await readSealedServerEnv(paths);
       const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
-        parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))),
+        parseServerEnv(await readServerEnvFile(path10.join(options.projectDir, ".env.sporades.server"))),
         options.name
       );
       if (options.json) {
@@ -24933,7 +25037,7 @@ async function manageEnv(options) {
     }
     case "import": {
       await withSealedServerEnvMutationLock(paths, async () => {
-        const envPath = path9.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        const envPath = path10.resolve(options.projectDir, options.file ?? ".env.sporades.server");
         if (options.sealed) {
           const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
           await writeSealedServerEnv(paths, envelope2);
@@ -24941,20 +25045,20 @@ async function manageEnv(options) {
             ...envelopeSummary(envelope2, paths),
             imported: true,
             sealed: true,
-            source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
+            source: normalisePathForOutput(path10.relative(options.projectDir, envPath) || envPath)
           });
           return;
         }
         const env = parseServerEnv(await readServerEnvFile(envPath));
         const keyPair = await ensureSealedServerEnvKeyPair(paths);
         const envelope = sealServerEnv(env, keyPair.publicKey, {
-          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path10.relative(options.projectDir, envPath) || envPath)
         });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath),
+          source: normalisePathForOutput(path10.relative(options.projectDir, envPath) || envPath),
           privateKeyConfigured: true
         });
       });
@@ -24966,7 +25070,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path10.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -24977,15 +25081,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path9.resolve(options.projectDir, options.output);
-        await mkdir6(path9.dirname(outputPath), { recursive: true });
+        const outputPath = path10.resolve(options.projectDir, options.output);
+        await mkdir6(path10.dirname(outputPath), { recursive: true });
         await writeFile7(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path9.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path10.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -25009,11 +25113,11 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path9.join(
+      const hostEnvelopePath = path10.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir6(path9.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await mkdir6(path10.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
       await writeFile7(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
@@ -25040,7 +25144,7 @@ function stripOneTrailingLineEnding(value) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile8(filePath, "utf8"));
+    envelope = JSON.parse(await readFile9(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(
@@ -25207,8 +25311,8 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      const bindingPath = path10.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path10.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
@@ -25240,8 +25344,8 @@ async function manageHost(options) {
         }
         throw commandError4(result.error.message, result.error.hint);
       }
-      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      const bindingPath = path10.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path10.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data = {
@@ -25704,7 +25808,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir6(path9.dirname(logPath), { recursive: true });
+  await mkdir6(path10.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -25737,25 +25841,25 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path9.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path10.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync2(path9.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path10.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path9.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path9.basename(options.projectDir)}`;
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path10.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path10.basename(options.projectDir)}`;
+  const bindingPath = path10.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
-  const previousConsumer = await readPublicTreeConsumer(path9.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path10.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const dataDir = path9.join(runtimeDir, "data");
+  const dataDir = path10.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir6(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
@@ -25769,7 +25873,7 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path9.basename(bundle.staticFiles.publicDir),
+      publicTree: path10.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
@@ -26030,7 +26134,7 @@ async function startContainerSession(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path10.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data2 = localContainerSshState({
@@ -26210,7 +26314,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path9.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path10.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -26364,8 +26468,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path9.join(options.projectDir, ".sporades", "data");
-  return path9.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path10.join(options.projectDir, ".sporades", "data");
+  return path10.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -26378,7 +26482,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path10.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -26525,7 +26629,7 @@ async function writeAuthConfiguration(configPath, envPath, config, envValues) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile8(filePath, "utf8");
+    return await readFile9(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -26535,7 +26639,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile8(bindingPath, "utf8"));
+    return JSON.parse(await readFile9(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -26551,7 +26655,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile8(path9.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile9(path10.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -26581,7 +26685,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile8(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile9(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -26598,13 +26702,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir6(path9.dirname(filePath), { recursive: true });
+  await mkdir6(path10.dirname(filePath), { recursive: true });
   await writeFile7(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path9.join(process.env.XDG_CONFIG_HOME ?? path9.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path9.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path10.join(process.env.XDG_CONFIG_HOME ?? path10.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path10.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -26730,7 +26834,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path10.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError4(
@@ -26747,7 +26851,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path10.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -26830,10 +26934,10 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path9.join(options.projectDir, ".sporades", "host-push");
+  const hostPushDir = path10.join(options.projectDir, ".sporades", "host-push");
   await mkdir6(hostPushDir, { recursive: true });
-  const localArchive = path9.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path9.join(hostPushDir, `${releaseId}-files`);
+  const localArchive = path10.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path10.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -26852,27 +26956,27 @@ async function createHostReleaseArchive(options) {
     publicFiles
   });
   await rm6(packageDir, { recursive: true, force: true });
-  await mkdir6(path9.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir6(path9.join(packageDir, ".sporades", "ssh"), { recursive: true });
-  await cp(options.bundle.staticFiles.publicDir, path9.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await mkdir6(path10.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir6(path10.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await cp(options.bundle.staticFiles.publicDir, path10.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile7(path9.join(packageDir, "server.mjs"), await readFile8(path9.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile7(path9.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile7(path10.join(packageDir, "server.mjs"), await readFile9(path10.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile7(path10.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile7(path9.join(packageDir, ".env.sporades.server"), await readFile8(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile7(path10.join(packageDir, ".env.sporades.server"), await readFile9(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile7(
-      path9.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      path10.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path9.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    const authorizedKeysPath = path10.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile7(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod2(authorizedKeysPath, 420);
@@ -26914,9 +27018,9 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir2(directory, { withFileTypes: true })) {
-    const entryPath = path9.join(directory, entry.name);
+    const entryPath = path10.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path9.relative(root, entryPath).split(path9.sep).join("/")}`);
+    else if (entry.isFile()) files.push(`public/${path10.relative(root, entryPath).split(path10.sep).join("/")}`);
     else throw commandError4("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
@@ -27207,12 +27311,12 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path9.join(path9.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
+  return path10.join(path10.dirname(fileURLToPath2(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path9.posix.dirname(remoteHelper);
+  const remoteBin = path10.posix.dirname(remoteHelper);
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
@@ -27273,9 +27377,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path9.resolve(options.projectDir, options.file);
-  const relativeFile = path9.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path9.sep}`) || path9.isAbsolute(relativeFile)) {
+  const outputPath = path10.resolve(options.projectDir, options.file);
+  const relativeFile = path10.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path10.sep}`) || path10.isAbsolute(relativeFile)) {
     throw commandError4(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -27302,7 +27406,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile8(outputPath, "utf8");
+    await readFile9(outputPath, "utf8");
     if (!options.force) {
       throw commandError4(
         "GitHub Actions workflow already exists.",
@@ -27314,7 +27418,7 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir6(path9.dirname(outputPath), { recursive: true });
+  await mkdir6(path10.dirname(outputPath), { recursive: true });
   await writeFile7(outputPath, workflow);
   return {
     ok: true,
@@ -27328,7 +27432,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path9.sep).join("/");
+  return filePath.split(path10.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -27431,7 +27535,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path9.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path10.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError4("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -27473,7 +27577,7 @@ function runDocker(args, cwd, message, hint) {
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path9.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path10.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data = {
     ...binding?.containerId ? {
       container: {
@@ -27500,7 +27604,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path10.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -27509,7 +27613,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path10.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError4(
@@ -27564,7 +27668,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 async function removeLocalContainerSession(options) {
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path10.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -27575,7 +27679,7 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path9.join(options.projectDir, ".sporades", "build");
+  const buildDir = path10.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
@@ -27586,7 +27690,7 @@ async function removeLocalContainerSession(options) {
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path9.join(buildDir, ".public-trees", currentConsumer.tree),
+      path10.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -27713,7 +27817,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path10.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -27783,7 +27887,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "starting",
       engine: service.engine,
-      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
+      statePath: path10.join(CAPSULE_SERVICES_STATE_DIR, name)
     });
   }
   try {
@@ -27834,7 +27938,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "ready",
       engine: service.engine,
-      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
+      statePath: path10.join(CAPSULE_SERVICES_STATE_DIR, name),
       host: connection.host,
       port: connection.port
     });
@@ -27896,7 +28000,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
+        statePath: path10.join(CAPSULE_SERVICES_STATE_DIR, name)
       }
     ])
   );
@@ -28141,7 +28245,7 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path9.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path10.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -28197,23 +28301,23 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path9.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir6(path9.dirname(lockDir), { recursive: true });
+  const lockDir = path10.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir6(path10.dirname(lockDir), { recursive: true });
   const token = randomBytes6(16).toString("hex");
-  const ownerPath = path9.join(lockDir, "owner.json");
+  const ownerPath = path10.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir6(lockDir);
       await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm6(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
         const age = Date.now() - await lstat7(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
@@ -28270,7 +28374,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod2(targetPath, 448);
     const entries = await readdir2(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path9.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path10.join(targetPath, entry.name));
     }
     return;
   }

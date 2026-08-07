@@ -7,6 +7,7 @@ import { buildClientToolchain, validateClientToolchainInput, type ClientToolchai
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
+import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 
@@ -111,13 +112,25 @@ export async function createBundle(
     devRefresh: options.devClientRefresh === true,
   }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
   const clientBundle = clientOutput.legacyClientBundle;
-  const serverBundle = createServerBundleSource({
+  const serverBundleInputs = {
     config,
     serverEnv: sealedEnvelope ? {} : serverEnv,
     sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
     serverSource,
     serverModuleSource: serverCapsuleModule,
-  });
+  };
+  // Which builder assembles the server Bundle. Default is the emitted list, so nothing about a
+  // normal build or a deployment changes; `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` selects the
+  // module-graph builder instead.
+  //
+  // The switch exists so the new builder is reachable from the shipping code path rather than from
+  // its own test alone. A builder only ever called directly cannot be exercised by the suites that
+  // drive `bin/sporades.js`, and those suites are the ones that resolve paths the way a released
+  // CLI does — which is exactly where the first version of this went wrong.
+  const serverBundle = process.env.SPORADES_SERVER_BUNDLE_MODULE_GRAPH === "1"
+    ? await createServerBundleModuleSource(serverBundleInputs)
+        .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); })
+    : createServerBundleSource(serverBundleInputs);
 
   await mkdir(buildDir, { recursive: true });
   const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
