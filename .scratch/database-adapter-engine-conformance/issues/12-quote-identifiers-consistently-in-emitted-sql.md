@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Quote Identifiers Consistently In Emitted SQL
 
