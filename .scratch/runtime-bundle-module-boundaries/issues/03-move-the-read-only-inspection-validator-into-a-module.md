@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Move The Read-Only Inspection Validator Into A Module
 
