@@ -1,8 +1,7 @@
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveSporadesPackageRoot } from "../package-root.js";
 // The module the boot program reads its per-build values from. Substituted for the virtual
 // specifier `sporades:server-bundle-inputs`, which nothing else resolves, so a build where this
 // substitution did not happen fails rather than producing a Capsule with an empty config.
@@ -20,34 +19,15 @@ function bundleModuleGraphError(message, hint) {
     return Object.assign(new Error(message), { hint });
 }
 // Where the boot entry lives, found by walking from this module up to the package root and then
-// down the known `dist/` path.
-//
-// Not `new URL("./server-bundle-entry.js", import.meta.url)`. That sibling lookup is right only
-// while this module is being executed from `dist/templates/`, and the CLI is not executed from
-// there: `scripts/build-bin.mjs` bundles `src/cli/sporades.ts` into `bin/sporades.js`, and esbuild
-// rewrites `import.meta.url` for the entry point only. Every other module in the graph inherits the
-// entry's, so a sibling lookup inside a bundled CLI resolves next to `bin/` and fails with ENOENT.
-// `CLI_ROOT` in `src/cli/sporades.ts` survives bundling for precisely the opposite reason — that
-// file *is* the entry point.
-//
-// Walking to the package root is correct under both layouts, because `<root>/dist/templates/…` and
-// `<root>/bin/sporades.js` sit inside the same package. This is the one path resolution the
-// `toString()` mechanism never had to make, since concatenating source text reads no files.
+// down the known `dist/` path. `resolveSporadesPackageRoot` records why the walk is not a sibling
+// lookup off `import.meta.url`; the emitted-list builder locates this module's compiled output the
+// same way, for the same reason.
 function resolveServerBundleEntry() {
-    let directory = path.dirname(fileURLToPath(import.meta.url));
-    for (;;) {
-        if (existsSync(path.join(directory, "package.json"))) {
-            return {
-                packageRoot: directory,
-                entryPath: path.join(directory, "dist", "templates", "server-bundle-entry.js"),
-            };
-        }
-        const parent = path.dirname(directory);
-        if (parent === directory) {
-            throw bundleModuleGraphError("Server bundle failed: could not locate the Sporades package root.", "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.");
-        }
-        directory = parent;
-    }
+    const packageRoot = resolveSporadesPackageRoot();
+    return {
+        packageRoot,
+        entryPath: path.join(packageRoot, "dist", "templates", "server-bundle-entry.js"),
+    };
 }
 // Builds the deployed Capsule's server bundle from an ordinary module graph.
 //

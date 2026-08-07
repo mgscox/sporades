@@ -1,3 +1,10 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+import { transformSync } from "esbuild";
+
+import * as inspectionSql from "../inspection-sql.js";
+import { resolveSporadesPackageRoot } from "../package-root.js";
 import {
   ACL_HELPER_STATE,
   EMAIL_SIGN_IN_FAILURE_LIMIT,
@@ -16,10 +23,7 @@ import {
   PRIVILEGED_AUDIT_SCHEMA,
   PRIVILEGED_AUTH_USER_ID,
   RESERVED_JOB_NAME_PREFIX,
-  SAFE_INSPECTION_PRAGMAS,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
-  SIDE_EFFECT_SQL_FUNCTIONS,
-  SIDE_EFFECT_SQL_KEYWORDS,
 } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 
@@ -33,6 +37,173 @@ function serializeRuntimeConstant(value: unknown): string {
   if (typeof value === "symbol") return `Symbol(${JSON.stringify(value.description)})`;
   if (value instanceof Set) return `new Set(${JSON.stringify([...value])})`;
   return JSON.stringify(value);
+}
+
+const INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
+
+// Statements the carried copy of the inspection gate and the loaded one must agree about, checked at
+// every bundle build. Half are refused by the gate and half admitted, and the refused half is what
+// gives the check its teeth: a carried copy whose validator had been replaced by one that admits
+// everything answers `ok` for all of them.
+//
+// The shapes are the ones ADR-0038 records as having defeated this gate — a bare destructive verb, a
+// second statement, a nested block comment, the composed line comment, a verb inside a dollar quote,
+// a PRAGMA assignment, whitespace no engine has, and text the wire cannot carry — so a carried copy
+// that differs in any limb this project has actually got wrong is caught rather than shipped.
+export const INSPECTION_SQL_SKEW_PROBE = [
+  "DROP TABLE t",
+  "TRUNCATE TABLE t",
+  "SELECT 1 AS s; DROP TABLE t",
+  "/*/* */ SELECT 1 */ TRUNCATE TABLE t",
+  "SELECT 1 AS s --x\r/*y\n; DROP TABLE t --*/ AS z",
+  "SELECT $$a; DROP TABLE t$$ AS s",
+  "PRAGMA journal_mode = WAL",
+  "SELECT\u00a01 AS a",
+  "SELECT 1 AS s\u0000",
+  "SELECT 1",
+  "SELECT * FROM posts;",
+  "PRAGMA table_info(posts)",
+  "WITH recent AS (SELECT 1 AS s) SELECT * FROM recent",
+  "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;",
+];
+
+function bundleTemplateError(message: string, hint: string) {
+  return Object.assign(new Error(message), { hint });
+}
+
+// The carried block, evaluated so it can be questioned rather than only pattern-matched.
+//
+// The input is this build's own output, produced two lines earlier from a file inside the Sporades
+// package — not Capsule code and not anything a Capsule author supplies. Evaluating it costs one
+// `new Function` and runs the module's top level, which builds three `Set`s and declares functions.
+function evaluateInspectionSqlBlock(code: string) {
+  try {
+    return new Function(`${code}\nreturn ${INSPECTION_SQL_NAMESPACE};`)();
+  } catch (error: any) {
+    throw bundleTemplateError(
+      `Server bundle failed: the read-only inspection module did not evaluate: ${error?.message ?? error}`,
+      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.",
+    );
+  }
+}
+
+// What the two copies of the inspection gate answer, as comparable text.
+function describeInspectionSqlAnswers(module: any) {
+  return INSPECTION_SQL_SKEW_PROBE.map((sql) =>
+    JSON.stringify([sql, module.validateReadOnlyInspectionSql(sql), module.sqlWithoutTrailingTerminator(sql)]),
+  );
+}
+
+// The read-only inspection validator and its tokenizer, carried into the bundle as `inspection-sql`'s
+// own compiled text rather than as `fn.toString()` over a list of its functions.
+//
+// **Why this one region is carried differently.** A stringified function reaches the bundle without
+// anything it closes over, so under the emitted-list mechanism a helper had to be registered in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS` to survive — and the inspection gate paid for that in five
+// duplicated copies of one set of comment and quoting rules, four independent reviews and five
+// rounds of fixes (ADR-0038). Carrying the module whole removes the registration step for that
+// region: a private helper travels because it is in the file, not because someone remembered it.
+// ADR-0041 records the decision. Nothing else has moved; every other runtime function still travels
+// through the list.
+//
+// The module is compiled to an IIFE by esbuild rather than concatenated with its `export` keywords
+// stripped, and the reason is privacy rather than safety. Concatenation would be *loud* if it
+// collided: the generated bundle is an ES module — it imports `node:crypto` and uses top-level
+// `await` — and a duplicate top-level `function` or `const` there is a load-time `SyntaxError`, which
+// is exactly what a duplicate entry in the emitted list produces and why none is left there. What
+// concatenation would cost is the thing this whole change is for: every one of this module's private
+// helpers would land at the bundle's top level, reachable from 500-odd runtime functions, so
+// "private" would stop meaning anything at the point it started to matter. Inside the IIFE it does.
+// Not stripping `export` keywords out of generated JavaScript by hand is the second reason.
+//
+// `transformSync`, not `build`: this is a format conversion of one already-compiled file, so nothing
+// is resolved and nothing is read except the file named below. `createServerBundleSource` is
+// synchronous and every caller expects it to stay that way.
+function inspectionSqlModuleSource() {
+  const modulePath = path.join(resolveSporadesPackageRoot(), "dist", "inspection-sql.js");
+  let compiled: string;
+  try {
+    compiled = readFileSync(modulePath, "utf8");
+  } catch (error: any) {
+    throw bundleTemplateError(
+      `Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`,
+      "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.",
+    );
+  }
+  return inspectionSqlBlockFrom(compiled, modulePath);
+}
+
+// The block, and the checks that decide whether the copy it was built from is the copy this process
+// is running. Separated from the file read so that a test can drive it with a deliberately skewed
+// copy without touching the tree the suite is running out of.
+export function inspectionSqlBlockFrom(compiled: string, modulePath: string) {
+  let code: string;
+  try {
+    ({ code } = transformSync(compiled, {
+      loader: "js",
+      format: "iife",
+      globalName: INSPECTION_SQL_NAMESPACE,
+      platform: "node",
+      target: "node22",
+    }));
+  } catch (error: any) {
+    // A file that will not parse — a truncated write is the ordinary way to get one. esbuild's own
+    // error names the position, and it is worth nothing to a person without the file it came from.
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} did not parse: ${error?.errors?.map((entry: any) => entry.text).join("; ") || error?.message || String(error)}`,
+      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.",
+    );
+  }
+
+  // **Two copies of this module exist while the CLI is a bundle, and they are checked against each
+  // other here.** `bin/sporades.js` is built by esbuild from `src/`, so the `inspectionSql` imported
+  // above is a copy inlined into `bin/`, while the text just read comes from `dist/` on disk. Running
+  // from `dist/` there is one copy and the question does not arise; running from `bin/` a tree whose
+  // `dist/` and `bin/` came from different builds would ship the `dist/` gate inside a Capsule while
+  // every other runtime function in that same Capsule came from `bin/`.
+  //
+  // Nothing in `scripts/` compares those for freshness — `check-generated-bin.mjs` checks the
+  // shebang, the generated header and the absence of `../src/` imports, and an earlier version of
+  // this comment claimed a freshness check it does not perform. So the comparison is made here,
+  // against the copy that will actually be carried rather than against the file it came from.
+  const carried = evaluateInspectionSqlBlock(code);
+
+  // The names the rest of the bundle resolves against, taken from the carried namespace itself. A
+  // name that the block does not export cannot be destructured from it, so "declared here, absent
+  // there" is not a state this can reach. Written out by hand instead, a misspelling would declare a
+  // binding that is simply `undefined` at runtime, which the free-binding guard resolves exactly as
+  // cleanly as a correct one.
+  const exported = Object.keys(carried).sort();
+  const loaded = Object.keys(inspectionSql).sort();
+  if (exported.join(",") !== loaded.join(",")) {
+    const missing = loaded.filter((name) => !exported.includes(name));
+    const extra = exported.filter((name) => !loaded.includes(name));
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} exports a different set of names than the running CLI's copy of it`
+        + `${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`,
+      "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.",
+    );
+  }
+
+  // And the same names are not enough, because the shape that matters most keeps them: a carried copy
+  // whose validator body had been replaced would export exactly this list and admit everything. So
+  // the two copies are asked the same questions and must answer identically.
+  //
+  // This is a probe, not a proof, and the difference is worth stating rather than leaving to be
+  // discovered: two copies that agree on the export surface and on every statement below still ship,
+  // however else they differ. What it does close is the case that is otherwise silent.
+  const carriedAnswers = describeInspectionSqlAnswers(carried);
+  const loadedAnswers = describeInspectionSqlAnswers(inspectionSql);
+  const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
+  if (disagreement >= 0) {
+    throw bundleTemplateError(
+      `Server bundle failed: ${modulePath} answers the read-only inspection gate differently than the running CLI's copy of it, `
+        + `starting at ${JSON.stringify(INSPECTION_SQL_SKEW_PROBE[disagreement])}.`,
+      "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.",
+    );
+  }
+
+  return `${code}\nconst { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
 }
 
 export function createServerBundleSource({
@@ -56,17 +227,14 @@ export function createServerBundleSource({
     normalizePublicTreePath.toString(),
     publicTreePathFromRequest.toString(),
   ].join("\n\n");
-  // The read-only inspection gate's keyword tables. A runtime function reaches the bundle as its
-  // own source text and a module-level binding it closes over does not follow, so these are
-  // written out here — serialized from the real Sets rather than restated, which is the same thing
-  // `PUBLIC_TREE_LIMITS` above does and leaves nothing that can drift from the runtime source.
-  const readOnlyInspectionKeywords = ([
-    ["SAFE_INSPECTION_PRAGMAS", SAFE_INSPECTION_PRAGMAS],
-    ["SIDE_EFFECT_SQL_KEYWORDS", SIDE_EFFECT_SQL_KEYWORDS],
-    ["SIDE_EFFECT_SQL_FUNCTIONS", SIDE_EFFECT_SQL_FUNCTIONS],
-  ] as [string, Set<string>][])
-    .map(([name, values]) => `const ${name} = new Set(${JSON.stringify([...values])});`)
-    .join("\n");
+  // The read-only inspection gate's three keyword tables used to be serialized into a preamble here,
+  // because a runtime function reaches the bundle as its own source text and a module-level binding
+  // it closes over does not follow. They are declarations inside `inspectionSqlModule` now, and the
+  // gate's own functions close over them there exactly as they do in `dist/`, so serializing them
+  // again would declare each name twice. They are still reachable by name at the bundle's top level
+  // through the destructuring that module block ends with, which is what the constant probe in
+  // `test/server-bundle-module-graph.test.js` reads them through.
+  const inspectionSqlModule = inspectionSqlModuleSource();
   // The runtime's module-level constants, for the same reason as the keyword tables above: a
   // runtime function reaches the bundle as its own source text and a module-level binding it closes
   // over does not follow. Each is serialized from the runtime source's own declaration rather than
@@ -113,7 +281,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeConstants}
-${readOnlyInspectionKeywords}
+${inspectionSqlModule}
 ${runtimeFunctions}
 ${publicTreeContract}
 

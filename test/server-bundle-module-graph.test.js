@@ -27,13 +27,16 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
+import * as inspectionSqlModule from "../dist/inspection-sql.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { INSPECTION_SQL_SKEW_PROBE, createServerBundleSource, inspectionSqlBlockFrom } from "../dist/templates/server-bundle-template.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -1282,6 +1285,310 @@ test("every constant the preamble serializes carries the same value and the same
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The read-only inspection surface, in both bundles.
+//
+// This is the first region of the runtime to have left `server-runtime-source.ts`, and the two
+// bundles now reach it by genuinely different routes: the module-graph bundle imports
+// `inspection-sql` and lets esbuild resolve the names, while the emitted-list bundle carries that
+// module's compiled text as one block and destructures its exports at the bundle's top level
+// (ADR-0041). Everything else about this file compares *behaviour over a Capsule*; the inspection
+// gate is not reachable that way, because `sporades db query` goes through the CLI rather than
+// through HTTP or the WebSocket transport. So it is compared directly, inside each booted bundle.
+//
+// The corpus is asserted to contain every shape this gate has actually shipped a defect in before
+// any result from it is read. ADR-0038 records why: three separate rounds of this work reported
+// clean from a corpus that could not express the class it was reporting about.
+const INSPECTION_SURFACE_CORPUS = (() => {
+  const pieces = ["", " ", "\n", "\r", "--x\r", "--x\n", "/*y*/", "/*/", "*/", "$$", "'", '"', "`", "[", "]", "E'", "\\", ";", "\u00a0", "\v"];
+  const shapes = [
+    (piece) => `SELECT 1 AS s${piece}`,
+    (piece) => `SELECT 1 AS s ${piece} TRUNCATE TABLE sporades_canary`,
+    (piece) => `SELECT 1 AS s ${piece}; DROP TABLE sporades_canary`,
+    (piece) => `/*${piece}/* SELECT 1 */ ${piece}*/ TRUNCATE TABLE t`,
+    (piece) => `SELECT $$a${piece}DROP TABLE t;$$ AS s`,
+    (piece) => `SELECT 'a${piece}drop' AS s`,
+    (piece) => `SELECT "a${piece}drop" AS s`,
+    (piece) => `SELECT E'a${piece}DROP TABLE t;' AS s`,
+    (piece) => `PRAGMA table_info(t)${piece}`,
+    (piece) => `PRAGMA ${piece} journal_mode = WAL`,
+    (piece) => `WITH t AS (SELECT 1 AS s${piece}) SELECT * FROM t`,
+    (piece) => `SELECT * FROM sporades_log_events ${piece}`,
+  ];
+  const corpus = [];
+  for (const shape of shapes) for (const piece of pieces) corpus.push(shape(piece));
+  // Realistic queries, so a difference in what an operator would actually type is visible here too
+  // and not only a difference over attack shapes.
+  corpus.push(
+    "SELECT 1",
+    "SELECT * FROM posts;",
+    "select id, title from posts where id = 3",
+    "SELECT id FROM posts WHERE title = 'it''s fine'",
+    "SELECT id FROM posts -- why\r\nORDER BY id",
+    "SELECT /* why */ COUNT(*) AS n FROM users",
+    "SELECT \"group\" FROM t",
+    "PRAGMA table_list",
+    "PRAGMA main.table_info(posts)",
+    "WITH recent AS (SELECT * FROM posts LIMIT 5) SELECT * FROM recent",
+    "SELECT comment FROM posts",
+    "SELECT * FROM t WHERE s = '\u0000'",
+    "SELECT $\ud800$ AS s",
+  );
+  return corpus;
+})();
+
+for (const [shape, matches] of [
+  ["a nesting block comment", (sql) => sql.startsWith("/*/* SELECT 1 */")],
+  ["a `/*/` straddle", (sql) => sql.includes("/*/")],
+  ["a line comment closed by a bare CR", (sql) => /--[^\n]*\r/.test(sql)],
+  ["a verb wrapped in a dollar quote", (sql) => /\$\$a.*DROP/s.test(sql)],
+  ["a verb behind a CR-ended line comment inside a dollar quote", (sql) => /\$\$a--x\r/.test(sql)],
+  ["an E-string with a backslash in it", (sql) => /E'a\\/.test(sql)],
+  ["whitespace no engine has", (sql) => /[\u00a0\v]/.test(sql)],
+  ["text the wire cannot carry", (sql) => /[\u0000]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(sql)],
+  ["a safe metadata PRAGMA", (sql) => sql.startsWith("PRAGMA table_info")],
+  ["a PRAGMA assignment", (sql) => sql.includes("journal_mode = WAL")],
+  ["an unterminated quoted run", (sql) => (sql.match(/"/g) ?? []).length % 2 === 1],
+  ["a log-index table reference", (sql) => sql.includes("sporades_log_events")],
+  ["an ordinary query a person would type", (sql) => sql === "SELECT * FROM posts;"],
+]) {
+  if (!INSPECTION_SURFACE_CORPUS.some(matches)) {
+    throw new Error(`the inspection-surface corpus cannot emit ${shape} — this comparison would be clean for the wrong reason`);
+  }
+}
+
+// Identical in both bundles. Each resolves the names in its own top-level scope: the emitted-list
+// bundle's destructuring of the inspection module block, the module-graph bundle's imports.
+function inspectionSurfaceReport(outputPath) {
+  return `
+import { writeFileSync as __probeWriteFileSync } from "node:fs";
+const __probeCorpus = ${JSON.stringify(INSPECTION_SURFACE_CORPUS)};
+const __probeCall = (fn, ...args) => {
+  try { return { ok: true, value: fn(...args) }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+};
+__probeWriteFileSync(${JSON.stringify(outputPath)}, JSON.stringify(__probeCorpus.map((sql) => ({
+  sql,
+  validate: __probeCall(validateReadOnlyInspectionSql, sql),
+  strip: __probeCall(sqlWithoutTrailingTerminator, sql),
+  disagreement: __probeCall(sqlTheEnginesLexDifferently, sql),
+  fingerprintCr: __probeCall(sqlContentFingerprint, sql, true),
+  fingerprintLf: __probeCall(sqlContentFingerprint, sql, false),
+  firstToken: __probeCall(readFirstSqlToken, sql),
+  multiple: __probeCall(hasMultipleSqlStatements, sql),
+  sideEffect: __probeCall(containsSideEffectSqlToken, sql),
+  tokensCr: __probeCall(readSqlTokens, sql, true),
+  tokensLf: __probeCall(readSqlTokens, sql, false),
+  trivia: __probeCall(skipSqlTrivia, sql, 0, true),
+  quotedIdentifier: __probeCall(readSqlQuotedIdentifier, sql, 0, "'\\"\`["),
+  bareIdentifier: __probeCall(readBareSqlIdentifier, sql, 0),
+  pragma: __probeCall(isSafeInspectionPragma, sql, 6),
+  skipEveryEngine: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectEveryEngineQuotes(true)),
+  skipWithheld: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectWithoutPostgresStringForms(true)),
+})), null, 2));
+process.exit(0);
+`;
+}
+
+// Boot one probe bundle and insist it exited cleanly.
+//
+// The retry is for `spawnSync` failing to *start* a process — `result.error` set and `result.status`
+// null, which is what an `EAGAIN` under a loaded suite looks like — and for nothing else. A bundle
+// that started and exited non-zero is a real answer and is never retried, because retrying a real
+// failure is how a flake becomes a silence. Both branches report the whole outcome: an earlier
+// version printed only `stderr`, which is `null` in exactly the case that needed explaining.
+function runInspectionProbe(label, dir, bundlePath, attempt = 1) {
+  const result = spawnSync(process.execPath, [bundlePath], {
+    cwd: dir,
+    // `PORT=0` so the kernel picks the port. Nothing here connects to these bundles — the probe
+    // writes its report and exits — so a port is only something to fail on.
+    env: { ...process.env, PORT: "0" },
+    encoding: "utf8",
+  });
+  if (result.error && attempt < 3) {
+    return runInspectionProbe(label, dir, bundlePath, attempt + 1);
+  }
+  assert.equal(
+    result.status,
+    0,
+    [
+      `${label} inspection probe did not exit cleanly on attempt ${attempt}`,
+      `  status: ${result.status}`,
+      `  signal: ${result.signal}`,
+      `  spawn error: ${result.error ? `${result.error.code ?? ""} ${result.error.message}` : "none"}`,
+      `  stdout: ${String(result.stdout ?? "").slice(-2000)}`,
+      `  stderr: ${String(result.stderr ?? "").slice(-2000)}`,
+    ].join("\n"),
+  );
+}
+
+test("both bundles answer the whole read-only inspection surface identically", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-inspection-"));
+  try {
+    const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
+    const reportPath = (label) => path.join(root, `${label}.json`);
+    const bundles = [
+      ["emitted", createServerBundleSource(inputs) + inspectionSurfaceReport(reportPath("emitted"))],
+      [
+        "graph",
+        await createServerBundleModuleSource({
+          ...inputs,
+          // The module under test, imported by name. The emitted-list bundle reaches the same names
+          // through the destructuring its inspection module block ends with, and that difference in
+          // how the names resolve is the thing this test exists to find nothing wrong with.
+          epilogue: [
+            `import { readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens, containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma, skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes, sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "../inspection-sql.js";`,
+            inspectionSurfaceReport(reportPath("graph")),
+          ].join("\n"),
+        }),
+      ],
+    ];
+
+    for (const [label, source] of bundles) {
+      const dir = path.join(root, label);
+      await mkdir(dir, { recursive: true });
+      const bundlePath = path.join(dir, "server.mjs");
+      await writeFile(bundlePath, source);
+      runInspectionProbe(label, dir, bundlePath);
+    }
+
+    const emittedReport = JSON.parse(await readFile(reportPath("emitted"), "utf8"));
+    const graphReport = JSON.parse(await readFile(reportPath("graph"), "utf8"));
+
+    // Guard the measurement before trusting it. Two reports of refusals-for-everything, or of a
+    // gate that answered nothing, would compare equal and prove nothing.
+    assert.equal(emittedReport.length, INSPECTION_SURFACE_CORPUS.length);
+    const admitted = emittedReport.filter((entry) => entry.validate.value?.ok === true).length;
+    const refused = emittedReport.filter((entry) => entry.validate.value?.ok === false).length;
+    assert.ok(admitted > 20, `the corpus admits ${admitted} statements — too few to be comparing an inspection gate`);
+    assert.ok(refused > 20, `the corpus refuses ${refused} statements — too few to be comparing an inspection gate`);
+    assert.ok(
+      new Set(emittedReport.map((entry) => entry.validate.value?.error?.message)).size >= 4,
+      "the corpus does not reach every refusal limb, so a limb that changed would be invisible here",
+    );
+
+    for (const [index, entry] of emittedReport.entries()) {
+      assert.deepEqual(
+        graphReport[index],
+        entry,
+        `the two bundles answer differently for ${JSON.stringify(entry.sql)}`,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// While the CLI ships as a bundle there are two copies of `inspection-sql`: the one esbuild inlined
+// into `bin/sporades.js`, which is what `createServerBundleSource` imports, and `dist/inspection-sql.js`
+// on disk, which is what it reads the carried text from. A tree whose `dist/` and `bin/` came from
+// different builds would put the `dist/` gate inside a Capsule while every other runtime function in
+// that same Capsule came from `bin/`, and nothing in `scripts/` compares the two for freshness.
+//
+// So the builder compares them itself, and this is that check exercised against copies skewed on
+// purpose. Driven through `inspectionSqlBlockFrom` rather than by editing the tree the suite is
+// running out of.
+test("a carried copy of the inspection gate that disagrees with the running one fails the build", async () => {
+  const modulePath = fileURLToPath(new URL("../dist/inspection-sql.js", import.meta.url));
+  const compiled = await readFile(modulePath, "utf8");
+
+  // The honest copy builds, or every rejection below would be meaningless.
+  assert.match(inspectionSqlBlockFrom(compiled, modulePath), /function nestingBlockCommentEnd\(/);
+
+  // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
+  // allow-everything validator from the real one, which is the case this check exists for.
+  const refused = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === false);
+  const admitted = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === true);
+  assert.ok(refused.length >= 5, `the skew probe only refuses ${refused.length} statements — it cannot see a validator that admits everything`);
+  assert.ok(admitted.length >= 5, `the skew probe only admits ${admitted.length} statements — it cannot see a validator that refuses everything`);
+
+  const skews = [
+    // The one that was silent before this check existed: same exports, same names, a validator
+    // replaced by one that admits anything.
+    [
+      "a validator swapped for one that admits everything",
+      compiled.replace(
+        /export function validateReadOnlyInspectionSql\(sql\) \{/,
+        "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
+      ),
+      /answers the read-only inspection gate differently/,
+    ],
+    // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
+    // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
+    [
+      "a tokenizer whose line comment stops ending at a carriage return",
+      compiled.replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
+      /answers the read-only inspection gate differently/,
+    ],
+    // Structural skew: an export the running copy has and the carried one does not.
+    [
+      "a copy missing an export the running one has",
+      compiled.replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
+      /exports a different set of names.*missing skipSqlTrivia/s,
+    ],
+    // Truncation part-way through a function, which is what an interrupted write leaves behind.
+    [
+      "a copy truncated mid-function",
+      compiled.slice(0, compiled.indexOf("export function skipSqlQuotedOrCommented(") + 200),
+      /did not parse|did not evaluate|exports a different set of names/,
+    ],
+  ];
+
+  for (const [description, skewed, expected] of skews) {
+    assert.notEqual(skewed, compiled, `the ${description} case did not actually change the module`);
+    assert.throws(
+      () => inspectionSqlBlockFrom(skewed, modulePath),
+      (error) => {
+        assert.match(error.message, expected, `wrong rejection for ${description}: ${error.message}`);
+        assert.match(error.hint, /npm run build|reinstall the Sporades CLI/i, `no actionable hint for ${description}`);
+        return true;
+      },
+      `${description} was carried into the bundle instead of failing the build`,
+    );
+  }
+});
+
+test("the emitted-list bundle carries the inspection module's private helpers, which no list registers", () => {
+  // Criterion 2 of the ticket this landed under, asserted rather than described. A private helper of
+  // `inspection-sql` is exported from nothing and appears in no emitted list, and it still reaches
+  // the bundle that ships — because that bundle carries the module whole rather than one registered
+  // function at a time.
+  //
+  // Under the old mechanism this was impossible: a runtime function reached the bundle as its own
+  // source text, so a helper it called and nobody registered was a `ReferenceError` the first time a
+  // deployed Capsule executed that path, invisible to a green suite. Four names shipped that way.
+  const bundle = createServerBundleSource({
+    config: capsuleConfig(),
+    serverEnv: {},
+    serverSource: "",
+    serverModuleSource: "export default {};",
+  });
+
+  for (const helper of ["nestingBlockCommentEnd", "opensQuotedRun"]) {
+    assert.equal(
+      Object.keys(inspectionSqlModule).includes(helper),
+      false,
+      `${helper} is exported, so it is not the private helper this asserts`,
+    );
+    assert.equal(
+      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === helper),
+      false,
+      `${helper} is registered in the emitted list, so it is not travelling on the module's terms`,
+    );
+    assert.match(bundle, new RegExp(`function ${helper}\\(`), `${helper} did not reach the emitted-list bundle`);
+  }
+
+  // And the gate's own entry points are no longer in the emitted list either — the whole region
+  // travels as the module rather than as the twenty-three registrations it used to need.
+  for (const moved of ["validateReadOnlyInspectionSql", "skipSqlQuotedOrCommented", "sqlWithoutTrailingTerminator"]) {
+    assert.equal(
+      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),
+      false,
+      `${moved} is still registered in the emitted list as well as living in the module, which would declare it twice`,
+    );
+    assert.match(bundle, new RegExp(`function ${moved}\\(`), `${moved} did not reach the emitted-list bundle`);
   }
 });
 
