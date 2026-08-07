@@ -14722,6 +14722,11 @@ function validatePublicTreeFileSet(files) {
 }
 
 // src/templates/server-bundle-template.ts
+function serializeRuntimeConstant(value) {
+  if (typeof value === "symbol") return `Symbol(${JSON.stringify(value.description)})`;
+  if (value instanceof Set) return `new Set(${JSON.stringify([...value])})`;
+  return JSON.stringify(value);
+}
 function createServerBundleSource({
   config,
   serverEnv,
@@ -14740,6 +14745,25 @@ function createServerBundleSource({
     ["SIDE_EFFECT_SQL_KEYWORDS", SIDE_EFFECT_SQL_KEYWORDS],
     ["SIDE_EFFECT_SQL_FUNCTIONS", SIDE_EFFECT_SQL_FUNCTIONS]
   ].map(([name, values]) => `const ${name} = new Set(${JSON.stringify([...values])});`).join("\n");
+  const runtimeConstants = [
+    ["PRIVILEGED_AUTH_USER_ID", PRIVILEGED_AUTH_USER_ID],
+    ["EMAIL_SIGN_IN_FAILURE_LIMIT", EMAIL_SIGN_IN_FAILURE_LIMIT],
+    ["EMAIL_SIGN_IN_THROTTLE_WINDOW_MS", EMAIL_SIGN_IN_THROTTLE_WINDOW_MS],
+    ["EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES", EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES],
+    ["EMAIL_SIGN_IN_THROTTLE_FIELD", EMAIL_SIGN_IN_THROTTLE_FIELD],
+    ["PASSWORD_RESET_THROTTLE_FIELD", PASSWORD_RESET_THROTTLE_FIELD],
+    ["PASSWORD_RESET_DEFAULT_PATH", PASSWORD_RESET_DEFAULT_PATH],
+    ["PASSWORD_RESET_DEFAULT_TTL_MS", PASSWORD_RESET_DEFAULT_TTL_MS],
+    ["PASSWORD_RESET_MIN_TTL_MS", PASSWORD_RESET_MIN_TTL_MS],
+    ["PASSWORD_RESET_MAX_TTL_MS", PASSWORD_RESET_MAX_TTL_MS],
+    ["PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL", PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL],
+    ["RESERVED_JOB_NAME_PREFIX", RESERVED_JOB_NAME_PREFIX],
+    ["PASSWORD_RESET_MAIL_JOB", PASSWORD_RESET_MAIL_JOB],
+    ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
+    ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
+    ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],
+    ["ACL_HELPER_STATE", ACL_HELPER_STATE]
+  ].map(([name, value]) => `const ${name} = ${serializeRuntimeConstant(value)};`).join("\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
@@ -14756,23 +14780,7 @@ const sporadesActionIndex = process.argv.indexOf("--sporades-action");
 const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
-const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
-const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
-const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
-const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
-const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
-const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
-const RESERVED_JOB_NAME_PREFIX = "_sporades";
-const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+${runtimeConstants}
 ${readOnlyInspectionKeywords}
 ${runtimeFunctions}
 ${publicTreeContract}

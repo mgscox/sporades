@@ -1,10 +1,39 @@
 import {
+  ACL_HELPER_STATE,
+  EMAIL_SIGN_IN_FAILURE_LIMIT,
+  EMAIL_SIGN_IN_THROTTLE_FIELD,
+  EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES,
+  EMAIL_SIGN_IN_THROTTLE_WINDOW_MS,
+  PASSWORD_RESET_DEFAULT_PATH,
+  PASSWORD_RESET_DEFAULT_TTL_MS,
+  PASSWORD_RESET_MAIL_JOB,
+  PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL,
+  PASSWORD_RESET_MAX_TTL_MS,
+  PASSWORD_RESET_MIN_TTL_MS,
+  PASSWORD_RESET_THROTTLE_FIELD,
+  PRIVILEGED_AUDIT_ACTOR_KINDS,
+  PRIVILEGED_AUDIT_OUTCOMES,
+  PRIVILEGED_AUDIT_SCHEMA,
+  PRIVILEGED_AUTH_USER_ID,
+  RESERVED_JOB_NAME_PREFIX,
   SAFE_INSPECTION_PRAGMAS,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
   SIDE_EFFECT_SQL_FUNCTIONS,
   SIDE_EFFECT_SQL_KEYWORDS,
 } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
+
+// How a runtime module constant is written into the bundle preamble. Values travel as their own
+// serialization so the runtime source's declaration stays the only place the value is written.
+// A `Symbol` has no serialization, so it is reconstructed from its description: the result is a
+// different Symbol than the runtime module's, which is safe for the one Symbol here because the
+// bundle's only writer and only reader of that key both resolve the name to the preamble's own
+// declaration, and the objects it keys never cross between a bundled Capsule and this process.
+function serializeRuntimeConstant(value: unknown): string {
+  if (typeof value === "symbol") return `Symbol(${JSON.stringify(value.description)})`;
+  if (value instanceof Set) return `new Set(${JSON.stringify([...value])})`;
+  return JSON.stringify(value);
+}
 
 export function createServerBundleSource({
   config, 
@@ -38,6 +67,34 @@ export function createServerBundleSource({
   ] as [string, Set<string>][])
     .map(([name, values]) => `const ${name} = new Set(${JSON.stringify([...values])});`)
     .join("\n");
+  // The runtime's module-level constants, for the same reason as the keyword tables above: a
+  // runtime function reaches the bundle as its own source text and a module-level binding it closes
+  // over does not follow. Each is serialized from the runtime source's own declaration rather than
+  // restated here, so a threshold is written in exactly one place and changing it there changes
+  // what a deployed Capsule enforces. Several of these are security thresholds, and a restated copy
+  // that drifted would be silent — the free-binding guard resolves names, and a wrong value
+  // resolves exactly as cleanly as a right one.
+  const runtimeConstants = ([
+    ["PRIVILEGED_AUTH_USER_ID", PRIVILEGED_AUTH_USER_ID],
+    ["EMAIL_SIGN_IN_FAILURE_LIMIT", EMAIL_SIGN_IN_FAILURE_LIMIT],
+    ["EMAIL_SIGN_IN_THROTTLE_WINDOW_MS", EMAIL_SIGN_IN_THROTTLE_WINDOW_MS],
+    ["EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES", EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES],
+    ["EMAIL_SIGN_IN_THROTTLE_FIELD", EMAIL_SIGN_IN_THROTTLE_FIELD],
+    ["PASSWORD_RESET_THROTTLE_FIELD", PASSWORD_RESET_THROTTLE_FIELD],
+    ["PASSWORD_RESET_DEFAULT_PATH", PASSWORD_RESET_DEFAULT_PATH],
+    ["PASSWORD_RESET_DEFAULT_TTL_MS", PASSWORD_RESET_DEFAULT_TTL_MS],
+    ["PASSWORD_RESET_MIN_TTL_MS", PASSWORD_RESET_MIN_TTL_MS],
+    ["PASSWORD_RESET_MAX_TTL_MS", PASSWORD_RESET_MAX_TTL_MS],
+    ["PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL", PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL],
+    ["RESERVED_JOB_NAME_PREFIX", RESERVED_JOB_NAME_PREFIX],
+    ["PASSWORD_RESET_MAIL_JOB", PASSWORD_RESET_MAIL_JOB],
+    ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
+    ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
+    ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],
+    ["ACL_HELPER_STATE", ACL_HELPER_STATE],
+  ] as [string, unknown][])
+    .map(([name, value]) => `const ${name} = ${serializeRuntimeConstant(value)};`)
+    .join("\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
 
 return `// Sporades server bundle
@@ -55,23 +112,7 @@ const sporadesActionIndex = process.argv.indexOf("--sporades-action");
 const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
-const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
-const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
-const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
-const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
-const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
-const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
-const RESERVED_JOB_NAME_PREFIX = "_sporades";
-const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+${runtimeConstants}
 ${readOnlyInspectionKeywords}
 ${runtimeFunctions}
 ${publicTreeContract}

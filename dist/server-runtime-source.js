@@ -1,19 +1,25 @@
 import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
-const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
-const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
-const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
-const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
-const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
-const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
-const RESERVED_JOB_NAME_PREFIX = "_sporades";
-const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
+// Exported because the generated Capsule bundle carries these in its constant preamble. A runtime
+// function reaches the bundle as its own source text and the module-level bindings it closes over
+// do not follow, so the preamble declares them — serialized from these declarations rather than
+// restated, which is what `PUBLIC_TREE_LIMITS` and the inspection keyword Sets already do. Several
+// of these are security thresholds; a restated copy that drifted would change what a deployed
+// Capsule enforces while every test, importing from `dist/` where these live, stayed green.
+export const PRIVILEGED_AUTH_USER_ID = "__privileged__";
+export const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
+export const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
+export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+export const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
+export const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
+export const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+export const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+export const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     validateMailConfig,
     createMailRuntime,
@@ -4529,9 +4535,11 @@ function createRuntimeLogger(database, context = {}) {
         error: (...args) => write("error", args),
     };
 }
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
+// Exported for the generated Capsule bundle's constant preamble; see the note above
+// `PRIVILEGED_AUTH_USER_ID`.
+export const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+export const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+export const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
 function createPrivilegedAuditEmitter(log) {
     return {
         emit(details) {
@@ -7251,7 +7259,14 @@ function filterRowsByReadAcl(database, table, rows, context) {
     }
     return rows.filter((_, index) => decisions[index]);
 }
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+// Exported so the generated Capsule bundle's preamble can reconstruct it from this declaration's
+// own description rather than restating the string. The reconstructed Symbol is a *different*
+// Symbol than this one, which is fine: the only writer (`createAclHelpers`) and the only reader
+// (`aclRuleTouchedAsyncHelperRead`) both travel into the bundle as source text and both resolve
+// this name to the single binding the preamble declares, so the key is consistent within the
+// bundle. These helper objects never cross between a bundled Capsule and this module, so the two
+// Symbols are never asked to match each other.
+export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database) {
     const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
     const helpers = {
