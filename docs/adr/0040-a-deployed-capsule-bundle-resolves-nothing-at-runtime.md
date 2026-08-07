@@ -3,11 +3,13 @@
 The generated server Bundle must be able to import Node's own builtins and
 nothing else. A Hosted Capsule runs `node /app/server.mjs` inside the Sporades
 base image, which is `node:22-alpine` with no install step and no `node_modules`
-anywhere, and a release mounts only `server.mjs`, `sporades.json` and the public
-tree into `/app`, read-only. Nothing else is reachable, so a bare specifier left
-in the Bundle is not a slow path or a fallback — it is a container that does not
-start. This is why the Capsule module travels as a base64 `data:` URL rather
-than as a second file beside the Bundle.
+anywhere. A release mounts `server.mjs`, `sporades.json` and the public tree into
+`/app`, plus `.env.sporades.server` or the sealed-env envelope and private key
+when those are in use — every mount read-only, and none of them a place a module
+specifier could resolve to. So a bare specifier left in the Bundle is not a slow
+path or a fallback; it is a container that does not start. This is why the
+Capsule module travels as a base64 `data:` URL rather than as a second file
+beside the Bundle.
 
 This is a self-containment requirement, not a requirement about how the Bundle
 is produced. Assembling it from `Function.prototype.toString()` over
@@ -22,7 +24,8 @@ still be a fetch from a read-only container.
 
 No second constraint of this kind was found. The Bundle is written once and
 read only as an opaque file: nothing inspects its text, no size limit applies to
-it, the Host helper checks only that `server.mjs` is present, and
+it, the Host helper checks that `server.mjs`, `sporades.json` and
+`public/index.html` are present but reads none of their contents, and
 `sporadesServerSource` is carried as data for handler-source extraction rather
 than executed as part of the graph. The one-shot inspection action (ADR-0028)
 depends on the Capsule module staying unevaluated, which is a property of

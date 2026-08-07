@@ -590,9 +590,22 @@ async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN) {
 
 const WEBSOCKET_SCRIPT = [
   { id: "m1", type: "auth.get" },
+  // Both subscriptions are opened before the first mutation, and neither is retired until the end.
+  //
+  // That ordering is what makes the rebroadcast count deterministic. A successful `mutation.run`
+  // rebroadcasts every open subscription on a later tick, so a subscribe that happens *between* a
+  // mutation and its deferred rebroadcast may or may not be included — the set of open
+  // subscriptions is read when the tick runs, not when the mutation was sent. With a subscribe
+  // interleaved among the mutations this script produced three or four frames depending on the
+  // run. With every subscription open before the first mutation, each of the two successful
+  // mutations rebroadcasts exactly the same two subscriptions.
+  //
+  // `nosuchquery` is one of them on purpose: subscribing to an unknown query still registers a
+  // subscription, since the runtime does not reject the name at subscribe time, so it re-emits its
+  // failure frame alongside the good one. That is worth comparing rather than avoiding.
   { id: "m2", type: "query.subscribe", query: "notes" },
-  { id: "m3", type: "mutation.run", mutation: "addNote", args: [{ text: "over the socket", rank: 5 }] },
   { id: "m4", type: "query.subscribe", query: "nosuchquery" },
+  { id: "m3", type: "mutation.run", mutation: "addNote", args: [{ text: "over the socket", rank: 5 }] },
   { id: "m5", type: "mutation.run", mutation: "nosuchmutation", args: [] },
   { id: "m6", type: "mutation.run", mutation: "denied", args: [] },
   { id: "m7", type: "auth.signUp", provider: "email", credentials: { email: "probe@example.com", password: "correct horse battery staple" } },
@@ -614,6 +627,26 @@ const WEBSOCKET_SCRIPT = [
   { id: "m23", type: "nosuch.messagetype" },
 ];
 
+// Blocks until the socket has produced no new frame for `idleMs`, or `timeoutMs` elapses. The
+// timeout is a backstop against a runtime that never goes quiet, not the normal exit: reaching it
+// would mean frames were still arriving, and the comparison that follows would be reading a partial
+// set — so it is deliberately far longer than any rebroadcast this script provokes.
+async function drainUntilQuiet(socket, { idleMs = 1500, timeoutMs = 30_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let seen = socket.received.length;
+  let lastChange = Date.now();
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    if (socket.received.length !== seen) {
+      seen = socket.received.length;
+      lastChange = Date.now();
+    } else if (Date.now() - lastChange >= idleMs) {
+      return;
+    }
+    if (Date.now() >= deadline) return;
+  }
+}
+
 async function driveWebSocketSurface(baseUrl, context) {
   const socket = await openBundleSocket(baseUrl);
   const replies = [];
@@ -623,9 +656,19 @@ async function driveWebSocketSurface(baseUrl, context) {
       const reply = await socket.waitFor((candidate) => candidate.id === message.id && !replies.includes(candidate));
       replies.push(reply);
     }
-    // Mutations rebroadcast every open subscription on a later tick. Those frames are genuinely
-    // asynchronous, so they are compared as a set rather than in arrival order.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // A successful `mutation.run` rebroadcasts every open subscription on a later tick, so the
+    // socket keeps producing frames after the last reply has been read. Both open subscriptions
+    // rebroadcast: `nosuchquery` registers a subscription like any other — the runtime does not
+    // reject an unknown query name at subscribe time — so it re-emits its error frame every time
+    // too, which is why the frame count is not simply "one per mutation".
+    //
+    // Drained to quiescence rather than for a fixed interval. A fixed window compares whichever
+    // frames happened to arrive in time, and the two bundles run as separate processes with
+    // independent windows, so a slow tick in one of them shows up as a difference in multiplicity
+    // that has nothing to do with the bundles. Waiting for the socket to go quiet lets each side
+    // reach its own complete set, which keeps the count meaningful: a genuinely missing or
+    // duplicated broadcast still fails, because quiescence ends either way and the sets differ.
+    await drainUntilQuiet(socket);
     const broadcasts = socket.received
       .filter((entry) => !replies.includes(entry))
       .map((entry) => JSON.stringify(normalize(entry, context)))
@@ -778,6 +821,13 @@ test("a Capsule built from a module graph answers identically to the emitted-lis
     assert.equal(status.body.plainValue, "plain-env-value");
     const signedIn = emittedRun.websocket.replies.find((entry, index) => WEBSOCKET_SCRIPT[index].id === "m19");
     assert.equal(signedIn.reply.type, "auth.signIn.result", JSON.stringify(signedIn));
+    // Two successful mutations, two open subscriptions, one rebroadcast each. Asserted rather than
+    // merely compared: if this ever stops being a fixed number the comparison below turns into a
+    // coin toss, and a flaky equivalence proof is worse than none.
+    assert.deepEqual(
+      emittedRun.websocket.broadcasts.map((entry) => { const frame = JSON.parse(entry); return `${frame.id}:${frame.type}`; }),
+      ["m2:query.result", "m2:query.result", "m4:query.result", "m4:query.result"],
+    );
 
     for (const [index, step] of HTTP_SCRIPT.entries()) {
       assert.deepEqual(graphRun.http[index], emittedRun.http[index], `HTTP surface differs at "${step.name}"`);
@@ -1202,6 +1252,21 @@ test("every constant the preamble serializes carries the same value and the same
     const graphConstants = JSON.parse(await readFile(graphReport, "utf8"));
 
     assert.deepEqual(Object.keys(emittedConstants).sort(), [...PROBED_CONSTANTS].sort());
+
+    // The list above is written out by hand, and so is the preamble's. Two hand-kept lists agreeing
+    // with each other proves nothing about a constant added to only one of them, and this probe's
+    // own assertions cannot see that gap: a constant nobody probes is a constant nobody compares.
+    //
+    // Derived from the runtime module instead. The preamble can only serialize what that module
+    // exports, so every exported SCREAMING_CASE binding is a candidate — and any that is not probed
+    // has to be named here as a deliberate exclusion rather than quietly missed.
+    const runtimeModule = await import("../dist/server-runtime-source.js");
+    const NOT_A_SERIALIZED_CONSTANT = new Set(["SERVER_RUNTIME_SOURCE_FUNCTIONS"]);
+    assert.deepEqual(
+      Object.keys(runtimeModule).filter((name) => /^[A-Z][A-Z0-9_]*$/.test(name) && !NOT_A_SERIALIZED_CONSTANT.has(name)).sort(),
+      [...RUNTIME_SOURCE_CONSTANTS].sort(),
+      "the runtime module exports a constant this probe does not compare",
+    );
 
     // The report has to have observed real structure, or agreement between two empty objects would
     // pass for equivalence.

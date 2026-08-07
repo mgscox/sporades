@@ -58,7 +58,7 @@ function resolveServerBundleEntry() {
 //
 // The graph is rooted at the compiled entry in `dist/`, not at the TypeScript source, because a
 // published Sporades CLI ships `dist/` and not `src/` — see `package.json`'s `files`. How that path
-// is found matters more than it looks; `resolveServerBundleEntryPath` records why. esbuild is a
+// is found matters more than it looks; `resolveServerBundleEntry` records why. esbuild is a
 // direct dependency and already builds the Capsule module and the client pipeline, so nothing new
 // is required at bundle time.
 //
