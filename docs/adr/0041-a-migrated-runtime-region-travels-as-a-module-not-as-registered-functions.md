@@ -353,6 +353,116 @@ a class method, or assigned to a property of an exported object, is not collecte
 in its own right, while one nested inside another declaration is covered through
 its enclosing text.
 
+**Batch 9 is the last domain, and it is the batch where an accurate-looking estimate was
+wrong in both directions at once by sixteen and eight.** The Database adapters and dialect
+were estimated at ~55 and are 59 declarations, which reads like the sequence's first
+accurate estimate and is not: the name sweep collects 51, eight of which are not this
+domain's, and misses sixteen that are. The errors nearly cancel. That is batch 6's warning
+about a cancelling estimate, arriving on the batch with the largest domain.
+
+**Both passes were run and they overlap on nothing.** The reverse-graph pass flagged ten
+seeds with no in-domain caller and — applying batch 7's refinement that the question flags
+entry points and foreigners alike — reading the bodies kept two and rejected eight.
+`sqliteTypeForFieldKind` is the sharpest of the eight: it is named for the SQLite dialect,
+sits nowhere near it, and populates the `sqliteType` field on a Capsule schema that the
+dialect's `columnType` entry *later reads*. Layout is not membership, a name is not
+membership, and here neither was proximity to the thing that consumes your output.
+
+**The content sweep needed sharpening before it answered anything, and that is the finding
+to carry forward.** Batch 8 recommended one and was right to, but its own form of the
+question — which declarations touch SQL text, `prepare`, `exec`, `all`, `get` — collects 54
+extra declarations on this batch and nearly all of them are false. *Every* domain in this
+runtime emits SQL through these adapters, so on the layer everything else is built on,
+"touches the subject matter" selects consumers rather than members. The question that
+answers is narrower: which declarations have what only a *member* has — a dialect seam entry
+by name, a statement primitive being **defined** rather than called, engine wire bytes, an
+engine-specific error string. Sharpened that way it took the sixteen and nothing else, thirteen
+of which are the shared method set's own bodies hoisted out of its object literal. So the
+transferable rule is batch 8's plus one clause: **a content sweep must be written against
+what distinguishes the layer from its callers, and on a bottom layer that is not the
+vocabulary its callers use.**
+
+**Every blocker sorted, and none was the composition core's — the first time since batch 4.**
+Closing the domain's graph left nine names outside it. `createAnonymousAuthTables` went home
+to `auth-runtime.ts` (batch 5's case), the value codec's writing half and `invalidReferenceError`
+went to modules that already existed for their subject, and the Log index's storage became
+`log-index-storage.ts`. All 59 declarations moved, against batch 4's 34 of 51 and batch 8's
+32 of 33.
+
+**The Log index's storage is a domain the ticket's nine batches never named**, and it is worth
+recording because it is the one case the sequence's scoping missed rather than mis-sized.
+Batch 1 was the log-index *guard* — four functions that conceal the table from `sporades db
+query` — and nothing was ever scoped to the index itself. It surfaced as batch 9's blocker
+because the only thing in the repository that calls it is the shared adapter method set. Nine
+declarations, extracted on batch 6's third-answer rule. The platform log's sink did *not* go
+with it and the seam is the adapter itself: `createRuntimeLogSink` reaches the index through
+`database.insertLogIndexEvent(…)`, an adapter method resolved at run time rather than a module
+binding, so that half cost this batch nothing and remains for ticket 05 to place.
+
+**The pattern under three of the four blockers is one the migration kept finding rather than
+one batch 9 drew.** A domain's table bootstrap belongs to that domain and the adapter delegates
+to it: `ensureFileStorage()` and `ensureUserPreferencesStorage()` already crossed a module
+boundary because batches 6 and 5 moved those tables, and `ensureAuthStorage()` and
+`ensureLogStorage()` now do too. The adapter module owns no domain's tables and emits every
+domain's SQL.
+
+**Batch 9's differential limb is the third distinct shape of "what a refusal travels on", and
+the emptiest.** Batch 3's denial record and batch 7's ACL refusal hung on a thrown error;
+batch 8's `prepareHttpSecurity` answered a boolean identical across allowed and refused. Here
+*almost nothing returns its own answer at all*: a dialect's catalog entries build a query and
+hand it to an adapter, and every one of the seventy-odd shared method bodies builds a statement
+and hands it to `this.prepare(…)`. Measured over the limb's 41 method cases, the return values
+take **11 distinct values and are byte-identical between SQLite and Postgres** — a limb
+comparing them could not have told the two engines apart at all, while a carried copy queried
+`pg_catalog`, dropped the filter that hides SQLite's internals, emitted `INSERT OR REPLACE`
+where Postgres needs `ON CONFLICT`, or dropped `updateAppRow`'s `ownerId` predicate. Driven
+through a recorder the same cases take **39 distinct statement blocks and do differ by engine**.
+The limb costs **0.311 ms** per bundle build against batch 8's 0.047, batch 7's 0.13 and batch
+6's 0.07, and it reads no clock and does no I/O — asserted by comparing two runs byte for byte
+rather than by inspection.
+
+Two residuals are stated rather than left to be found. Parameter *values* are deliberately not
+recorded, because some bodies bind a fresh UUID or a clock read and recording them would make
+two honest copies disagree on every build; the parameter *count* is kept. And `probedAnswer`
+drops `hint`, which for this domain's refusals is the whole actionable half — `commandError`
+leaves `code` null, so an incomplete-seam refusal would compare on its message alone. A local
+`dialectProbedAnswer` adds it, as `authProbedAnswer` and the ACL one add what theirs travel on.
+
+**Two of batch 9's ten skews did not fail, and both were the probe's fault.** The Date fixture
+was written in canonical ISO form, so a `normalizeDateValue` that had stopped normalizing
+returned the identical string; and the marker fixture's bracketed text was identifier-shaped, so
+widening the substitution's bound changed no answer. Neither gap was visible on any honest build.
+That is the third batch running to find a limb blind to exactly what its own sabotage changes,
+and the first to find it in a *fixture* rather than in what the limb captured — **a probe whose
+input already satisfies the rule cannot see the rule being removed.**
+
+**Batch 9's counterfactual is the eighth confirmation, and the first that comes out differently.**
+A private `const`-arrow SQL walker planted in `database-runtime.ts` and called from
+`quoteIdentifier` fails the census by name, with the plant reaching the emitted Capsule bundle —
+two occurrences, confirmed by building it. With the plant still shipping and only the module's
+entry removed from `MIGRATED_RUNTIME_MODULES` in the seam test, **the plant becomes invisible to
+the census, exactly as in batches 1–8 — but the census still fails**, because three of this
+module's functions (`postgresInterpolate`, `splitSqlStatements`,
+`createSharedDatabaseAdapterMethods`) are already named in the written census and disappear with
+it. So the guard goes red for the wrong reason and says nothing about the plant. That is luck
+rather than protection: it happens only because this domain owns census entries, which
+`acl-runtime`, `http-runtime` and `log-index-storage` do not. The thing that actually protects an
+unlisted module is its `atLeast` floor and sentinel, and those are not consulted at all when the
+entry is absent. **A batch that migrates a domain and does not list it still silently narrows
+every guard that reads the emitted list.**
+
+Batch 9 measured its own base at 453 top-level names in the emitted bundle and 410 after, zero
+duplicates on both sides. The 46 that went are exactly the 46 declarations it made private — the
+38 in `database-runtime.js`, `backfillLogIndexSequences` and `chainSchemaOperation` in
+`log-index-storage.js`, the four auth storage migrations, and `toSqlNumber` and `dateValueError`
+in the codec. **Three names appeared that were not there before**, which no batch before this one
+saw: `listDatabaseTables`, `dumpDatabase` and `runReadOnlyQuery` were `export`s of
+`server-runtime-source.ts` that were never entries in `SERVER_RUNTIME_SOURCE_FUNCTIONS` — the CLI
+imports them directly — so they never reached the emitted bundle at all. Carried as module text
+they do. It is the same fact the walker census recorded when `simulateLocalIdentitySession`
+appeared in it: **the emitted list was never the whole runtime**, so migrating a domain can add to
+the shipped artifact as well as take away.
+
 ## What is not decided here
 
 This says nothing about *which* regions move or in what order, and nothing about
@@ -368,6 +478,11 @@ with "Cannot determine intended module format". **That prediction was correct an
 has since been executed rather than left standing.** `log-index-guard` imports
 this gate's tokenizer; `transformSync` over its compiled text emits
 `require("./inspection-sql.js")`, which is why the carrier bundles now.
+
+Sixteen modules are carried as of batch 9, `log-index-storage` and `database-runtime` being
+the fifteenth and sixteenth. The second is the first to import from *nine* other migrated
+modules, and the first to need three of ADR-0042's four routes to a Node builtin in one
+file. Nothing in the set imports it, so unlike batch 8's pair it sits on no cycle.
 
 Fourteen modules are carried as of batch 8, `http-runtime` being the fourteenth. It is the
 first to sit on a *cycle* — it imports `auth-runtime` and `auth-runtime` imports it — which
