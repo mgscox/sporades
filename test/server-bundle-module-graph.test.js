@@ -2295,6 +2295,92 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         originals["maybe-promise.js"].replace("export function thenIfPromise", "function thenIfPromise"),
         /did not build|export a different set of names|do not supply/,
       ],
+      // Batch 7's domain, ACL and privileged audit. **The Symbol split first**, because it is the one
+      // skew in this whole file that fails *open* rather than closed and the one issue 16 spent its
+      // length reasoning about rather than executing. `ACL_HELPER_STATE` has exactly one writer and
+      // one reader; give the reader a Symbol of its own and `touchedAsyncRead` becomes invisible, so
+      // an ACL rule that consulted an asynchronous helper read returns `true` on a value it never
+      // awaited and the write is **allowed**. The module exports the same names, every other limb
+      // agrees, and a deployed Capsule writes rows its own policy would have refused.
+      [
+        "an ACL_HELPER_STATE the writer and the reader no longer share",
+        "acl-runtime.js",
+        originals["acl-runtime.js"]
+          .replace(
+            "function aclRuleTouchedAsyncHelperRead(aclContext) {",
+            'const ACL_HELPER_STATE_OTHER = Symbol("sporades.aclHelperState");\nfunction aclRuleTouchedAsyncHelperRead(aclContext) {',
+          )
+          .replace(
+            "return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;",
+            "return aclContext?.acl?.[ACL_HELPER_STATE_OTHER]?.touchedAsyncRead === true;",
+          ),
+        /answer the skew probe differently/,
+      ],
+      // The privileged bypass failing open. `hasPrivilegedDbAccess` is what lets `ctx.privileged.run`
+      // write past a Capsule's own ACL rules, and a copy that answered `true` for every context would
+      // turn every ordinary handler into a privileged one — every ACL rule in the Capsule silently
+      // never consulted.
+      [
+        "a privileged-access gate that admits every context",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace(
+          "function hasPrivilegedDbAccess(context) {",
+          "function hasPrivilegedDbAccess(context) {\n  return true;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The write/insert/update/delete fallback ADR-0022 states. A copy that stopped falling back to
+      // `write` would leave a table declaring only a `write` rule unguarded on all three write
+      // operations, which is the single most common way a Capsule declares an ACL.
+      [
+        "an ACL resolver that stopped letting a write rule cover insert, update and delete",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace(
+          "return aclRules[operation] ?? aclRules.write;",
+          "return aclRules[operation];",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The audit event contract drifting by one member of a `Set` that was a preamble constant until
+      // this batch. Every privileged run by a captured user would be recorded as `unknown`.
+      [
+        "a privileged audit actor-kind set missing a member",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace('"privileged-server-role", "captured-user"', '"privileged-server-role"'),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on a module the monolith imports twenty-eight names back from.
+      [
+        "an ACL module that stopped exporting what the monolith imports",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace("export function runTableWriteWithAcl", "function runTableWriteWithAcl"),
+        /did not build|export a different set of names|do not supply/,
+      ],
+      // Batch 7's two non-domain modules, reached from the ACL limbs as well as their own. The first
+      // is the join that decides which field names an ACL denial record may name: reduced to a bare
+      // `password` test it would write `clientSecret` and `authorization` into the record of every
+      // refused operation in a deployed Capsule, and every honest log would still look right.
+      [
+        "a sensitive-key test reduced to one word",
+        "runtime-log-policy.js",
+        originals["runtime-log-policy.js"].replace(
+          /export function isSensitiveLogKey[\s\S]*?\n}\n/,
+          'export function isSensitiveLogKey(key) {\n  return /password/i.test(String(key));\n}\n',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // And the decoding `ctx.acl.db.get()` answers with. A copy that stopped parsing a Json column
+      // hands an ACL rule a string where the Capsule author's policy expects an object — a rule that
+      // then denies every row, with nothing in any log to say why.
+      [
+        "a stored-row decoder that stopped parsing Json",
+        "stored-row-decoding.js",
+        originals["stored-row-decoding.js"].replace(
+          "output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);",
+          "output[field.name] = output[field.name];",
+        ),
+        /answer the skew probe differently/,
+      ],
     ];
 
     for (const [description, file, skewed, expected] of skews) {

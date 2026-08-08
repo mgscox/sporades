@@ -295,6 +295,12 @@ the five declarations it made private (`createPreferencesError`,
 in the repository references them. Diffing the two name *sets* is what makes that
 reviewable; a count alone would have said "five fewer" and not which five.
 
+Batch 7 measured its own base at 501 and 470 after, zero duplicates on both sides and no
+name appearing that was not there before; the 31 that went are exactly the 31 declarations
+`acl-runtime.ts` made private. Its base of 501 happens to equal batch 6's *after* figure,
+which is a coincidence of two probes counting the same tree rather than evidence of
+anything — measure your own base regardless.
+
 Batch 6 measured its own base at 528 top-level names and zero duplicates, and 501
 after, with zero duplicates and **no name appearing that was not there before**. The
 27 that went are exactly the 27 declarations it made private — the S3 request path
@@ -362,6 +368,12 @@ with "Cannot determine intended module format". **That prediction was correct an
 has since been executed rather than left standing.** `log-index-guard` imports
 this gate's tokenizer; `transformSync` over its compiled text emits
 `require("./inspection-sql.js")`, which is why the carrier bundles now.
+
+Thirteen modules are carried as of batch 7 — `runtime-log-policy`, `stored-row-decoding`
+and `acl-runtime` are the eleventh to thirteenth. `acl-runtime` is the first to import
+from *six* other migrated modules, which the carrier resolves without comment for the
+reason bundling the whole set together was already forced. It reaches no Node builtin, so
+ADR-0042's accessor does not appear in it.
 
 Ten modules are carried as of batch 6, `maybe-promise` and `file-storage-runtime`
 being the ninth and tenth. The storage module is the first to combine every route a
@@ -462,6 +474,75 @@ error factory that already lived in the file. Nothing about chaining a
 maybe-promise is cohesive with errors, and the cost of a file whose name stops
 describing its contents is paid by every later reader rather than by the batch
 that saved the ceremony.
+
+**Batch 7 is where the third answer was needed twice in one batch, and where the last
+preamble constant left.** ACL and privileged audit was estimated at ~61 by name sweep; the
+sweep collects 63 and the graph disagrees with that in both directions again. One of the
+63 is not the domain's — `runMutationHookAndDrainPendingAclWrites` has no in-domain caller,
+its body is `runMutationHook` in a `try` with `drainPendingAclWrites` in the `finally`, and
+it sits at the mutation layer beside the function it wraps. Three more could not travel:
+`createPrivilegedHandlerContext`, `createContextPrivilegedApi` and `createPrivilegedJobApi`,
+held by `createContextHolder`, `createEndpointDatabaseApi` and `createCurrentUserJobApi`.
+That is batch 4's case rather than batch 5's — a privileged handler context *is* the point
+where every domain's API is composed onto one object — so the chain closes at ticket 05 and
+at no batch on the list. Fifty-nine of 62 moved.
+
+Three blockers belonged to no batch, and two modules came out of them:
+`runtime-log-policy.ts` for `isSensitiveLogKey` and `logIndexLimit`, and
+`stored-row-decoding.ts` for `deserializeRow` and its near-twin `deserializeFieldValue`.
+What each held is the argument for extracting rather than shrugging: `isSensitiveLogKey`
+held the ACL denial record and through it all three enforcement entry points,
+`deserializeRow` held `createAclHelpers` and therefore `ACL_HELPER_STATE`'s only writer, and
+`logIndexLimit` held the privileged-audit reindex after a rollback. Nine lines and thirteen
+would otherwise have kept the domain's heart in the monolith and the last constant in the
+preamble. Two modules rather than one because they are two subjects; the pair
+`deserializeRow`/`deserializeFieldValue` travels together because they are one rule written
+at two granularities — the emitted list is why there are two copies at all — and splitting
+them across a boundary would have put the copies further apart than the single file had.
+
+**The last four preamble constants left in this batch, and the preamble now serializes
+nothing.** `PRIVILEGED_AUDIT_SCHEMA`, `PRIVILEGED_AUDIT_ACTOR_KINDS`,
+`PRIVILEGED_AUDIT_OUTCOMES` and `ACL_HELPER_STATE` are declarations inside `acl-runtime.js`,
+and they left `runtimeConstants` in the commit that moved them for the reason batch 3's
+twelve did. The empty list is kept rather than deleted: the emitted list still ships, so a
+constant added to the monolith before ticket 05 would still need an entry.
+
+**`ACL_HELPER_STATE`'s Symbol identity stopped being an argument and became a measurement.**
+Issue 16 established that the preamble's reconstruction was safe because the key has one
+writer (`createAclHelpers`) and one reader (`aclRuleTouchedAsyncHelperRead`), both of which
+travelled into the bundle and resolved the preamble's single declaration. Carried as a module
+declaration there is one `Symbol("sporades.aclHelperState")` expression in each bundle rather
+than a declaration and a reconstruction — the property the module-graph bundle already had.
+Both counts are asserted, in both bundles, along with the absence of a preamble copy beside
+the declaration.
+
+The identity itself is now executed on every bundle build rather than reasoned about. The
+differential's ACL write limb drives a *synchronous* rule whose `ctx.acl.db.get()` returns a
+thenable: `markAsyncAclHelperRead` writes `touchedAsyncRead` through the Symbol and
+`aclRuleTouchedAsyncHelperRead` reads it back through the Symbol, and the write must be
+refused. Executed rather than asserted — a skewed `dist/` in which the reader mints a Symbol
+of its own answers `{"returned":"written"}` where the honest copy throws `DENIED`. **It is
+the only skew in that test that fails open**, which is why it is the first case listed.
+
+**Batch 7's counterfactual is the sixth confirmation that both walker guards go green when a
+module is carried and not listed.** A private `const`-arrow SQL walker planted in
+`acl-runtime.ts` fails the census by name and fails the terminator-spelling guard by name.
+With the plant still in `dist/acl-runtime.js` *and* reaching the emitted Capsule bundle — two
+occurrences, confirmed by building it — and only the module's entry removed from
+`MIGRATED_RUNTIME_MODULES` in the seam test, both guards pass with zero failures. Worth one
+addition to the record: an *unreachable* plant is tree-shaken out of the carried block by
+esbuild, so a counterfactual that only appends a dead function demonstrates less than it looks
+like. Give the plant a caller before concluding the guard would have missed something that
+ships.
+
+**A differential limb must also capture what a refusal travels *on*, and batch 7 is the second
+batch to find that the hard way.** The ACL write path reports a refusal by throwing, and
+`createAclDeniedError` hangs the whole denial record on the error rather than returning it —
+so `probedAnswer` dropped it, and with it `createAclDenialLogData`, `aclRuleDeclaredOperation`,
+`aclRowLogSnapshot`, `aclVisibleFieldNames` and the only path from that limb into
+`isSensitiveLogKey`. That is the same shape as batch 3's `authProbedAnswer` and it was closed
+the same way. The `previous`/`next` arm of the row snapshot is reachable through nothing else:
+a read refusal takes the other arm.
 
 The other three blockers sorted normally. `writeNotFound` and
 `writeJsonHttpResponse` are the HTTP layer's — their other consumer is
