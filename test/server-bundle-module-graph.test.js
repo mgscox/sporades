@@ -1561,7 +1561,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-row-decoding.js", "acl-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -2295,6 +2295,92 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         originals["maybe-promise.js"].replace("export function thenIfPromise", "function thenIfPromise"),
         /did not build|export a different set of names|do not supply/,
       ],
+      // Batch 7's domain, ACL and privileged audit. **The Symbol split first**, because it is the one
+      // skew in this whole file that fails *open* rather than closed and the one issue 16 spent its
+      // length reasoning about rather than executing. `ACL_HELPER_STATE` has exactly one writer and
+      // one reader; give the reader a Symbol of its own and `touchedAsyncRead` becomes invisible, so
+      // an ACL rule that consulted an asynchronous helper read returns `true` on a value it never
+      // awaited and the write is **allowed**. The module exports the same names, every other limb
+      // agrees, and a deployed Capsule writes rows its own policy would have refused.
+      [
+        "an ACL_HELPER_STATE the writer and the reader no longer share",
+        "acl-runtime.js",
+        originals["acl-runtime.js"]
+          .replace(
+            "function aclRuleTouchedAsyncHelperRead(aclContext) {",
+            'const ACL_HELPER_STATE_OTHER = Symbol("sporades.aclHelperState");\nfunction aclRuleTouchedAsyncHelperRead(aclContext) {',
+          )
+          .replace(
+            "return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;",
+            "return aclContext?.acl?.[ACL_HELPER_STATE_OTHER]?.touchedAsyncRead === true;",
+          ),
+        /answer the skew probe differently/,
+      ],
+      // The privileged bypass failing open. `hasPrivilegedDbAccess` is what lets `ctx.privileged.run`
+      // write past a Capsule's own ACL rules, and a copy that answered `true` for every context would
+      // turn every ordinary handler into a privileged one — every ACL rule in the Capsule silently
+      // never consulted.
+      [
+        "a privileged-access gate that admits every context",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace(
+          "function hasPrivilegedDbAccess(context) {",
+          "function hasPrivilegedDbAccess(context) {\n  return true;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The write/insert/update/delete fallback ADR-0022 states. A copy that stopped falling back to
+      // `write` would leave a table declaring only a `write` rule unguarded on all three write
+      // operations, which is the single most common way a Capsule declares an ACL.
+      [
+        "an ACL resolver that stopped letting a write rule cover insert, update and delete",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace(
+          "return aclRules[operation] ?? aclRules.write;",
+          "return aclRules[operation];",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The audit event contract drifting by one member of a `Set` that was a preamble constant until
+      // this batch. Every privileged run by a captured user would be recorded as `unknown`.
+      [
+        "a privileged audit actor-kind set missing a member",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace('"privileged-server-role", "captured-user"', '"privileged-server-role"'),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on a module the monolith imports twenty-eight names back from.
+      [
+        "an ACL module that stopped exporting what the monolith imports",
+        "acl-runtime.js",
+        originals["acl-runtime.js"].replace("export function runTableWriteWithAcl", "function runTableWriteWithAcl"),
+        /did not build|export a different set of names|do not supply/,
+      ],
+      // Batch 7's two non-domain modules, reached from the ACL limbs as well as their own. The first
+      // is the join that decides which field names an ACL denial record may name: reduced to a bare
+      // `password` test it would write `clientSecret` and `authorization` into the record of every
+      // refused operation in a deployed Capsule, and every honest log would still look right.
+      [
+        "a sensitive-key test reduced to one word",
+        "runtime-log-policy.js",
+        originals["runtime-log-policy.js"].replace(
+          /export function isSensitiveLogKey[\s\S]*?\n}\n/,
+          'export function isSensitiveLogKey(key) {\n  return /password/i.test(String(key));\n}\n',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // And the decoding `ctx.acl.db.get()` answers with. A copy that stopped parsing a Json column
+      // hands an ACL rule a string where the Capsule author's policy expects an object — a rule that
+      // then denies every row, with nothing in any log to say why.
+      [
+        "a stored-row decoder that stopped parsing Json",
+        "stored-row-decoding.js",
+        originals["stored-row-decoding.js"].replace(
+          "output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);",
+          "output[field.name] = output[field.name];",
+        ),
+        /answer the skew probe differently/,
+      ],
     ];
 
     for (const [description, file, skewed, expected] of skews) {
@@ -2422,28 +2508,50 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
   assert.equal(bundle.includes("require("), false, "the emitted-list bundle would resolve a specifier at runtime");
 });
 
-test("the module-graph bundle resolves the runtime's own symbol rather than a reconstruction of it", async () => {
-  // A `Symbol` has no serialization, so the emitted-list preamble rebuilds `ACL_HELPER_STATE` from
-  // its description and a bundled Capsule ends up holding a different Symbol than the runtime
-  // module's. That is safe there because the bundle is the only writer and the only reader of that
-  // key. Building from a module graph removes the second Symbol rather than reproducing it, so this
-  // records the one place where the new bundle is deliberately not a copy of the old one.
-  const emitted = createServerBundleSource({
-    config: capsuleConfig(),
-    serverEnv: {},
-    serverSource: "",
-    serverModuleSource: "export default {};",
-  });
-  assert.match(emitted, /const ACL_HELPER_STATE = Symbol\("sporades\.aclHelperState"\);/);
-
+test("both bundles now mint ACL_HELPER_STATE exactly once, from the runtime's own declaration", async () => {
+  // A `Symbol` has no serialization, so while `ACL_HELPER_STATE` was a monolith declaration the
+  // emitted-list bundle's constant preamble rebuilt it from that declaration's description and a
+  // deployed Capsule held a *different* Symbol than the runtime module's. That was safe — this key
+  // has exactly one writer (`createAclHelpers`) and one reader (`aclRuleTouchedAsyncHelperRead`),
+  // both of which travelled into the bundle and resolved the preamble's single declaration, and the
+  // frozen helper objects never cross between a bundled Capsule and this process — but it was
+  // reasoned about rather than checked, and this test recorded it as the one place where the
+  // module-graph bundle was deliberately not a copy of the emitted-list one.
+  //
+  // **Batch 7 removed the difference rather than preserving it.** `ACL_HELPER_STATE` is a
+  // declaration inside `acl-runtime.js` now, carried into the emitted-list bundle as that module's
+  // own text, so the preamble does not write it and there is one `Symbol(…)` expression in each
+  // bundle instead of a declaration and a reconstruction. That is what this asserts, in both
+  // directions: exactly one mint, and no preamble copy of it.
+  //
+  // Counting rather than matching, because "at least one" is what a reconstruction alongside the
+  // declaration would also satisfy — which is precisely the duplicate-declaration hazard the four
+  // constants had to leave the preamble in the same commit to avoid.
+  const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
+  const emitted = createServerBundleSource(inputs);
   const graph = await createServerBundleModuleSource({
-    config: capsuleConfig(),
-    serverEnv: {},
-    serverSource: "",
-    serverModuleSource: "export default {};",
+    ...inputs,
     epilogue: `import { ACL_HELPER_STATE as __probeAclHelperState } from "../server-runtime-source.js";\nglobalThis.__probeAclHelperState = __probeAclHelperState;`,
   });
-  assert.equal(graph.includes('Symbol("sporades.aclHelperState")'), true);
+
+  for (const [label, bundle] of [["emitted", emitted], ["graph", graph]]) {
+    assert.equal(
+      bundle.split('Symbol("sporades.aclHelperState")').length - 1,
+      1,
+      `the ${label} bundle does not mint ACL_HELPER_STATE exactly once`,
+    );
+    assert.equal(
+      /const ACL_HELPER_STATE = Symbol\("sporades\.aclHelperState"\);/.test(bundle),
+      false,
+      `the ${label} bundle still reconstructs ACL_HELPER_STATE in a preamble beside the carried declaration`,
+    );
+  }
+
+  // And the name still resolves at each bundle's top level, which is what the writer and the reader
+  // inside the carried module reach it by. The emitted-list bundle gets it from the destructuring
+  // the migrated block ends with; the module-graph bundle from an import esbuild resolved.
+  assert.match(emitted, /const \{[^}]*\bACL_HELPER_STATE\b/);
+  assert.match(graph, /\bACL_HELPER_STATE\b/);
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {

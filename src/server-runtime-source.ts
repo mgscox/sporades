@@ -37,6 +37,23 @@ import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
+import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+import { deserializeFieldValue, deserializeRow } from "./stored-row-decoding.js";
+// Twenty-one names, which is what the three functions of that domain still in this file plus
+// `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
+// runners resolve. `ACL_HELPER_STATE` and `createTableAclContext` are deliberately not among them:
+// both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
+// `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
+// here, so importing them would declare a name nothing in this file reads.
+import {
+  applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter,
+  createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError,
+  createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
+  drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
+  filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError,
+  normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
+  revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode,
+} from "./acl-runtime.js";
 import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
   createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
@@ -124,12 +141,15 @@ export * from "./runtime-errors.js";
 // occurrence calculation and the payload-factory lanes. One module and not two, because they share
 // the queue and the occurrence machinery.
 //
-// **Seventeen of the domain's fifty-one declarations are still in this file**, and the reference
-// graph says why: `runCurrentUserJobWorker` and `enqueueScheduledOccurrence` build a handler context
-// with `createMutationContext`, which is the composition point this file retains, and
-// `assertActivePrivilegedJobAccess` reaches `hasPrivilegedDbAccess`, which is batch 6's ACL. The
-// twenty-four names imported below are what those seventeen call. See `jobs-runtime.ts` for the
-// per-function account.
+// **Fifteen of the domain's fifty-one declarations are still in this file.** It was seventeen until
+// batch 7, and the reference graph says why for both numbers: `runCurrentUserJobWorker` and
+// `enqueueScheduledOccurrence` build a handler context with `createMutationContext`, which is the
+// composition point this file retains, and `assertActivePrivilegedJobAccess` reached
+// `hasPrivilegedDbAccess`, which is the ACL domain — batch *7*, which this note called batch 6
+// before that batch ran. Batch 7 cleared it and `createPrivilegedScheduleApi` with it;
+// `createPrivilegedJobApi` did not follow them, because it reaches `createCurrentUserJobApi`, which
+// is one of the fifteen. The names imported below are what those fifteen call. See
+// `jobs-runtime.ts` for the per-function account.
 //
 // **`enqueueRuntimeJob` is one of the seventeen, so batch 3's `sendEmailPasswordResetLink` is still
 // blocked.** Auth's blocker moved one link down the chain rather than away: `enqueueRuntimeJob`
@@ -190,14 +210,68 @@ export * from "./user-preferences-runtime.js";
 //
 // Both are re-exported whole for the reason the eight above are. Neither declares a SCREAMING_CASE
 // constant, so unlike auth and jobs this batch adds nothing to the constant probe and removed
-// nothing from the bundle preamble — the four that remain there are the privileged-audit trio and
-// `ACL_HELPER_STATE`, which are the ACL batch's. What makes the re-export load-bearing here is
+// nothing from the bundle preamble — the four that remained there were the privileged-audit trio
+// and `ACL_HELPER_STATE`, which batch 7 took with the ACL domain, leaving that preamble empty. What
+// makes the re-export load-bearing here is
 // `test/database-adapter.test.js`, which imports ten of this domain's names through this module,
 // and `test/dev.test.js`, which asserts the generated bundle still declares `localFileStoragePath`
 // and `localFileVersionPath` — both of which are private to `file-storage-runtime.js` now and reach
 // the bundle as carried module text rather than as emitted-list entries.
 export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
+
+// Two more modules that are not domains, extracted by batch 7 for the reason `runtime-errors.js`
+// and `maybe-promise.js` were extracted: they hold what the ACL and privileged-audit domain's
+// reference graph left outside it and no batch on ticket 04's list owns.
+//
+// `runtime-log-policy.js` holds `isSensitiveLogKey` and `logIndexLimit` — which field names the
+// platform log must never write down, and how many events the log index keeps. Both are read by the
+// log sink still in this file *and* by the ACL and audit paths that left it: the first held the
+// entire ACL denial record and through it all three enforcement entry points, the second held the
+// privileged-audit reindex after a rollback.
+//
+// `stored-row-decoding.js` holds `deserializeRow` and `deserializeFieldValue`, the Boolean, Json
+// and Number columns turned back into the values a Capsule author sees. `ctx.acl.db.get()` answers
+// with the first, which is why it is here; the endpoint table API and both mutation paths still in
+// this file call both.
+//
+// Both are re-exported whole for the reason the ten above are. Neither declares a SCREAMING_CASE
+// constant, so neither adds anything to the constant probe.
+export * from "./runtime-log-policy.js";
+export * from "./stored-row-decoding.js";
+
+// The ACL and privileged-audit domain left this file as batch 7 — table ACL declaration and
+// resolution, the read and write enforcement paths, the frozen `ctx.acl` helpers and their bounded
+// read state, the ACL denial record, the privileged server role's `ctx.privileged` File and
+// Schedule surfaces, and the whole privileged audit event contract. Fifty-nine declarations, of
+// which thirty-one are private to that module now; twenty-one of its names are imported above,
+// which is what the three functions of the domain still in this file, plus `openDevDatabase`, the
+// endpoint table API, the schema extractor and the four mutation and message runners, need from it.
+//
+// **Three of the domain's sixty-two declarations are still here**, and the reference graph says
+// why: `createPrivilegedHandlerContext` reaches `createContextHolder` and `createEndpointDatabaseApi`,
+// `createContextPrivilegedApi` is mutually recursive with it, and `createPrivilegedJobApi` reaches
+// `createCurrentUserJobApi`. That is the composition core this file retains until ticket 05 — a
+// privileged handler context *is* the point where every domain's API is assembled onto one object —
+// so these three are batch 4's case rather than batch 5's: no later batch on ticket 04's list
+// clears them. See `acl-runtime.ts` for the per-function account, including the one function a name
+// sweep collects that turned out to belong to the mutation layer instead.
+//
+// **All four remaining preamble constants left with this batch.** `PRIVILEGED_AUDIT_SCHEMA`,
+// `PRIVILEGED_AUDIT_ACTOR_KINDS`, `PRIVILEGED_AUDIT_OUTCOMES` and `ACL_HELPER_STATE` are
+// declarations inside `acl-runtime.js` now, and they had to leave `runtimeConstants` in the same
+// commit or each name would be declared twice at the top level of the emitted ES module. The
+// bundle preamble serializes nothing at all as of this batch.
+//
+// Re-exported whole for the reason the ten above are, and this batch has three consumers that make
+// it load-bearing rather than convenient: the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from *this* module's
+// SCREAMING_CASE exports, so a narrower re-export would quietly stop comparing the audit schema,
+// the actor kinds, the outcomes and the helper-state Symbol between the two bundles;
+// `src/cli/sporades.ts` and `src/cli/sporades-host-helper.ts` build a privileged audit event with
+// `createPrivilegedAuditLogInput` through here; and `test/database-adapter.test.js` and
+// `test/mail.test.js` resolve `emitPrivilegedAuditEvent` and `createTableAclContext` through here.
+export * from "./acl-runtime.js";
 
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
@@ -277,7 +351,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createRuntimeInspectionAdapter,
   createCurrentUserJobApi,
   createPrivilegedJobApi,
-  assertActivePrivilegedJobAccess,
   flushPendingJobEnqueues,
   scheduleCurrentUserJobWorker,
   scheduleNextDelayedJob,
@@ -314,41 +387,17 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
-  createPrivilegedAuditEmitter,
-  emitPrivilegedAuditEvent,
   createContextPrivilegedApi,
-  emitPrivilegedRunAudit,
-  recordPrivilegedAuditEventForTransaction,
-  reindexPrivilegedAuditEventsAfterRollback,
-  privilegedAuditEventAlreadyIndexed,
-  samePrivilegedAuditLogEvent,
-  normalizePrivilegedRunSignal,
-  createPrivilegedRunAbortError,
-  createPrivilegedRunAuditDetails,
-  validatedPrivilegedOperation,
-  validatedPrivilegedMetadata,
-  isPlainPrivilegedMetadata,
-  invalidPrivilegedRunMetadata,
-  createPrivilegedRunPublicError,
-  createPrivilegedAuditEmissionPublicError,
-  isPrivilegedAuditEmissionPublicError,
   createPrivilegedHandlerContext,
-  createPrivilegedScheduleApi,
-  createPrivilegedFileApi,
-  activePrivilegedFileAccess,
-  createPrivilegedAuditLogInput,
-  normalizePrivilegedAuditActorKind,
-  normalizePrivilegedAuditOutcome,
-  privilegedAuditLevelForOutcome,
-  normalizePrivilegedAuditCorrelation,
-  safePrivilegedAuditErrorCode,
-  auditString,
   createLogEnvelope,
   sanitizeLogData,
   redactLogData,
   logDataContainsServerEnvValue,
   isSensitiveLogString,
-  isSensitiveLogKey,
+  // `isSensitiveLogKey` stood here until batch 7 moved it to `runtime-log-policy.ts`, and
+  // `logIndexLimit` eleven entries below it. Both are declarations inside a carried module now, so
+  // listing either again would declare the same top-level function twice in the emitted ES module —
+  // a load-time `SyntaxError` rather than a drift.
   capLogEnvelope,
   formatLogIndexSequence,
   nextLogIndexSequence,
@@ -359,7 +408,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   pruneLogIndex,
   readRecentLogEvents,
   readJsonlLogEvents,
-  logIndexLimit,
   logPayloadMaxBytes,
   logRedactedValue,
   // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
@@ -376,8 +424,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   extractSchema,
   schemaFromCapsuleDefinition,
   schemaTableFromCapsuleTable,
-  normalizeTableAcl,
-  resolveEffectiveAclRule,
   schemaFieldFromCapsuleField,
   sqliteTypeForFieldKind,
   extractEndpoints,
@@ -424,46 +470,38 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   readEndpointRequest,
   createEndpointContext,
   createContextHolder,
-  createTableAclContext,
   applyContextMiddleware,
   runContextMiddleware,
   endpointQueryFromUrl,
-  privilegedDbAccessContextSet,
-  grantPrivilegedDbAccess,
-  revokePrivilegedDbAccess,
-  hasPrivilegedDbAccess,
   createEndpointDatabaseApi,
   createEndpointTableApi,
-  runTableWriteWithAcl,
-  applyReadAcl,
-  filterRowsByReadAcl,
-  createAclHelpers,
-  aclRuleTouchedAsyncHelperRead,
-  // The two halves of the ACL helpers' async-read detection. Both are reached from the frozen
-  // helper objects an ACL rule is handed, so without them here every rule that consulted
-  // `ctx.acl.db` or `ctx.acl.storage` threw out of the rule rather than answering it.
-  markAsyncAclHelperRead,
-  createAclDbHelpers,
-  createAclStorageHelpers,
-  resolveAclStorageFileReference,
-  assertAclHelperReadAllowed,
-  resolveAclAppTable,
-  resolveAclStorageResource,
-  aclStorageMetadataFromFileRow,
-  emitAclDeniedLog,
-  createAclDenialLogData,
-  aclRuleDeclaredOperation,
-  aclRowLogSnapshot,
-  aclVisibleFieldNames,
-  createAclDeniedError,
+  // The ACL and privileged-audit domain occupied fifty-five entries in this list until batch 7 —
+  // twenty-seven of them here, from `runTableWriteWithAcl` through `createAclDeniedError`, and the
+  // rest in four other runs: the privileged audit region above `createLogEnvelope`, the table ACL
+  // normalizer among the schema extractors, the privileged-access WeakSet after
+  // `endpointQueryFromUrl`, and `assertActivePrivilegedJobAccess` and `drainPendingAclWrites` down
+  // among the mutation runners. All fifty-five are declarations inside `./acl-runtime.js` now and
+  // reach the generated Capsule bundle as that module's own text, so listing any of them again
+  // would declare the same top-level function twice in an ES module — a load-time `SyntaxError`
+  // rather than a drift.
+  //
+  // Three entries the sweep for that domain would collect are still here — `createContextHolder`
+  // and `createEndpointDatabaseApi` above, and `createEndpointContext` — because they are the
+  // composition core rather than the domain; see the note above `export * from "./acl-runtime.js"`.
+  //
+  // A comment stood here naming `markAsyncAclHelperRead` and `resolveAclStorageFileReference` as
+  // entries that had to be in this list or every ACL rule consulting `ctx.acl` threw. Both are
+  // private declarations inside that module now, registered in nothing, which is the thing this
+  // list could not express.
   fieldValueForWrite,
   invalidReferenceError,
   referenceExists,
   serializeFieldValue,
-  deserializeFieldValue,
   normalizeDateValue,
   dateValueError,
-  deserializeRow,
+  // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
+  // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
+  // for the reason recorded beside `isSensitiveLogKey` above.
   readEndpointBody,
   createEndpointLogger,
   routeRuntimeHealth,
@@ -512,7 +550,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   runMutationHook,
   runMutationHookAndDrainPendingAclWrites,
   createMutationContext,
-  drainPendingAclWrites,
   createMessageContext,
   createHookErrorResult,
   runInsertMutation,
@@ -2977,11 +3014,6 @@ function libsqlValueToJs(value: any) {
   return value;
 }
 
-function logIndexLimit(config: LooseRecord = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
-
 function logPayloadMaxBytes(config: LooseRecord = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
@@ -3065,29 +3097,6 @@ function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; ev
     error: (...args: any) => write("error", args),
   };
 }
-
-// Exported for the generated Capsule bundle's constant preamble; see the note above
-// `PRIVILEGED_AUTH_USER_ID`.
-export const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-export const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-export const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-
-function createPrivilegedAuditEmitter(log: { emit: (input: LooseRecord) => any; }) {
-  return {
-    emit(details: LooseRecord) {
-      return emitPrivilegedAuditEvent(log, details);
-    },
-  };
-}
-
-function emitPrivilegedAuditEvent(target: LooseRecord, details: LooseRecord = {}) {
-  const log = target?.log?.emit ? target.log : target;
-  if (!log?.emit) {
-    throw new Error("Privileged audit events require a runtime log sink.");
-  }
-  return log.emit(createPrivilegedAuditLogInput(details));
-}
-
 function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return {
     async run(options: LooseRecord, callback: any) {
@@ -3173,166 +3182,6 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
     },
   };
 }
-
-async function emitPrivilegedRunAudit(database: LooseRecord, context: LooseRecord, details: LooseRecord) {
-  const event = await database.audit.emit(details);
-  recordPrivilegedAuditEventForTransaction(context, event);
-  return event;
-}
-
-function recordPrivilegedAuditEventForTransaction(context: LooseRecord, event: LooseRecord) {
-  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
-    return;
-  }
-  if (!Array.isArray(context.__privilegedAuditEvents)) {
-    Object.defineProperty(context, "__privilegedAuditEvents", {
-      value: [],
-      enumerable: false,
-      configurable: true,
-    });
-  }
-  context.__privilegedAuditEvents.push(event);
-}
-
-async function reindexPrivilegedAuditEventsAfterRollback(database: LooseRecord, context: LooseRecord | undefined) {
-  const events = context?.__privilegedAuditEvents;
-  if (!Array.isArray(events) || events.length === 0) {
-    return;
-  }
-  for (const event of events) {
-    try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
-        continue;
-      }
-      await database.adapter.insertLogIndexEvent(event);
-    } catch {
-      return;
-    }
-  }
-  try {
-    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
-  } catch {
-  }
-}
-
-async function privilegedAuditEventAlreadyIndexed(database: LooseRecord, event: LooseRecord) {
-  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
-  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
-}
-
-function samePrivilegedAuditLogEvent(left: LooseRecord, right: LooseRecord) {
-  return (
-    left?.category === right?.category &&
-    left?.event === right?.event &&
-    left?.timestamp === right?.timestamp &&
-    left?.data?.schema === right?.data?.schema &&
-    left?.data?.operation === right?.data?.operation &&
-    left?.data?.outcome === right?.data?.outcome &&
-    left?.data?.actorKind === right?.data?.actorKind &&
-    (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null)
-  );
-}
-
-function normalizePrivilegedRunSignal(value: any) {
-  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
-    return value;
-  }
-  return new AbortController().signal;
-}
-
-function createPrivilegedRunAbortError() {
-  return commandError(
-    "Privileged run aborted.",
-    "Retry the privileged operation if cancellation was not intended.",
-    "ABORTED",
-  );
-}
-
-function createPrivilegedRunAuditDetails(context: LooseRecord, options: LooseRecord) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
-  }
-  const operation = validatedPrivilegedOperation(options.operation);
-  const metadata = validatedPrivilegedMetadata(options.metadata);
-  return {
-    actorKind: "privileged-server-role",
-    operation,
-    surface: auditString(options.surface ?? context?.kind, "server-handler"),
-    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
-    correlation: options.correlation ?? null,
-    request: options.request ?? null,
-    source: "runtime",
-    metadata,
-  };
-}
-
-function validatedPrivilegedOperation(value: any) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
-  }
-  const operation = value.trim();
-  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
-    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
-  }
-  return operation;
-}
-
-function validatedPrivilegedMetadata(value: any) {
-  if (value === undefined) {
-    return {};
-  }
-  if (!isPlainPrivilegedMetadata(value)) {
-    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
-  }
-  return { ...value };
-}
-
-function isPlainPrivilegedMetadata(value: any) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  if (typeof value.then === "function") {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function invalidPrivilegedRunMetadata(message: string) {
-  return commandError(
-    message,
-    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
-    "INVALID_PRIVILEGED_RUN_METADATA",
-  );
-}
-
-function createPrivilegedRunPublicError(cause: any) {
-  const error = commandError(
-    "Privileged run failed.",
-    "Check the privileged audit events and server logs before exposing a safe response.",
-    "PRIVILEGED_RUN_FAILED",
-  );
-  error.cause = cause;
-  return error;
-}
-
-function createPrivilegedAuditEmissionPublicError(cause: any, context: LooseRecord | undefined = undefined) {
-  const error = commandError(
-    "Privileged audit emission failed.",
-    "Check the server audit log configuration before retrying the privileged operation.",
-    "PRIVILEGED_AUDIT_EMISSION_FAILED",
-  );
-  error.cause = cause;
-  if (context) {
-    (error as any).privilegedAuditContext = context;
-  }
-  return error;
-}
-
-function isPrivilegedAuditEmissionPublicError(error: any) {
-  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
-}
-
 function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRecord, signal: any) {
   const privilegedContext: LooseRecord = {
     ...context,
@@ -3363,202 +3212,6 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.mail = database.mail;
   return privilegedContext;
 }
-
-function createPrivilegedScheduleApi(database: LooseRecord, contextGetter: () => LooseRecord) {
-  const sqlite = () => (database.__rootDatabase ?? database).adapter;
-  return {
-    async get(name: any) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
-      return row ? await scheduleSummary(sqlite(), row) : null;
-    },
-    async list() {
-      assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
-      const summaries = [];
-      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
-      return summaries;
-    },
-  };
-}
-
-function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => LooseRecord) {
-  return Object.freeze({
-    async url(fileReference: any) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      const row = resolved.row;
-      if (!row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: {
-            ...fileMetadataFromRow(row),
-            ownerId: row.ownerId,
-          },
-        },
-        error: null as any,
-      };
-    },
-    async createPublicUrl(fileReference: any, options: LooseRecord = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
-    },
-    async delete(fileReference: any) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
-    },
-    unsupported() {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        throw commandError(
-          active.error?.message ?? "Privileged file access is no longer active.",
-          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
-          "PRIVILEGED_FILE_ACCESS_INACTIVE",
-        );
-      }
-      throw commandError(
-        "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
-        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION",
-      );
-    },
-  });
-}
-
-function activePrivilegedFileAccess(contextGetter: () => LooseRecord) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "Privileged file access is no longer active.",
-      "Start a new ctx.privileged.run callback before using privileged file operations.",
-    ),
-  };
-}
-
-export function createPrivilegedAuditLogInput(details: LooseRecord = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata)
-      ? details.metadata
-      : {},
-  };
-
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
-    data,
-    request: details.request ?? null,
-    release,
-    correlation,
-  };
-}
-
-function normalizePrivilegedAuditActorKind(value: any) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-
-function normalizePrivilegedAuditOutcome(value: any) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-
-function privilegedAuditLevelForOutcome(outcome: string) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-
-function safePrivilegedAuditErrorCode(value: any, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
-  if (source === null || source === undefined || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source)
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_.-]+/g, "_")
-    .slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-
-function normalizePrivilegedAuditCorrelation(value: any) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-
-function auditString(value: any, fallback: string) {
-  const text = value === null || value === undefined ? "" : String(value);
-  return text.trim() ? text : fallback;
-}
-
 export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();
   const config = input.config ?? {};
@@ -3633,13 +3286,6 @@ function logDataContainsServerEnvValue(value: unknown, serverEnv: any) {
     typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue,
   );
   return values.some((secret) => serialized.includes(String(secret)));
-}
-
-function isSensitiveLogKey(key: string) {
-  return (
-    /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
-    /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key))
-  );
 }
 
 function isSensitiveLogString(value: string) {
@@ -3926,58 +3572,6 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
   };
 }
-
-function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined) {
-  const supportedOperations = new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === undefined) {
-    return {
-      allowByDefault: true,
-      resolve(operation: any) {
-        return resolveEffectiveAclRule(this, operation);
-      },
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete.",
-    );
-  }
-
-  const normalized: LooseRecord = {
-    allowByDefault: true,
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete.",
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete.",
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve(operation: any) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-
-function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: boolean; resolve?: (operation: any) => any; write?: any; }, operation: string) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return undefined;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
-}
-
 function schemaFieldFromCapsuleField(name: string, field: any) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
     throw commandError(
@@ -5049,15 +4643,6 @@ function createContextHolder(context: LooseRecord) {
   });
   return holder;
 }
-
-function createTableAclContext(context: any, database: any) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
-  return {
-    ...aclContext,
-    acl: createAclHelpers(database),
-  };
-}
-
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
   let context: LooseRecord = {
     ...baseContext,
@@ -5106,37 +4691,6 @@ function endpointQueryFromUrl(requestUrl: URL) {
   }
   return query;
 }
-
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet as LooseRecord;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: new WeakSet(),
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  return holder.contexts;
-}
-
-function grantPrivilegedDbAccess(context: any) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().add(context);
-  }
-  return context;
-}
-
-function revokePrivilegedDbAccess(context: any) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().delete(context);
-  }
-  return context;
-}
-
-function hasPrivilegedDbAccess(context: any) {
-  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
-}
-
 function createEndpointDatabaseApi(database: LooseRecord, contextGetter: any = null) {
   return Object.fromEntries(
     database.schema.tables.map((table: { name: any; }) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]),
@@ -5293,310 +4847,6 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
     },
   };
 }
-
-function runTableWriteWithAcl(database: any, table: LooseRecord, operation: string, previous: any, next: any, contextGetter: any, write: () => any) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context,
-    table,
-    operation,
-    previous,
-    next,
-  });
-  const deny = () => {
-    if (!context?.__pendingAclWrites) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next,
-  });
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  });
-  context?.__pendingAclWrites?.push(pending);
-  return pending;
-}
-
-
-
-
-function applyReadAcl(database: any, table: LooseRecord, row: any, context: any) {
-  if (hasPrivilegedDbAccess(context)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row,
-  });
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context,
-      table,
-      operation: "read",
-      row,
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
-  }
-  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
-}
-
-function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any) {
-  const decisions = rows.map((row: any) => applyReadAcl(database, table, row, context));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved: any[]) => rows.filter((_: any, index: number) => resolved[index]));
-  }
-  return rows.filter((_: any, index: number) => decisions[index]);
-}
-
-// Exported so the generated Capsule bundle's preamble can reconstruct it from this declaration's
-// own description rather than restating the string. The reconstructed Symbol is a *different*
-// Symbol than this one, which is fine: the only writer (`createAclHelpers`) and the only reader
-// (`aclRuleTouchedAsyncHelperRead`) both travel into the bundle as source text and both resolve
-// this name to the single binding the preamble declares, so the key is consistent within the
-// bundle. These helper objects never cross between a bundled Capsule and this module, so the two
-// Symbols are never asked to match each other.
-export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-
-function createAclHelpers(database: any) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state),
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false,
-  });
-  return Object.freeze(helpers);
-}
-
-function aclRuleTouchedAsyncHelperRead(aclContext: any) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
-}
-
-function markAsyncAclHelperRead(state: LooseRecord, result: any) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => { });
-    return true;
-  }
-  return false;
-}
-
-function createAclDbHelpers(database: LooseRecord, state: LooseRecord) {
-  return Object.freeze({
-    get(tableName: any, id: any) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
-    },
-    exists(tableName: any, id: any) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
-    },
-  });
-}
-
-function createAclStorageHelpers(database: any, state: LooseRecord) {
-  return Object.freeze({
-    get(resourceName: any, reference: any) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
-      }
-      return null;
-    },
-    exists(resourceName: any, reference: any) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
-      }
-      return false;
-    },
-  });
-}
-
-function resolveAclStorageFileReference(database: LooseRecord, state: any, reference: any) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected = database.adapter.selectLiveFileByPath(path);
-    if (markAsyncAclHelperRead(state, selected)) {
-      return null;
-    }
-    const resolved = selected.length > 1 ? { ambiguous: true } : (selected[0] ?? null);
-    return resolved?.ambiguous ? null : resolved;
-  }
-  const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
-}
-
-function assertAclHelperReadAllowed(state: LooseRecord) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-
-function resolveAclAppTable(database: LooseRecord, tableName: any) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate: { name: string; }) => candidate.name === normalized);
-  if (!table) {
-    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-
-function resolveAclStorageResource(resourceName: any) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-
-function aclStorageMetadataFromFileRow(row: LooseRecord) {
-  const metadata = fileMetadataFromRow(row);
-  return {
-    ...metadata,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null,
-  };
-}
-
-function emitAclDeniedLog(database: LooseRecord, details: LooseRecord) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details),
-  });
-}
-
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }: LooseRecord) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name,
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation),
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null,
-    },
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
-  };
-}
-
-function aclRuleDeclaredOperation(table: LooseRecord, operation: string) {
-  if (operation !== "read" && table.acl?.[operation] === undefined && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-
-function aclRowLogSnapshot(input: any) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next),
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input),
-  };
-}
-
-function aclVisibleFieldNames(row: any) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName),
-  );
-}
-
-function createAclDeniedError(logData: any = null) {
-  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
-
 function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   if (field.kind === "Reference" && value !== undefined && value !== null) {
     return thenIfPromise(referenceExists(database, field, value), (exists: any) => {
@@ -5643,19 +4893,6 @@ function serializeFieldValue(field: LooseRecord, value: any) {
   return String(value ?? "");
 }
 
-function deserializeFieldValue(field: LooseRecord, value: any) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
-
 function normalizeDateValue(value: string | number | Date, fieldName: string) {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
@@ -5678,21 +4915,6 @@ function dateValueError(fieldName: any) {
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value.",
   );
-}
-
-function deserializeRow(table: LooseRecord, row: LooseRecord) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
 }
 
 async function readEndpointBody(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null) {
@@ -7790,12 +7012,6 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
     async cancel(id: any) { assertActivePrivilegedJobAccess(contextGetter); return await cancelJob(database.__rootDatabase ?? database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id); },
   };
 }
-
-function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-
 async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
   if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
   context.__pendingJobsFlushed = true;
@@ -7872,23 +7088,6 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
     }
   } finally { database.__jobWorkerRunning = false; }
 }
-
-async function drainPendingAclWrites(context: LooseRecord) {
-  let firstError: any = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
-  }
-}
-
 function createHookErrorResult(error: any) {
   return {
     ok: false,

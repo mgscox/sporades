@@ -2148,6 +2148,1060 @@ import { isBuiltin } from "node:module";
 import path4 from "node:path";
 import { buildSync } from "esbuild";
 
+// src/acl-runtime.ts
+var acl_runtime_exports = {};
+__export(acl_runtime_exports, {
+  ACL_HELPER_STATE: () => ACL_HELPER_STATE,
+  PRIVILEGED_AUDIT_ACTOR_KINDS: () => PRIVILEGED_AUDIT_ACTOR_KINDS,
+  PRIVILEGED_AUDIT_OUTCOMES: () => PRIVILEGED_AUDIT_OUTCOMES,
+  PRIVILEGED_AUDIT_SCHEMA: () => PRIVILEGED_AUDIT_SCHEMA,
+  applyReadAcl: () => applyReadAcl,
+  assertActivePrivilegedJobAccess: () => assertActivePrivilegedJobAccess,
+  createPrivilegedAuditEmissionPublicError: () => createPrivilegedAuditEmissionPublicError,
+  createPrivilegedAuditEmitter: () => createPrivilegedAuditEmitter,
+  createPrivilegedAuditLogInput: () => createPrivilegedAuditLogInput,
+  createPrivilegedFileApi: () => createPrivilegedFileApi,
+  createPrivilegedRunAbortError: () => createPrivilegedRunAbortError,
+  createPrivilegedRunAuditDetails: () => createPrivilegedRunAuditDetails,
+  createPrivilegedRunPublicError: () => createPrivilegedRunPublicError,
+  createPrivilegedScheduleApi: () => createPrivilegedScheduleApi,
+  createTableAclContext: () => createTableAclContext,
+  drainPendingAclWrites: () => drainPendingAclWrites,
+  emitAclDeniedLog: () => emitAclDeniedLog,
+  emitPrivilegedAuditEvent: () => emitPrivilegedAuditEvent,
+  emitPrivilegedRunAudit: () => emitPrivilegedRunAudit,
+  filterRowsByReadAcl: () => filterRowsByReadAcl,
+  grantPrivilegedDbAccess: () => grantPrivilegedDbAccess,
+  isPrivilegedAuditEmissionPublicError: () => isPrivilegedAuditEmissionPublicError,
+  normalizePrivilegedRunSignal: () => normalizePrivilegedRunSignal,
+  normalizeTableAcl: () => normalizeTableAcl,
+  reindexPrivilegedAuditEventsAfterRollback: () => reindexPrivilegedAuditEventsAfterRollback,
+  revokePrivilegedDbAccess: () => revokePrivilegedDbAccess,
+  runTableWriteWithAcl: () => runTableWriteWithAcl,
+  safePrivilegedAuditErrorCode: () => safePrivilegedAuditErrorCode
+});
+
+// src/file-storage-runtime.ts
+var file_storage_runtime_exports = {};
+__export(file_storage_runtime_exports, {
+  checkRuntimeFileStorage: () => checkRuntimeFileStorage,
+  completePendingFileUpload: () => completePendingFileUpload,
+  contentTypeForFile: () => contentTypeForFile,
+  createFileStorageTables: () => createFileStorageTables,
+  createLocalFileStorageAdapter: () => createLocalFileStorageAdapter,
+  createPendingFileUpload: () => createPendingFileUpload,
+  createPublicFileUrl: () => createPublicFileUrl,
+  createRuntimeFileStorageAdapter: () => createRuntimeFileStorageAdapter,
+  createS3CompatibleFileStorageAdapter: () => createS3CompatibleFileStorageAdapter,
+  createStructuredFileError: () => createStructuredFileError,
+  deletePrivateFile: () => deletePrivateFile,
+  fileMetadataFromRow: () => fileMetadataFromRow,
+  fileMetadataFromUpload: () => fileMetadataFromUpload,
+  fileRowForOwner: () => fileRowForOwner,
+  getPrivateFileUrl: () => getPrivateFileUrl,
+  isAbsoluteFilePath: () => isAbsoluteFilePath,
+  normalizeAbsoluteFilePath: () => normalizeAbsoluteFilePath,
+  normalizeFileName: () => normalizeFileName,
+  resolvePrivilegedLiveFileReference: () => resolvePrivilegedLiveFileReference,
+  revokePublicFileUrl: () => revokePublicFileUrl,
+  s3CanonicalPath: () => s3CanonicalPath,
+  s3ObjectKey: () => s3ObjectKey,
+  s3Signature: () => s3Signature,
+  validatePublicUrlExpiry: () => validatePublicUrlExpiry
+});
+
+// src/maybe-promise.ts
+var maybe_promise_exports = {};
+__export(maybe_promise_exports, {
+  chainMaybePromise: () => chainMaybePromise,
+  isPromiseLike: () => isPromiseLike,
+  thenIfPromise: () => thenIfPromise
+});
+function isPromiseLike(value) {
+  return value && typeof value === "object" && typeof value.then === "function";
+}
+function thenIfPromise(value, onResolved) {
+  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
+}
+function chainMaybePromise(steps) {
+  let pending = null;
+  for (const step of steps) {
+    if (pending) {
+      pending = pending.then(step);
+      continue;
+    }
+    const result = step();
+    if (isPromiseLike(result)) {
+      pending = result;
+    }
+  }
+  return pending ?? void 0;
+}
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
+  const path13 = await import("node:path");
+  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+    return createS3CompatibleFileStorageAdapter({
+      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
+      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
+      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
+      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
+      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
+      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule"
+    });
+  }
+  return createLocalFileStorageAdapter({
+    storagePath: config.files?.storagePath ?? path13.join(path13.dirname(databasePath), "files")
+  });
+}
+function createLocalFileStorageAdapter({ storagePath }) {
+  if (typeof storagePath !== "string" || storagePath.length === 0) {
+    throw new Error("Local file storage requires a storagePath.");
+  }
+  return {
+    engine: "local",
+    storagePath,
+    async writeFileVersion({ fileId, version, bytes }) {
+      const { mkdir: mkdir7, writeFile: writeFile8 } = await import("node:fs/promises");
+      await mkdir7(localFileStoragePath(storagePath, fileId), { recursive: true });
+      await writeFile8(localFileVersionPath(storagePath, fileId, version), bytes);
+    },
+    async readFileVersion({ fileId, version }) {
+      const { readFile: readFile10 } = await import("node:fs/promises");
+      return await readFile10(localFileVersionPath(storagePath, fileId, version));
+    },
+    async deleteFileVersion({ fileId, version }) {
+      const { rm: rm7 } = await import("node:fs/promises");
+      await rm7(localFileVersionPath(storagePath, fileId, version), { force: true });
+    },
+    async checkHealth() {
+      const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
+      const path13 = await import("node:path");
+      const probeDirectory = path13.join(storagePath, ".sporades-health");
+      const probeFile = path13.join(probeDirectory, `${nodeCryptoModule.randomUUID()}.tmp`);
+      try {
+        await mkdir7(probeDirectory, { recursive: true });
+        await writeFile8(probeFile, "");
+        await rm7(probeFile, { force: true });
+        return { ok: true };
+      } catch {
+        await rm7(probeFile, { force: true }).catch(() => {
+        });
+        return { ok: false };
+      }
+    },
+    close() {
+    }
+  };
+}
+function localFileStoragePath(storagePath, fileId) {
+  return `${storagePath}/${fileId}`;
+}
+function localFileVersionPath(storagePath, fileId, version) {
+  return `${localFileStoragePath(storagePath, fileId)}/${version}`;
+}
+function createS3CompatibleFileStorageAdapter({
+  endpoint,
+  bucket,
+  region,
+  accessKey,
+  secretKey,
+  namespace
+}) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("S3-compatible file storage requires an endpoint.");
+  }
+  if (typeof bucket !== "string" || bucket.length === 0) {
+    throw new Error("S3-compatible file storage requires a bucket.");
+  }
+  if (typeof region !== "string" || region.length === 0) {
+    throw new Error("S3-compatible file storage requires a region.");
+  }
+  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
+    throw new Error("S3-compatible file storage requires access credentials.");
+  }
+  const isolatedNamespace = s3StorageNamespace(namespace);
+  const config = { endpoint, bucket, region, accessKey, secretKey };
+  let bucketReady = false;
+  const ensureBucket = async () => {
+    if (bucketReady) {
+      return;
+    }
+    const head = await s3Request(config, { method: "HEAD", key: null });
+    if (head.statusCode === 404) {
+      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
+      if (created.statusCode < 200 || created.statusCode >= 300) {
+        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
+      }
+    } else if (head.statusCode < 200 || head.statusCode >= 300) {
+      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
+    }
+    bucketReady = true;
+  };
+  return {
+    engine: "s3-compatible",
+    endpoint,
+    bucket,
+    region,
+    namespace: isolatedNamespace,
+    objectKeyPrefix: `${isolatedNamespace}/files`,
+    async writeFileVersion({ fileId, version, bytes }) {
+      await ensureBucket();
+      const result = await s3Request(config, {
+        method: "PUT",
+        key: s3ObjectKey(isolatedNamespace, fileId, version),
+        body: bytes
+      });
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async readFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        throw s3ObjectNotFoundError();
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
+      }
+      return result.body;
+    },
+    async deleteFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "DELETE",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        return;
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async checkHealth() {
+      try {
+        await ensureBucket();
+        return { ok: true, adapter: "s3-compatible" };
+      } catch {
+        return { ok: false, adapter: "s3-compatible" };
+      }
+    },
+    close() {
+    }
+  };
+}
+function s3ObjectKey(namespace, fileId, version) {
+  return `${namespace}/files/${fileId}/${version}`;
+}
+async function s3Request(config, { method, key = null, body = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = s3RequestBodyBuffer(body);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({
+    "host": endpoint.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate
+  });
+  headers.authorization = s3Signature({
+    method,
+    pathname,
+    query: "",
+    headers,
+    payloadHash,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+    region: config.region,
+    date,
+    amzDate
+  });
+  return await new Promise((resolve, reject) => {
+    const request = transport.request(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || void 0,
+        method,
+        path: `${pathname}${endpoint.search}`,
+        headers: {
+          ...headers,
+          "content-length": payload.length
+        }
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks)
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+    if (payload.length > 0) {
+      request.write(payload);
+    }
+    request.end();
+  });
+}
+function s3RequestBodyBuffer(body) {
+  if (body === null || body === void 0) {
+    return Buffer.alloc(0);
+  }
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+  return Buffer.from(String(body));
+}
+function s3SignedHeaders(headers) {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+function s3Signature({
+  method,
+  pathname,
+  query,
+  headers,
+  payloadHash,
+  accessKey,
+  secretKey,
+  region,
+  date,
+  amzDate
+}) {
+  const signedHeaders = Object.keys(headers).join(";");
+  const canonicalHeaders = Object.entries(headers).map(([name, value]) => `${name}:${value}
+`).join("");
+  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const credentialScope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
+  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
+  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+}
+function s3SigningKey(secretKey, date, region) {
+  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
+  const dateRegionKey = s3Hmac(dateKey, region);
+  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
+  return s3Hmac(dateRegionServiceKey, "aws4_request");
+}
+function s3CanonicalPath(basePath, bucket, key) {
+  const base = String(basePath ?? "").split("/").filter(Boolean);
+  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
+  return `/${parts.join("/")}`;
+}
+function s3EncodedPathSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3StorageNamespace(namespace) {
+  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
+    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
+  }
+  return `capsules/${namespace}`;
+}
+function s3AmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+function s3Hmac(key, data) {
+  return nodeCryptoModule.createHmac("sha256", key).update(data).digest();
+}
+function s3Sha256Hex(data) {
+  return nodeCryptoModule.createHash("sha256").update(data).digest("hex");
+}
+function s3ObjectNotFoundError() {
+  const error = new Error("S3-compatible file object not found.");
+  error.code = "ENOENT";
+  return error;
+}
+async function checkRuntimeFileStorage(database) {
+  return await database.fileStorage.checkHealth();
+}
+function createFileStorageTables(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
+      )
+    ),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
+    () => sqlite.exec(sql(filePathBackfillSql())),
+    () => sqlite.exec(sql(activeFilePathDedupeSql())),
+    () => sqlite.exec(
+      sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
+      )
+    ),
+    () => ensureFileUploadTargetColumns(sqlite),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
+      )
+    )
+  ]);
+}
+async function readRequestBytes(request, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+function contentTypeForFile(type) {
+  if (typeof type !== "string") {
+    return "application/octet-stream";
+  }
+  const normalized = type.split(";")[0].trim().toLowerCase();
+  const safeInlineTypes = /* @__PURE__ */ new Set([
+    "text/plain",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp"
+  ]);
+  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
+}
+async function createPendingFileUpload(database, auth, message) {
+  const input = message.file ?? {};
+  const size = Number(input.size ?? 0);
+  if (!Number.isFinite(size) || size < 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
+    };
+  }
+  if (size > database.fileMaxSizeBytes) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      )
+    };
+  }
+  return await withFileUploadPathLock("capsule", async () => {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const replacing = message.replace === true;
+    const replaceReference = message.fileReference ?? message.fileId;
+    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    if (!resolvedReplacement.ok) {
+      return resolvedReplacement;
+    }
+    const existingByReference = resolvedReplacement.row;
+    if (replacing && !existingByReference) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    return await database.adapter.withTransaction(async (sqlite) => {
+      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+      let target;
+      try {
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+      } catch (error) {
+        return {
+          ok: false,
+          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+        };
+      }
+      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
+      if (existingByPath?.ambiguous) {
+        return ambiguousFileReferenceError(target.path);
+      }
+      if (existingByPath && existingByPath.ownerId !== auth.userId) {
+        return {
+          ok: false,
+          error: createStructuredFileError(
+            "File path already exists.",
+            "Choose another absolute File path or ask the owning user to delete the existing file first."
+          )
+        };
+      }
+      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
+      const existing = existingByReference ?? existingByPath;
+      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule.randomUUID();
+      const uploadId = nodeCryptoModule.randomUUID();
+      const version = nodeCryptoModule.randomUUID();
+      const name = normalizeFileName(input.name, target.path);
+      const type = String(input.type ?? "application/octet-stream");
+      await sqlite.deleteFileUploadsForPath(target.path);
+      try {
+        await sqlite.insertFileUpload({
+          id: uploadId,
+          fileId,
+          ownerId: auth.userId,
+          bucketId: target.bucket.id,
+          bucketName: target.bucket.name,
+          path: target.path,
+          name,
+          type,
+          version,
+          expectedSize: size,
+          createdAt: now
+        });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        const current = await sqlite.selectPendingFileUploadByPath(target.path);
+        if (!current) throw error;
+        return {
+          ok: true,
+          data: {
+            uploadUrl: `/__sporades/uploads/${current.id}`,
+            method: "PUT",
+            headers: {},
+            file: fileMetadataFromUpload(current)
+          },
+          error: null
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          uploadUrl: `/__sporades/uploads/${uploadId}`,
+          method: "PUT",
+          headers: {},
+          file: fileMetadataFromUpload({
+            fileId,
+            bucketName: target.bucket.name,
+            path: target.path,
+            name,
+            type,
+            expectedSize: size,
+            version
+          })
+        },
+        error: null
+      };
+    });
+  });
+}
+async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  const upload = await database.adapter.selectFileUpload(uploadId);
+  if (!upload) {
+    return {
+      ok: false,
+      data: null,
+      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
+    };
+  }
+  let wroteFileVersion = false;
+  const previousFile = await database.adapter.selectFileById(upload.fileId);
+  try {
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.progress",
+      fileId: upload.fileId,
+      loaded: 0,
+      total: upload.expectedSize
+    });
+    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+    wroteFileVersion = true;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const completion = await database.adapter.withTransaction(async (sqlite) => {
+      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
+      if (completed?.changes === 0) {
+        return { ok: false, superseded: true };
+      }
+      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+    });
+    if (!completion.ok && completion.superseded) {
+      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+      return {
+        ok: false,
+        data: null,
+        error: createStructuredFileError(
+          "Upload URL was superseded.",
+          "Request a fresh upload URL before retrying this file upload."
+        )
+      };
+    }
+    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
+      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
+    }
+    const file = fileMetadataFromRow(completion.row);
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.complete",
+      file
+    });
+    return { ok: true, data: { file }, error: null };
+  } catch (error) {
+    if (wroteFileVersion) {
+      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+    }
+    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
+      message: error.message,
+      hint: error.hint ?? "Request a fresh upload URL and retry."
+    };
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.failed",
+      fileId: upload.fileId,
+      error: structuredError
+    });
+    return {
+      ok: false,
+      data: null,
+      error: structuredError
+    };
+  }
+}
+async function getPrivateFileUrl(database, auth, fileReference) {
+  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const row = resolved.row;
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+      file: fileMetadataFromRow(row)
+    },
+    error: null
+  };
+}
+async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+  const expiry = validatePublicUrlExpiry(options);
+  if (!expiry.ok) {
+    return expiry;
+  }
+  return await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    const id = nodeCryptoModule.randomUUID();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await sqlite.insertPublicFileUrl({
+      id,
+      fileId: row.id,
+      ownerId: auth.userId,
+      version: row.version,
+      expiresAt: expiry.expiresAt,
+      createdAt: now
+    });
+    return {
+      ok: true,
+      data: {
+        publicUrl: {
+          id,
+          fileId: row.id,
+          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
+          expiresAt: expiry.expiresAt,
+          revokedAt: null
+        }
+      },
+      error: null
+    };
+  });
+}
+async function revokePublicFileUrl(database, auth, publicUrlId) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
+  if (result.changes === 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
+    error: null
+  };
+}
+async function deletePrivateFile(database, auth, fileReference) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await sqlite.deleteFileUploadsForPath(row.path);
+    await sqlite.markFileDeleted(row.id, now);
+    await sqlite.revokePublicFileUrlsForFile(row.id, now);
+    return {
+      ok: true,
+      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+      error: null,
+      deletedFile: row
+    };
+  });
+  if (!result.ok) {
+    return result;
+  }
+  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  return {
+    ok: true,
+    data: result.data,
+    error: null
+  };
+}
+async function runFileMetadataTransaction(database, fn) {
+  if (database.__transactionActive) {
+    return await fn(database.adapter);
+  }
+  return await database.adapter.withTransaction(fn);
+}
+function validatePublicUrlExpiry(options) {
+  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
+  if (choices.length !== 1) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "Public file URLs require exactly one expiry choice.",
+        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
+      )
+    };
+  }
+  if (options.noExpiry === true) {
+    return { ok: true, expiresAt: null };
+  }
+  if (options.ttlSeconds !== void 0) {
+    const ttlSeconds = Number(options.ttlSeconds);
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      return {
+        ok: false,
+        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
+      };
+    }
+    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
+  }
+  const expiresAt = new Date(options.expires);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
+    };
+  }
+  return { ok: true, expiresAt: expiresAt.toISOString() };
+}
+async function fileRowForOwner(database, fileId, ownerId) {
+  const reference = String(fileId ?? "");
+  if (isAbsoluteFilePath(reference)) {
+    const resolved = await resolveLiveFileReference(database, ownerId, reference);
+    return resolved.ok ? resolved.row : null;
+  }
+  return await database.adapter.fileRowForOwner(reference, ownerId);
+}
+function fileMetadataFromRow(row) {
+  return {
+    id: row.id,
+    bucket: row.bucketName,
+    size: Number(row.size),
+    type: row.type,
+    name: row.name,
+    path: row.path,
+    version: row.version
+  };
+}
+function fileMetadataFromUpload(upload) {
+  return {
+    id: upload.fileId,
+    bucket: upload.bucketName,
+    size: Number(upload.expectedSize),
+    type: upload.type,
+    name: upload.name,
+    path: upload.path,
+    version: upload.version
+  };
+}
+async function withFileUploadPathLock(path13, fn) {
+  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
+  const key = String(path13);
+  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  const next = previous.then(() => current, () => current);
+  fileUploadPathLocks.set(key, next);
+  try {
+    await previous.catch(() => {
+    });
+    return await fn();
+  } finally {
+    release?.();
+    if (fileUploadPathLocks.get(key) === next) {
+      fileUploadPathLocks.delete(key);
+    }
+  }
+}
+async function resolveFileWriteTarget(database, ownerId, input, now) {
+  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
+  const path13 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path13.split("/").filter(Boolean)[0] ?? "default";
+  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
+  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
+  return { bucket, path: path13 };
+}
+async function ensureFileBucket(database, ownerId, name, now) {
+  const existing = await database.adapter.findFileBucket(ownerId, name);
+  if (existing) return existing;
+  const bucket = { id: nodeCryptoModule.randomUUID(), ownerId, name, createdAt: now };
+  try {
+    await database.adapter.createFileBucket(bucket);
+    return bucket;
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const raced = await database.adapter.findFileBucket(ownerId, name);
+    if (raced) return raced;
+    throw error;
+  }
+}
+function normalizeAbsoluteFilePath(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw.startsWith("/")) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
+  }
+  const segments = raw.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
+  }
+  return `/${segments.join("/")}`;
+}
+function normalizeFileName(name, filePath) {
+  const candidate = String(name ?? "").trim();
+  if (candidate) return candidate;
+  const pathName = filePath?.split("/").filter(Boolean).at(-1);
+  return pathName || "upload";
+}
+function isAbsoluteFilePath(value) {
+  return typeof value === "string" && value.startsWith("/");
+}
+async function resolveLiveFileReference(database, ownerId, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path13;
+    try {
+      path13 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path13);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
+  }
+  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+async function resolvePrivilegedLiveFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path13;
+    try {
+      path13 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path13);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved };
+  }
+  const row = await database.adapter.selectFileById(value);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  return { ok: true, row };
+}
+function singleLiveFileRowByPath(database, path13) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path13), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function singleActiveFileRowByPath(database, path13) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path13), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function ambiguousFileReferenceError(reference) {
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "File reference is ambiguous.",
+      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
+    )
+  };
+}
+function structuredFileException(message, hint) {
+  const error = new Error(message);
+  error.hint = hint;
+  return error;
+}
+function isUniqueConstraintError(error) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text);
+}
+function filePathBackfillSql() {
+  return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
+}
+function activeFilePathDedupeSql() {
+  return "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (SELECT MAX([id]) FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') GROUP BY [path])";
+}
+function ensureFileUploadTargetColumns(sqlite) {
+  const addedColumns = [
+    ["bucketId", "TEXT"],
+    ["bucketName", "TEXT"],
+    ["path", "TEXT"],
+    ["name", "TEXT"],
+    ["type", "TEXT"]
+  ];
+  const statements = [
+    "UPDATE [sporades_file_uploads] SET [bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) WHERE [path] IS NULL OR [path] = ''",
+    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path])",
+    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
+    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])"
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
+    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
+  ]);
+}
+function createStructuredFileError(message, hint) {
+  return { message, hint };
+}
+async function removeFileVersionBestEffort(database, fileId, version) {
+  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {
+  });
+}
+
+// src/jobs-runtime.ts
+var jobs_runtime_exports = {};
+__export(jobs_runtime_exports, {
+  RESERVED_JOB_NAME_PREFIX: () => RESERVED_JOB_NAME_PREFIX,
+  abortSchedulePayloadFactories: () => abortSchedulePayloadFactories,
+  assertJobScheduleProvenance: () => assertJobScheduleProvenance,
+  boundedJobJson: () => boundedJobJson,
+  cancelJob: () => cancelJob,
+  createControllableRuntimeClock: () => createControllableRuntimeClock,
+  createRuntimeClock: () => createRuntimeClock,
+  decodeJobCursor: () => decodeJobCursor,
+  encodeJobCursor: () => encodeJobCursor,
+  ensureJobStorage: () => ensureJobStorage,
+  ensureScheduleStorage: () => ensureScheduleStorage,
+  finishFailedScheduledOccurrence: () => finishFailedScheduledOccurrence,
+  inspectRuntimeJobs: () => inspectRuntimeJobs,
+  inspectRuntimeSchedules: () => inspectRuntimeSchedules,
+  jobActorProvider: () => jobActorProvider,
+  jobError: () => jobError,
+  jobHandlersFromCapsuleDefinition: () => jobHandlersFromCapsuleDefinition,
+  jobState: () => jobState,
+  jobSummary: () => jobSummary,
+  nextScheduleOccurrence: () => nextScheduleOccurrence,
+  normalizeJobRetry: () => normalizeJobRetry,
+  parseScheduleExpression: () => parseScheduleExpression,
+  resolveSchedulePayload: () => resolveSchedulePayload,
+  resolveSchedulePayloadFactoryTimeoutMs: () => resolveSchedulePayloadFactoryTimeoutMs,
+  runtimeOwnedJobHandlers: () => runtimeOwnedJobHandlers,
+  safeJobFailure: () => safeJobFailure,
+  scheduleDefinitionsFromCapsule: () => scheduleDefinitionsFromCapsule,
+  scheduleSummary: () => scheduleSummary,
+  scheduledOccurrenceIdentity: () => scheduledOccurrenceIdentity
+});
+
+// src/runtime-errors.ts
+var runtime_errors_exports = {};
+__export(runtime_errors_exports, {
+  assertJsonCompatible: () => assertJsonCompatible,
+  commandError: () => commandError
+});
+function commandError(message, hint, code = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (code) {
+    error.code = code;
+  }
+  return error;
+}
+function assertJsonCompatible(value) {
+  let context;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === void 0) {
+      throw invalidJsonFieldValueError();
+    }
+    JSON.parse(serialized);
+  } catch (error) {
+    if (error?.hint) {
+      throw error;
+    }
+    throw invalidJsonFieldValueError();
+  }
+}
+function invalidJsonFieldValueError() {
+  return commandError(
+    "Invalid JSON field value.",
+    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
+  );
+}
+
 // src/auth-runtime.ts
 var auth_runtime_exports = {};
 __export(auth_runtime_exports, {
@@ -2220,42 +3274,6 @@ __export(auth_runtime_exports, {
   verifyPasswordResetCode: () => verifyPasswordResetCode,
   writeRedirect: () => writeRedirect
 });
-
-// src/runtime-errors.ts
-var runtime_errors_exports = {};
-__export(runtime_errors_exports, {
-  assertJsonCompatible: () => assertJsonCompatible,
-  commandError: () => commandError
-});
-function commandError(message, hint, code = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (code) {
-    error.code = code;
-  }
-  return error;
-}
-function assertJsonCompatible(value) {
-  let context;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === void 0) {
-      throw invalidJsonFieldValueError();
-    }
-    JSON.parse(serialized);
-  } catch (error) {
-    if (error?.hint) {
-      throw error;
-    }
-    throw invalidJsonFieldValueError();
-  }
-}
-function invalidJsonFieldValueError() {
-  return commandError(
-    "Invalid JSON field value.",
-    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
-  );
-}
 
 // src/user-preferences-runtime.ts
 var user_preferences_runtime_exports = {};
@@ -2361,7 +3379,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/auth-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var PRIVILEGED_AUTH_USER_ID = "__privileged__";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
@@ -2473,7 +3491,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   return await database.adapter.withTransaction(async (tx) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
+    const userId = identity?.userId ?? nodeCryptoModule2.randomUUID();
     if (identity) {
       await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
       await tx.updateAuthIdentity({
@@ -2496,7 +3514,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         provider: "anonymous"
       });
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule.randomUUID(),
+        id: nodeCryptoModule2.randomUUID(),
         userId,
         provider,
         subject,
@@ -2892,7 +3910,7 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
   }
   let signingKey;
   try {
-    signingKey = nodeCryptoModule.createPrivateKey(privateKey);
+    signingKey = nodeCryptoModule2.createPrivateKey(privateKey);
   } catch {
     throw commandError(
       "Apple client credential is invalid.",
@@ -2915,7 +3933,7 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
     aud: "https://appleid.apple.com",
     sub: apple.clientId
   })).toString("base64url");
-  const signatureBytes = nodeCryptoModule.sign(
+  const signatureBytes = nodeCryptoModule2.sign(
     "sha256",
     Buffer.from(`${header}.${claims}`),
     { key: signingKey, dsaEncoding: "ieee-p1363" }
@@ -3271,7 +4289,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -3588,7 +4606,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -3673,7 +4691,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -3965,8 +4983,8 @@ function normalizePasswordResetPath(value) {
   return value;
 }
 function passwordResetCodeParts(database) {
-  const selector = nodeCryptoModule.randomBytes(16).toString("base64url");
-  const verifier = nodeCryptoModule.randomBytes(32).toString("base64url");
+  const selector = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const verifier = nodeCryptoModule2.randomBytes(32).toString("base64url");
   return {
     selector,
     verifier,
@@ -3976,7 +4994,7 @@ function passwordResetCodeParts(database) {
   };
 }
 function hashPasswordResetVerifier(verifier) {
-  return nodeCryptoModule.createHash("sha256").update(verifier).digest("base64url");
+  return nodeCryptoModule2.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential) {
   const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
@@ -4044,7 +5062,7 @@ async function readPasswordResetCode(database, code) {
   const row = await database.adapter.findPasswordResetCode(parts[0]);
   const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
   const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
-  const matches = actual.length === expected.length && nodeCryptoModule.timingSafeEqual(actual, expected);
+  const matches = actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
   if (!row || !matches) {
     return null;
   }
@@ -4265,14 +5283,14 @@ function normalizeEmailCredentials(credentials) {
   return { ok: true, email, password, name };
 }
 function hashEmailPassword(password) {
-  const salt = nodeCryptoModule.randomBytes(16).toString("base64url");
-  const hash = nodeCryptoModule.scryptSync(password, salt, 64).toString("base64url");
+  const salt = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const hash = nodeCryptoModule2.scryptSync(password, salt, 64).toString("base64url");
   return { hash, salt };
 }
 function verifyEmailPassword(password, salt, expectedHash) {
-  const actual = nodeCryptoModule.scryptSync(password, salt, 64);
+  const actual = nodeCryptoModule2.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHash, "base64url");
-  return actual.length === expected.length && nodeCryptoModule.timingSafeEqual(actual, expected);
+  return actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
 }
 function emailAuthDisabledError() {
   return {
@@ -4288,7 +5306,7 @@ function isExpiredSession(row) {
   return Date.parse(row.expiresAt) <= Date.now();
 }
 function createSessionToken() {
-  return nodeCryptoModule.randomBytes(32).toString("base64url");
+  return nodeCryptoModule2.randomBytes(32).toString("base64url");
 }
 async function refreshSessionOnAdapter(sqlite, token) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -4308,7 +5326,7 @@ async function resolveAnonymousSession(database, sessionToken) {
     }
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const userId = nodeCryptoModule.randomUUID();
+  const userId = nodeCryptoModule2.randomUUID();
   const token = createSessionToken();
   await database.adapter.withTransaction(async (tx) => {
     await tx.insertAuthUser({
@@ -4648,7 +5666,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
       });
     } else {
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule.randomUUID(),
+        id: nodeCryptoModule2.randomUUID(),
         userId: auth.userId,
         provider,
         subject,
@@ -4696,1424 +5714,7 @@ async function moveSessionToUserOnAdapter(database, sqlite, session, userId, pro
   });
 }
 
-// src/file-storage-runtime.ts
-var file_storage_runtime_exports = {};
-__export(file_storage_runtime_exports, {
-  checkRuntimeFileStorage: () => checkRuntimeFileStorage,
-  completePendingFileUpload: () => completePendingFileUpload,
-  contentTypeForFile: () => contentTypeForFile,
-  createFileStorageTables: () => createFileStorageTables,
-  createLocalFileStorageAdapter: () => createLocalFileStorageAdapter,
-  createPendingFileUpload: () => createPendingFileUpload,
-  createPublicFileUrl: () => createPublicFileUrl,
-  createRuntimeFileStorageAdapter: () => createRuntimeFileStorageAdapter,
-  createS3CompatibleFileStorageAdapter: () => createS3CompatibleFileStorageAdapter,
-  createStructuredFileError: () => createStructuredFileError,
-  deletePrivateFile: () => deletePrivateFile,
-  fileMetadataFromRow: () => fileMetadataFromRow,
-  fileMetadataFromUpload: () => fileMetadataFromUpload,
-  fileRowForOwner: () => fileRowForOwner,
-  getPrivateFileUrl: () => getPrivateFileUrl,
-  isAbsoluteFilePath: () => isAbsoluteFilePath,
-  normalizeAbsoluteFilePath: () => normalizeAbsoluteFilePath,
-  normalizeFileName: () => normalizeFileName,
-  resolvePrivilegedLiveFileReference: () => resolvePrivilegedLiveFileReference,
-  revokePublicFileUrl: () => revokePublicFileUrl,
-  s3CanonicalPath: () => s3CanonicalPath,
-  s3ObjectKey: () => s3ObjectKey,
-  s3Signature: () => s3Signature,
-  validatePublicUrlExpiry: () => validatePublicUrlExpiry
-});
-
-// src/maybe-promise.ts
-var maybe_promise_exports = {};
-__export(maybe_promise_exports, {
-  chainMaybePromise: () => chainMaybePromise,
-  isPromiseLike: () => isPromiseLike,
-  thenIfPromise: () => thenIfPromise
-});
-function isPromiseLike(value) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
-function thenIfPromise(value, onResolved) {
-  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
-}
-function chainMaybePromise(steps) {
-  let pending = null;
-  for (const step of steps) {
-    if (pending) {
-      pending = pending.then(step);
-      continue;
-    }
-    const result = step();
-    if (isPromiseLike(result)) {
-      pending = result;
-    }
-  }
-  return pending ?? void 0;
-}
-
-// src/file-storage-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
-async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path13 = await import("node:path");
-  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
-    return createS3CompatibleFileStorageAdapter({
-      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
-      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
-      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
-      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
-      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule"
-    });
-  }
-  return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path13.join(path13.dirname(databasePath), "files")
-  });
-}
-function createLocalFileStorageAdapter({ storagePath }) {
-  if (typeof storagePath !== "string" || storagePath.length === 0) {
-    throw new Error("Local file storage requires a storagePath.");
-  }
-  return {
-    engine: "local",
-    storagePath,
-    async writeFileVersion({ fileId, version, bytes }) {
-      const { mkdir: mkdir7, writeFile: writeFile8 } = await import("node:fs/promises");
-      await mkdir7(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile8(localFileVersionPath(storagePath, fileId, version), bytes);
-    },
-    async readFileVersion({ fileId, version }) {
-      const { readFile: readFile10 } = await import("node:fs/promises");
-      return await readFile10(localFileVersionPath(storagePath, fileId, version));
-    },
-    async deleteFileVersion({ fileId, version }) {
-      const { rm: rm7 } = await import("node:fs/promises");
-      await rm7(localFileVersionPath(storagePath, fileId, version), { force: true });
-    },
-    async checkHealth() {
-      const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
-      const path13 = await import("node:path");
-      const probeDirectory = path13.join(storagePath, ".sporades-health");
-      const probeFile = path13.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
-      try {
-        await mkdir7(probeDirectory, { recursive: true });
-        await writeFile8(probeFile, "");
-        await rm7(probeFile, { force: true });
-        return { ok: true };
-      } catch {
-        await rm7(probeFile, { force: true }).catch(() => {
-        });
-        return { ok: false };
-      }
-    },
-    close() {
-    }
-  };
-}
-function localFileStoragePath(storagePath, fileId) {
-  return `${storagePath}/${fileId}`;
-}
-function localFileVersionPath(storagePath, fileId, version) {
-  return `${localFileStoragePath(storagePath, fileId)}/${version}`;
-}
-function createS3CompatibleFileStorageAdapter({
-  endpoint,
-  bucket,
-  region,
-  accessKey,
-  secretKey,
-  namespace
-}) {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    throw new Error("S3-compatible file storage requires an endpoint.");
-  }
-  if (typeof bucket !== "string" || bucket.length === 0) {
-    throw new Error("S3-compatible file storage requires a bucket.");
-  }
-  if (typeof region !== "string" || region.length === 0) {
-    throw new Error("S3-compatible file storage requires a region.");
-  }
-  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
-    throw new Error("S3-compatible file storage requires access credentials.");
-  }
-  const isolatedNamespace = s3StorageNamespace(namespace);
-  const config = { endpoint, bucket, region, accessKey, secretKey };
-  let bucketReady = false;
-  const ensureBucket = async () => {
-    if (bucketReady) {
-      return;
-    }
-    const head = await s3Request(config, { method: "HEAD", key: null });
-    if (head.statusCode === 404) {
-      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
-      if (created.statusCode < 200 || created.statusCode >= 300) {
-        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
-      }
-    } else if (head.statusCode < 200 || head.statusCode >= 300) {
-      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
-    }
-    bucketReady = true;
-  };
-  return {
-    engine: "s3-compatible",
-    endpoint,
-    bucket,
-    region,
-    namespace: isolatedNamespace,
-    objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version, bytes }) {
-      await ensureBucket();
-      const result = await s3Request(config, {
-        method: "PUT",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-        body: bytes
-      });
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async readFileVersion({ fileId, version }) {
-      const result = await s3Request(config, {
-        method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version)
-      });
-      if (result.statusCode === 404) {
-        throw s3ObjectNotFoundError();
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
-      }
-      return result.body;
-    },
-    async deleteFileVersion({ fileId, version }) {
-      const result = await s3Request(config, {
-        method: "DELETE",
-        key: s3ObjectKey(isolatedNamespace, fileId, version)
-      });
-      if (result.statusCode === 404) {
-        return;
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async checkHealth() {
-      try {
-        await ensureBucket();
-        return { ok: true, adapter: "s3-compatible" };
-      } catch {
-        return { ok: false, adapter: "s3-compatible" };
-      }
-    },
-    close() {
-    }
-  };
-}
-function s3ObjectKey(namespace, fileId, version) {
-  return `${namespace}/files/${fileId}/${version}`;
-}
-async function s3Request(config, { method, key = null, body = null }) {
-  const endpoint = new URL(config.endpoint);
-  const isHttps = endpoint.protocol === "https:";
-  const transport = await (isHttps ? import("node:https") : import("node:http"));
-  const payload = s3RequestBodyBuffer(body);
-  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
-  const date = amzDate.slice(0, 8);
-  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
-  const payloadHash = s3Sha256Hex(payload);
-  const headers = s3SignedHeaders({
-    "host": endpoint.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate
-  });
-  headers.authorization = s3Signature({
-    method,
-    pathname,
-    query: "",
-    headers,
-    payloadHash,
-    accessKey: config.accessKey,
-    secretKey: config.secretKey,
-    region: config.region,
-    date,
-    amzDate
-  });
-  return await new Promise((resolve, reject) => {
-    const request = transport.request(
-      {
-        protocol: endpoint.protocol,
-        hostname: endpoint.hostname,
-        port: endpoint.port || void 0,
-        method,
-        path: `${pathname}${endpoint.search}`,
-        headers: {
-          ...headers,
-          "content-length": payload.length
-        }
-      },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        response.on("end", () => {
-          resolve({
-            statusCode: response.statusCode ?? 0,
-            headers: response.headers,
-            body: Buffer.concat(chunks)
-          });
-        });
-      }
-    );
-    request.on("error", reject);
-    if (payload.length > 0) {
-      request.write(payload);
-    }
-    request.end();
-  });
-}
-function s3RequestBodyBuffer(body) {
-  if (body === null || body === void 0) {
-    return Buffer.alloc(0);
-  }
-  if (Buffer.isBuffer(body)) {
-    return body;
-  }
-  if (body instanceof Uint8Array) {
-    return Buffer.from(body);
-  }
-  return Buffer.from(String(body));
-}
-function s3SignedHeaders(headers) {
-  return Object.fromEntries(
-    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
-  );
-}
-function s3Signature({
-  method,
-  pathname,
-  query,
-  headers,
-  payloadHash,
-  accessKey,
-  secretKey,
-  region,
-  date,
-  amzDate
-}) {
-  const signedHeaders = Object.keys(headers).join(";");
-  const canonicalHeaders = Object.entries(headers).map(([name, value]) => `${name}:${value}
-`).join("");
-  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
-  const credentialScope = `${date}/${region}/s3/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
-  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
-  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
-function s3SigningKey(secretKey, date, region) {
-  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
-  const dateRegionKey = s3Hmac(dateKey, region);
-  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
-  return s3Hmac(dateRegionServiceKey, "aws4_request");
-}
-function s3CanonicalPath(basePath, bucket, key) {
-  const base = String(basePath ?? "").split("/").filter(Boolean);
-  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
-  return `/${parts.join("/")}`;
-}
-function s3EncodedPathSegment(segment) {
-  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-function s3StorageNamespace(namespace) {
-  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
-    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
-  }
-  return `capsules/${namespace}`;
-}
-function s3AmzDate(date) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-function s3Hmac(key, data) {
-  return nodeCryptoModule2.createHmac("sha256", key).update(data).digest();
-}
-function s3Sha256Hex(data) {
-  return nodeCryptoModule2.createHash("sha256").update(data).digest("hex");
-}
-function s3ObjectNotFoundError() {
-  const error = new Error("S3-compatible file object not found.");
-  error.code = "ENOENT";
-  return error;
-}
-async function checkRuntimeFileStorage(database) {
-  return await database.fileStorage.checkHealth();
-}
-function createFileStorageTables(sqlite) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
-      )
-    ),
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
-      )
-    ),
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
-    () => sqlite.exec(sql(filePathBackfillSql())),
-    () => sqlite.exec(sql(activeFilePathDedupeSql())),
-    () => sqlite.exec(
-      sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
-    ),
-    () => sqlite.exec(
-      sql(
-        "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
-      )
-    ),
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
-      )
-    ),
-    () => ensureFileUploadTargetColumns(sqlite),
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
-      )
-    )
-  ]);
-}
-async function readRequestBytes(request, maxBytes) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      );
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-function contentTypeForFile(type) {
-  if (typeof type !== "string") {
-    return "application/octet-stream";
-  }
-  const normalized = type.split(";")[0].trim().toLowerCase();
-  const safeInlineTypes = /* @__PURE__ */ new Set([
-    "text/plain",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/bmp"
-  ]);
-  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
-}
-async function createPendingFileUpload(database, auth, message) {
-  const input = message.file ?? {};
-  const size = Number(input.size ?? 0);
-  if (!Number.isFinite(size) || size < 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
-    };
-  }
-  if (size > database.fileMaxSizeBytes) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      )
-    };
-  }
-  return await withFileUploadPathLock("capsule", async () => {
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const replacing = message.replace === true;
-    const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-    if (!resolvedReplacement.ok) {
-      return resolvedReplacement;
-    }
-    const existingByReference = resolvedReplacement.row;
-    if (replacing && !existingByReference) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    return await database.adapter.withTransaction(async (sqlite) => {
-      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-      let target;
-      try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
-      } catch (error) {
-        return {
-          ok: false,
-          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
-        };
-      }
-      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
-      if (existingByPath?.ambiguous) {
-        return ambiguousFileReferenceError(target.path);
-      }
-      if (existingByPath && existingByPath.ownerId !== auth.userId) {
-        return {
-          ok: false,
-          error: createStructuredFileError(
-            "File path already exists.",
-            "Choose another absolute File path or ask the owning user to delete the existing file first."
-          )
-        };
-      }
-      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
-      const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
-      const uploadId = nodeCryptoModule2.randomUUID();
-      const version = nodeCryptoModule2.randomUUID();
-      const name = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
-      await sqlite.deleteFileUploadsForPath(target.path);
-      try {
-        await sqlite.insertFileUpload({
-          id: uploadId,
-          fileId,
-          ownerId: auth.userId,
-          bucketId: target.bucket.id,
-          bucketName: target.bucket.name,
-          path: target.path,
-          name,
-          type,
-          version,
-          expectedSize: size,
-          createdAt: now
-        });
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        const current = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current) throw error;
-        return {
-          ok: true,
-          data: {
-            uploadUrl: `/__sporades/uploads/${current.id}`,
-            method: "PUT",
-            headers: {},
-            file: fileMetadataFromUpload(current)
-          },
-          error: null
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          uploadUrl: `/__sporades/uploads/${uploadId}`,
-          method: "PUT",
-          headers: {},
-          file: fileMetadataFromUpload({
-            fileId,
-            bucketName: target.bucket.name,
-            path: target.path,
-            name,
-            type,
-            expectedSize: size,
-            version
-          })
-        },
-        error: null
-      };
-    });
-  });
-}
-async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  const upload = await database.adapter.selectFileUpload(uploadId);
-  if (!upload) {
-    return {
-      ok: false,
-      data: null,
-      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
-    };
-  }
-  let wroteFileVersion = false;
-  const previousFile = await database.adapter.selectFileById(upload.fileId);
-  try {
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.progress",
-      fileId: upload.fileId,
-      loaded: 0,
-      total: upload.expectedSize
-    });
-    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-    wroteFileVersion = true;
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const completion = await database.adapter.withTransaction(async (sqlite) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
-      if (completed?.changes === 0) {
-        return { ok: false, superseded: true };
-      }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
-      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
-    });
-    if (!completion.ok && completion.superseded) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-      return {
-        ok: false,
-        data: null,
-        error: createStructuredFileError(
-          "Upload URL was superseded.",
-          "Request a fresh upload URL before retrying this file upload."
-        )
-      };
-    }
-    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
-      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
-    }
-    const file = fileMetadataFromRow(completion.row);
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.complete",
-      file
-    });
-    return { ok: true, data: { file }, error: null };
-  } catch (error) {
-    if (wroteFileVersion) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-    }
-    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
-      message: error.message,
-      hint: error.hint ?? "Request a fresh upload URL and retry."
-    };
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.failed",
-      fileId: upload.fileId,
-      error: structuredError
-    });
-    return {
-      ok: false,
-      data: null,
-      error: structuredError
-    };
-  }
-}
-async function getPrivateFileUrl(database, auth, fileReference) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-      file: fileMetadataFromRow(row)
-    },
-    error: null
-  };
-}
-async function createPublicFileUrl(database, auth, fileReference, options = {}) {
-  const expiry = validatePublicUrlExpiry(options);
-  if (!expiry.ok) {
-    return expiry;
-  }
-  return await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    const id = nodeCryptoModule2.randomUUID();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    await sqlite.insertPublicFileUrl({
-      id,
-      fileId: row.id,
-      ownerId: auth.userId,
-      version: row.version,
-      expiresAt: expiry.expiresAt,
-      createdAt: now
-    });
-    return {
-      ok: true,
-      data: {
-        publicUrl: {
-          id,
-          fileId: row.id,
-          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-          expiresAt: expiry.expiresAt,
-          revokedAt: null
-        }
-      },
-      error: null
-    };
-  });
-}
-async function revokePublicFileUrl(database, auth, publicUrlId) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
-  if (result.changes === 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
-    error: null
-  };
-}
-async function deletePrivateFile(database, auth, fileReference) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-    await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now);
-    return {
-      ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
-      error: null,
-      deletedFile: row
-    };
-  });
-  if (!result.ok) {
-    return result;
-  }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
-  return {
-    ok: true,
-    data: result.data,
-    error: null
-  };
-}
-async function runFileMetadataTransaction(database, fn) {
-  if (database.__transactionActive) {
-    return await fn(database.adapter);
-  }
-  return await database.adapter.withTransaction(fn);
-}
-function validatePublicUrlExpiry(options) {
-  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
-  if (choices.length !== 1) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "Public file URLs require exactly one expiry choice.",
-        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
-      )
-    };
-  }
-  if (options.noExpiry === true) {
-    return { ok: true, expiresAt: null };
-  }
-  if (options.ttlSeconds !== void 0) {
-    const ttlSeconds = Number(options.ttlSeconds);
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-      return {
-        ok: false,
-        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
-      };
-    }
-    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
-  }
-  const expiresAt = new Date(options.expires);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
-    };
-  }
-  return { ok: true, expiresAt: expiresAt.toISOString() };
-}
-async function fileRowForOwner(database, fileId, ownerId) {
-  const reference = String(fileId ?? "");
-  if (isAbsoluteFilePath(reference)) {
-    const resolved = await resolveLiveFileReference(database, ownerId, reference);
-    return resolved.ok ? resolved.row : null;
-  }
-  return await database.adapter.fileRowForOwner(reference, ownerId);
-}
-function fileMetadataFromRow(row) {
-  return {
-    id: row.id,
-    bucket: row.bucketName,
-    size: Number(row.size),
-    type: row.type,
-    name: row.name,
-    path: row.path,
-    version: row.version
-  };
-}
-function fileMetadataFromUpload(upload) {
-  return {
-    id: upload.fileId,
-    bucket: upload.bucketName,
-    size: Number(upload.expectedSize),
-    type: upload.type,
-    name: upload.name,
-    path: upload.path,
-    version: upload.version
-  };
-}
-async function withFileUploadPathLock(path13, fn) {
-  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path13);
-  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release;
-  const current = new Promise((resolve) => {
-    release = resolve;
-  });
-  const next = previous.then(() => current, () => current);
-  fileUploadPathLocks.set(key, next);
-  try {
-    await previous.catch(() => {
-    });
-    return await fn();
-  } finally {
-    release?.();
-    if (fileUploadPathLocks.get(key) === next) {
-      fileUploadPathLocks.delete(key);
-    }
-  }
-}
-async function resolveFileWriteTarget(database, ownerId, input, now) {
-  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path13 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path13.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
-  return { bucket, path: path13 };
-}
-async function ensureFileBucket(database, ownerId, name, now) {
-  const existing = await database.adapter.findFileBucket(ownerId, name);
-  if (existing) return existing;
-  const bucket = { id: nodeCryptoModule2.randomUUID(), ownerId, name, createdAt: now };
-  try {
-    await database.adapter.createFileBucket(bucket);
-    return bucket;
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.adapter.findFileBucket(ownerId, name);
-    if (raced) return raced;
-    throw error;
-  }
-}
-function normalizeAbsoluteFilePath(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/")) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
-  }
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
-  }
-  return `/${segments.join("/")}`;
-}
-function normalizeFileName(name, filePath) {
-  const candidate = String(name ?? "").trim();
-  if (candidate) return candidate;
-  const pathName = filePath?.split("/").filter(Boolean).at(-1);
-  return pathName || "upload";
-}
-function isAbsoluteFilePath(value) {
-  return typeof value === "string" && value.startsWith("/");
-}
-async function resolveLiveFileReference(database, ownerId, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path13;
-    try {
-      path13 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path13);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
-  }
-  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
-}
-async function resolvePrivilegedLiveFileReference(database, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path13;
-    try {
-      path13 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path13);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved };
-  }
-  const row = await database.adapter.selectFileById(value);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  return { ok: true, row };
-}
-function singleLiveFileRowByPath(database, path13) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path13), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function singleActiveFileRowByPath(database, path13) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path13), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function ambiguousFileReferenceError(reference) {
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "File reference is ambiguous.",
-      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
-    )
-  };
-}
-function structuredFileException(message, hint) {
-  const error = new Error(message);
-  error.hint = hint;
-  return error;
-}
-function isUniqueConstraintError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
-}
-function filePathBackfillSql() {
-  return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
-}
-function activeFilePathDedupeSql() {
-  return "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (SELECT MAX([id]) FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') GROUP BY [path])";
-}
-function ensureFileUploadTargetColumns(sqlite) {
-  const addedColumns = [
-    ["bucketId", "TEXT"],
-    ["bucketName", "TEXT"],
-    ["path", "TEXT"],
-    ["name", "TEXT"],
-    ["type", "TEXT"]
-  ];
-  const statements = [
-    "UPDATE [sporades_file_uploads] SET [bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) WHERE [path] IS NULL OR [path] = ''",
-    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path])",
-    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
-    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])"
-  ];
-  return chainMaybePromise([
-    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
-    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
-  ]);
-}
-function createStructuredFileError(message, hint) {
-  return { message, hint };
-}
-async function removeFileVersionBestEffort(database, fileId, version) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {
-  });
-}
-
-// src/inspection-sql.ts
-var inspection_sql_exports = {};
-__export(inspection_sql_exports, {
-  SAFE_INSPECTION_PRAGMAS: () => SAFE_INSPECTION_PRAGMAS,
-  SIDE_EFFECT_SQL_FUNCTIONS: () => SIDE_EFFECT_SQL_FUNCTIONS,
-  SIDE_EFFECT_SQL_KEYWORDS: () => SIDE_EFFECT_SQL_KEYWORDS,
-  ambiguousInspectionSqlError: () => ambiguousInspectionSqlError,
-  containsSideEffectSqlToken: () => containsSideEffectSqlToken,
-  containsSideEffectSqlTokenUnder: () => containsSideEffectSqlTokenUnder,
-  hasMultipleSqlStatements: () => hasMultipleSqlStatements,
-  isSafeInspectionPragma: () => isSafeInspectionPragma,
-  readBareSqlIdentifier: () => readBareSqlIdentifier,
-  readFirstSqlToken: () => readFirstSqlToken,
-  readOnlyInspectionSqlError: () => readOnlyInspectionSqlError,
-  readSqlQuotedIdentifier: () => readSqlQuotedIdentifier,
-  readSqlTokenIdentifier: () => readSqlTokenIdentifier,
-  readSqlTokens: () => readSqlTokens,
-  skipSqlQuotedOrCommented: () => skipSqlQuotedOrCommented,
-  skipSqlTrivia: () => skipSqlTrivia,
-  sqlContentFingerprint: () => sqlContentFingerprint,
-  sqlDialectCommentsOnly: () => sqlDialectCommentsOnly,
-  sqlDialectEveryEngineQuotes: () => sqlDialectEveryEngineQuotes,
-  sqlDialectQuotedIdentifiersOnly: () => sqlDialectQuotedIdentifiersOnly,
-  sqlDialectQuotedRunsOnly: () => sqlDialectQuotedRunsOnly,
-  sqlDialectWithoutPostgresStringForms: () => sqlDialectWithoutPostgresStringForms,
-  sqlTheEnginesLexDifferently: () => sqlTheEnginesLexDifferently,
-  sqlWithoutTrailingTerminator: () => sqlWithoutTrailingTerminator,
-  unrepresentableInspectionSqlError: () => unrepresentableInspectionSqlError,
-  validateReadOnlyInspectionSql: () => validateReadOnlyInspectionSql
-});
-function validateReadOnlyInspectionSql(sql) {
-  const text = String(sql ?? "");
-  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
-    return unrepresentableInspectionSqlError();
-  }
-  const disagreement = sqlTheEnginesLexDifferently(text);
-  if (disagreement) {
-    return ambiguousInspectionSqlError(disagreement);
-  }
-  const firstToken = readFirstSqlToken(text);
-  if (!firstToken || hasMultipleSqlStatements(text)) {
-    return readOnlyInspectionSqlError();
-  }
-  const keyword = firstToken.toLowerCase();
-  if (keyword === "pragma") {
-    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
-  }
-  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
-    return { ok: true };
-  }
-  return readOnlyInspectionSqlError();
-}
-function readOnlyInspectionSqlError() {
-  return {
-    ok: false,
-    data: null,
-    error: {
-      message: "Only read-only SQL is allowed.",
-      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
-    }
-  };
-}
-function unrepresentableInspectionSqlError() {
-  return {
-    ok: false,
-    data: null,
-    error: {
-      message: "Only SQL text the database receives unchanged is allowed.",
-      hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL."
-    }
-  };
-}
-function ambiguousInspectionSqlError(hint) {
-  return {
-    ok: false,
-    data: null,
-    error: {
-      message: "Only SQL the database reads the same way this check does is allowed.",
-      hint
-    }
-  };
-}
-function sqlTheEnginesLexDifferently(sql) {
-  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
-    return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
-  }
-  const dialect = sqlDialectEveryEngineQuotes(true);
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      if (sql[index] === "/" && sql[index + 1] === "*") {
-        if (nestingBlockCommentEnd(sql, index) !== skipped) {
-          return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
-        }
-      }
-      index = skipped;
-      continue;
-    }
-    if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
-      return "Replace the invisible character outside quotes \u2014 a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace \u2014 with an ordinary space.";
-    }
-    index += 1;
-  }
-  return null;
-}
-function nestingBlockCommentEnd(sql, index) {
-  let depth = 0;
-  let cursor = index;
-  while (cursor < sql.length) {
-    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
-      depth += 1;
-      cursor += 2;
-      continue;
-    }
-    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
-      depth -= 1;
-      cursor += 2;
-      if (depth === 0) {
-        break;
-      }
-      continue;
-    }
-    cursor += 1;
-  }
-  return cursor;
-}
-function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
-  const dialect = sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn);
-  let fingerprint = "";
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      if (opensQuotedRun(sql, index)) {
-        fingerprint += `q${index}-${skipped};`;
-      }
-      index = skipped;
-      continue;
-    }
-    if (!/[ \t\n\r\f]/.test(sql[index])) {
-      fingerprint += `${index}:${sql[index]};`;
-    }
-    index += 1;
-  }
-  return fingerprint;
-}
-function readFirstSqlToken(sql) {
-  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0, true))?.value ?? null;
-}
-function hasMultipleSqlStatements(sql) {
-  const dialect = sqlDialectEveryEngineQuotes(true);
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === ";") {
-      return skipSqlTrivia(sql, index + 1, true) < sql.length;
-    }
-    index += 1;
-  }
-  return false;
-}
-function isSafeInspectionPragma(sql, pragmaTokenLength) {
-  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0, true) + pragmaTokenLength, true);
-  let identifier = readBareSqlIdentifier(sql, index);
-  if (!identifier) {
-    return false;
-  }
-  let pragmaName = identifier.value.toLowerCase();
-  index = skipSqlTrivia(sql, identifier.nextIndex, true);
-  if (sql[index] === ".") {
-    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1, true));
-    if (!identifier) {
-      return false;
-    }
-    pragmaName = identifier.value.toLowerCase();
-    index = skipSqlTrivia(sql, identifier.nextIndex, true);
-  }
-  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
-    return false;
-  }
-  const dialect = sqlDialectEveryEngineQuotes(true);
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === "=") {
-      return false;
-    }
-    index += 1;
-  }
-  return true;
-}
-var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
-  "database_list",
-  "foreign_key_list",
-  "index_info",
-  "index_list",
-  "index_xinfo",
-  "table_info",
-  "table_list",
-  "table_xinfo"
-]);
-function containsSideEffectSqlToken(sql) {
-  return containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false);
-}
-function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
-  for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
-    const value = token.value.toLowerCase();
-    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
-      return true;
-    }
-    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
-      return true;
-    }
-  }
-  return false;
-}
-var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
-  "alter",
-  "analyze",
-  "attach",
-  "create",
-  "delete",
-  "detach",
-  "drop",
-  "insert",
-  "merge",
-  "reindex",
-  "replace",
-  "update",
-  "vacuum"
-]);
-var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
-  "load_extension",
-  "nextval",
-  "set_config",
-  "setval"
-]);
-function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
-  const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
-  const tokens = [];
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    const identifier = readSqlTokenIdentifier(sql, index);
-    if (identifier) {
-      tokens.push(identifier);
-      index = identifier.nextIndex;
-      continue;
-    }
-    index += 1;
-  }
-  return tokens;
-}
-function readBareSqlIdentifier(sql, index) {
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
-}
-function readSqlTokenIdentifier(sql, index) {
-  return readSqlQuotedIdentifier(sql, index, '"`[');
-}
-function readSqlQuotedIdentifier(sql, index, quotes) {
-  const end = skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedIdentifiersOnly(quotes));
-  if (end === index) {
-    return readBareSqlIdentifier(sql, index);
-  }
-  const closingQuote = sql[end - 1];
-  const value = sql.slice(index + 1, end - 1);
-  return {
-    value: closingQuote === sql[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
-    nextIndex: end
-  };
-}
-function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn) {
-  return {
-    comments: true,
-    lineCommentEndsAtCarriageReturn,
-    dollarQuoting: true,
-    escapeStrings: true,
-    quotes: "'\"`[",
-    unterminatedQuotedRunReachesEndOfInput: true
-  };
-}
-function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn) {
-  return {
-    comments: true,
-    lineCommentEndsAtCarriageReturn,
-    dollarQuoting: false,
-    escapeStrings: false,
-    quotes: "'",
-    unterminatedQuotedRunReachesEndOfInput: true
-  };
-}
-function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn) {
-  return {
-    comments: true,
-    lineCommentEndsAtCarriageReturn,
-    dollarQuoting: false,
-    escapeStrings: false,
-    quotes: "",
-    unterminatedQuotedRunReachesEndOfInput: true
-  };
-}
-function sqlDialectQuotedRunsOnly() {
-  return {
-    comments: false,
-    lineCommentEndsAtCarriageReturn: true,
-    dollarQuoting: true,
-    escapeStrings: true,
-    quotes: "'\"`[",
-    unterminatedQuotedRunReachesEndOfInput: true
-  };
-}
-function sqlDialectQuotedIdentifiersOnly(quotes) {
-  return {
-    comments: false,
-    lineCommentEndsAtCarriageReturn: true,
-    dollarQuoting: false,
-    escapeStrings: false,
-    quotes,
-    unterminatedQuotedRunReachesEndOfInput: false
-  };
-}
-function skipSqlQuotedOrCommented(sql, index, dialect) {
-  if (dialect.comments && sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (dialect.comments && sql[index] === "-" && sql[index + 1] === "-") {
-    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
-    return end ? index + 2 + end.index + 1 : sql.length;
-  }
-  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
-  if (dialect.dollarQuoting && sql[index] === "$" && opensToken) {
-    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
-    if (!delimiter) {
-      return index;
-    }
-    const end = sql.indexOf(delimiter, index + delimiter.length);
-    return end === -1 ? index : end + delimiter.length;
-  }
-  if (dialect.escapeStrings && (sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
-    let cursor2 = index + 2;
-    while (cursor2 < sql.length) {
-      if (sql[cursor2] === "\\") {
-        cursor2 += 2;
-        continue;
-      }
-      if (sql[cursor2] === "'") {
-        if (sql[cursor2 + 1] === "'") {
-          cursor2 += 2;
-          continue;
-        }
-        return cursor2 + 1;
-      }
-      cursor2 += 1;
-    }
-    return index;
-  }
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === void 0 || !dialect.quotes.includes(quote)) {
-    return index;
-  }
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === closingQuote) {
-      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql.length : index;
-}
-function opensQuotedRun(sql, index) {
-  return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
-}
-function sqlWithoutTrailingTerminator(sql) {
-  const text = String(sql ?? "");
-  const dialect = sqlDialectEveryEngineQuotes(true);
-  let index = 0;
-  let contentEnd = 0;
-  while (index < text.length) {
-    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
-    if (skipped > index) {
-      if (opensQuotedRun(text, index)) {
-        contentEnd = skipped;
-      }
-      index = skipped;
-      continue;
-    }
-    if (text[index] === ";") {
-      break;
-    }
-    if (!/[ \t\n\r\f]/.test(text[index])) {
-      contentEnd = index + 1;
-    }
-    index += 1;
-  }
-  return text.slice(0, contentEnd);
-}
-function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
-  const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
-  let index = startIndex;
-  let advanced = true;
-  while (advanced) {
-    advanced = false;
-    while (/[ \t\n\r\f]/.test(sql[index] ?? "")) {
-      index += 1;
-      advanced = true;
-    }
-    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
-    if (skipped > index) {
-      index = skipped;
-      advanced = true;
-    }
-  }
-  return index;
-}
-
 // src/jobs-runtime.ts
-var jobs_runtime_exports = {};
-__export(jobs_runtime_exports, {
-  RESERVED_JOB_NAME_PREFIX: () => RESERVED_JOB_NAME_PREFIX,
-  abortSchedulePayloadFactories: () => abortSchedulePayloadFactories,
-  assertJobScheduleProvenance: () => assertJobScheduleProvenance,
-  boundedJobJson: () => boundedJobJson,
-  cancelJob: () => cancelJob,
-  createControllableRuntimeClock: () => createControllableRuntimeClock,
-  createRuntimeClock: () => createRuntimeClock,
-  decodeJobCursor: () => decodeJobCursor,
-  encodeJobCursor: () => encodeJobCursor,
-  ensureJobStorage: () => ensureJobStorage,
-  ensureScheduleStorage: () => ensureScheduleStorage,
-  finishFailedScheduledOccurrence: () => finishFailedScheduledOccurrence,
-  inspectRuntimeJobs: () => inspectRuntimeJobs,
-  inspectRuntimeSchedules: () => inspectRuntimeSchedules,
-  jobActorProvider: () => jobActorProvider,
-  jobError: () => jobError,
-  jobHandlersFromCapsuleDefinition: () => jobHandlersFromCapsuleDefinition,
-  jobState: () => jobState,
-  jobSummary: () => jobSummary,
-  nextScheduleOccurrence: () => nextScheduleOccurrence,
-  normalizeJobRetry: () => normalizeJobRetry,
-  parseScheduleExpression: () => parseScheduleExpression,
-  resolveSchedulePayload: () => resolveSchedulePayload,
-  resolveSchedulePayloadFactoryTimeoutMs: () => resolveSchedulePayloadFactoryTimeoutMs,
-  runtimeOwnedJobHandlers: () => runtimeOwnedJobHandlers,
-  safeJobFailure: () => safeJobFailure,
-  scheduleDefinitionsFromCapsule: () => scheduleDefinitionsFromCapsule,
-  scheduleSummary: () => scheduleSummary,
-  scheduledOccurrenceIdentity: () => scheduledOccurrenceIdentity
-});
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
@@ -6610,6 +6211,1193 @@ function safeJobFailure(error) {
     JOB_FAILED: "Job handler failed."
   };
   return { code, message: messages[code] };
+}
+
+// src/runtime-log-policy.ts
+var runtime_log_policy_exports = {};
+__export(runtime_log_policy_exports, {
+  isSensitiveLogKey: () => isSensitiveLogKey,
+  logIndexLimit: () => logIndexLimit
+});
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+
+// src/stored-row-decoding.ts
+var stored_row_decoding_exports = {};
+__export(stored_row_decoding_exports, {
+  deserializeFieldValue: () => deserializeFieldValue,
+  deserializeRow: () => deserializeRow
+});
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
+}
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
+    }
+  }
+  return output;
+}
+
+// src/acl-runtime.ts
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
+function createPrivilegedAuditEmitter(log) {
+  return {
+    emit(details) {
+      return emitPrivilegedAuditEvent(log, details);
+    }
+  };
+}
+function emitPrivilegedAuditEvent(target, details = {}) {
+  const log = target?.log?.emit ? target.log : target;
+  if (!log?.emit) {
+    throw new Error("Privileged audit events require a runtime log sink.");
+  }
+  return log.emit(createPrivilegedAuditLogInput(details));
+}
+async function emitPrivilegedRunAudit(database, context, details) {
+  const event = await database.audit.emit(details);
+  recordPrivilegedAuditEventForTransaction(context, event);
+  return event;
+}
+function recordPrivilegedAuditEventForTransaction(context, event) {
+  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
+    return;
+  }
+  if (!Array.isArray(context.__privilegedAuditEvents)) {
+    Object.defineProperty(context, "__privilegedAuditEvents", {
+      value: [],
+      enumerable: false,
+      configurable: true
+    });
+  }
+  context.__privilegedAuditEvents.push(event);
+}
+async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
+  const events = context?.__privilegedAuditEvents;
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+  for (const event of events) {
+    try {
+      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+        continue;
+      }
+      await database.adapter.insertLogIndexEvent(event);
+    } catch {
+      return;
+    }
+  }
+  try {
+    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
+  } catch {
+  }
+}
+async function privilegedAuditEventAlreadyIndexed(database, event) {
+  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
+}
+function samePrivilegedAuditLogEvent(left, right) {
+  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
+}
+function normalizePrivilegedRunSignal(value) {
+  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
+    return value;
+  }
+  return new AbortController().signal;
+}
+function createPrivilegedRunAbortError() {
+  return commandError(
+    "Privileged run aborted.",
+    "Retry the privileged operation if cancellation was not intended.",
+    "ABORTED"
+  );
+}
+function createPrivilegedRunAuditDetails(context, options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
+  }
+  const operation = validatedPrivilegedOperation(options.operation);
+  const metadata = validatedPrivilegedMetadata(options.metadata);
+  return {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: auditString(options.surface ?? context?.kind, "server-handler"),
+    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
+    correlation: options.correlation ?? null,
+    request: options.request ?? null,
+    source: "runtime",
+    metadata
+  };
+}
+function validatedPrivilegedOperation(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
+  }
+  const operation = value.trim();
+  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
+    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
+  }
+  return operation;
+}
+function validatedPrivilegedMetadata(value) {
+  if (value === void 0) {
+    return {};
+  }
+  if (!isPlainPrivilegedMetadata(value)) {
+    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
+  }
+  return { ...value };
+}
+function isPlainPrivilegedMetadata(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (typeof value.then === "function") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function invalidPrivilegedRunMetadata(message) {
+  return commandError(
+    message,
+    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
+    "INVALID_PRIVILEGED_RUN_METADATA"
+  );
+}
+function createPrivilegedRunPublicError(cause) {
+  const error = commandError(
+    "Privileged run failed.",
+    "Check the privileged audit events and server logs before exposing a safe response.",
+    "PRIVILEGED_RUN_FAILED"
+  );
+  error.cause = cause;
+  return error;
+}
+function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
+  const error = commandError(
+    "Privileged audit emission failed.",
+    "Check the server audit log configuration before retrying the privileged operation.",
+    "PRIVILEGED_AUDIT_EMISSION_FAILED"
+  );
+  error.cause = cause;
+  if (context) {
+    error.privilegedAuditContext = context;
+  }
+  return error;
+}
+function isPrivilegedAuditEmissionPublicError(error) {
+  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+}
+function createPrivilegedScheduleApi(database, contextGetter) {
+  const sqlite = () => (database.__rootDatabase ?? database).adapter;
+  return {
+    async get(name) {
+      assertActivePrivilegedJobAccess(contextGetter);
+      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
+      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
+      return row ? await scheduleSummary(sqlite(), row) : null;
+    },
+    async list() {
+      assertActivePrivilegedJobAccess(contextGetter);
+      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
+      const summaries = [];
+      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
+      return summaries;
+    }
+  };
+}
+function createPrivilegedFileApi(database, contextGetter) {
+  return Object.freeze({
+    async url(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      const row = resolved.row;
+      if (!row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+          file: {
+            ...fileMetadataFromRow(row),
+            ownerId: row.ownerId
+          }
+        },
+        error: null
+      };
+    },
+    async createPublicUrl(fileReference, options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
+    },
+    async delete(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
+    },
+    unsupported() {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        throw commandError(
+          active.error?.message ?? "Privileged file access is no longer active.",
+          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
+          "PRIVILEGED_FILE_ACCESS_INACTIVE"
+        );
+      }
+      throw commandError(
+        "Unsupported privileged file operation.",
+        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
+      );
+    }
+  });
+}
+function activePrivilegedFileAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "Privileged file access is no longer active.",
+      "Start a new ctx.privileged.run callback before using privileged file operations."
+    )
+  };
+}
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
+    data,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "errored") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
+  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "errored") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text = value === null || value === void 0 ? "" : String(value);
+  return text.trim() ? text : fallback;
+}
+function normalizeTableAcl(tableName, aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
+  if (aclRules === void 0) {
+    return {
+      allowByDefault: true,
+      resolve(operation) {
+        return resolveEffectiveAclRule(this, operation);
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      `Invalid Capsule table ACL: ${tableName}`,
+      "Pass an object with function rules for read, write, insert, update, and delete."
+    );
+  }
+  const normalized = {
+    allowByDefault: true
+  };
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
+        "Supported ACL operations are read, write, insert, update, and delete."
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule table ACL: ${tableName}.${operation}`,
+        "ACL rules must be functions for read, write, insert, update, and delete."
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation) {
+    return resolveEffectiveAclRule(this, operation);
+  };
+  return normalized;
+}
+function resolveEffectiveAclRule(aclRules, operation) {
+  if (!aclRules || typeof aclRules !== "object") {
+    return void 0;
+  }
+  if (operation === "insert" || operation === "update" || operation === "delete") {
+    return aclRules[operation] ?? aclRules.write;
+  }
+  return aclRules[operation];
+}
+function createTableAclContext(context, database) {
+  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  return {
+    ...aclContext,
+    acl: createAclHelpers(database)
+  };
+}
+function privilegedDbAccessContextSet() {
+  const holder = privilegedDbAccessContextSet;
+  if (!holder.contexts) {
+    Object.defineProperty(holder, "contexts", {
+      value: /* @__PURE__ */ new WeakSet(),
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return holder.contexts;
+}
+function grantPrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().add(context);
+  }
+  return context;
+}
+function revokePrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().delete(context);
+  }
+  return context;
+}
+function hasPrivilegedDbAccess(context) {
+  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
+}
+function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return write();
+  }
+  const rule = table.acl?.resolve?.(operation);
+  if (!rule) {
+    return write();
+  }
+  const context = contextGetter?.();
+  const denialLogData = createAclDenialLogData({
+    context,
+    table,
+    operation,
+    previous,
+    next
+  });
+  const deny = () => {
+    if (!context?.__pendingAclWrites) {
+      emitAclDeniedLog(database, { data: denialLogData });
+    }
+    throw createAclDeniedError(denialLogData);
+  };
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation,
+    table: table.name,
+    previous,
+    next
+  });
+  if (!isPromiseLike(result)) {
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  }
+  const pending = Promise.resolve(result).then((allowed) => {
+    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  });
+  context?.__pendingAclWrites?.push(pending);
+  return pending;
+}
+function applyReadAcl(database, table, row, context) {
+  if (hasPrivilegedDbAccess(context)) {
+    return true;
+  }
+  const rule = table.acl?.resolve?.("read");
+  if (!rule) {
+    return true;
+  }
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation: "read",
+    table: table.name,
+    row
+  });
+  const deny = () => {
+    emitAclDeniedLog(database, {
+      context,
+      table,
+      operation: "read",
+      row
+    });
+    return false;
+  };
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
+}
+function filterRowsByReadAcl(database, table, rows, context) {
+  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
+  if (decisions.some(isPromiseLike)) {
+    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
+  }
+  return rows.filter((_, index) => decisions[index]);
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+function createAclHelpers(database) {
+  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const helpers = {
+    db: createAclDbHelpers(database, state),
+    storage: createAclStorageHelpers(database, state)
+  };
+  Object.defineProperty(helpers, ACL_HELPER_STATE, {
+    value: state,
+    enumerable: false
+  });
+  return Object.freeze(helpers);
+}
+function aclRuleTouchedAsyncHelperRead(aclContext) {
+  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+}
+function markAsyncAclHelperRead(state, result) {
+  if (isPromiseLike(result)) {
+    state.touchedAsyncRead = true;
+    Promise.resolve(result).catch(() => {
+    });
+    return true;
+  }
+  return false;
+}
+function createAclDbHelpers(database, state) {
+  return Object.freeze({
+    get(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return null;
+      }
+      return selected ? deserializeRow(table, selected) : null;
+    },
+    exists(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return false;
+      }
+      return Boolean(selected);
+    }
+  });
+}
+function createAclStorageHelpers(database, state) {
+  return Object.freeze({
+    get(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = resolveAclStorageFileReference(database, state, reference);
+        return row ? aclStorageMetadataFromFileRow(row) : null;
+      }
+      return null;
+    },
+    exists(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        return Boolean(resolveAclStorageFileReference(database, state, reference));
+      }
+      return false;
+    }
+  });
+}
+function resolveAclStorageFileReference(database, state, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path13;
+    try {
+      path13 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return null;
+    }
+    const selected2 = database.adapter.selectLiveFileByPath(path13);
+    if (markAsyncAclHelperRead(state, selected2)) {
+      return null;
+    }
+    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
+    return resolved?.ambiguous ? null : resolved;
+  }
+  const selected = database.adapter.selectFileById(value);
+  if (markAsyncAclHelperRead(state, selected)) {
+    return null;
+  }
+  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
+    return null;
+  }
+  return selected;
+}
+function assertAclHelperReadAllowed(state) {
+  state.readCount += 1;
+  if (state.readCount > state.maxReads) {
+    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+  }
+}
+function resolveAclAppTable(database, tableName) {
+  const normalized = String(tableName ?? "");
+  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  if (!table) {
+    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+  }
+  return table;
+}
+function resolveAclStorageResource(resourceName) {
+  const normalized = String(resourceName ?? "");
+  if (normalized === "files") {
+    return normalized;
+  }
+  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+}
+function aclStorageMetadataFromFileRow(row) {
+  const metadata = fileMetadataFromRow(row);
+  return {
+    ...metadata,
+    originalName: row.name,
+    owner: row.ownerId,
+    ownerId: row.ownerId,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt ?? null
+  };
+}
+function emitAclDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied table operation.",
+    data: details.data ?? createAclDenialLogData(details)
+  });
+}
+function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
+  return {
+    resource: {
+      kind: "table",
+      name: table.name
+    },
+    operation,
+    rule: {
+      category: "table",
+      declaredOperation: aclRuleDeclaredOperation(table, operation)
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null
+    },
+    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
+  };
+}
+function aclRuleDeclaredOperation(table, operation) {
+  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
+    return "write";
+  }
+  return operation;
+}
+function aclRowLogSnapshot(input) {
+  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
+    const previous = input.previous ?? null;
+    const next = input.next ?? null;
+    return {
+      previousId: previous?.id ?? null,
+      nextId: next?.id ?? null,
+      previousFields: aclVisibleFieldNames(previous),
+      nextFields: aclVisibleFieldNames(next),
+      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
+      previousPresent: Boolean(previous),
+      nextPresent: Boolean(next)
+    };
+  }
+  return {
+    id: input?.id ?? null,
+    fields: aclVisibleFieldNames(input)
+  };
+}
+function aclVisibleFieldNames(row) {
+  return Object.keys(row ?? {}).filter(
+    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
+  );
+}
+function createAclDeniedError(logData = null) {
+  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  if (logData) {
+    error.sporadesAclDenialLogData = logData;
+  }
+  return error;
+}
+function assertActivePrivilegedJobAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) return;
+  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
+}
+async function drainPendingAclWrites(context) {
+  let firstError = null;
+  while (context?.__pendingAclWrites?.length > 0) {
+    const pending = context.__pendingAclWrites.splice(0);
+    const results = await Promise.allSettled(pending);
+    for (const result of results) {
+      if (result.status === "rejected" && !firstError) {
+        firstError = result.reason;
+      }
+    }
+  }
+  if (firstError) {
+    throw firstError;
+  }
+}
+
+// src/inspection-sql.ts
+var inspection_sql_exports = {};
+__export(inspection_sql_exports, {
+  SAFE_INSPECTION_PRAGMAS: () => SAFE_INSPECTION_PRAGMAS,
+  SIDE_EFFECT_SQL_FUNCTIONS: () => SIDE_EFFECT_SQL_FUNCTIONS,
+  SIDE_EFFECT_SQL_KEYWORDS: () => SIDE_EFFECT_SQL_KEYWORDS,
+  ambiguousInspectionSqlError: () => ambiguousInspectionSqlError,
+  containsSideEffectSqlToken: () => containsSideEffectSqlToken,
+  containsSideEffectSqlTokenUnder: () => containsSideEffectSqlTokenUnder,
+  hasMultipleSqlStatements: () => hasMultipleSqlStatements,
+  isSafeInspectionPragma: () => isSafeInspectionPragma,
+  readBareSqlIdentifier: () => readBareSqlIdentifier,
+  readFirstSqlToken: () => readFirstSqlToken,
+  readOnlyInspectionSqlError: () => readOnlyInspectionSqlError,
+  readSqlQuotedIdentifier: () => readSqlQuotedIdentifier,
+  readSqlTokenIdentifier: () => readSqlTokenIdentifier,
+  readSqlTokens: () => readSqlTokens,
+  skipSqlQuotedOrCommented: () => skipSqlQuotedOrCommented,
+  skipSqlTrivia: () => skipSqlTrivia,
+  sqlContentFingerprint: () => sqlContentFingerprint,
+  sqlDialectCommentsOnly: () => sqlDialectCommentsOnly,
+  sqlDialectEveryEngineQuotes: () => sqlDialectEveryEngineQuotes,
+  sqlDialectQuotedIdentifiersOnly: () => sqlDialectQuotedIdentifiersOnly,
+  sqlDialectQuotedRunsOnly: () => sqlDialectQuotedRunsOnly,
+  sqlDialectWithoutPostgresStringForms: () => sqlDialectWithoutPostgresStringForms,
+  sqlTheEnginesLexDifferently: () => sqlTheEnginesLexDifferently,
+  sqlWithoutTrailingTerminator: () => sqlWithoutTrailingTerminator,
+  unrepresentableInspectionSqlError: () => unrepresentableInspectionSqlError,
+  validateReadOnlyInspectionSql: () => validateReadOnlyInspectionSql
+});
+function validateReadOnlyInspectionSql(sql) {
+  const text = String(sql ?? "");
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+    return unrepresentableInspectionSqlError();
+  }
+  const disagreement = sqlTheEnginesLexDifferently(text);
+  if (disagreement) {
+    return ambiguousInspectionSqlError(disagreement);
+  }
+  const firstToken = readFirstSqlToken(text);
+  if (!firstToken || hasMultipleSqlStatements(text)) {
+    return readOnlyInspectionSqlError();
+  }
+  const keyword = firstToken.toLowerCase();
+  if (keyword === "pragma") {
+    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+  }
+  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+    return { ok: true };
+  }
+  return readOnlyInspectionSqlError();
+}
+function readOnlyInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only read-only SQL is allowed.",
+      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
+    }
+  };
+}
+function unrepresentableInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL text the database receives unchanged is allowed.",
+      hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL."
+    }
+  };
+}
+function ambiguousInspectionSqlError(hint) {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL the database reads the same way this check does is allowed.",
+      hint
+    }
+  };
+}
+function sqlTheEnginesLexDifferently(sql) {
+  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
+    return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
+  }
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      if (sql[index] === "/" && sql[index + 1] === "*") {
+        if (nestingBlockCommentEnd(sql, index) !== skipped) {
+          return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
+        }
+      }
+      index = skipped;
+      continue;
+    }
+    if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
+      return "Replace the invisible character outside quotes \u2014 a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace \u2014 with an ordinary space.";
+    }
+    index += 1;
+  }
+  return null;
+}
+function nestingBlockCommentEnd(sql, index) {
+  let depth = 0;
+  let cursor = index;
+  while (cursor < sql.length) {
+    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+      depth += 1;
+      cursor += 2;
+      continue;
+    }
+    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+      depth -= 1;
+      cursor += 2;
+      if (depth === 0) {
+        break;
+      }
+      continue;
+    }
+    cursor += 1;
+  }
+  return cursor;
+}
+function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn);
+  let fingerprint = "";
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      if (opensQuotedRun(sql, index)) {
+        fingerprint += `q${index}-${skipped};`;
+      }
+      index = skipped;
+      continue;
+    }
+    if (!/[ \t\n\r\f]/.test(sql[index])) {
+      fingerprint += `${index}:${sql[index]};`;
+    }
+    index += 1;
+  }
+  return fingerprint;
+}
+function readFirstSqlToken(sql) {
+  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0, true))?.value ?? null;
+}
+function hasMultipleSqlStatements(sql) {
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === ";") {
+      return skipSqlTrivia(sql, index + 1, true) < sql.length;
+    }
+    index += 1;
+  }
+  return false;
+}
+function isSafeInspectionPragma(sql, pragmaTokenLength) {
+  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0, true) + pragmaTokenLength, true);
+  let identifier = readBareSqlIdentifier(sql, index);
+  if (!identifier) {
+    return false;
+  }
+  let pragmaName = identifier.value.toLowerCase();
+  index = skipSqlTrivia(sql, identifier.nextIndex, true);
+  if (sql[index] === ".") {
+    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1, true));
+    if (!identifier) {
+      return false;
+    }
+    pragmaName = identifier.value.toLowerCase();
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
+  }
+  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
+    return false;
+  }
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === "=") {
+      return false;
+    }
+    index += 1;
+  }
+  return true;
+}
+var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
+  "database_list",
+  "foreign_key_list",
+  "index_info",
+  "index_list",
+  "index_xinfo",
+  "table_info",
+  "table_list",
+  "table_xinfo"
+]);
+function containsSideEffectSqlToken(sql) {
+  return containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false);
+}
+function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
+  for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
+    const value = token.value.toLowerCase();
+    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
+      return true;
+    }
+    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
+      return true;
+    }
+  }
+  return false;
+}
+var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
+  "alter",
+  "analyze",
+  "attach",
+  "create",
+  "delete",
+  "detach",
+  "drop",
+  "insert",
+  "merge",
+  "reindex",
+  "replace",
+  "update",
+  "vacuum"
+]);
+var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
+  "load_extension",
+  "nextval",
+  "set_config",
+  "setval"
+]);
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
+  const tokens = [];
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    const identifier = readSqlTokenIdentifier(sql, index);
+    if (identifier) {
+      tokens.push(identifier);
+      index = identifier.nextIndex;
+      continue;
+    }
+    index += 1;
+  }
+  return tokens;
+}
+function readBareSqlIdentifier(sql, index) {
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+}
+function readSqlTokenIdentifier(sql, index) {
+  return readSqlQuotedIdentifier(sql, index, '"`[');
+}
+function readSqlQuotedIdentifier(sql, index, quotes) {
+  const end = skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedIdentifiersOnly(quotes));
+  if (end === index) {
+    return readBareSqlIdentifier(sql, index);
+  }
+  const closingQuote = sql[end - 1];
+  const value = sql.slice(index + 1, end - 1);
+  return {
+    value: closingQuote === sql[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
+    nextIndex: end
+  };
+}
+function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "'",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedRunsOnly() {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedIdentifiersOnly(quotes) {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes,
+    unterminatedQuotedRunReachesEndOfInput: false
+  };
+}
+function skipSqlQuotedOrCommented(sql, index, dialect) {
+  if (dialect.comments && sql[index] === "/" && sql[index + 1] === "*") {
+    const end = sql.indexOf("*/", index + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+  if (dialect.comments && sql[index] === "-" && sql[index + 1] === "-") {
+    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
+  }
+  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
+  if (dialect.dollarQuoting && sql[index] === "$" && opensToken) {
+    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+    if (!delimiter) {
+      return index;
+    }
+    const end = sql.indexOf(delimiter, index + delimiter.length);
+    return end === -1 ? index : end + delimiter.length;
+  }
+  if (dialect.escapeStrings && (sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+    let cursor2 = index + 2;
+    while (cursor2 < sql.length) {
+      if (sql[cursor2] === "\\") {
+        cursor2 += 2;
+        continue;
+      }
+      if (sql[cursor2] === "'") {
+        if (sql[cursor2 + 1] === "'") {
+          cursor2 += 2;
+          continue;
+        }
+        return cursor2 + 1;
+      }
+      cursor2 += 1;
+    }
+    return index;
+  }
+  const quote = sql[index];
+  const closingQuote = quote === "[" ? "]" : quote;
+  if (quote === void 0 || !dialect.quotes.includes(quote)) {
+    return index;
+  }
+  let cursor = index + 1;
+  while (cursor < sql.length) {
+    if (sql[cursor] === closingQuote) {
+      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+        cursor += 2;
+        continue;
+      }
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql.length : index;
+}
+function opensQuotedRun(sql, index) {
+  return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
+}
+function sqlWithoutTrailingTerminator(sql) {
+  const text = String(sql ?? "");
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  let contentEnd = 0;
+  while (index < text.length) {
+    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
+    if (skipped > index) {
+      if (opensQuotedRun(text, index)) {
+        contentEnd = skipped;
+      }
+      index = skipped;
+      continue;
+    }
+    if (text[index] === ";") {
+      break;
+    }
+    if (!/[ \t\n\r\f]/.test(text[index])) {
+      contentEnd = index + 1;
+    }
+    index += 1;
+  }
+  return text.slice(0, contentEnd);
+}
+function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
+  let index = startIndex;
+  let advanced = true;
+  while (advanced) {
+    advanced = false;
+    while (/[ \t\n\r\f]/.test(sql[index] ?? "")) {
+      index += 1;
+      advanced = true;
+    }
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      advanced = true;
+    }
+  }
+  return index;
 }
 
 // src/log-index-guard.ts
@@ -7973,7 +8761,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createRuntimeInspectionAdapter,
   createCurrentUserJobApi,
   createPrivilegedJobApi,
-  assertActivePrivilegedJobAccess,
   flushPendingJobEnqueues,
   scheduleCurrentUserJobWorker,
   scheduleNextDelayedJob,
@@ -8010,41 +8797,17 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
-  createPrivilegedAuditEmitter,
-  emitPrivilegedAuditEvent,
   createContextPrivilegedApi,
-  emitPrivilegedRunAudit,
-  recordPrivilegedAuditEventForTransaction,
-  reindexPrivilegedAuditEventsAfterRollback,
-  privilegedAuditEventAlreadyIndexed,
-  samePrivilegedAuditLogEvent,
-  normalizePrivilegedRunSignal,
-  createPrivilegedRunAbortError,
-  createPrivilegedRunAuditDetails,
-  validatedPrivilegedOperation,
-  validatedPrivilegedMetadata,
-  isPlainPrivilegedMetadata,
-  invalidPrivilegedRunMetadata,
-  createPrivilegedRunPublicError,
-  createPrivilegedAuditEmissionPublicError,
-  isPrivilegedAuditEmissionPublicError,
   createPrivilegedHandlerContext,
-  createPrivilegedScheduleApi,
-  createPrivilegedFileApi,
-  activePrivilegedFileAccess,
-  createPrivilegedAuditLogInput,
-  normalizePrivilegedAuditActorKind,
-  normalizePrivilegedAuditOutcome,
-  privilegedAuditLevelForOutcome,
-  normalizePrivilegedAuditCorrelation,
-  safePrivilegedAuditErrorCode,
-  auditString,
   createLogEnvelope,
   sanitizeLogData,
   redactLogData,
   logDataContainsServerEnvValue,
   isSensitiveLogString,
-  isSensitiveLogKey,
+  // `isSensitiveLogKey` stood here until batch 7 moved it to `runtime-log-policy.ts`, and
+  // `logIndexLimit` eleven entries below it. Both are declarations inside a carried module now, so
+  // listing either again would declare the same top-level function twice in the emitted ES module —
+  // a load-time `SyntaxError` rather than a drift.
   capLogEnvelope,
   formatLogIndexSequence,
   nextLogIndexSequence,
@@ -8055,7 +8818,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   pruneLogIndex,
   readRecentLogEvents,
   readJsonlLogEvents,
-  logIndexLimit,
   logPayloadMaxBytes,
   logRedactedValue,
   // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
@@ -8072,8 +8834,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractSchema,
   schemaFromCapsuleDefinition,
   schemaTableFromCapsuleTable,
-  normalizeTableAcl,
-  resolveEffectiveAclRule,
   schemaFieldFromCapsuleField,
   sqliteTypeForFieldKind,
   extractEndpoints,
@@ -8120,46 +8880,38 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readEndpointRequest,
   createEndpointContext,
   createContextHolder,
-  createTableAclContext,
   applyContextMiddleware,
   runContextMiddleware,
   endpointQueryFromUrl,
-  privilegedDbAccessContextSet,
-  grantPrivilegedDbAccess,
-  revokePrivilegedDbAccess,
-  hasPrivilegedDbAccess,
   createEndpointDatabaseApi,
   createEndpointTableApi,
-  runTableWriteWithAcl,
-  applyReadAcl,
-  filterRowsByReadAcl,
-  createAclHelpers,
-  aclRuleTouchedAsyncHelperRead,
-  // The two halves of the ACL helpers' async-read detection. Both are reached from the frozen
-  // helper objects an ACL rule is handed, so without them here every rule that consulted
-  // `ctx.acl.db` or `ctx.acl.storage` threw out of the rule rather than answering it.
-  markAsyncAclHelperRead,
-  createAclDbHelpers,
-  createAclStorageHelpers,
-  resolveAclStorageFileReference,
-  assertAclHelperReadAllowed,
-  resolveAclAppTable,
-  resolveAclStorageResource,
-  aclStorageMetadataFromFileRow,
-  emitAclDeniedLog,
-  createAclDenialLogData,
-  aclRuleDeclaredOperation,
-  aclRowLogSnapshot,
-  aclVisibleFieldNames,
-  createAclDeniedError,
+  // The ACL and privileged-audit domain occupied fifty-five entries in this list until batch 7 —
+  // twenty-seven of them here, from `runTableWriteWithAcl` through `createAclDeniedError`, and the
+  // rest in four other runs: the privileged audit region above `createLogEnvelope`, the table ACL
+  // normalizer among the schema extractors, the privileged-access WeakSet after
+  // `endpointQueryFromUrl`, and `assertActivePrivilegedJobAccess` and `drainPendingAclWrites` down
+  // among the mutation runners. All fifty-five are declarations inside `./acl-runtime.js` now and
+  // reach the generated Capsule bundle as that module's own text, so listing any of them again
+  // would declare the same top-level function twice in an ES module — a load-time `SyntaxError`
+  // rather than a drift.
+  //
+  // Three entries the sweep for that domain would collect are still here — `createContextHolder`
+  // and `createEndpointDatabaseApi` above, and `createEndpointContext` — because they are the
+  // composition core rather than the domain; see the note above `export * from "./acl-runtime.js"`.
+  //
+  // A comment stood here naming `markAsyncAclHelperRead` and `resolveAclStorageFileReference` as
+  // entries that had to be in this list or every ACL rule consulting `ctx.acl` threw. Both are
+  // private declarations inside that module now, registered in nothing, which is the thing this
+  // list could not express.
   fieldValueForWrite,
   invalidReferenceError,
   referenceExists,
   serializeFieldValue,
-  deserializeFieldValue,
   normalizeDateValue,
   dateValueError,
-  deserializeRow,
+  // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
+  // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
+  // for the reason recorded beside `isSensitiveLogKey` above.
   readEndpointBody,
   createEndpointLogger,
   routeRuntimeHealth,
@@ -8208,7 +8960,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   runMutationHook,
   runMutationHookAndDrainPendingAclWrites,
   createMutationContext,
-  drainPendingAclWrites,
   createMessageContext,
   createHookErrorResult,
   runInsertMutation,
@@ -10354,10 +11105,6 @@ function libsqlValueToJs(value) {
   }
   return value;
 }
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
@@ -10426,23 +11173,6 @@ function createRuntimeLogger(database, context = {}) {
     warn: (...args) => write("warn", args),
     error: (...args) => write("error", args)
   };
-}
-var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
-function createPrivilegedAuditEmitter(log) {
-  return {
-    emit(details) {
-      return emitPrivilegedAuditEvent(log, details);
-    }
-  };
-}
-function emitPrivilegedAuditEvent(target, details = {}) {
-  const log = target?.log?.emit ? target.log : target;
-  if (!log?.emit) {
-    throw new Error("Privileged audit events require a runtime log sink.");
-  }
-  return log.emit(createPrivilegedAuditLogInput(details));
 }
 function createContextPrivilegedApi(database, contextGetter) {
   return {
@@ -10521,141 +11251,6 @@ function createContextPrivilegedApi(database, contextGetter) {
     }
   };
 }
-async function emitPrivilegedRunAudit(database, context, details) {
-  const event = await database.audit.emit(details);
-  recordPrivilegedAuditEventForTransaction(context, event);
-  return event;
-}
-function recordPrivilegedAuditEventForTransaction(context, event) {
-  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
-    return;
-  }
-  if (!Array.isArray(context.__privilegedAuditEvents)) {
-    Object.defineProperty(context, "__privilegedAuditEvents", {
-      value: [],
-      enumerable: false,
-      configurable: true
-    });
-  }
-  context.__privilegedAuditEvents.push(event);
-}
-async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
-  const events = context?.__privilegedAuditEvents;
-  if (!Array.isArray(events) || events.length === 0) {
-    return;
-  }
-  for (const event of events) {
-    try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
-        continue;
-      }
-      await database.adapter.insertLogIndexEvent(event);
-    } catch {
-      return;
-    }
-  }
-  try {
-    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
-  } catch {
-  }
-}
-async function privilegedAuditEventAlreadyIndexed(database, event) {
-  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
-  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
-}
-function samePrivilegedAuditLogEvent(left, right) {
-  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
-}
-function normalizePrivilegedRunSignal(value) {
-  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
-    return value;
-  }
-  return new AbortController().signal;
-}
-function createPrivilegedRunAbortError() {
-  return commandError(
-    "Privileged run aborted.",
-    "Retry the privileged operation if cancellation was not intended.",
-    "ABORTED"
-  );
-}
-function createPrivilegedRunAuditDetails(context, options) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
-  }
-  const operation = validatedPrivilegedOperation(options.operation);
-  const metadata = validatedPrivilegedMetadata(options.metadata);
-  return {
-    actorKind: "privileged-server-role",
-    operation,
-    surface: auditString(options.surface ?? context?.kind, "server-handler"),
-    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
-    correlation: options.correlation ?? null,
-    request: options.request ?? null,
-    source: "runtime",
-    metadata
-  };
-}
-function validatedPrivilegedOperation(value) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
-  }
-  const operation = value.trim();
-  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
-    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
-  }
-  return operation;
-}
-function validatedPrivilegedMetadata(value) {
-  if (value === void 0) {
-    return {};
-  }
-  if (!isPlainPrivilegedMetadata(value)) {
-    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
-  }
-  return { ...value };
-}
-function isPlainPrivilegedMetadata(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  if (typeof value.then === "function") {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-function invalidPrivilegedRunMetadata(message) {
-  return commandError(
-    message,
-    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
-    "INVALID_PRIVILEGED_RUN_METADATA"
-  );
-}
-function createPrivilegedRunPublicError(cause) {
-  const error = commandError(
-    "Privileged run failed.",
-    "Check the privileged audit events and server logs before exposing a safe response.",
-    "PRIVILEGED_RUN_FAILED"
-  );
-  error.cause = cause;
-  return error;
-}
-function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
-  const error = commandError(
-    "Privileged audit emission failed.",
-    "Check the server audit log configuration before retrying the privileged operation.",
-    "PRIVILEGED_AUDIT_EMISSION_FAILED"
-  );
-  error.cause = cause;
-  if (context) {
-    error.privilegedAuditContext = context;
-  }
-  return error;
-}
-function isPrivilegedAuditEmissionPublicError(error) {
-  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
-}
 function createPrivilegedHandlerContext(database, context, signal) {
   const privilegedContext = {
     ...context,
@@ -10685,184 +11280,6 @@ function createPrivilegedHandlerContext(database, context, signal) {
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;
-}
-function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => (database.__rootDatabase ?? database).adapter;
-  return {
-    async get(name) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
-      return row ? await scheduleSummary(sqlite(), row) : null;
-    },
-    async list() {
-      assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
-      const summaries = [];
-      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
-      return summaries;
-    }
-  };
-}
-function createPrivilegedFileApi(database, contextGetter) {
-  return Object.freeze({
-    async url(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      const row = resolved.row;
-      if (!row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: {
-            ...fileMetadataFromRow(row),
-            ownerId: row.ownerId
-          }
-        },
-        error: null
-      };
-    },
-    async createPublicUrl(fileReference, options = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
-    },
-    async delete(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
-    },
-    unsupported() {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        throw commandError(
-          active.error?.message ?? "Privileged file access is no longer active.",
-          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
-          "PRIVILEGED_FILE_ACCESS_INACTIVE"
-        );
-      }
-      throw commandError(
-        "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
-        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
-      );
-    }
-  });
-}
-function activePrivilegedFileAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "Privileged file access is no longer active.",
-      "Start a new ctx.privileged.run callback before using privileged file operations."
-    )
-  };
-}
-function createPrivilegedAuditLogInput(details = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
-  };
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
-    data,
-    request: details.request ?? null,
-    release,
-    correlation
-  };
-}
-function normalizePrivilegedAuditActorKind(value) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
-  if (source === null || source === void 0 || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-function normalizePrivilegedAuditCorrelation(value) {
-  if (value === null || value === void 0) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-function auditString(value, fallback) {
-  const text = value === null || value === void 0 ? "" : String(value);
-  return text.trim() ? text : fallback;
 }
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -10932,9 +11349,6 @@ function logDataContainsServerEnvValue(value, serverEnv) {
     (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue
   );
   return values.some((secret) => serialized.includes(String(secret)));
-}
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 function isSensitiveLogString(value) {
   return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
@@ -11099,54 +11513,6 @@ function schemaTableFromCapsuleTable(name, table) {
     acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field))
   };
-}
-function normalizeTableAcl(tableName, aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === void 0) {
-    return {
-      allowByDefault: true,
-      resolve(operation) {
-        return resolveEffectiveAclRule(this, operation);
-      }
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete."
-    );
-  }
-  const normalized = {
-    allowByDefault: true
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete."
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete."
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve(operation) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-function resolveEffectiveAclRule(aclRules, operation) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return void 0;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
 }
 function schemaFieldFromCapsuleField(name, field) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
@@ -12025,13 +12391,6 @@ function createContextHolder(context) {
   });
   return holder;
 }
-function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
-  return {
-    ...aclContext,
-    acl: createAclHelpers(database)
-  };
-}
 async function applyContextMiddleware(database, baseContext, kind) {
   let context = {
     ...baseContext,
@@ -12077,32 +12436,6 @@ function endpointQueryFromUrl(requestUrl) {
     query[name] = value;
   }
   return query;
-}
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: /* @__PURE__ */ new WeakSet(),
-      enumerable: false,
-      configurable: false
-    });
-  }
-  return holder.contexts;
-}
-function grantPrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().add(context);
-  }
-  return context;
-}
-function revokePrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().delete(context);
-  }
-  return context;
-}
-function hasPrivilegedDbAccess(context) {
-  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
 }
 function createEndpointDatabaseApi(database, contextGetter = null) {
   return Object.fromEntries(
@@ -12254,280 +12587,6 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     }
   };
 }
-function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context,
-    table,
-    operation,
-    previous,
-    next
-  });
-  const deny = () => {
-    if (!context?.__pendingAclWrites) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next
-  });
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  });
-  context?.__pendingAclWrites?.push(pending);
-  return pending;
-}
-function applyReadAcl(database, table, row, context) {
-  if (hasPrivilegedDbAccess(context)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row
-  });
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context,
-      table,
-      operation: "read",
-      row
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
-  }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
-}
-function filterRowsByReadAcl(database, table, rows, context) {
-  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
-  }
-  return rows.filter((_, index) => decisions[index]);
-}
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-function createAclHelpers(database) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state)
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false
-  });
-  return Object.freeze(helpers);
-}
-function aclRuleTouchedAsyncHelperRead(aclContext) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
-}
-function markAsyncAclHelperRead(state, result) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {
-    });
-    return true;
-  }
-  return false;
-}
-function createAclDbHelpers(database, state) {
-  return Object.freeze({
-    get(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
-    },
-    exists(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
-    }
-  });
-}
-function createAclStorageHelpers(database, state) {
-  return Object.freeze({
-    get(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
-      }
-      return null;
-    },
-    exists(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
-      }
-      return false;
-    }
-  });
-}
-function resolveAclStorageFileReference(database, state, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path13;
-    try {
-      path13 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected2 = database.adapter.selectLiveFileByPath(path13);
-    if (markAsyncAclHelperRead(state, selected2)) {
-      return null;
-    }
-    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
-    return resolved?.ambiguous ? null : resolved;
-  }
-  const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
-}
-function assertAclHelperReadAllowed(state) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-function resolveAclAppTable(database, tableName) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
-  if (!table) {
-    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-function resolveAclStorageResource(resourceName) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-function aclStorageMetadataFromFileRow(row) {
-  const metadata = fileMetadataFromRow(row);
-  return {
-    ...metadata,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null
-  };
-}
-function emitAclDeniedLog(database, details) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details)
-  });
-}
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation)
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null
-    },
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
-  };
-}
-function aclRuleDeclaredOperation(table, operation) {
-  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-function aclRowLogSnapshot(input) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next)
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input)
-  };
-}
-function aclVisibleFieldNames(row) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
-  );
-}
-function createAclDeniedError(logData = null) {
-  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
 function fieldValueForWrite(database, field, value) {
   if (field.kind === "Reference" && value !== void 0 && value !== null) {
     return thenIfPromise(referenceExists(database, field, value), (exists) => {
@@ -12570,18 +12629,6 @@ function serializeFieldValue(field, value) {
   }
   return String(value ?? "");
 }
-function deserializeFieldValue(field, value) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
 function normalizeDateValue(value, fieldName) {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
@@ -12603,20 +12650,6 @@ function dateValueError(fieldName) {
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value."
   );
-}
-function deserializeRow(table, row) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
 }
 async function readEndpointBody(request, headers, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -14510,10 +14543,6 @@ function createPrivilegedJobApi(database, contextGetter) {
     }
   };
 }
-function assertActivePrivilegedJobAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
 async function flushPendingJobEnqueues(context) {
   if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
   context.__pendingJobsFlushed = true;
@@ -14610,21 +14639,6 @@ async function runCurrentUserJobWorker(database) {
     }
   } finally {
     database.__jobWorkerRunning = false;
-  }
-}
-async function drainPendingAclWrites(context) {
-  let firstError = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
   }
 }
 function createHookErrorResult(error) {
@@ -14915,7 +14929,20 @@ var MIGRATED_RUNTIME_MODULES = [
   // because that module imports it. Storage imports `runtime-errors.js` for its `HelperError` type
   // only, which is erased, so `maybe-promise.js` is its one real dependency.
   { file: "maybe-promise.js", loaded: maybe_promise_exports },
-  { file: "file-storage-runtime.js", loaded: file_storage_runtime_exports }
+  { file: "file-storage-runtime.js", loaded: file_storage_runtime_exports },
+  // Batch 7. Neither of these is a domain either: they are what closing the ACL and privileged-audit
+  // domain's reference graph left outside it and no batch on ticket 04's list owns — the log
+  // policy the redactor and the ACL denial record share, and the stored-column decoding the ACL
+  // helpers and both mutation paths share. Both are listed before `acl-runtime.js` because it
+  // imports them; esbuild resolves the graph either way and the order is documentation.
+  { file: "runtime-log-policy.js", loaded: runtime_log_policy_exports },
+  { file: "stored-row-decoding.js", loaded: stored_row_decoding_exports },
+  // Batch 7: the ACL and privileged-audit domain, listed last because it imports from six of the
+  // modules above — `file-storage-runtime` for the privileged File API and the ACL storage helper,
+  // `jobs-runtime` for the privileged Schedule API, `maybe-promise` for the ACL rules' sync/async
+  // lanes, `runtime-errors` for `commandError`, and the two above for what its graph left outside
+  // it. esbuild resolves the graph either way; the order is documentation.
+  { file: "acl-runtime.js", loaded: acl_runtime_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [
@@ -15210,6 +15237,176 @@ var MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE = [
   ["then-not-a-function", { then: 1 }],
   ["function", () => "called"]
 ];
+var MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE = [
+  ["isSensitiveLogKey", ["password"]],
+  ["isSensitiveLogKey", ["user_password_hash"]],
+  ["isSensitiveLogKey", ["client-secret"]],
+  ["isSensitiveLogKey", ["clientSecret"]],
+  ["isSensitiveLogKey", ["apiToken"]],
+  ["isSensitiveLogKey", ["privateKey"]],
+  ["isSensitiveLogKey", ["authorized_keys"]],
+  ["isSensitiveLogKey", ["rawRequestBody"]],
+  ["isSensitiveLogKey", ["stacktrace"]],
+  ["isSensitiveLogKey", ["AUTHORIZATION"]],
+  ["isSensitiveLogKey", ["title"]],
+  ["isSensitiveLogKey", ["passwordless"]],
+  ["isSensitiveLogKey", ["id"]],
+  ["isSensitiveLogKey", [""]],
+  ["isSensitiveLogKey", [null]],
+  // The log index's retention cap: a `config` read with two spellings, an integer gate and a
+  // default. A carried copy that had lost the gate would let a Capsule configure a fractional or
+  // negative cap and prune its own log index to nothing.
+  ["logIndexLimit", [{}]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logging: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 }, logging: { indexLimit: 99 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 0 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: -1 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 1.5 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: "25" } }]]
+];
+var MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE = [
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 0]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 1]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, null]],
+  ["deserializeFieldValue", [{ kind: "Number" }, "42"]],
+  ["deserializeFieldValue", [{ kind: "Number" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, '{"a":[1,null]}']],
+  ["deserializeFieldValue", [{ kind: "Json" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, "not json"]],
+  ["deserializeFieldValue", [{ kind: "Text" }, "left alone"]],
+  ["deserializeFieldValue", [{ kind: "Reference" }, "row-1"]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }, { name: "title", kind: "Text" }] },
+    { id: "r1", flag: 0, count: "7", meta: '{"a":1}', title: "kept" }
+  ]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }] },
+    { id: "r2", flag: null, count: null, meta: null }
+  ]],
+  ["deserializeRow", [{ fields: [] }, { id: "r3", untouched: "value" }]],
+  ["deserializeRow", [{ fields: [{ name: "meta", kind: "Json" }] }, { id: "r4", meta: "not json" }]]
+];
+var MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE = [
+  ["empty", {}],
+  ["started", { actorKind: "privileged-server-role", operation: "billing.charge", surface: "server-handler", targetResourceKind: "invoice", outcome: "started", correlation: "corr-1", source: "runtime", metadata: { attempt: 1 } }],
+  ["completed", { actorKind: "captured-user", operation: "billing.charge", outcome: "completed", correlation: { id: "corr-2", parent: "corr-1" } }],
+  ["errored-with-error", { actorKind: "platform", operation: "billing.charge", outcome: "errored", error: { code: "card declined!" } }],
+  ["errored-without-code", { actorKind: "platform", operation: "billing.charge", outcome: "errored" }],
+  ["finished", { actorKind: "unknown", operation: "billing.charge", outcome: "finished" }],
+  ["unknown-actor-kind", { actorKind: "root", operation: "billing.charge", outcome: "started" }],
+  ["unknown-outcome", { actorKind: "platform", operation: "billing.charge", outcome: "half-done" }],
+  ["long-error-code", { operation: "x", outcome: "errored", safeErrorCode: "a".repeat(200) }],
+  ["numeric-correlation", { operation: "x", correlationId: 42 }],
+  ["array-metadata", { operation: "x", metadata: [1, 2] }],
+  ["blank-strings", { operation: "   ", surface: "", targetResourceKind: null, message: "  ", event: "" }]
+];
+var MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE = [
+  ["minimal", { kind: "mutation" }, { operation: "billing.charge" }],
+  ["full", { kind: "endpoint" }, { operation: "billing.charge", surface: "endpoint", targetResourceKind: "invoice", correlation: "c", metadata: { a: 1 } }],
+  ["dotted-operation", null, { operation: "a.b_c:d-e" }],
+  ["null-prototype-metadata", null, { operation: "x", metadata: /* @__PURE__ */ Object.create(null) }],
+  ["absent-metadata", null, { operation: "x" }],
+  ["no-options", null, void 0],
+  ["array-options", null, []],
+  ["no-operation", null, {}],
+  ["blank-operation", null, { operation: "   " }],
+  ["punctuated-operation", null, { operation: "billing charge!" }],
+  ["thenable-metadata", null, { operation: "x", metadata: { then: () => {
+  } } }],
+  ["class-metadata", null, { operation: "x", metadata: /* @__PURE__ */ new Date(0) }],
+  ["array-metadata", null, { operation: "x", metadata: [1] }]
+];
+var MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE = [
+  ["allow", "allow", "insert", "sync"],
+  ["deny", "deny", "insert", "sync"],
+  ["deny-update", "deny", "update", "sync"],
+  ["deny-delete", "deny", "delete", "sync"],
+  ["write-covers-insert", "write-only-deny", "insert", "sync"],
+  ["insert-overrides-write", "insert-allow-write-deny", "insert", "sync"],
+  ["no-rule", "none", "insert", "sync"],
+  ["undeclared-acl", "undeclared", "insert", "sync"],
+  ["privileged-bypass", "deny", "insert", "privileged"],
+  ["privileged-revoked", "deny", "insert", "revoked"],
+  ["db-helper-read", "read-db", "update", "sync"],
+  ["db-helper-unknown-table", "read-unknown-db", "insert", "sync"],
+  ["storage-helper-read", "read-storage", "insert", "sync"],
+  ["storage-helper-unknown-resource", "read-unknown-storage", "insert", "sync"],
+  ["helper-read-limit", "read-db-many", "insert", "sync"],
+  // The Symbol identity case. A synchronous rule, an asynchronous adapter read, and a verdict that
+  // must be a refusal.
+  ["async-helper-read", "read-db", "insert", "async"]
+];
+var MIGRATED_MODULE_ACL_READ_SKEW_PROBE = [
+  ["allow", "allow", "sync"],
+  ["deny", "deny", "sync"],
+  ["no-rule", "none", "sync"],
+  ["privileged-bypass", "deny", "privileged"],
+  ["async-helper-read", "read-db", "async"]
+];
+function migratedModuleAclProbeDatabase(mode, recorded) {
+  const asyncRead = mode === "async";
+  const wrap = (value) => asyncRead ? { then: (resolve) => resolve(value) } : value;
+  return {
+    log: { emit: (event) => {
+      recorded.push(event);
+      return event;
+    } },
+    schema: {
+      tables: [{
+        name: "posts",
+        fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }, { name: "title", kind: "Text" }]
+      }]
+    },
+    adapter: {
+      selectAppRowById: () => wrap({ id: "row-1", flag: 0, count: "7", meta: '{"a":1}', title: "kept" }),
+      selectFileById: () => wrap({ id: "file-1", bucketName: "images", size: "12", type: "image/png", name: "a.png", path: "/images/a.png", version: "v1", ownerId: "u1", status: "uploaded", createdAt: "c", updatedAt: "u", deletedAt: null }),
+      selectLiveFileByPath: () => wrap([])
+    }
+  };
+}
+function migratedModuleAclProbeRules(kind) {
+  const seen = (ctx) => ctx;
+  switch (kind) {
+    case "undeclared":
+      return void 0;
+    case "none":
+      return {};
+    case "allow":
+      return { read: () => true, write: () => true };
+    case "deny":
+      return { read: () => false, write: () => false };
+    case "write-only-deny":
+      return { write: () => false };
+    case "insert-allow-write-deny":
+      return { insert: () => true, write: () => false };
+    case "read-db":
+      return {
+        read: ({ ctx }) => Boolean(seen(ctx).acl.db.get("posts", "row-1")) || true,
+        write: ({ ctx }) => {
+          seen(ctx).acl.db.get("posts", "row-1");
+          return seen(ctx).acl.db.exists("posts", "row-1") || true;
+        }
+      };
+    case "read-unknown-db":
+      return { write: ({ ctx }) => Boolean(seen(ctx).acl.db.get("sporades_sessions", "s")) };
+    case "read-storage":
+      return {
+        write: ({ ctx }) => Boolean(seen(ctx).acl.storage.get("files", "file-1")) && seen(ctx).acl.storage.exists("files", "/images/a.png") === false
+      };
+    case "read-unknown-storage":
+      return { write: ({ ctx }) => Boolean(seen(ctx).acl.storage.get("secrets", "s")) };
+    case "read-db-many":
+      return {
+        write: ({ ctx }) => {
+          for (let index = 0; index < 40; index += 1) seen(ctx).acl.db.exists("posts", "row-1");
+          return true;
+        }
+      };
+    default:
+      throw new Error(`unknown ACL probe rule kind: ${kind}`);
+  }
+}
 function bundleTemplateError(message, hint) {
   return Object.assign(new Error(message), { hint });
 }
@@ -15247,7 +15444,16 @@ var MIGRATED_MODULE_PROBE_NAMES = [
   "createFileStorageTables",
   "isPromiseLike",
   "thenIfPromise",
-  "chainMaybePromise"
+  "chainMaybePromise",
+  ...new Set(MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name]) => name)),
+  ...new Set(MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name]) => name)),
+  "createPrivilegedAuditLogInput",
+  "createPrivilegedRunAuditDetails",
+  "normalizeTableAcl",
+  "runTableWriteWithAcl",
+  "applyReadAcl",
+  "grantPrivilegedDbAccess",
+  "revokePrivilegedDbAccess"
 ];
 function probedAnswer(call) {
   try {
@@ -15265,6 +15471,19 @@ function authProbedAnswer(call) {
         code: error?.code ?? null,
         message: String(error?.message ?? error),
         denial: error?.sporadesAuthDenialLogData ?? null
+      }
+    };
+  }
+}
+function aclProbedAnswer(call) {
+  try {
+    return { returned: call() };
+  } catch (error) {
+    return {
+      threw: {
+        code: error?.code ?? null,
+        message: String(error?.message ?? error),
+        denial: error?.sporadesAclDenialLogData ?? null
       }
     };
   }
@@ -15426,6 +15645,85 @@ function describeMigratedModuleAnswers(module) {
           return [seen.join(","), module.isPromiseLike(chained) ? "promise" : String(chained)];
         })
       ])
+    ),
+    // Batch 7's two non-domain modules, asked directly. Both are also reached through the ACL
+    // limbs — `aclRowLogSnapshot` filters field names with `isSensitiveLogKey`, and the ACL helper
+    // state limb reads a row back through `deserializeRow` — but a limb that reached them only
+    // that way would report a skew in either of them under an ACL heading, and would go missing
+    // entirely if the ACL limbs were ever narrowed.
+    ...MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(
+      ([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])
+    ),
+    ...MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(
+      ([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])
+    ),
+    // Batch 7: the ACL and privileged-audit domain. The audit event contract and the privileged run
+    // gate are ordinary `[input, answer]` pairs; the two enforcement limbs are not, and the reason
+    // is the one batch 5 recorded: an ACL rule is a function and a denial record is built out of the
+    // context it was handed, so neither the input nor the raw output can be serialized. What is
+    // compared is a *verdict* — the label, whether the write ran, and the denial record the fake log
+    // sink captured, which is where every one of the record's private builders shows up.
+    ...MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE.map(
+      ([label, details]) => JSON.stringify([label, probedAnswer(() => module.createPrivilegedAuditLogInput(details))])
+    ),
+    ...MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE.map(
+      ([label, context, options]) => JSON.stringify([label, probedAnswer(() => module.createPrivilegedRunAuditDetails(context, options))])
+    ),
+    ...MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE.map(([label, rules, operation, mode]) => {
+      const recorded = [];
+      const answer = aclProbedAnswer(() => {
+        const database = migratedModuleAclProbeDatabase(mode, recorded);
+        const table = { name: "posts", acl: module.normalizeTableAcl("posts", migratedModuleAclProbeRules(rules)) };
+        const context = { auth: { userId: "u1", provider: "google", isAuthenticated: true, isGuest: false } };
+        if (mode === "privileged" || mode === "revoked") module.grantPrivilegedDbAccess(context);
+        if (mode === "revoked") module.revokePrivilegedDbAccess(context);
+        const previous = operation === "insert" ? null : { id: "row-1", title: "before", password: "secret" };
+        const next = operation === "delete" ? null : { id: "row-1", title: "after", password: "secret" };
+        return module.runTableWriteWithAcl(database, table, operation, previous, next, () => context, () => "written");
+      });
+      return JSON.stringify([label, operation, answer, recorded]);
+    }),
+    ...MIGRATED_MODULE_ACL_READ_SKEW_PROBE.map(
+      ([label, rules, mode]) => JSON.stringify([
+        label,
+        probedAnswer(() => {
+          const recorded = [];
+          const database = migratedModuleAclProbeDatabase(mode, recorded);
+          const table = { name: "posts", acl: module.normalizeTableAcl("posts", migratedModuleAclProbeRules(rules)) };
+          const context = { auth: { userId: "u1", provider: "google", isAuthenticated: true, isGuest: false } };
+          if (mode === "privileged") module.grantPrivilegedDbAccess(context);
+          const allowed = module.applyReadAcl(database, table, { id: "row-1", title: "t", authorization: "Bearer x" }, context);
+          return { allowed, recorded };
+        })
+      ])
+    ),
+    // The ACL declaration gate itself, which is what turns a Capsule's `aclRules` into the object
+    // both limbs above resolve rules out of. Its refusals are the only place a Capsule author is
+    // told an ACL declaration is wrong, and its `resolve` is the insert/update/delete-falls-back-to-
+    // `write` rule ADR-0022 states. Compared as which declared rule a resolution picked, by
+    // identity, because the rules are functions.
+    ...[
+      ["undeclared", void 0, "read"],
+      ["empty", {}, "read"],
+      ["read-only", { read: () => "read" }, "read"],
+      ["write-covers-insert", { write: () => "write" }, "insert"],
+      ["write-covers-update", { write: () => "write" }, "update"],
+      ["write-covers-delete", { write: () => "write" }, "delete"],
+      ["write-does-not-cover-read", { write: () => "write" }, "read"],
+      ["insert-overrides-write", { insert: () => "insert", write: () => "write" }, "insert"],
+      ["unsupported-operation", { upsert: () => "upsert" }, "read"],
+      ["not-an-object", [], "read"],
+      ["not-a-function", { read: "nope" }, "read"]
+    ].map(
+      ([label, rules, operation]) => JSON.stringify([
+        label,
+        operation,
+        probedAnswer(() => {
+          const normalized = module.normalizeTableAcl("posts", rules);
+          const rule = normalized.resolve(operation);
+          return { allowByDefault: normalized.allowByDefault, resolved: typeof rule === "function" ? rule() : String(rule) };
+        })
+      ])
     )
   ];
 }
@@ -15518,12 +15816,7 @@ function createServerBundleSource({
     publicTreePathFromRequest.toString()
   ].join("\n\n");
   const migratedModules = migratedRuntimeModulesSource();
-  const runtimeConstants = [
-    ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
-    ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
-    ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],
-    ["ACL_HELPER_STATE", ACL_HELPER_STATE]
-  ].map(([name, value]) => `const ${name} = ${serializeRuntimeConstant(value)};`).join("\n");
+  const runtimeConstants = [].map(([name, value]) => `const ${name} = ${serializeRuntimeConstant(value)};`).join("\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";

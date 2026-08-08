@@ -21,9 +21,12 @@
 //     `createCurrentUserJobApi`, `recordScheduledOccurrence`, `recoverPendingScheduleOccurrences`,
 //     `schedulePendingOccurrenceRecovery`, `claimScheduledOccurrence`, `reconcileSchedules` and
 //     `startStaticSchedules`.
-//   - `hasPrivilegedDbAccess`, which is batch 6's ACL and privileged-audit domain. It blocks
-//     `assertActivePrivilegedJobAccess` and through it `createPrivilegedJobApi` and
-//     `createPrivilegedScheduleApi`.
+//   - `hasPrivilegedDbAccess`, which is the ACL and privileged-audit domain — batch *7*, not 6, as
+//     this said before that batch ran. It blocked `assertActivePrivilegedJobAccess` and through it
+//     `createPrivilegedJobApi` and `createPrivilegedScheduleApi`. Batch 7 cleared two of the three:
+//     `assertActivePrivilegedJobAccess` and `createPrivilegedScheduleApi` are in `acl-runtime.js`
+//     now. `createPrivilegedJobApi` is not, and the reason is this module's own blocker rather than
+//     that one — it reaches `createCurrentUserJobApi`, which is in the list above.
 //   - `assertJsonCompatible`, which is in `runtime-errors.js` as of this batch. It is not a later
 //     batch: thirteen call sites and one of them is a Job. See that module for why.
 //

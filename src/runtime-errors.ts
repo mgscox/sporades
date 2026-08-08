@@ -44,7 +44,8 @@ export function commandError(message: string | undefined, hint: string, code: st
 //
 // Batch 4 closed the jobs and schedules domain's reference graph and this was one of three things
 // left outside it. The other two are `createMutationContext` and `hasPrivilegedDbAccess`, which are
-// the composition core and batch 6's ACL — later work, and the seventeen job and schedule functions
+// the composition core and the ACL domain (batch 7, not 6 as this said before it ran) — later work
+// when this was written, and the seventeen job and schedule functions
 // that reach them stayed behind for that reason. This one is not later work. It has thirteen call
 // sites and exactly one of them is a Job: the rest are schema field defaults, field serialization,
 // user preferences, queries, mutations and app messages. It belongs to no domain, so leaving it in
