@@ -60,6 +60,14 @@ and the HTTP layer and almost nothing calls out of them.
 7. **ACL and privileged audit** (~61). Carries `ACL_HELPER_STATE`, whose Symbol identity
    was analysed at length in issue 16 — read that before moving it.
 8. **HTTP and security policy** (~17). CORS, CSP and the request/response plumbing.
+
+   *(The estimate was the sequence's worst, and wrong in a new way: 32 declarations plus two
+   type aliases, with the whole error in one direction. The name sweep collected nothing that
+   was not this domain's — the reverse-graph pass flagged twelve seeds and rejected none — and
+   missed ten, because ten of this domain's declarations answer to no HTTP-shaped name. Batch 8
+   found them with a content sweep and recommends running one on batch 9. Thirty-two of the
+   thirty-three moved; `routeEndpoint` is held by the composition core, so it is ticket 05's.
+   All six auth functions batch 3 left behind were freed.)*
 9. **Database adapters and dialect** (~55). Last, deliberately. Every other domain reaches
    the engines through it, so it has the most inbound edges and moving it earlier would
    put a boundary under every other batch.
@@ -157,6 +165,26 @@ working; use the full suite as the gate before the batch is done.
   the general rule: *a blocker naming a later batch is not a promise that batch clears it.*
   Batch 5 established the converse: a named blocker **can** clear, and can clear more than
   promised. The test is whether the holder is a domain or the composition core.
+- **A reverse pass cannot find what you failed to seed — run a content sweep too.** Batch 8's
+  estimate was ~17 against 32, and unlike every batch before it the error was in one direction
+  only: the name sweep collected nothing foreign, and missed ten. Three of the ten
+  (`writeEndpointResult`, `writeEndpointError`, `endpointResponseError`) are named for the
+  endpoint layer and are pure HTTP response plumbing. The reverse-graph pass cannot flag them —
+  a function that was never seeded has no entry in the graph to flag — so batch 8 added a
+  second, cheap pass: ask which top-level declarations *touch the domain's subject matter*
+  (`writeHead`, `response.end`, a `content-type` literal, an HTTP status) rather than which
+  ones are named for it. Two questions, two passes. Batch 9 should run both.
+- **Layout is not membership, and neither is a name.** Batch 6's rule applies to a
+  function's own body as well as to its neighbours. Batch 8's `resolveOAuthRequestOrigin` is
+  named for OAuth, was listed by ticket 04 as auth's, and validates a request origin against
+  the CORS policy while referencing no auth name at all — its second caller is
+  `createWebSocketHub`. It left the monolith as its blocker promised; *where* it landed was a
+  separate question that only reading it answered.
+- **Two migrated modules may import each other.** Batch 8 is the first cycle in the set
+  (`http-runtime` ↔ `auth-runtime`, because the private File route authenticates). It is safe
+  where every binding across it is a hoisted `function` declaration used only inside a
+  request-time body, and esbuild resolves it in both bundles. Worth checking rather than
+  assuming if batch 9 creates another.
 - **Layout is not membership — run the reverse-graph pass.** After seeding your domain by
   name, ask which seeds have **no in-domain caller**. Batch 6 found three functions sitting
   inside its file region that belong to other domains — `runSchemaExecIgnoringDuplicateColumn`

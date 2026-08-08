@@ -369,6 +369,12 @@ has since been executed rather than left standing.** `log-index-guard` imports
 this gate's tokenizer; `transformSync` over its compiled text emits
 `require("./inspection-sql.js")`, which is why the carrier bundles now.
 
+Fourteen modules are carried as of batch 8, `http-runtime` being the fourteenth. It is the
+first to sit on a *cycle* — it imports `auth-runtime` and `auth-runtime` imports it — which
+the carrier resolves for the same reason it resolves every other edge in the set, and which
+is safe for the reason recorded in the batch 8 section below. Like `acl-runtime` it reaches
+no Node builtin, so ADR-0042's accessor does not appear in it either.
+
 Thirteen modules are carried as of batch 7 — `runtime-log-policy`, `stored-row-decoding`
 and `acl-runtime` are the eleventh to thirteenth. `acl-runtime` is the first to import
 from *six* other migrated modules, which the carrier resolves without comment for the
@@ -549,6 +555,104 @@ The other three blockers sorted normally. `writeNotFound` and
 `routeRuntimeHealth` — so `handleFileHttpRoute` and `sendFileHttpResponse` stayed
 behind for batch 8, which is a domain that has not run yet rather than the last
 one. Two of fifty-three, against batch 4's seventeen of fifty-one.
+
+**Batch 8 is where a name sweep was wrong in one direction only, and the direction it
+was wrong in is the one no reverse pass finds.** HTTP and security policy was ticket
+04's smallest remaining estimate at ~17; the domain is 32 declarations and two type
+aliases. Every previous batch's error had a foreign function in it — a name the sweep
+collected that belonged elsewhere — and batch 8 has none: the reverse-graph pass flagged
+twelve seeds with no in-domain caller and every one of them is an entry point, so it
+rejected nothing. The whole error is the other kind. Ten of this domain's declarations
+answer to no HTTP-shaped name, and three of those ten are the ones that matter:
+`writeEndpointResult`, `writeEndpointError` and `endpointResponseError` are named for the
+endpoint layer and are pure HTTP response plumbing — a status code, a content type, an
+error envelope, and the refusal of a malformed handler response — reaching nothing outside
+the domain but `isPayloadTooLargeError`, which is also its.
+
+**The pass that finds them is a content sweep, and it should be run beside the name sweep
+rather than instead of it.** Asking which top-level declarations touch `writeHead`,
+`response.end`, a `content-type` literal or an HTTP status code takes all three, takes
+nothing this domain did not already have, and cost one pass. That is the transferable
+half: batch 6's reverse-graph pass answers "is this seed really mine", and it cannot
+answer "what did I fail to seed" — a function no sweep collected has no entry in the
+reverse graph to flag. Two different questions, two different passes, and the second one
+is what a low estimate looks like from the inside.
+
+The reverse-graph pass still earned its keep on a batch where it rejected nothing. It is
+what settled `checkRuntimeSqlite`, which by batch 6's own precedent looks like the
+adapters' — batch 6 took `checkRuntimeFileStorage` because it probes storage, and this one
+probes the database through `database.adapter.checkHealth()`. Its only caller is
+`createRuntimeHealthResult` and its only other consumer in the repository is a test, so it
+is the health route's limb rather than the adapters'. "Who calls this" separated a name
+from a neighbour again, in the direction of keeping rather than rejecting.
+
+**One function of the domain did not move, and it is the composition core's.**
+`routeEndpoint` reaches `runEndpoint`, which reaches `createMutationContext`,
+`createContextHolder` and `createEndpointDatabaseApi` by three independent two- and
+three-step paths. Batch 4's case, so batch 9 does not clear it and ticket 05 does. The
+three writers it calls moved anyway and it imports them back — the same trade batch 6 made
+in the other direction when `writeNotFound` kept `handleFileHttpRoute` in the monolith.
+Thirty-two of thirty-three, against batch 7's fifty-nine of sixty-two.
+
+**All six of batch 3's blocked auth functions cleared, which is batch 5's case a second
+time.** `routeSporadesAuth`, `beginOAuthSignIn`, `readOAuthCallbackParameters`,
+`oauthFormContentTypeValid` and `resolvePasswordResetConfig` are riders in `auth-runtime.ts`
+now. The sixth, `resolveOAuthRequestOrigin`, is in `http-runtime.ts` instead, and the
+judgement is worth recording because the ticket named it as auth's: its body validates a
+request origin against the CORS policy's `publicOrigin`, the `Host` header and the two
+`X-Forwarded-*` headers, it references `normalizeOrigin`, `singleHttpHeader` and
+`validatedRequestHost` and not one auth name, and its second caller is `createWebSocketHub`
+rather than an OAuth path. **Layout is not membership, and neither is a name** — batch 6's
+rule applied to a function's own body rather than to its neighbours. It leaves the monolith
+either way, which is what "the blocker cleared" means; where it lands is a separate
+question answered by reading it.
+
+**Two migrated modules may import each other, and batch 8 is the first pair that does.**
+`http-runtime.ts` imports `resolveAnonymousSession` from `auth-runtime.ts`, because the
+private File route authenticates before it hands back a row; `auth-runtime.ts` imports four
+HTTP primitives back for its riders. The cycle is a real domain edge rather than an artifact
+of where the split was drawn, and it is safe for a reason worth stating rather than leaving
+to be rediscovered: every binding across it is a hoisted `function` declaration, and every
+use is inside a body that runs on a request rather than at module initialization, so neither
+module reads a name of the other's before both are initialized. esbuild resolves it when it
+bundles the migrated set into the carried IIFE and again when it builds `bin/`, and the
+metafile check is unaffected because neither import is external to the set.
+
+**A differential limb must capture what a refusal travels on — and batch 8 is the case
+where the answer travels on nothing at all.** Batch 3's denial record and batch 7's ACL
+refusal both hung on a thrown error that `probedAnswer` dropped. `prepareHttpSecurity`
+throws nothing and returns nothing useful: it replaces `response.writeHead` with a wrapper
+and answers a bare boolean saying only whether it already handled a CORS preflight.
+Measured over the limb's twelve cases, that boolean takes **two distinct values**, and the
+two preflight cases both answer `true` whether or not the origin was allowed — one writes
+the `Access-Control-Allow-*` headers and the other writes none, and the return value is
+identical. So a limb comparing the obvious thing would have compared `false` against
+`false` ten times and `true` against `true` twice while a carried copy served a different
+CSP, echoed an attacker's origin, stopped stripping `X-Powered-By`, or stopped escaping the
+page connection token. The limb therefore drives the wrapper through a fake response that
+records every `writeHead` argument. Seven skews were executed rather than reasoned about —
+a loosened `object-src`, a dropped `frame-ancestors`, an always-true origin allow-list, a
+sanitizer that stops stripping, a raised body limit, an unescaped connection token and a
+missing export — and all seven are build errors, the last through the export-surface half
+rather than the answers half. The limb costs **0.0465 ms** per bundle build against batch
+6's 0.07 and batch 7's 0.13, and it reads no clock and does no I/O.
+
+Batch 8 measured its own base at 470 top-level names in the emitted bundle and 453 after,
+zero duplicates on both sides and no name appearing that was not there before. The 17 that
+went are exactly the 17 declarations it made private — the fifteen in `http-runtime.js`
+(the CSP construction, the origin and header predicates, the payload-limit error pair, the
+health-result builder and the three low-level response writers) plus
+`readOAuthCallbackParameters` and `oauthFormContentTypeValid`, which are private in
+`auth-runtime.js`. As with every batch, the absolute figures are not comparable with the
+paragraphs above; the name-set diff is the reviewable half.
+
+**Batch 8's counterfactual is the seventh confirmation that both walker guards go green
+when a module is carried and not listed.** A private `const`-arrow SQL walker planted in
+`http-runtime.ts` and called from `serializeCspDirectives` fails the census by name. With
+the plant still in `dist/http-runtime.js` *and* reaching the emitted Capsule bundle — two
+occurrences, confirmed by building it, the caller being what keeps esbuild from tree-shaking
+it — and only the module's entry removed from `MIGRATED_RUNTIME_MODULES` in the seam test,
+both guards pass with zero failures.
 
 **A module with no private function still needs a census sentinel, and an exported
 one is the right answer.** Every batch from 1 to 5 used a private sentinel, and the
