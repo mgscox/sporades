@@ -176,7 +176,11 @@ const MIGRATED_RUNTIME_MODULES = [
   // first name in that module that is not exported, and it was an emitted-list entry before this
   // batch — so finding it here is the evidence that a helper which stopped being registered did not
   // thereby stop being a census subject.
-  { file: "auth-runtime.js", atLeast: 90, sentinel: "passwordResetCodeParts" },
+  //
+  // Batch 5 carried seven more auth functions into it — 111 declarations now, four of the seven
+  // private — so the floor rises with the module rather than staying where batch 3 left it. A floor
+  // that never moves is how a census keeps passing while covering a smaller fraction of its subject.
+  { file: "auth-runtime.js", atLeast: 95, sentinel: "passwordResetCodeParts" },
   { file: "runtime-errors.js", atLeast: 2, sentinel: "invalidJsonFieldValueError" },
   // Batch 4: jobs and schedules, 34 declarations of which 5 are private. The sentinel is private for
   // the fourth time running. `scheduleWallClockParts` is the one every occurrence calculation passes
@@ -189,6 +193,17 @@ const MIGRATED_RUNTIME_MODULES = [
   // The floor is 25 against 34 declarations, leaving room for an honest edit to fold a helper away
   // without failing the guard, while still catching a parse that returned a fraction of the module.
   { file: "jobs-runtime.js", atLeast: 25, sentinel: "scheduleWallClockParts" },
+  // Batch 5: user preferences, 6 declarations of which 1 is private. The sentinel is private for the
+  // fifth time running. `createPreferencesError` is the one both refusal paths in that module pass
+  // through — the shape gate throws it, and `updateCurrentUserPreferences` builds its fallback with
+  // it — so no honest edit to that module removes it, and it is exported from nothing and registered
+  // in nothing. Under the emitted list it was an entry, so it was visible to these guards by being
+  // registered; finding it here is the evidence that it did not leave the census by becoming private.
+  //
+  // The floor is 4 against 6. A domain this small has little room between "parsed a fraction of the
+  // module" and "an honest edit folded a helper away", and 4 is the value that still fails if either
+  // of the two functions holding the SQL and the validation stopped being collected.
+  { file: "user-preferences-runtime.js", atLeast: 4, sentinel: "createPreferencesError" },
 ];
 
 function migratedModuleDeclaredFunctions() {

@@ -7,9 +7,12 @@ import test from "node:test";
 
 // `oauthProviderAdapter` and `authProvidersForClient` are named imports since batch 3 moved the auth
 // domain out of the emitted list; see the note in `test/oauth-provider.test.js` for why the `.find`
-// spelling is unsafe once a domain leaves it. The two below are still in the monolith.
+// spelling is unsafe once a domain leaves it. `linkProviderIdentity` joined them in batch 5, which
+// moved it into `auth-runtime.ts` with the rest of the sessions-and-sign-in region. `beginOAuthSignIn`
+// below is still in the monolith, behind the HTTP layer.
 import {
   authProvidersForClient,
+  linkProviderIdentity,
   oauthProviderAdapter,
   openDevDatabase,
   resolveAnonymousSession,
@@ -19,7 +22,6 @@ import {
 import { authStatus } from "../dist/bundle-pipeline.js";
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
-const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withFacebookDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-facebook-oauth-"));

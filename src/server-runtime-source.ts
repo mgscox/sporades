@@ -24,7 +24,14 @@ import {
   resetEmailSignInAttempts, resolveAnonymousSession, serverAuthError, sessionExpiresAt, setEmailPassword,
   setOwnEmailPassword, validateConsumedOAuthCallbackParameters, verifyEmailPassword,
   verifyPasswordResetCode, writeRedirect,
+  // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
+  // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
+  // preferences stopped holding them.
+  linkProviderIdentity, signInWithEmail, signUpWithEmail,
 } from "./auth-runtime.js";
+import {
+  createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
+} from "./user-preferences-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
@@ -126,6 +133,26 @@ export * from "./runtime-errors.js";
 // `parseScheduleExpression`) are resolved through here by the job, schedule, clock, password-reset
 // and Postgres suites.
 export * from "./jobs-runtime.js";
+
+// The user-preferences domain left this file as batch 5 — the preference table's schema, the read
+// and update path, and the anonymous-to-account merge. Six declarations: three imported above, one
+// by `auth-runtime.js`, one exported for the two-bundle skew probe and one private. See
+// `user-preferences-runtime.ts` for why the domain is exactly six and not the fifteen identifiers a
+// name sweep for `preference` turns up.
+//
+// **This is the batch that let auth finish.** `migrateAnonymousPreferences` was the only thing
+// keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them
+// `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`, `rotateSession` and
+// `moveSessionToUser` — in this file after batch 3. All seven are in `auth-runtime.js` now, so the
+// three names imported from it above are the only part of that region this file still resolves.
+//
+// Re-exported whole for the reason the seven above are, and one consumer makes it load-bearing
+// rather than convenient: `test/database-adapter.test.js` imports `updateCurrentUserPreferences`
+// through this module by name. This domain declares no SCREAMING_CASE constant, so unlike auth and
+// jobs it adds nothing to the constant probe — `INVALID_PREFERENCES_PATCH` and
+// `PREFERENCES_UPDATE_FAILED` read like constants and are string literals inside two function
+// bodies, so no preamble entry left with this batch.
+export * from "./user-preferences-runtime.js";
 
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
@@ -466,21 +493,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createAnonymousAuthTables,
   createProviderIdentityTables,
   ensureOAuthStateColumns,
-  createUserPreferencesTables,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
-  rotateSession,
-  rotateSessionOnAdapter,
-  moveSessionToUser,
-  moveSessionToUserOnAdapter,
-  migrateAnonymousPreferences,
-  readCurrentUserPreferences,
-  updateCurrentUserPreferences,
-  normalizePreferencesPatch,
-  createPreferencesError,
   routeSporadesAuth,
-  signUpWithEmail,
-  signInWithEmail,
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
@@ -489,7 +504,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   beginOAuthSignIn,
   readOAuthCallbackParameters,
   oauthFormContentTypeValid,
-  linkProviderIdentity,
   createWebSocketAccept,
   createWebSocketHub,
   drainWebSocketFrames,
@@ -7954,111 +7968,6 @@ async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, pro
   return { ok: true, url: started.url };
 }
 
-async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord) {
-  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
-  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
-    ? provider
-    : "provider";
-  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
-  if (!subject) {
-    return {
-      ok: false,
-      error: {
-        message: `${providerName} profile is missing a stable subject.`,
-        hint: "Retry sign-in. Sporades requires a verified stable subject claim.",
-      },
-    };
-  }
-
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
-    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
-    if (!identity && email && provider === "google") {
-      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
-      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
-            message: "Google did not verify the email needed to restore this legacy account.",
-            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method.",
-          },
-        };
-      }
-      if (legacyIdentities.length > 1) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
-            message: "Google email matches more than one legacy account.",
-            hint: "Sign in with an existing authentication method before linking this Google identity.",
-          },
-        };
-      }
-      identity = legacyIdentities[0] ?? null;
-    }
-    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
-      return {
-        ok: false,
-        error: {
-          code: "AUTH_IDENTITY_CONFLICT",
-          message: `${providerName} identity is already linked to another account.`,
-          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`,
-        },
-      };
-    }
-    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
-    const auth = {
-      userId: identity?.userId ?? session.auth.userId,
-      displayName,
-      email,
-      picture: profile.picture ?? null,
-      isAuthenticated: true,
-      isGuest: false,
-      provider,
-    };
-    const now = new Date().toISOString();
-    if (identity) {
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        updatedAt: now,
-      });
-    } else {
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId: auth.userId,
-        provider,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider,
-    });
-    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
-    } else {
-      await tx.setAuthSessionProvider(session.token, provider);
-      await refreshSessionOnAdapter(tx, session.token);
-    }
-    return { ok: true, auth };
-  });
-}
-
 // The reset link origin and page path come from Capsule configuration only.
 // Deriving either from a request header would let an attacker who can reach the
 // Capsule mail a victim a genuine reset link pointing at the attacker's server.
@@ -8151,105 +8060,6 @@ export async function sendEmailPasswordResetLink(
     // Job execution is at least once; the key keeps one Reset code to one mail.
   }, `password-reset:${issued.selector}`);
   return { ok: true };
-}
-
-export async function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any) {
-  if (provider !== "email") {
-    return {
-      ok: false,
-      error: {
-        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-        hint: "Use auth.signUp with the email provider.",
-      },
-    };
-  }
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-
-  const normalized: any = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-
-  if (await database.adapter.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: "Use auth.signIn(\"email\", ...) with this email address.",
-      },
-    };
-  }
-
-  const password = hashEmailPassword(normalized.password);
-  const displayName = normalized.name || normalized.email;
-  const auth = {
-    userId: session.auth.userId,
-    displayName,
-    email: normalized.email,
-    picture: null as any,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "email",
-  };
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
-    await tx.insertEmailCredential({
-      email: normalized.email,
-      userId: auth.userId,
-      passwordHash: password.hash,
-      passwordSalt: password.salt,
-      createdAt: new Date().toISOString(),
-    });
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider: "email",
-    });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
-  });
-}
-
-export async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-
-  const normalized: any = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-
-  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-  if (throttle.throttled) {
-    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
-  }
-
-  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
-  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, normalized.email, session);
-    return { ok: false, error: invalidEmailCredentialsError() };
-  }
-
-  resetEmailSignInAttempts(database, normalized.email, session);
-  const auth = {
-    userId: row.userId,
-    displayName: row.displayName,
-    email: row.email,
-    picture: row.picture,
-    isAuthenticated: Boolean(row.isAuthenticated),
-    isGuest: Boolean(row.isGuest),
-    provider: "email",
-  };
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => ({
-    ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-    auth,
-  }));
 }
 
 // The one definition of the auth storage bootstrap, for every engine.
@@ -8395,18 +8205,6 @@ function createProviderIdentityTables(sqlite: LooseRecord) {
   ]);
 }
 
-function createUserPreferencesTables(sqlite: LooseRecord) {
-  return sqlite.exec(
-    sqlite.dialect.sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_user_preferences] (" +
-      "[userId] TEXT PRIMARY KEY, " +
-      "[value] TEXT NOT NULL, " +
-      "[updatedAt] TEXT NOT NULL" +
-      ")",
-    ),
-  );
-}
-
 // The backfill runs unconditionally rather than only when the column was just added. It was
 // conditional because the `PRAGMA table_info` probe happened to say whether the ALTER had fired,
 // and the probe is SQLite's alone; the predicate does the same work portably, because a session
@@ -8507,125 +8305,6 @@ function splitSqlStatements(sql: any) {
     statements.push(last);
   }
   return statements;
-}
-
-async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId, provider));
-}
-
-async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  const now = new Date().toISOString();
-  const token = createSessionToken();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-  return token;
-}
-
-async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
-}
-
-async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  const now = new Date().toISOString();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, {
-    token: session.token,
-    userId,
-    provider,
-    createdAt: now,
-    expiresAt: sessionExpiresAt(now),
-  });
-}
-
-async function migrateAnonymousPreferences(database: LooseRecord, auth: LooseRecord, targetUserId: any, sqlite: LooseRecord | null = null) {
-  if (!auth?.isGuest || auth.userId === targetUserId) {
-    return;
-  }
-  const migrate = async (tx: LooseRecord) => {
-    const sourceRow = await tx.readUserPreferences(auth.userId);
-    if (!sourceRow) {
-      return;
-    }
-    const targetRow = await tx.readUserPreferences(targetUserId);
-    const source = JSON.parse(sourceRow.value);
-    const target = targetRow ? JSON.parse(targetRow.value) : {};
-    const next = { ...target, ...source };
-    assertJsonCompatible(next);
-    await tx.saveUserPreferences({
-      userId: targetUserId,
-      value: JSON.stringify(next),
-      updatedAt: new Date().toISOString(),
-    });
-  };
-  if (sqlite) {
-    await migrate(sqlite);
-    return;
-  }
-  await database.adapter.withTransaction(migrate);
-}
-
-async function readCurrentUserPreferences(database: LooseRecord, auth: LooseRecord) {
-  const row = await database.adapter.readUserPreferences(auth.userId);
-  return {
-    ok: true,
-    data: {
-      preferences: row ? JSON.parse(row.value) : {},
-    },
-    error: null,
-  };
-}
-
-export async function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any) {
-  try {
-    const normalizedPatch = normalizePreferencesPatch(patch);
-    const preferences = await database.adapter.withTransaction(async (tx: LooseRecord) => {
-      const row = await tx.readUserPreferences(auth.userId);
-      const current = row ? JSON.parse(row.value) : {};
-      const next = { ...current, ...normalizedPatch };
-      assertJsonCompatible(next);
-      await tx.saveUserPreferences({
-        userId: auth.userId,
-        value: JSON.stringify(next),
-        updatedAt: new Date().toISOString(),
-      });
-      return next;
-    });
-    return {
-      ok: true,
-      data: { preferences },
-      changes: normalizedPatch,
-      error: null,
-    };
-  } catch (error: any) {
-    if (error?.code === "INVALID_PREFERENCES_PATCH") {
-      return { ok: false, data: null, error };
-    }
-    return {
-      ok: false,
-      data: null,
-      error: createPreferencesError(
-        "Preferences update failed.",
-        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
-        "PREFERENCES_UPDATE_FAILED",
-      ),
-    };
-  }
-}
-
-function normalizePreferencesPatch(patch: any) {
-  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-    throw createPreferencesError(
-      "Preferences updates must be JSON objects.",
-      "Pass a plain JSON object to preferences.update().",
-      "INVALID_PREFERENCES_PATCH",
-    );
-  }
-  assertJsonCompatible(patch);
-  return patch;
-}
-
-function createPreferencesError(message: string, hint: string, code: string) {
-  return { code, message, hint };
 }
 
 function createWebSocketAccept(key: any) {

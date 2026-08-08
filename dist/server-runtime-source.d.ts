@@ -8,6 +8,7 @@ export * from "./mail-runtime.js";
 export * from "./auth-runtime.js";
 export * from "./runtime-errors.js";
 export * from "./jobs-runtime.js";
+export * from "./user-preferences-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -350,21 +351,6 @@ export declare function sendEmailPasswordResetLink(database: LooseRecord, sessio
 } | {
     ok: boolean;
     error?: undefined;
-}>;
-export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
-export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
-export declare function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any): Promise<{
-    ok: boolean;
-    data: {
-        preferences: any;
-    };
-    changes: any;
-    error: null;
-} | {
-    ok: boolean;
-    data: null;
-    error: any;
-    changes?: undefined;
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;

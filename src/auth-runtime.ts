@@ -4,29 +4,31 @@
 // `server-runtime-source.ts`, and apart from the two changes named below the bodies are
 // byte-identical to the ones that lived there.
 //
-// **What is exported and what is not.** 116 declarations moved: 104 functions and the twelve
-// SCREAMING_CASE constants that are this domain's security thresholds. 65 are exported and
-// 51 are private. Under the emitted list every one of the 51 had to be registered in
+// **What is exported and what is not.** 116 declarations moved in batch 3: 104 functions and the
+// twelve SCREAMING_CASE constants that are this domain's security thresholds. 65 were exported and
+// 51 private. Under the emitted list every one of the 51 had to be registered in
 // `SERVER_RUNTIME_SOURCE_FUNCTIONS` or become a `ReferenceError` in a deployed Capsule, so
 // "private" was not a thing this domain could be.
 //
+// **Batch 5 added seven more**, at the end of this file — the sessions-and-sign-in region batch 3
+// had to leave behind. 123 declarations now, 68 exported and 55 private. See the section header
+// down there for why those seven and not the other seven, and what still holds the rest.
+//
 // The exports are not a designed interface — they are the names something outside this file still
 // resolves. Three groups: the constants, which the bundle preamble used to serialize and the
-// module-graph bundle's constant probe still derives over; the names the fourteen auth functions
-// still in the monolith call (see below); and the names the OAuth, password-reset and require-auth
-// suites reach for, which resolved through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find(name)` before this
-// batch and return `undefined` the moment a domain stops being entries in it.
+// module-graph bundle's constant probe still derives over; the names the auth functions still in the
+// monolith call (see below); and the names the OAuth, password-reset and require-auth suites reach
+// for, which resolved through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find(name)` before batch 3 and return
+// `undefined` the moment a domain stops being entries in it.
 //
-// **Fourteen auth functions did not move, and each is blocked by a domain that has not migrated
-// yet.** `routeSporadesAuth`, `readOAuthCallbackParameters`, `oauthFormContentTypeValid`,
+// **Seven auth functions are still in the monolith, and each is blocked by a domain that has not
+// migrated yet.** `routeSporadesAuth`, `readOAuthCallbackParameters`, `oauthFormContentTypeValid`,
 // `beginOAuthSignIn`, `resolveOAuthRequestOrigin` and `resolvePasswordResetConfig` reach the HTTP
 // layer (`writeEndpointError`, `readLimitedRequestBody`, `normalizeOrigin`, `singleHttpHeader`,
-// `validatedRequestHost`), which is batch 7. `sendEmailPasswordResetLink` reaches
-// `enqueueRuntimeJob`, which is batch 4. `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter`
-// reach `migrateAnonymousPreferences`, which is the user-preferences domain and is on no batch's
-// list — and through those two they block `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`,
-// `rotateSession` and `moveSessionToUser`. A migrated module may not import from the monolith, so
-// those fourteen follow their blockers rather than this batch.
+// `validatedRequestHost`), which is batch 8. `sendEmailPasswordResetLink` reaches
+// `enqueueRuntimeJob`, which batch 4 could not move either — it needs `createMutationContext`, the
+// composition point `server-runtime-source.ts` retains, so it is not waiting on a batch at all.
+// A migrated module may not import from the monolith, so those seven follow their blockers.
 //
 // **Why `node:crypto` is reached through `process.getBuiltinModule` and not imported.** ADR-0042.
 // The emitted-list bundle carries this module as one esbuild IIFE (ADR-0041), and `format: "iife"`
@@ -57,6 +59,11 @@ import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike } from "node:crypto";
 
 import { commandError } from "./runtime-errors.js";
+// Batch 5. The one name this domain needs from the user-preferences module, and the reason that
+// module was made its own batch and run early: `migrateAnonymousPreferences` is what kept the seven
+// functions at the end of this file inside the monolith after batch 3. The dependency runs one way
+// — user preferences imports `runtime-errors.js` and nothing else — so this introduces no cycle.
+import { migrateAnonymousPreferences } from "./user-preferences-runtime.js";
 
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
@@ -2584,4 +2591,270 @@ export function authProvidersForClient(authConfig: LooseRecord, origin: any = nu
     };
   }
   return providers;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Batch 5: the sessions-and-sign-in region batch 3 had to leave behind.
+//
+// These seven are the ones `migrateAnonymousPreferences` was holding. `rotateSessionOnAdapter` and
+// `moveSessionToUserOnAdapter` call it directly; the other five reach it through those two, so all
+// seven moved the moment the user-preferences domain became a module this one may import. Every
+// other name they need was already here — the reference graph over the monolith shows no outbound
+// edge from any of them to anything outside this file and that module, which is why this batch's
+// rider was seven functions rather than the "some, none or all" it was scoped as.
+//
+// **The count is seven, not the six the ticket says.** The ticket's prose names seven
+// (`rotateSessionOnAdapter`, `moveSessionToUserOnAdapter`, `signInWithEmail`, `signUpWithEmail`,
+// `linkProviderIdentity`, `rotateSession`, `moveSessionToUser`) while calling them six; batch 3's
+// header arithmetic — six blocked on HTTP, one on `enqueueRuntimeJob`, seven here, fourteen in
+// total — is the one that adds up.
+//
+// **Three are exported and four are private.** `signUpWithEmail` and `signInWithEmail` are called by
+// `createWebSocketHub` and by the database-adapter and password-reset suites;
+// `linkProviderIdentity` by `routeSporadesAuth`, which is still in the monolith behind the HTTP
+// layer, and by three OAuth suites — which resolved it through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find`
+// until this batch and would have gone `undefined` rather than red. Exporting it is also what keeps
+// `test/oauth-provider.test.js`'s "one internal completion and linking seam" assertion true: that
+// test unions the emitted list with `Object.keys(authRuntime)`, so the name has to arrive here as an
+// export as it leaves the list.
+//
+// `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` are private because only the five above
+// call them. `rotateSession` and `moveSessionToUser` are private for a stronger reason: **nothing in
+// the repository names them at all.** They were reachable only by being entries in the emitted list,
+// and a repo-wide scan over `src/`, `test/`, `scripts/` and `docs/` returns nothing but this
+// paragraph. Left private and unreferenced, esbuild drops them from the carried block — which is
+// correct, and worth stating rather than discovering: they are the two names this batch removes from
+// a deployed Capsule's top-level scope, and no caller anywhere loses a binding.
+// ---------------------------------------------------------------------------------------------
+
+export async function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any) {
+  if (provider !== "email") {
+    return {
+      ok: false,
+      error: {
+        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
+        hint: "Use auth.signUp with the email provider.",
+      },
+    };
+  }
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+
+  const normalized: any = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+
+  if (await database.adapter.emailCredentialExists(normalized.email)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email is already registered.",
+        hint: "Use auth.signIn(\"email\", ...) with this email address.",
+      },
+    };
+  }
+
+  const password = hashEmailPassword(normalized.password);
+  const displayName = normalized.name || normalized.email;
+  const auth = {
+    userId: session.auth.userId,
+    displayName,
+    email: normalized.email,
+    picture: null as any,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+    await tx.insertEmailCredential({
+      email: normalized.email,
+      userId: auth.userId,
+      passwordHash: password.hash,
+      passwordSalt: password.salt,
+      createdAt: new Date().toISOString(),
+    });
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email",
+    });
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
+  });
+}
+
+export async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+
+  const normalized: any = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+
+  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  if (throttle.throttled) {
+    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+  }
+
+  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
+  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
+    recordFailedEmailSignInAttempt(database, normalized.email, session);
+    return { ok: false, error: invalidEmailCredentialsError() };
+  }
+
+  resetEmailSignInAttempts(database, normalized.email, session);
+  const auth = {
+    userId: row.userId,
+    displayName: row.displayName,
+    email: row.email,
+    picture: row.picture,
+    isAuthenticated: Boolean(row.isAuthenticated),
+    isGuest: Boolean(row.isGuest),
+    provider: "email",
+  };
+  return await database.adapter.withTransaction(async (tx: LooseRecord) => ({
+    ok: true,
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
+    auth,
+  }));
+}
+
+export async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord) {
+  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
+    ? provider
+    : "provider";
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
+  if (!subject) {
+    return {
+      ok: false,
+      error: {
+        message: `${providerName} profile is missing a stable subject.`,
+        hint: "Retry sign-in. Sporades requires a verified stable subject claim.",
+      },
+    };
+  }
+
+  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    if (!identity && email && provider === "google") {
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method.",
+          },
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity.",
+          },
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
+    }
+    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
+      return {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: `${providerName} identity is already linked to another account.`,
+          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`,
+        },
+      };
+    }
+    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
+    const auth = {
+      userId: identity?.userId ?? session.auth.userId,
+      displayName,
+      email,
+      picture: profile.picture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider,
+    };
+    const now = new Date().toISOString();
+    if (identity) {
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        updatedAt: now,
+      });
+    } else {
+      await tx.insertAuthIdentity({
+        id: nodeCryptoModule.randomUUID(),
+        userId: auth.userId,
+        provider,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider,
+    });
+    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
+    } else {
+      await tx.setAuthSessionProvider(session.token, provider);
+      await refreshSessionOnAdapter(tx, session.token);
+    }
+    return { ok: true, auth };
+  });
+}
+
+async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  return await database.adapter.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId, provider));
+}
+
+async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  const now = new Date().toISOString();
+  const token = createSessionToken();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  return token;
+}
+
+async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  return await database.adapter.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
+}
+
+async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  const now = new Date().toISOString();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, {
+    token: session.token,
+    userId,
+    provider,
+    createdAt: now,
+    expiresAt: sessionExpiresAt(now),
+  });
 }
