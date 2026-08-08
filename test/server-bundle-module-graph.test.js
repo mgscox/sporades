@@ -2330,7 +2330,10 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     serverModuleSource: "export default {};",
   });
 
-  const migratedModules = { ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule };
+  const migratedModules = {
+    ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule,
+    ...fileStorageRuntimeModule, ...maybePromiseModule,
+  };
   // `readSqlIdentifier` is the log-index guard's, and it became private in the same change that made
   // the guard a module: it was an entry in the emitted list until then, because a helper the list
   // did not carry was a `ReferenceError` rather than a compile error.
@@ -2346,6 +2349,13 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     "foldMimeHeader",
     "normalizePostmarkProvider",
     "mailError",
+    // The storage domain's, batch 6, and the same story again at twenty-seven. `s3Hmac` is the
+    // whole S3 signing path's HMAC and `resolveLiveFileReference` is what every ownership-scoped
+    // File lookup resolves through — both were emitted-list entries until this batch, purely
+    // because a helper the list did not carry could not be called from one it did, and both are
+    // now exported from nothing and named in no list.
+    "s3Hmac",
+    "resolveLiveFileReference",
   ]) {
     assert.equal(
       Object.keys(migratedModules).includes(helper),
@@ -2378,6 +2388,14 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     // leaf function. It is carried module text now, so the entry had to go or the bundle would
     // declare it twice.
     "validateMailConfig",
+    // Batch 6's entry points, one per shape the storage domain reaches the bundle in: an engine
+    // constructor, an upload-lifecycle entry point the WebSocket hub dispatches, the DDL the shared
+    // adapter method set calls, and one of `maybe-promise`'s three, which nine still-registered
+    // runtime functions call from their own source text.
+    "createS3CompatibleFileStorageAdapter",
+    "createPendingFileUpload",
+    "createFileStorageTables",
+    "isPromiseLike",
   ]) {
     assert.equal(
       SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),
