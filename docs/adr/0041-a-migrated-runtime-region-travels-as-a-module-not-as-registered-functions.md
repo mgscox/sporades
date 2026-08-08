@@ -40,10 +40,17 @@ written in it. That is relocation, and relocation was explicitly not the point.
 
 **A migrated region is carried into the emitted-list bundle as the module's own
 compiled text, as one block, rather than as `fn.toString()` over a list of its
-functions.** `createServerBundleSource` reads `dist/inspection-sql.js`, converts
-it to an IIFE with esbuild's `transformSync`, and destructures the exports it
-needs at the bundle's top level. The module-graph bundle keeps importing it, and
-esbuild resolves the names.
+functions.** `createServerBundleSource` builds the modules listed in
+`MIGRATED_RUNTIME_MODULES` out of `dist/` into one IIFE with esbuild's
+`buildSync`, and destructures their exports at the bundle's top level. The
+module-graph bundle keeps importing them, and esbuild resolves the names.
+
+The first version of this read one file and converted it with `transformSync`,
+because the first migrated region imported nothing. The second one did, and the
+section "What is not decided here" below had already named what that costs; what
+it did not anticipate is that *one block for all of them* rather than one block
+each is also forced, and by a different argument. See "Why the modules are
+bundled together" below.
 
 Two properties follow, and they are what the ticket asked for:
 
@@ -100,12 +107,12 @@ locate its own entry, and the walk to the package root that ADR-0040 explains is
 now shared (`resolveSporadesPackageRoot`) rather than written twice.
 
 The split is the part that is easy to miss. While the CLI ships as
-`bin/sporades.js`, esbuild has inlined `inspection-sql` into that bundle — so the
-names come from the copy inside `bin/` while the carried text comes from
-`dist/inspection-sql.js` on disk. Running from `dist/` there is one copy and the
-question does not arise. Running from `bin/`, a tree whose `dist/` and `bin/` came
-from different builds would put the `dist/` gate inside a deployed Capsule while
-every other runtime function in that same Capsule came from `bin/`.
+`bin/sporades.js`, esbuild has inlined every migrated module into that bundle — so
+the names come from the copies inside `bin/` while the carried text is built from
+`dist/` on disk. Running from `dist/` there is one copy and the question does not
+arise. Running from `bin/`, a tree whose `dist/` and `bin/` came from different
+builds would put the `dist/` gate inside a deployed Capsule while every other
+runtime function in that same Capsule came from `bin/`.
 
 **Nothing in `scripts/` compares them.** `check-generated-bin.mjs` checks the
 shebang, the generated-file header and the absence of `../src/` imports; it has no
@@ -119,26 +126,33 @@ So the builder compares the two copies itself, and the comparison is in two part
 because the same names are not enough:
 
 - **The export surface**, taken from the carried block after evaluating it, must
-  equal the running module's. This also makes "declared in the block, absent from
-  the destructuring" unreachable, because the destructured names now come from the
-  block rather than from the import.
-- **The answers**, over a fixed probe of statements the gate refuses and admits,
-  drawn from the shapes ADR-0038 records as having defeated it. A carried copy
-  whose validator body differed would keep every export and still fail here.
+  equal the union of the running modules'. This also makes "declared in the block,
+  absent from the destructuring" unreachable, because the destructured names now
+  come from the block rather than from the import.
+- **The answers**, over a fixed probe drawn from the shapes ADR-0038 records as
+  having defeated the gate. A carried copy whose validator body differed would keep
+  every export and still fail here. The probe grew a second half when the log-index
+  guard arrived, because that module answers about *rows* as well as SQL, and a
+  copy that had lost its row filter agrees with the running one about every
+  statement.
 
-Four skews were executed rather than reasoned about — an allow-everything
+Seven skews were executed rather than reasoned about — an allow-everything
 validator, a tokenizer whose line comment stops ending at a carriage return, a
-missing export, and a file truncated mid-function. Each is now a build error with
-an actionable hint; the first two were silent before.
+missing export, a file truncated mid-function, a log-index guard that no longer
+recognises the table it conceals, one whose row filter stopped flagging metadata
+rows, and a gate that stopped exporting the tokenizer the guard imports. Each is a
+build error with an actionable hint; the first two were silent before, and the
+last is only reachable at all because the carrier resolves the graph.
 
 **This is a probe, not a proof, and the residual is stated rather than left to be
 found: two copies that agree on the export surface and on every statement in that
 probe still ship, however else they differ.** The probe is guarded in turn — a test
 asserts it both refuses and admits at least five statements, because a probe the
-gate admits in full could not see an allow-everything validator at all. The whole
+gate admits in full could not see an allow-everything validator at all, and asserts
+the same in both directions for each of the log-index guard's two limbs. The whole
 question disappears with the emitted list, which is when the disk read goes away.
 
-**The emitted-list builder now spawns esbuild.** `transformSync` runs the esbuild
+**The emitted-list builder now spawns esbuild.** `buildSync` runs the esbuild
 binary out of process. Measured rather than assumed: the steady state is 1.3 ms per
 call, because esbuild's synchronous API reuses the process it started, and the
 first call in a process pays for the spawn — 52 ms on the machine this was written
@@ -150,11 +164,33 @@ the Capsule module — is better on both counts and was not taken here, because
 changing the shipping builder's signature is a wider change than this batch should
 make and the whole carrier disappears when the emitted list does.
 
-**The bundle's self-containment is unchanged.** `transformSync` resolves nothing:
-it is a format conversion of one already-compiled file, and the module imports
-nothing. The output is still a program whose only external imports are Node
-builtins, which the module-graph builder proves from esbuild's metafile and the
-free-binding guard proves by resolving every identifier in the emitted text.
+`buildSync` costs one capability the first version had: **it accepts no plugins**,
+so there is no way to hand esbuild an in-memory module graph. The skew seam
+therefore takes a *directory* rather than a string of module text, and the test
+that drives it writes a scratch copy of `dist/`. That is the more faithful seam
+anyway — a skewed module is now resolved by the same import the shipping build
+resolves, which is what makes "a gate that stopped exporting the tokenizer the
+guard imports" a case that can be executed at all.
+
+**Why the modules are bundled together.** One block for every migrated module,
+not one block each, and the reason is not tidiness. Bundling each module
+separately inlines its dependencies into its own block, so `inspection-sql` would
+appear once per module that imports it. Two copies inside the shipped artifact
+cannot drift — same file, same build — but ADR-0038's whole subject is that the
+duplication *itself* is what generates the defects, and an artifact that
+contradicts it teaches the next reader the wrong thing. Asserted rather than
+described: the emitted-list bundle is checked to contain exactly one
+`function skipSqlQuotedOrCommented(`.
+
+**The bundle's self-containment is now a property that has to be checked rather
+than one that holds by construction.** `transformSync` resolved nothing, so the
+first version of this carrier could not import anything by accident. `buildSync`
+with `bundle: true` resolves within the migrated set and marks everything else
+external — and `format: "iife"` writes an external as `require(…)`, which in this
+ES-module bundle is not a slow path but a Capsule that does not boot. So the
+carrier reads esbuild's metafile and refuses any external import at all, the way
+`createServerBundleModuleSource` does (ADR-0040). A builtin is no better than a
+package here, which is the one place this check is stricter than that one.
 
 **The walker census had to stop reading a list.** The census in
 `test/database-adapter-engine-seam.test.js` flagged emitted runtime functions
@@ -163,12 +199,24 @@ whose source names comment or quote delimiters, and asserted the detected set
 made it invisible there, so the census would have gone quiet about the one
 tokenizer while continuing to report success — the exact shape of failure ADR-0038
 spends its methodology section on. It now reads the union of the emitted list and
-**every function `inspection-sql` declares, parsed out of the module's compiled
-source text**. Reading the module's *exports* would have been the easy version and
-the wrong one: privacy would have become a way to leave the census, at the moment
-privacy became possible. `nestingBlockCommentEnd` is a private helper and is a
-census entry, and a planted private walker in that module was confirmed to fail
-the census rather than reasoned about.
+**every function each migrated module declares, parsed out of that module's
+compiled source text** — `MIGRATED_RUNTIME_MODULES` in that file, which every
+batch of the migration extends. Reading a module's *exports* would have been the
+easy version and the wrong one: privacy would have become a way to leave the
+census, at the moment privacy became possible. `nestingBlockCommentEnd` is a
+private helper and is a census entry, and a planted private walker in that module
+was confirmed to fail the census rather than reasoned about.
+
+**Extending that list is the load-bearing half, and the cost of forgetting it was
+measured rather than argued.** A private `const`-arrow walker planted in
+`log-index-guard`, spelled the way the pre-collapse walkers were spelled, fails
+the census by name. With the plant still in the shipped module and only the
+module's *entry* removed from the list, both walker guards pass. The failure has
+no red anywhere: the subjects went away rather than started failing, which is why
+a batch that migrates a domain and does not list it silently narrows every guard
+that reads the emitted list. Each entry therefore carries its own floor and its
+own sentinel function, so a module whose parse quietly returned nothing fails on
+its own rather than being covered by another module's count.
 
 **Reading source text opened a gap in the same change that closed one, and the two
 are the same fact.** A collector that saw only `FunctionDeclaration` nodes could
@@ -195,17 +243,29 @@ what happens when the emitted list is deleted. At that point the block carrier a
 the reading of `dist/` go with it, because the module-graph bundle imports the
 module directly and needs neither.
 
-It also does not claim the mechanism generalizes untested to every region. It is
-proven for one module that imports nothing, and the boundary of that has been
-executed: give `transformSync` a module with an import and it emits a `require(…)`
-into the IIFE, and the Capsule dies at boot with "Cannot determine intended module
-format". Loud rather than silent, but a region with imports of its own needs
-`build` rather than `transformSync`. A region whose functions are called
-from the still-monolithic runtime will keep needing exports for those names — which
-is what `skipSqlTrivia` and `readSqlQuotedIdentifier` are here, because the
-internal log-index table guard lexes SQL with this gate's tokenizer and did not
-move. That coupling was invisible while both lived in one file, and it is the kind
-of thing the next batch should expect to find rather than discover.
+It also does not claim the mechanism generalizes untested to every region. The
+first version of this section said the mechanism was proven only for a module that
+imports nothing, and named the boundary: give `transformSync` a module with an
+import and it emits a `require(…)` into the IIFE, and the Capsule dies at boot
+with "Cannot determine intended module format". **That prediction was correct and
+has since been executed rather than left standing.** `log-index-guard` imports
+this gate's tokenizer; `transformSync` over its compiled text emits
+`require("./inspection-sql.js")`, which is why the carrier bundles now. The
+mechanism is proven for two modules, one of which imports the other, and the
+untested case that remains is a migrated module importing something *outside* the
+migrated set — which the metafile check above turns into a build error rather than
+a boot failure.
+
+A region whose functions are called from the still-monolithic runtime will keep
+needing exports for those names. `skipSqlTrivia` and `readSqlQuotedIdentifier`
+were that here, because the internal log-index table guard lexes SQL with this
+gate's tokenizer — a coupling invisible while both lived in one file. They still
+are exports, but the consumer is now `log-index-guard.ts` rather than 13,700 lines
+of unrelated domains, and the guard is a module beside this one rather than inside
+it because ADR-0038 draws the gate/guard line and concealing an internal table is
+not one of the gate's rules. **The transferable half is that the coupling was
+found by grepping for callers before drawing the boundary, not after** — which is
+what every remaining batch should do.
 
 ## Relationship to existing decisions
 

@@ -1,21 +1,32 @@
 import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
-import { readSqlQuotedIdentifier, skipSqlTrivia, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
-// The read-only inspection gate is a module now, and these are the four names the rest of this file
+import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
+import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
+// The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
-// and hands the engine `sqlWithoutTrailingTerminator(sql)`, the Postgres `columns()` primitive wraps
-// the same stripped text, and the internal log-index table guard lexes a table reference with the
-// gate's trivia skipper and quoted-identifier reader.
+// and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
+// wraps the same stripped text. That is the gate's whole interface to this file.
 //
-// Re-exported whole, rather than only those four, because this module is still the address the rest
-// of the repository knows: the constant probe in `test/server-bundle-module-graph.test.js` derives
-// what it compares from this module's own SCREAMING_CASE exports, the walker census and the
-// terminator-spelling guards in `test/database-adapter-engine-seam.test.js` resolve the gate's
-// functions through here, and `scripts/inspection-lexing-differential.mjs` compares a build against
-// the pre-work base through here too. A narrower re-export would move those guards' subjects out of
-// reach and buy nothing: this is a name-resolution convenience, not a second definition.
+// It used to be four. `skipSqlTrivia` and `readSqlQuotedIdentifier` were the other two, imported
+// here because the internal log-index table guard lexes a table reference with the gate's
+// tokenizer — a coupling the single file was hiding, which ADR-0041 recorded and left in place. The
+// guard is `./log-index-guard.js` now, so those two names have one consumer and it is a module
+// whose job is lexing SQL on this path, rather than being reachable from 13,700 lines of unrelated
+// domains.
+//
+// Both modules are re-exported whole, rather than only the names above, because this module is
+// still the address the rest of the repository knows: the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from this module's own
+// SCREAMING_CASE exports, the walker census and the terminator-spelling guards in
+// `test/database-adapter-engine-seam.test.js` resolve the gate's functions through here, and
+// `scripts/inspection-lexing-differential.mjs` compares a build against the pre-work base through
+// here too — including `targetsInternalLogIndexTable` and `readSqlTableReference`, which stopped
+// being entries in `SERVER_RUNTIME_SOURCE_FUNCTIONS` when the guard moved and would otherwise have
+// gone quietly "not comparable" there. A narrower re-export would move those guards' subjects out
+// of reach and buy nothing: this is a name-resolution convenience, not a second definition.
 export * from "./inspection-sql.js";
+export * from "./log-index-guard.js";
 // Exported because the generated Capsule bundle carries these in its constant preamble. A runtime
 // function reaches the bundle as its own source text and the module-level bindings it closes over
 // do not follow, so the preamble declares them — serialized from these declarations rather than
@@ -236,18 +247,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     logPayloadMaxBytes,
     logRedactedValue,
     // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
-    // between `logRedactedValue` and `targetsInternalLogIndexTable`. They live in `./inspection-sql.js`
-    // now and reach the generated Capsule bundle as that module's own text rather than one function at
-    // a time — see `createServerBundleSource` and ADR-0041. Listing them here as well would declare
-    // each of them twice in the emitted bundle, which is a `SyntaxError` rather than a subtle problem.
+    // between `logRedactedValue` and `extractSchema`, and the internal log-index table guard four more
+    // right after them. Both are modules now — `./inspection-sql.js` and `./log-index-guard.js` — and
+    // reach the generated Capsule bundle as those modules' own text rather than one function at a time
+    // (see `createServerBundleSource` and ADR-0041). Listing any of them here as well would declare
+    // each name twice in the emitted bundle, which is a `SyntaxError` rather than a subtle problem.
     //
-    // The two names below stay because they are *this* file's callers of that module's lexing, not
-    // part of the gate: the internal log-index table guard reads a table reference with the same
-    // tokenizer. That coupling was invisible while everything lived in one file.
-    targetsInternalLogIndexTable,
-    readSqlTableReference,
-    readSqlIdentifier,
-    isInternalLogIndexMetadataRow,
+    // Nothing is left of the log-index guard here. `readSqlIdentifier` is a private helper of that
+    // module now, which is a thing this list could not express: a function reached the bundle as its
+    // own source text, so a helper that was not listed here was a `ReferenceError` in a deployed
+    // Capsule rather than a compile error.
     extractSchema,
     schemaFromCapsuleDefinition,
     schemaTableFromCapsuleTable,
@@ -7714,52 +7723,11 @@ export async function dumpDatabase(database) {
 export async function runReadOnlyQuery(database, sql) {
     return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
 }
-function targetsInternalLogIndexTable(sql) {
-    const text = String(sql);
-    const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
-    let match;
-    while ((match = targetKeywords.exec(text))) {
-        const reference = readSqlTableReference(text, match.index + match[0].length);
-        if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
-            return true;
-        }
-    }
-    return false;
-}
-function readSqlTableReference(sql, startIndex) {
-    let index = skipSqlTrivia(sql, startIndex, true);
-    while (sql[index] === "(") {
-        index += 1;
-        index = skipSqlTrivia(sql, index, true);
-    }
-    const parts = [];
-    while (index < sql.length) {
-        const identifier = readSqlIdentifier(sql, index);
-        if (!identifier) {
-            break;
-        }
-        parts.push(identifier.value);
-        index = skipSqlTrivia(sql, identifier.nextIndex, true);
-        if (sql[index] !== ".") {
-            break;
-        }
-        index = skipSqlTrivia(sql, index + 1, true);
-    }
-    return parts;
-}
-// The table-reference reader's identifier reader. It recognises `'` as well, because SQLite accepts
-// a single-quoted string where a table name is expected and `targetsInternalLogIndexTable` has to
-// see through that spelling too.
-function readSqlIdentifier(sql, index) {
-    return readSqlQuotedIdentifier(sql, index, "'\"`[");
-}
-function isInternalLogIndexMetadataRow(row, sql = "") {
-    const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
-    return (["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") ||
-        Object.values(row ?? {}).some((value) => typeof value === "string" &&
-            (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) ||
-                (queriesSqliteSchema && /\bsporades_log_events\b/i.test(value)))));
-}
+// The internal log-index guard used to be four functions here — `targetsInternalLogIndexTable`,
+// `readSqlTableReference`, `readSqlIdentifier` and `isInternalLogIndexMetadataRow`. It is
+// `./log-index-guard.js` now, and `runReadOnlyInspectionQuery` above calls it through the import at
+// the top of this file. ADR-0038 is why it is a module beside the inspection gate rather than part
+// of it, and that module's header states the reasoning.
 export async function simulateLocalIdentitySession(database, options = {}) {
     const provider = String(options.provider ?? "").trim().toLowerCase();
     if (!["email", "google"].includes(provider)) {

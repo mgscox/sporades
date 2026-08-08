@@ -9,7 +9,7 @@ var __export = (target, all) => {
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
-import { readdirSync, readFileSync as readFileSync3, statSync, watch } from "node:fs";
+import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
 import path12 from "node:path";
@@ -2144,9 +2144,8 @@ function field(kind) {
 }
 
 // src/templates/server-bundle-template.ts
-import { readFileSync as readFileSync2 } from "node:fs";
 import path4 from "node:path";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 
 // src/inspection-sql.ts
 var inspection_sql_exports = {};
@@ -2582,6 +2581,56 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
   return index;
 }
 
+// src/log-index-guard.ts
+var log_index_guard_exports = {};
+__export(log_index_guard_exports, {
+  isInternalLogIndexMetadataRow: () => isInternalLogIndexMetadataRow,
+  readSqlTableReference: () => readSqlTableReference,
+  targetsInternalLogIndexTable: () => targetsInternalLogIndexTable
+});
+function targetsInternalLogIndexTable(sql) {
+  const text = String(sql);
+  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
+  let match;
+  while (match = targetKeywords.exec(text)) {
+    const reference = readSqlTableReference(text, match.index + match[0].length);
+    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
+      return true;
+    }
+  }
+  return false;
+}
+function readSqlTableReference(sql, startIndex) {
+  let index = skipSqlTrivia(sql, startIndex, true);
+  while (sql[index] === "(") {
+    index += 1;
+    index = skipSqlTrivia(sql, index, true);
+  }
+  const parts = [];
+  while (index < sql.length) {
+    const identifier = readSqlIdentifier(sql, index);
+    if (!identifier) {
+      break;
+    }
+    parts.push(identifier.value);
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
+    if (sql[index] !== ".") {
+      break;
+    }
+    index = skipSqlTrivia(sql, index + 1, true);
+  }
+  return parts;
+}
+function readSqlIdentifier(sql, index) {
+  return readSqlQuotedIdentifier(sql, index, "'\"`[");
+}
+function isInternalLogIndexMetadataRow(row, sql = "") {
+  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
+  return ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") || Object.values(row ?? {}).some(
+    (value) => typeof value === "string" && (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) || queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))
+  );
+}
+
 // src/package-root.ts
 import { existsSync } from "node:fs";
 import path3 from "node:path";
@@ -2949,18 +2998,16 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   logPayloadMaxBytes,
   logRedactedValue,
   // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
-  // between `logRedactedValue` and `targetsInternalLogIndexTable`. They live in `./inspection-sql.js`
-  // now and reach the generated Capsule bundle as that module's own text rather than one function at
-  // a time — see `createServerBundleSource` and ADR-0041. Listing them here as well would declare
-  // each of them twice in the emitted bundle, which is a `SyntaxError` rather than a subtle problem.
+  // between `logRedactedValue` and `extractSchema`, and the internal log-index table guard four more
+  // right after them. Both are modules now — `./inspection-sql.js` and `./log-index-guard.js` — and
+  // reach the generated Capsule bundle as those modules' own text rather than one function at a time
+  // (see `createServerBundleSource` and ADR-0041). Listing any of them here as well would declare
+  // each name twice in the emitted bundle, which is a `SyntaxError` rather than a subtle problem.
   //
-  // The two names below stay because they are *this* file's callers of that module's lexing, not
-  // part of the gate: the internal log-index table guard reads a table reference with the same
-  // tokenizer. That coupling was invisible while everything lived in one file.
-  targetsInternalLogIndexTable,
-  readSqlTableReference,
-  readSqlIdentifier,
-  isInternalLogIndexMetadataRow,
+  // Nothing is left of the log-index guard here. `readSqlIdentifier` is a private helper of that
+  // module now, which is a thing this list could not express: a function reached the bundle as its
+  // own source text, so a helper that was not listed here was a `ReferenceError` in a deployed
+  // Capsule rather than a compile error.
   extractSchema,
   schemaFromCapsuleDefinition,
   schemaTableFromCapsuleTable,
@@ -10227,48 +10274,6 @@ async function dumpDatabase(database) {
 async function runReadOnlyQuery(database, sql) {
   return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
 }
-function targetsInternalLogIndexTable(sql) {
-  const text = String(sql);
-  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
-  let match;
-  while (match = targetKeywords.exec(text)) {
-    const reference = readSqlTableReference(text, match.index + match[0].length);
-    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
-      return true;
-    }
-  }
-  return false;
-}
-function readSqlTableReference(sql, startIndex) {
-  let index = skipSqlTrivia(sql, startIndex, true);
-  while (sql[index] === "(") {
-    index += 1;
-    index = skipSqlTrivia(sql, index, true);
-  }
-  const parts = [];
-  while (index < sql.length) {
-    const identifier = readSqlIdentifier(sql, index);
-    if (!identifier) {
-      break;
-    }
-    parts.push(identifier.value);
-    index = skipSqlTrivia(sql, identifier.nextIndex, true);
-    if (sql[index] !== ".") {
-      break;
-    }
-    index = skipSqlTrivia(sql, index + 1, true);
-  }
-  return parts;
-}
-function readSqlIdentifier(sql, index) {
-  return readSqlQuotedIdentifier(sql, index, "'\"`[");
-}
-function isInternalLogIndexMetadataRow(row, sql = "") {
-  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
-  return ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") || Object.values(row ?? {}).some(
-    (value) => typeof value === "string" && (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) || queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))
-  );
-}
 async function simulateLocalIdentitySession(database, options = {}) {
   const provider = String(options.provider ?? "").trim().toLowerCase();
   if (!["email", "google"].includes(provider)) {
@@ -14904,8 +14909,12 @@ function serializeRuntimeConstant(value) {
   if (value instanceof Set) return `new Set(${JSON.stringify([...value])})`;
   return JSON.stringify(value);
 }
-var INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
-var INSPECTION_SQL_SKEW_PROBE = [
+var MIGRATED_MODULES_NAMESPACE = "__sporadesMigratedRuntimeModules";
+var MIGRATED_RUNTIME_MODULES = [
+  { file: "inspection-sql.js", loaded: inspection_sql_exports },
+  { file: "log-index-guard.js", loaded: log_index_guard_exports }
+];
+var MIGRATED_MODULE_SKEW_PROBE = [
   "DROP TABLE t",
   "TRUNCATE TABLE t",
   "SELECT 1 AS s; DROP TABLE t",
@@ -14919,78 +14928,135 @@ var INSPECTION_SQL_SKEW_PROBE = [
   "SELECT * FROM posts;",
   "PRAGMA table_info(posts)",
   "WITH recent AS (SELECT 1 AS s) SELECT * FROM recent",
-  "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;"
+  "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;",
+  "SELECT * FROM sporades_log_events",
+  'SELECT * FROM main . "sporades_log_events"',
+  "SELECT name FROM sqlite_schema"
+];
+var MIGRATED_MODULE_ROW_SKEW_PROBE = [
+  [{ name: "sporades_log_events" }, "SELECT name FROM sqlite_schema"],
+  [{ tbl_name: "sporades_log_events" }, "SELECT tbl_name FROM sqlite_master"],
+  [{ sql: "CREATE TABLE sporades_log_events (id TEXT)" }, "SELECT sql FROM sqlite_schema"],
+  [{ note: "mentions sporades_log_events in passing" }, "SELECT note FROM sqlite_schema"],
+  [{ note: "mentions sporades_log_events in passing" }, "SELECT note FROM posts"],
+  [{ name: "posts" }, "SELECT name FROM sqlite_schema"],
+  [{}, ""]
 ];
 function bundleTemplateError(message, hint) {
   return Object.assign(new Error(message), { hint });
 }
-function evaluateInspectionSqlBlock(code) {
+function evaluateMigratedModulesBlock(code) {
   try {
     return new Function(`${code}
-return ${INSPECTION_SQL_NAMESPACE};`)();
+return ${MIGRATED_MODULES_NAMESPACE};`)();
   } catch (error) {
     throw bundleTemplateError(
-      `Server bundle failed: the read-only inspection module did not evaluate: ${error?.message ?? error}`,
-      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
+      `Server bundle failed: the migrated runtime modules did not evaluate: ${error?.message ?? error}`,
+      "A file under dist/ is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
     );
   }
 }
-function describeInspectionSqlAnswers(module) {
-  return INSPECTION_SQL_SKEW_PROBE.map(
-    (sql) => JSON.stringify([sql, module.validateReadOnlyInspectionSql(sql), module.sqlWithoutTrailingTerminator(sql)])
-  );
-}
-function inspectionSqlModuleSource() {
-  const modulePath = path4.join(resolveSporadesPackageRoot(), "dist", "inspection-sql.js");
-  let compiled;
-  try {
-    compiled = readFileSync2(modulePath, "utf8");
-  } catch (error) {
+var MIGRATED_MODULE_PROBE_NAMES = [
+  "validateReadOnlyInspectionSql",
+  "sqlWithoutTrailingTerminator",
+  "targetsInternalLogIndexTable",
+  "readSqlTableReference",
+  "isInternalLogIndexMetadataRow"
+];
+function describeMigratedModuleAnswers(module) {
+  const absent = MIGRATED_MODULE_PROBE_NAMES.filter((name) => typeof module[name] !== "function");
+  if (absent.length > 0) {
     throw bundleTemplateError(
-      `Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`,
-      "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
+      `Server bundle failed: the migrated runtime modules do not supply ${absent.join(", ")}, which the skew probe compares.`,
+      "MIGRATED_RUNTIME_MODULES and MIGRATED_MODULE_PROBE_NAMES in server-bundle-template.ts are out of step. A module listed for carrying must still export what the probe asks it."
     );
   }
-  return inspectionSqlBlockFrom(compiled, modulePath);
+  return [
+    ...MIGRATED_MODULE_SKEW_PROBE.map(
+      (sql) => JSON.stringify([
+        sql,
+        module.validateReadOnlyInspectionSql(sql),
+        module.sqlWithoutTrailingTerminator(sql),
+        module.targetsInternalLogIndexTable(sql),
+        module.readSqlTableReference(sql, 0)
+      ])
+    ),
+    ...MIGRATED_MODULE_ROW_SKEW_PROBE.map(
+      ([row, sql]) => JSON.stringify([row, sql, module.isInternalLogIndexMetadataRow(row, sql)])
+    )
+  ];
 }
-function inspectionSqlBlockFrom(compiled, modulePath) {
-  let code;
+function migratedRuntimeModulesSource() {
+  return migratedRuntimeModulesBlockFrom(path4.join(resolveSporadesPackageRoot(), "dist"));
+}
+function migratedRuntimeModulesBlockFrom(distDir) {
+  const entry = MIGRATED_RUNTIME_MODULES.map(({ file }) => `export * from ${JSON.stringify(`./${file}`)};`).join("\n");
+  let result;
   try {
-    ({ code } = transformSync(compiled, {
-      loader: "js",
+    result = buildSync({
+      bundle: true,
       format: "iife",
-      globalName: INSPECTION_SQL_NAMESPACE,
+      globalName: MIGRATED_MODULES_NAMESPACE,
       platform: "node",
-      target: "node22"
-    }));
+      target: "node22",
+      write: false,
+      metafile: true,
+      logLevel: "silent",
+      // esbuild labels every inlined module with its path relative to the working directory, and
+      // those labels are comments in the text that ships. Pinned to the directory being read so a
+      // Capsule bundle carries `inspection-sql.js` rather than whoever's absolute home directory the
+      // CLI was invoked from, and so the same inputs build identically on two machines.
+      absWorkingDir: distDir,
+      stdin: {
+        contents: entry,
+        sourcefile: path4.join(distDir, "__sporades-migrated-runtime-modules__.js"),
+        resolveDir: distDir,
+        loader: "js"
+      }
+    });
   } catch (error) {
     throw bundleTemplateError(
-      `Server bundle failed: ${modulePath} did not parse: ${error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error)}`,
-      "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
+      `Server bundle failed: the migrated runtime modules in ${distDir} did not build: ${error?.errors?.map((entry2) => entry2.text).join("; ") || error?.message || String(error)}`,
+      "A file under dist/ is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI."
     );
   }
-  const carried = evaluateInspectionSqlBlock(code);
+  const unresolved = Object.values(result.metafile.outputs).flatMap((entry2) => entry2.imports).filter((entry2) => entry2.external).map((entry2) => entry2.path);
+  if (unresolved.length > 0) {
+    throw bundleTemplateError(
+      `Server bundle failed: the migrated runtime modules would resolve ${[...new Set(unresolved)].sort().join(", ")} at runtime.`,
+      "A migrated runtime module may only import another migrated module. Add the dependency to MIGRATED_RUNTIME_MODULES, or inline what it needs."
+    );
+  }
+  const code = result.outputFiles?.[0]?.text;
+  if (!code) {
+    throw bundleTemplateError(
+      "Server bundle failed: esbuild produced no text for the migrated runtime modules.",
+      "Report this: the Sporades migrated runtime modules produced no output."
+    );
+  }
+  const carried = evaluateMigratedModulesBlock(code);
   const exported = Object.keys(carried).sort();
-  const loaded = Object.keys(inspection_sql_exports).sort();
+  const loaded = [...new Set(MIGRATED_RUNTIME_MODULES.flatMap(({ loaded: module }) => Object.keys(module)))].sort();
   if (exported.join(",") !== loaded.join(",")) {
     const missing = loaded.filter((name) => !exported.includes(name));
     const extra = exported.filter((name) => !loaded.includes(name));
     throw bundleTemplateError(
-      `Server bundle failed: ${modulePath} exports a different set of names than the running CLI's copy of it${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`,
+      `Server bundle failed: the migrated runtime modules in ${distDir} export a different set of names than the running CLI's copies of them${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`,
       "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI."
     );
   }
-  const carriedAnswers = describeInspectionSqlAnswers(carried);
-  const loadedAnswers = describeInspectionSqlAnswers(inspection_sql_exports);
+  const loadedModule = Object.assign({}, ...MIGRATED_RUNTIME_MODULES.map(({ loaded: module }) => ({ ...module })));
+  const carriedAnswers = describeMigratedModuleAnswers(carried);
+  const loadedAnswers = describeMigratedModuleAnswers(loadedModule);
   const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
   if (disagreement >= 0) {
     throw bundleTemplateError(
-      `Server bundle failed: ${modulePath} answers the read-only inspection gate differently than the running CLI's copy of it, starting at ${JSON.stringify(INSPECTION_SQL_SKEW_PROBE[disagreement])}.`,
+      `Server bundle failed: the migrated runtime modules in ${distDir} answer the read-only inspection surface differently than the running CLI's copies of them, starting at ${carriedAnswers[disagreement]}.`,
       "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI."
     );
   }
   return `${code}
-const { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
+const { ${exported.join(", ")} } = ${MIGRATED_MODULES_NAMESPACE};`;
 }
 function createServerBundleSource({
   config,
@@ -15005,7 +15071,7 @@ function createServerBundleSource({
     normalizePublicTreePath.toString(),
     publicTreePathFromRequest.toString()
   ].join("\n\n");
-  const inspectionSqlModule = inspectionSqlModuleSource();
+  const migratedModules = migratedRuntimeModulesSource();
   const runtimeConstants = [
     ["PRIVILEGED_AUTH_USER_ID", PRIVILEGED_AUTH_USER_ID],
     ["EMAIL_SIGN_IN_FAILURE_LIMIT", EMAIL_SIGN_IN_FAILURE_LIMIT],
@@ -15042,7 +15108,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeConstants}
-${inspectionSqlModule}
+${migratedModules}
 ${runtimeFunctions}
 ${publicTreeContract}
 
@@ -23675,7 +23741,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
   const resolvedPath = path12.resolve(projectDir, clientJsonPath);
   let raw;
   try {
-    raw = readFileSync3(resolvedPath, "utf8");
+    raw = readFileSync2(resolvedPath, "utf8");
   } catch {
     throw commandError4(
       `Unable to read OAuth client JSON: ${clientJsonPath}`,
@@ -23977,7 +24043,7 @@ async function runDoctor(options) {
 function defaultSporadesDependency() {
   const packageJsonPath = path12.join(CLI_ROOT, "package.json");
   try {
-    const packageJson = JSON.parse(readFileSync3(packageJsonPath, "utf8"));
+    const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
       return `^${packageJson.version}`;
     }
@@ -25989,7 +26055,7 @@ function projectLogPath(config, projectDir) {
   return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path12.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync3(path12.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path12.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
@@ -26630,7 +26696,7 @@ function resolveLocalContainerTarget(options) {
   const bindingPath = path12.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
-    binding = JSON.parse(readFileSync3(bindingPath, "utf8"));
+    binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") {
       throw error;
