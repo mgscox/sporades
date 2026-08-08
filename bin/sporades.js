@@ -15545,7 +15545,12 @@ var MIGRATED_MODULE_DATABASE_PROBE_TABLE = {
     { name: "flag", kind: "Boolean", sqliteType: "INTEGER", defaultValue: true },
     { name: "count", kind: "Number", sqliteType: "REAL", defaultValue: 0 },
     { name: "meta", kind: "Json", sqliteType: "TEXT", defaultValue: null },
-    { name: "due", kind: "Date", sqliteType: "TEXT", defaultValue: "2024-03-05T06:07:08.900Z" },
+    // Deliberately *not* already in canonical ISO form. Written as `2024-03-05T06:07:08.900Z` this
+    // field could not see a `normalizeDateValue` that had stopped normalizing, because the
+    // unnormalized answer and the normalized one are the same string — which is what the skew
+    // harness reported when this probe was first written. A loose date is the only shape that makes
+    // the Date branch of `toSqlLiteral`, and through it `stored-value-coding.js`, observable here.
+    { name: "due", kind: "Date", sqliteType: "TEXT", defaultValue: "2024-03-05" },
     { name: "ownerId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: null }
   ]
 };
@@ -15614,9 +15619,12 @@ function migratedModuleDialectAnswer(module, name) {
     name: d.name,
     columnType: probedAnswer(() => d.columnType({ sqliteType: "REAL" })),
     upsert: probedAnswer(() => d.upsertSql("sporades", ["key", "value"], ["key"])),
-    // The marker substitution ADR-0039 turns every identifier into, including one inside a string
-    // literal that must be left alone and a quote character that must be doubled.
-    sql: probedAnswer(() => d.sql("SELECT [id], [ownerId] FROM [notes] WHERE [name] = '[notLiteral]'")),
+    // The marker substitution ADR-0039 turns every identifier into. `[a-b c]` is not an identifier
+    // shape and must be left exactly as written: the substitution is bounded to
+    // `[A-Za-z_][A-Za-z0-9_]*` on purpose, and a copy that widened it would start rewriting a
+    // Capsule's *data* rather than its identifiers. Written without that case this limb could not
+    // see the widening at all, which is what the skew harness reported when it was first added.
+    sql: probedAnswer(() => d.sql("SELECT [id], [ownerId] FROM [notes] WHERE [name] = '[a-b c]' AND [x] = '[alsoIdentifierShaped]'")),
     quoted: ["plain", "camelCase", 'has"quote', "sqlite_schema", ""].map((identifier) => probedAnswer(() => d.quoteIdentifier(identifier))),
     catalog: { listed: "threw" in listed ? listed : null, described: "threw" in described ? described : null, altered: "threw" in altered ? altered : null, statements: catalog.statements },
     emitted
