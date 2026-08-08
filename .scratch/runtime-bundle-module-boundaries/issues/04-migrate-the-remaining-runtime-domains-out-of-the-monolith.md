@@ -172,6 +172,17 @@ working; use the full suite as the gate before the batch is done.
   cutting the domain in half. Put such a helper in a module whose **name describes its
   contents** rather than appending it to an existing shared one — batch 6 declined to add
   promise chaining to `runtime-errors.ts` for that reason.
+- **Give a planted counterfactual a caller.** Batch 7's first plant had none, so esbuild
+  tree-shook it out of the carried block — 0 occurrences in the bundle, and the
+  counterfactual proved nothing while appearing to prove everything.
+- **Never suppress a sabotage with a comment.** Batch 7's first free-binding sabotage used
+  `@ts-expect-error` to get past tsc. The comment travelled into the bundle through
+  `fn.toString()` and suppressed the free-binding guard's own checker. Use a
+  `declare function`, which emits nothing.
+- **"No in-domain caller" flags entry points and foreigners alike.** Batch 6's reverse-graph
+  pass is necessary but not sufficient: batch 7 found seven such seeds, rejected one
+  (`runMutationHookAndDrainPendingAclWrites`, a mutation-hook runner the name sweep claimed)
+  and kept six that are the domain's own entry points. Only reading the body separates them.
 - **Measure your own base for the duplicate-declaration parse.** The absolute count is not
   portable between batches — different probes count different things, and batches 4 and 5
   reported 533 and 510 for the same tree. Diff the name *sets*, not the totals.
