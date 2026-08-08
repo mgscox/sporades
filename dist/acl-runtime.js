@@ -39,8 +39,11 @@
 //
 // So this is batch 4's case rather than batch 5's: **the chain has to be closed at the end that
 // holds it, and that end is ticket 05.** No later batch on ticket 04's list clears these three.
-// Everything the three *call* is in this file, so the monolith imports twenty-eight names back and
-// the three functions are the only part of the domain still there.
+// Everything the three *call* is in this file, so the monolith imports twenty-one names back and
+// the three functions are the only part of the domain still there. Twenty-eight names are exported;
+// the other seven are for consumers outside the monolith — the constant probe, `src/cli`'s privileged
+// audit event, `test/mail.test.js` and `test/database-adapter.test.js` — which reach them through
+// `server-runtime-source.js`'s `export * from "./acl-runtime.js"`.
 //
 // **Two blockers were owned by no batch at all**, which is the third case batch 6 added, and both
 // became modules of their own rather than riders here: `runtime-log-policy.js` holds

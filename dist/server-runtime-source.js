@@ -18,6 +18,12 @@ import { createUserPreferencesTables, readCurrentUserPreferences, updateCurrentU
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeFieldValue, deserializeRow } from "./stored-row-decoding.js";
+// Twenty-one names, which is what the three functions of that domain still in this file plus
+// `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
+// runners resolve. `ACL_HELPER_STATE` and `createTableAclContext` are deliberately not among them:
+// both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
+// `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
+// here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, fileRowForOwner, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
@@ -156,8 +162,9 @@ export * from "./user-preferences-runtime.js";
 //
 // Both are re-exported whole for the reason the eight above are. Neither declares a SCREAMING_CASE
 // constant, so unlike auth and jobs this batch adds nothing to the constant probe and removed
-// nothing from the bundle preamble — the four that remain there are the privileged-audit trio and
-// `ACL_HELPER_STATE`, which are the ACL batch's. What makes the re-export load-bearing here is
+// nothing from the bundle preamble — the four that remained there were the privileged-audit trio
+// and `ACL_HELPER_STATE`, which batch 7 took with the ACL domain, leaving that preamble empty. What
+// makes the re-export load-bearing here is
 // `test/database-adapter.test.js`, which imports ten of this domain's names through this module,
 // and `test/dev.test.js`, which asserts the generated bundle still declares `localFileStoragePath`
 // and `localFileVersionPath` — both of which are private to `file-storage-runtime.js` now and reach
@@ -187,7 +194,7 @@ export * from "./stored-row-decoding.js";
 // resolution, the read and write enforcement paths, the frozen `ctx.acl` helpers and their bounded
 // read state, the ACL denial record, the privileged server role's `ctx.privileged` File and
 // Schedule surfaces, and the whole privileged audit event contract. Fifty-nine declarations, of
-// which thirty-one are private to that module now; twenty-three of its names are imported above,
+// which thirty-one are private to that module now; twenty-one of its names are imported above,
 // which is what the three functions of the domain still in this file, plus `openDevDatabase`, the
 // endpoint table API, the schema extractor and the four mutation and message runners, need from it.
 //
