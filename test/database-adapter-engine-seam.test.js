@@ -159,6 +159,18 @@ const MIGRATED_RUNTIME_MODULES = [
   // emitted list in this same batch.
   { file: "mail-runtime.js", atLeast: 20, sentinel: "encodeMimeHeaderValue" },
   { file: "mail-config.js", atLeast: 0, sentinel: "validateMailConfig" },
+  // Batch 3, and the largest subject added here: 104 functions, 51 of them private. The sentinel is
+  // private for the third time running, and this one is worth naming. `passwordResetCodeParts` mints
+  // the reset selector and verifier and is exported from nothing and registered in nothing — under
+  // the emitted list it was an entry, so it was visible to these guards by being registered rather
+  // than by being read. Finding it here is the evidence that fifty-one newly-private auth helpers,
+  // including the credential hashing, did not leave the census by becoming private.
+  //
+  // `runtime-errors` holds one function, so its floor is 0, for the same reason `mail-config`'s is:
+  // a floor only asserts that the parse returned something. It is a subject because it is carried,
+  // and `commandError` stopped being an entry in the emitted list in this same batch.
+  { file: "auth-runtime.js", atLeast: 90, sentinel: "passwordResetCodeParts" },
+  { file: "runtime-errors.js", atLeast: 0, sentinel: "commandError" },
 ];
 
 function migratedModuleDeclaredFunctions() {
@@ -1013,6 +1025,18 @@ const RUN_LEXER_CENSUS = {
   isSensitiveLogString: "not a lexer: the `-----BEGIN … PRIVATE KEY-----` PEM header pattern",
   validateMailConfig: "not a lexer: a hostname label may not start or end with `-`",
   parseScheduleExpression: "not a lexer: cron step syntax, `split(\"/\")` and `base === \"*\"`",
+  // Batch 3, and this entry is a blind spot closing rather than a new function. It is the same class
+  // as `beginOAuthSignIn` two lines up — a CLI flag in a hint string, `--email` — and it has been in
+  // the runtime the whole time. The census could not see it because `walkerGuardSubjects()` reads
+  // the emitted list plus the migrated modules, and `simulateLocalIdentitySession` was an *export*
+  // of `server-runtime-source.ts` that was never an entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS`: the
+  // CLI imports it directly, so nothing ever registered it. Carrying the auth domain as a module put
+  // it in front of this guard for the first time.
+  //
+  // Worth stating for the batches that follow: the emitted list was never the whole runtime, so a
+  // census derived from it was never a census of the runtime. Every batch that moves a domain should
+  // expect subjects that were invisible rather than new.
+  simulateLocalIdentitySession: "not a lexer: `--email` in a CLI hint string",
 };
 
 test("no second function decides where a SQL comment or quoted run ends", () => {

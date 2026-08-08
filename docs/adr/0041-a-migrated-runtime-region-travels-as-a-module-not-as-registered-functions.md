@@ -327,12 +327,31 @@ this gate's tokenizer; `transformSync` over its compiled text emits
 **The case that section named as untested — a migrated module importing something
 outside the migrated set — was executed in batch 2 and is where the "any external"
 rule was narrowed.** See the self-containment section above. The mechanism is now
-proven for four modules: two that import nothing (`inspection-sql`, `mail-config`),
-one that imports another migrated module (`log-index-guard`), and one that reaches
-Node builtins through dynamic `import(…)` (`mail-runtime`). The case still untested
-is a migrated module importing a *package*, which the metafile check turns into a
-build error rather than a boot failure and which nothing in this runtime has yet
-wanted to do.
+proven for six modules: two that import nothing (`inspection-sql`, `mail-config`),
+two that import another migrated module (`log-index-guard`, `auth-runtime`), one
+that reaches Node builtins through dynamic `import(…)` (`mail-runtime`), and one
+that exists only so a second can import it (`runtime-errors`). The case still
+untested is a migrated module importing a *package*, which the metafile check turns
+into a build error rather than a boot failure and which nothing in this runtime has
+yet wanted to do.
+
+**Batch 3 found the third way to reach a builtin, and it needed its own decision.**
+The two routes above are asynchronous or global-only, and the auth domain's
+credential path — `scryptSync`, `timingSafeEqual`, `createHash`, `randomBytes` — is
+synchronous with no Web Crypto equivalent. `process.getBuiltinModule` resolves a
+builtin synchronously off the `process` global, so esbuild sees no import and this
+carrier's metafile check passes unweakened rather than being narrowed a second time.
+ADR-0042 records it, including that it must be bound as a namespace rather than
+destructured, for exactly the `bin/` renaming reason recorded above.
+
+**The `bin/` collision rule was one case too narrow, and batch 3 is where that
+showed.** As written above it exempts only the names the monolith imports *from* the
+module being checked. Two modules that import the same name from the same third
+module are also one binding with nothing to rename — `commandError` lives in
+`runtime-errors.js` and both `auth-runtime.ts` and `server-runtime-source.ts` import
+it — so the guard compares origins now, not just names. A *declaration* is still
+refused whatever it is called, which is what keeps batch 2's `const randomUUID`
+failing by name.
 
 A region whose functions are called from the still-monolithic runtime will keep
 needing exports for those names. `skipSqlTrivia` and `readSqlQuotedIdentifier`

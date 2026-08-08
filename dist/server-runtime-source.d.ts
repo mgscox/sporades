@@ -5,6 +5,8 @@ export * from "./inspection-sql.js";
 export * from "./log-index-guard.js";
 export * from "./mail-config.js";
 export * from "./mail-runtime.js";
+export * from "./auth-runtime.js";
+export * from "./runtime-errors.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -23,19 +25,7 @@ type RuntimeSecurityPolicy = {
         directives: Record<string, string[] | string>;
     };
 };
-export declare const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-export declare const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-export declare const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS: number;
-export declare const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-export declare const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
-export declare const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
-export declare const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
-export declare const PASSWORD_RESET_DEFAULT_TTL_MS: number;
-export declare const PASSWORD_RESET_MIN_TTL_MS: number;
-export declare const PASSWORD_RESET_MAX_TTL_MS: number;
-export declare const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
 export declare const RESERVED_JOB_NAME_PREFIX = "_sporades";
-export declare const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any): void;
@@ -316,7 +306,6 @@ export declare function runReadOnlyQuery(database: {
     adapter: any;
     sqlite: any;
 }, sql: any): Promise<any>;
-export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 type TrustedRefreshTransport = {
     subscribeType: "dev.refresh.subscribe";
     receivedType: "dev.refresh.received";
@@ -361,61 +350,7 @@ export declare function createWebSocketHub(getDatabase: () => any, trustedRefres
 export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
-export declare function createEmailPasswordResetLink(database: LooseRecord, _session: LooseRecord, email: string): Promise<{
-    ok: boolean;
-    error: {
-        message: string;
-        hint: string;
-    };
-    link?: undefined;
-    expiresAt?: undefined;
-} | {
-    ok: boolean;
-    link: string;
-    expiresAt: string;
-    error?: undefined;
-}>;
-export declare function verifyPasswordResetCode(database: LooseRecord, _session: LooseRecord, code: any): Promise<{
-    ok: boolean;
-    error: {
-        message: string;
-        hint: string;
-    };
-    email?: undefined;
-} | {
-    ok: boolean;
-    email: any;
-    error?: undefined;
-}>;
-export declare function confirmPasswordReset(database: LooseRecord, _session: LooseRecord, code: any, newPassword: string): Promise<any>;
 export declare function sendEmailPasswordResetLink(database: LooseRecord, session: LooseRecord, email: string, options?: LooseRecord): Promise<{
-    ok: boolean;
-    error: {
-        message: string;
-        hint: string;
-    };
-} | {
-    ok: boolean;
-    error?: undefined;
-}>;
-export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, newPassword: string): Promise<{
-    ok: boolean;
-    error: {
-        message: string;
-        hint: string;
-    };
-} | {
-    ok: boolean;
-    error?: undefined;
-} | {
-    ok: boolean;
-    error: {
-        code: any;
-        message: any;
-        hint: any;
-    };
-}>;
-export declare function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string): Promise<{
     ok: boolean;
     error: {
         message: string;
@@ -427,18 +362,6 @@ export declare function setEmailPassword(database: LooseRecord, _session: LooseR
 }>;
 export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
 export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
-export declare function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null): Promise<{
-    token: any;
-    auth: {
-        userId: any;
-        displayName: any;
-        email: any;
-        picture: any;
-        isAuthenticated: boolean;
-        isGuest: boolean;
-        provider: any;
-    };
-}>;
 export declare function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any): Promise<{
     ok: boolean;
     data: {

@@ -161,11 +161,16 @@ function validatePublicTreeFileSet(files) {
 }
 
 // src/server-runtime-source.ts
-import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+
+// src/auth-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+
+// src/server-runtime-source.ts
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
