@@ -295,6 +295,14 @@ the five declarations it made private (`createPreferencesError`,
 in the repository references them. Diffing the two name *sets* is what makes that
 reviewable; a count alone would have said "five fewer" and not which five.
 
+Batch 6 measured its own base at 528 top-level names and zero duplicates, and 501
+after, with zero duplicates and **no name appearing that was not there before**. The
+27 that went are exactly the 27 declarations it made private — the S3 request path
+bar the three pure functions the skew probe calls, the File path resolvers, the
+upload path lock and the two data migrations. That the 27 line up name for name with
+the module's private set is the reviewable part; that 528 and 501 are neither 534,
+505 nor 510 is why the paragraph above says to measure rather than compare.
+
 **The walker census had to stop reading a list.** The census in
 `test/database-adapter-engine-seam.test.js` flagged emitted runtime functions
 whose source names comment or quote delimiters, and asserted the detected set
@@ -355,6 +363,14 @@ has since been executed rather than left standing.** `log-index-guard` imports
 this gate's tokenizer; `transformSync` over its compiled text emits
 `require("./inspection-sql.js")`, which is why the carrier bundles now.
 
+Ten modules are carried as of batch 6, `maybe-promise` and `file-storage-runtime`
+being the ninth and tenth. The storage module is the first to combine every route a
+carried module has to something outside itself in one file: a dynamic import of a
+builtin, a *conditional* dynamic import of two builtins, and the
+`process.getBuiltinModule` accessor, alongside an ordinary import of another
+migrated module. All four pass the metafile check, and the honest build is asserted
+to carry `process.getBuiltinModule("node:crypto")` and no `require(`.
+
 **The case that section named as untested — a migrated module importing something
 outside the migrated set — was executed in batch 2 and is where the "any external"
 rule was narrowed.** See the self-containment section above. The mechanism is now
@@ -409,6 +425,78 @@ The auth domain is finished apart from the seven functions in the HTTP layer and
 `sendEmailPasswordResetLink`, and that last one is worth restating for batches 6–9:
 **it is not waiting on a batch at all.** It reaches `enqueueRuntimeJob`, which needs
 the composition core, so it is ticket 05's or a composition change's — not batch 8's.
+
+**Batch 6 is where the count was wrong in both directions at once, and where the
+test for "domain or composition core" needed a third answer.** File and object
+storage was estimated at ~54 by name sweep and is 51 declarations plus one type
+alias, which looks like the estimate landing. It is not: three of the functions the
+sweep collects are not the domain's, and the graph found them by a question no
+sweep asks. `runSchemaExecIgnoringDuplicateColumn`, `isDuplicateColumnError` and
+`chainSchemaOperation` sit *inside* the file region, between two file helpers each,
+and **no file function calls any of them** — their only callers are the SQLite
+dialect's `addMissingColumn` and the log index's table creation. Layout is not
+membership. The cheap check that finds this is "which members of the seed set have
+no in-domain caller", and it should be run on every batch, because it costs one
+pass over the reverse graph and it is the only thing that separates a name from a
+neighbour.
+
+**The third answer is "neither — extract it".** Batch 4's rule sorted a blocker
+into a domain or the composition core. Storage's graph left four things outside it
+and one fits neither box: `thenIfPromise` and `chainMaybePromise`, the sync/async
+bridge that lets one adapter method body serve a synchronous SQLite engine and an
+asynchronous Postgres or libSQL one. Six domains call them — adapters, ACL,
+logging, schema migration, the auth tables and storage — and none owns them. Left
+behind they held `singleLiveFileRowByPath` and `createFileStorageTables`, and
+through the first `resolveLiveFileReference`, `createPendingFileUpload`, both URL
+paths and `deletePrivateFile`: the whole upload lifecycle held by a four-line
+utility. So batch 6 did what batch 3 did with `commandError` and made
+`maybe-promise.ts` — the second non-domain module, and the second time this
+sequence has needed one. **The test to add to batch 4's is: if the blocker belongs
+to no domain, it is not a later batch's and never will be, and extracting it is
+cheaper than cutting a domain in half.**
+
+`runtime-errors.ts` was not the home for them, and that is a judgement worth
+recording rather than leaving to look arbitrary. `assertJsonCompatible` was
+admitted there in batch 4 on a cohesion argument — it does nothing but throw an
+error factory that already lived in the file. Nothing about chaining a
+maybe-promise is cohesive with errors, and the cost of a file whose name stops
+describing its contents is paid by every later reader rather than by the batch
+that saved the ceremony.
+
+The other three blockers sorted normally. `writeNotFound` and
+`writeJsonHttpResponse` are the HTTP layer's — their other consumer is
+`routeRuntimeHealth` — so `handleFileHttpRoute` and `sendFileHttpResponse` stayed
+behind for batch 8, which is a domain that has not run yet rather than the last
+one. Two of fifty-three, against batch 4's seventeen of fifty-one.
+
+**A module with no private function still needs a census sentinel, and an exported
+one is the right answer.** Every batch from 1 to 5 used a private sentinel, and the
+prose above makes that read like a rule. `maybe-promise` has three functions and
+the monolith resolves all three, so it has no private name to use. `isPromiseLike`
+is its sentinel for the reason `mail-config`'s `validateMailConfig` is: the other
+two functions in the file are defined in terms of it, so no honest edit removes it.
+The property the private sentinels were chosen for — evidence that privacy is not a
+way out of the census — is already carried by six other entries.
+
+**Two `randomUUID` routes now exist and one file should not use both.** ADR-0042
+ranks the Web Crypto global above `process.getBuiltinModule` for `randomUUID`,
+which is why the mail domain writes `crypto.randomUUID()`. Storage binds the
+namespace anyway, for `createHmac` and `createHash` in the S3 signature, so its six
+`randomUUID` call sites take the accessor as `auth-runtime.ts`'s four do. The
+ranking is about which route to *reach for*, not about mixing two in one module
+that already has one. Replanting batch 2's `const randomUUID = () => crypto.randomUUID()`
+in this module fails the collision guard by name, which was executed rather than
+assumed — and the guard stayed quiet for a replanted `const createHmac`, correctly,
+because `s3Hmac` was the monolith's last consumer of that import and tsc had
+already elided it.
+
+**esbuild rewrites a conditional dynamic import into two analyzable ones.**
+`s3Request` picks its transport with `await import(isHttps ? "node:https" : "node:http")`,
+which looks like the unanalyzable form the carrier's metafile check cannot judge.
+It is not: esbuild emits `await (isHttps ? import("node:https") : import("node:http"))`
+and lists both as `kind: "dynamic-import"` externals, so the builtin allowance
+covers them and the check passes unweakened. Measured on the built bundle, not
+reasoned about.
 
 **A differential limb must not serialize anything its own sabotage can make
 unserializable.** Batch 5's probe first compared `[patch, probedAnswer(…)]` for the
