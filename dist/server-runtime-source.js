@@ -16,6 +16,8 @@ import { PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RE
 linkProviderIdentity, signInWithEmail, signUpWithEmail, } from "./auth-runtime.js";
 import { createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
+import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+import { deserializeFieldValue, deserializeRow } from "./stored-row-decoding.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createStructuredFileError, deletePrivateFile, fileMetadataFromRow, fileRowForOwner, getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
@@ -158,6 +160,25 @@ export * from "./user-preferences-runtime.js";
 // the bundle as carried module text rather than as emitted-list entries.
 export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
+// Two more modules that are not domains, extracted by batch 7 for the reason `runtime-errors.js`
+// and `maybe-promise.js` were extracted: they hold what the ACL and privileged-audit domain's
+// reference graph left outside it and no batch on ticket 04's list owns.
+//
+// `runtime-log-policy.js` holds `isSensitiveLogKey` and `logIndexLimit` — which field names the
+// platform log must never write down, and how many events the log index keeps. Both are read by the
+// log sink still in this file *and* by the ACL and audit paths that left it: the first held the
+// entire ACL denial record and through it all three enforcement entry points, the second held the
+// privileged-audit reindex after a rollback.
+//
+// `stored-row-decoding.js` holds `deserializeRow` and `deserializeFieldValue`, the Boolean, Json
+// and Number columns turned back into the values a Capsule author sees. `ctx.acl.db.get()` answers
+// with the first, which is why it is here; the endpoint table API and both mutation paths still in
+// this file call both.
+//
+// Both are re-exported whole for the reason the ten above are. Neither declares a SCREAMING_CASE
+// constant, so neither adds anything to the constant probe.
+export * from "./runtime-log-policy.js";
+export * from "./stored-row-decoding.js";
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
     // and `mail-config.ts`. They are carried into the emitted-list bundle as those modules' own
@@ -285,7 +306,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     redactLogData,
     logDataContainsServerEnvValue,
     isSensitiveLogString,
-    isSensitiveLogKey,
+    // `isSensitiveLogKey` stood here until batch 7 moved it to `runtime-log-policy.ts`, and
+    // `logIndexLimit` eleven entries below it. Both are declarations inside a carried module now, so
+    // listing either again would declare the same top-level function twice in the emitted ES module —
+    // a load-time `SyntaxError` rather than a drift.
     capLogEnvelope,
     formatLogIndexSequence,
     nextLogIndexSequence,
@@ -296,7 +320,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     pruneLogIndex,
     readRecentLogEvents,
     readJsonlLogEvents,
-    logIndexLimit,
     logPayloadMaxBytes,
     logRedactedValue,
     // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
@@ -397,10 +420,11 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     invalidReferenceError,
     referenceExists,
     serializeFieldValue,
-    deserializeFieldValue,
     normalizeDateValue,
     dateValueError,
-    deserializeRow,
+    // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
+    // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
+    // for the reason recorded beside `isSensitiveLogKey` above.
     readEndpointBody,
     createEndpointLogger,
     routeRuntimeHealth,
@@ -2577,10 +2601,6 @@ function libsqlValueToJs(value) {
     }
     return value;
 }
-function logIndexLimit(config = {}) {
-    const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-    return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
 function logPayloadMaxBytes(config = {}) {
     const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
     return Number.isInteger(configured) && configured > 0 ? configured : 4096;
@@ -3158,10 +3178,6 @@ function logDataContainsServerEnvValue(value, serverEnv) {
     }
     const serialized = JSON.stringify(value, (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue);
     return values.some((secret) => serialized.includes(String(secret)));
-}
-function isSensitiveLogKey(key) {
-    return (/(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
-        /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key)));
 }
 function isSensitiveLogString(value) {
     return (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) ||
@@ -4871,18 +4887,6 @@ function serializeFieldValue(field, value) {
     }
     return String(value ?? "");
 }
-function deserializeFieldValue(field, value) {
-    if (field.kind === "Boolean") {
-        return value === null ? null : Boolean(value);
-    }
-    if (field.kind === "Json") {
-        return value === null ? null : JSON.parse(value);
-    }
-    if (field.kind === "Number") {
-        return value === null ? null : Number(value);
-    }
-    return value;
-}
 function normalizeDateValue(value, fieldName) {
     if (value instanceof Date) {
         if (Number.isNaN(value.getTime())) {
@@ -4901,21 +4905,6 @@ function normalizeDateValue(value, fieldName) {
 }
 function dateValueError(fieldName) {
     return commandError(`Invalid date value for field: ${fieldName}`, "Pass an ISO 8601 date string or JavaScript Date value.");
-}
-function deserializeRow(table, row) {
-    const output = { ...row };
-    for (const field of table.fields) {
-        if (field.kind === "Boolean") {
-            output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-        }
-        else if (field.kind === "Json") {
-            output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-        }
-        if (field.kind === "Number") {
-            output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-        }
-    }
-    return output;
 }
 async function readEndpointBody(request, headers, limitSource = null) {
     const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");

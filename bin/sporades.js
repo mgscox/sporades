@@ -7914,6 +7914,53 @@ function resolveSporadesPackageRoot() {
   }
 }
 
+// src/runtime-log-policy.ts
+var runtime_log_policy_exports = {};
+__export(runtime_log_policy_exports, {
+  isSensitiveLogKey: () => isSensitiveLogKey,
+  logIndexLimit: () => logIndexLimit
+});
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+
+// src/stored-row-decoding.ts
+var stored_row_decoding_exports = {};
+__export(stored_row_decoding_exports, {
+  deserializeFieldValue: () => deserializeFieldValue,
+  deserializeRow: () => deserializeRow
+});
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
+}
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
+    }
+  }
+  return output;
+}
+
 // src/server-runtime-source.ts
 import { createHash as createHash2, randomBytes as randomBytes2, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync } from "node:fs";
@@ -8044,7 +8091,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   redactLogData,
   logDataContainsServerEnvValue,
   isSensitiveLogString,
-  isSensitiveLogKey,
+  // `isSensitiveLogKey` stood here until batch 7 moved it to `runtime-log-policy.ts`, and
+  // `logIndexLimit` eleven entries below it. Both are declarations inside a carried module now, so
+  // listing either again would declare the same top-level function twice in the emitted ES module —
+  // a load-time `SyntaxError` rather than a drift.
   capLogEnvelope,
   formatLogIndexSequence,
   nextLogIndexSequence,
@@ -8055,7 +8105,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   pruneLogIndex,
   readRecentLogEvents,
   readJsonlLogEvents,
-  logIndexLimit,
   logPayloadMaxBytes,
   logRedactedValue,
   // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
@@ -8156,10 +8205,11 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   invalidReferenceError,
   referenceExists,
   serializeFieldValue,
-  deserializeFieldValue,
   normalizeDateValue,
   dateValueError,
-  deserializeRow,
+  // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
+  // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
+  // for the reason recorded beside `isSensitiveLogKey` above.
   readEndpointBody,
   createEndpointLogger,
   routeRuntimeHealth,
@@ -10354,10 +10404,6 @@ function libsqlValueToJs(value) {
   }
   return value;
 }
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
@@ -10932,9 +10978,6 @@ function logDataContainsServerEnvValue(value, serverEnv) {
     (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue
   );
   return values.some((secret) => serialized.includes(String(secret)));
-}
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 function isSensitiveLogString(value) {
   return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
@@ -12570,18 +12613,6 @@ function serializeFieldValue(field, value) {
   }
   return String(value ?? "");
 }
-function deserializeFieldValue(field, value) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
 function normalizeDateValue(value, fieldName) {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
@@ -12603,20 +12634,6 @@ function dateValueError(fieldName) {
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value."
   );
-}
-function deserializeRow(table, row) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
 }
 async function readEndpointBody(request, headers, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -14915,7 +14932,14 @@ var MIGRATED_RUNTIME_MODULES = [
   // because that module imports it. Storage imports `runtime-errors.js` for its `HelperError` type
   // only, which is erased, so `maybe-promise.js` is its one real dependency.
   { file: "maybe-promise.js", loaded: maybe_promise_exports },
-  { file: "file-storage-runtime.js", loaded: file_storage_runtime_exports }
+  { file: "file-storage-runtime.js", loaded: file_storage_runtime_exports },
+  // Batch 7. Neither of these is a domain either: they are what closing the ACL and privileged-audit
+  // domain's reference graph left outside it and no batch on ticket 04's list owns — the log
+  // policy the redactor and the ACL denial record share, and the stored-column decoding the ACL
+  // helpers and both mutation paths share. Both are listed before `acl-runtime.js` because it
+  // imports them; esbuild resolves the graph either way and the order is documentation.
+  { file: "runtime-log-policy.js", loaded: runtime_log_policy_exports },
+  { file: "stored-row-decoding.js", loaded: stored_row_decoding_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [
@@ -15210,6 +15234,56 @@ var MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE = [
   ["then-not-a-function", { then: 1 }],
   ["function", () => "called"]
 ];
+var MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE = [
+  ["isSensitiveLogKey", ["password"]],
+  ["isSensitiveLogKey", ["user_password_hash"]],
+  ["isSensitiveLogKey", ["client-secret"]],
+  ["isSensitiveLogKey", ["clientSecret"]],
+  ["isSensitiveLogKey", ["apiToken"]],
+  ["isSensitiveLogKey", ["privateKey"]],
+  ["isSensitiveLogKey", ["authorized_keys"]],
+  ["isSensitiveLogKey", ["rawRequestBody"]],
+  ["isSensitiveLogKey", ["stacktrace"]],
+  ["isSensitiveLogKey", ["AUTHORIZATION"]],
+  ["isSensitiveLogKey", ["title"]],
+  ["isSensitiveLogKey", ["passwordless"]],
+  ["isSensitiveLogKey", ["id"]],
+  ["isSensitiveLogKey", [""]],
+  ["isSensitiveLogKey", [null]],
+  // The log index's retention cap: a `config` read with two spellings, an integer gate and a
+  // default. A carried copy that had lost the gate would let a Capsule configure a fractional or
+  // negative cap and prune its own log index to nothing.
+  ["logIndexLimit", [{}]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logging: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 }, logging: { indexLimit: 99 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 0 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: -1 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 1.5 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: "25" } }]]
+];
+var MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE = [
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 0]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 1]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, null]],
+  ["deserializeFieldValue", [{ kind: "Number" }, "42"]],
+  ["deserializeFieldValue", [{ kind: "Number" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, '{"a":[1,null]}']],
+  ["deserializeFieldValue", [{ kind: "Json" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, "not json"]],
+  ["deserializeFieldValue", [{ kind: "Text" }, "left alone"]],
+  ["deserializeFieldValue", [{ kind: "Reference" }, "row-1"]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }, { name: "title", kind: "Text" }] },
+    { id: "r1", flag: 0, count: "7", meta: '{"a":1}', title: "kept" }
+  ]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }] },
+    { id: "r2", flag: null, count: null, meta: null }
+  ]],
+  ["deserializeRow", [{ fields: [] }, { id: "r3", untouched: "value" }]],
+  ["deserializeRow", [{ fields: [{ name: "meta", kind: "Json" }] }, { id: "r4", meta: "not json" }]]
+];
 function bundleTemplateError(message, hint) {
   return Object.assign(new Error(message), { hint });
 }
@@ -15247,7 +15321,9 @@ var MIGRATED_MODULE_PROBE_NAMES = [
   "createFileStorageTables",
   "isPromiseLike",
   "thenIfPromise",
-  "chainMaybePromise"
+  "chainMaybePromise",
+  ...new Set(MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name]) => name)),
+  ...new Set(MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name]) => name))
 ];
 function probedAnswer(call) {
   try {
@@ -15426,6 +15502,17 @@ function describeMigratedModuleAnswers(module) {
           return [seen.join(","), module.isPromiseLike(chained) ? "promise" : String(chained)];
         })
       ])
+    ),
+    // Batch 7's two non-domain modules, asked directly. Both are also reached through the ACL
+    // limbs — `aclRowLogSnapshot` filters field names with `isSensitiveLogKey`, and the ACL helper
+    // state limb reads a row back through `deserializeRow` — but a limb that reached them only
+    // that way would report a skew in either of them under an ACL heading, and would go missing
+    // entirely if the ACL limbs were ever narrowed.
+    ...MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(
+      ([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])
+    ),
+    ...MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(
+      ([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])
     )
   ];
 }

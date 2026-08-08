@@ -13,6 +13,8 @@ import * as mailRuntime from "../mail-runtime.js";
 import * as maybePromise from "../maybe-promise.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import * as runtimeErrors from "../runtime-errors.js";
+import * as runtimeLogPolicy from "../runtime-log-policy.js";
+import * as storedRowDecoding from "../stored-row-decoding.js";
 import * as userPreferencesRuntime from "../user-preferences-runtime.js";
 import {
   ACL_HELPER_STATE,
@@ -67,6 +69,13 @@ const MIGRATED_RUNTIME_MODULES = [
   // only, which is erased, so `maybe-promise.js` is its one real dependency.
   { file: "maybe-promise.js", loaded: maybePromise as Record<string, unknown> },
   { file: "file-storage-runtime.js", loaded: fileStorageRuntime as Record<string, unknown> },
+  // Batch 7. Neither of these is a domain either: they are what closing the ACL and privileged-audit
+  // domain's reference graph left outside it and no batch on ticket 04's list owns — the log
+  // policy the redactor and the ACL denial record share, and the stored-column decoding the ACL
+  // helpers and both mutation paths share. Both are listed before `acl-runtime.js` because it
+  // imports them; esbuild resolves the graph either way and the order is documentation.
+  { file: "runtime-log-policy.js", loaded: runtimeLogPolicy as Record<string, unknown> },
+  { file: "stored-row-decoding.js", loaded: storedRowDecoding as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -571,6 +580,80 @@ export const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][] = [
   ["function", () => "called"],
 ];
 
+// Batch 7's two non-domain modules. Both are pure leaf functions, so both limbs are `[name, args]`
+// data put through `probedAnswer` in one loop — no clock, no I/O, and thirty-odd calls between them.
+//
+// **`isSensitiveLogKey` is the limb whose loss would be silent.** It is the only thing in this
+// runtime that decides which field names are never written into the platform log, and it is read
+// from two sides — `redactLogData` redacts a log payload with it, and `aclVisibleFieldNames` uses it
+// to decide which field names an ACL denial record may name. A carried copy reduced to a bare
+// `password` test would put a `clientSecret` or an `authorization` field name into every denial
+// record a deployed Capsule writes, and every honest log would still look right. Split both ways for
+// the reason this file repeats: a corpus it refuses in full cannot see a copy that refuses
+// everything, and one it admits in full cannot see one that admits everything. The refused half
+// covers both of the two alternations the real body is written as — the delimited spelling and the
+// camelCase one — because a copy that had kept only the first passes every `snake_case` case.
+export const MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE: [string, unknown[]][] = [
+  ["isSensitiveLogKey", ["password"]],
+  ["isSensitiveLogKey", ["user_password_hash"]],
+  ["isSensitiveLogKey", ["client-secret"]],
+  ["isSensitiveLogKey", ["clientSecret"]],
+  ["isSensitiveLogKey", ["apiToken"]],
+  ["isSensitiveLogKey", ["privateKey"]],
+  ["isSensitiveLogKey", ["authorized_keys"]],
+  ["isSensitiveLogKey", ["rawRequestBody"]],
+  ["isSensitiveLogKey", ["stacktrace"]],
+  ["isSensitiveLogKey", ["AUTHORIZATION"]],
+  ["isSensitiveLogKey", ["title"]],
+  ["isSensitiveLogKey", ["passwordless"]],
+  ["isSensitiveLogKey", ["id"]],
+  ["isSensitiveLogKey", [""]],
+  ["isSensitiveLogKey", [null]],
+  // The log index's retention cap: a `config` read with two spellings, an integer gate and a
+  // default. A carried copy that had lost the gate would let a Capsule configure a fractional or
+  // negative cap and prune its own log index to nothing.
+  ["logIndexLimit", [{}]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logging: { indexLimit: 25 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 25 }, logging: { indexLimit: 99 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 0 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: -1 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: 1.5 } }]],
+  ["logIndexLimit", [{ logs: { indexLimit: "25" } }]],
+];
+
+// The stored-column decoding, at both granularities the module holds it: a whole row against a
+// table's fields, and one field's value. The two are the same rule written twice — see that
+// module's header — so the cases are chosen to make a copy that had drifted on either visible in
+// the other: `null` survives every branch, a `"0"` from Postgres is a `Number` and not a string, a
+// stored `0` is Boolean `false`, and a Json column is parsed rather than handed back as text.
+//
+// `deserializeRow` is what `ctx.acl.db.get()` answers with, so a copy that stopped parsing Json
+// would hand an ACL rule a string where the Capsule author's policy expects an object — a rule that
+// then denies every row, out of a deployed Capsule, with nothing in any log to say why.
+export const MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE: [string, unknown[]][] = [
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 0]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, 1]],
+  ["deserializeFieldValue", [{ kind: "Boolean" }, null]],
+  ["deserializeFieldValue", [{ kind: "Number" }, "42"]],
+  ["deserializeFieldValue", [{ kind: "Number" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, '{"a":[1,null]}']],
+  ["deserializeFieldValue", [{ kind: "Json" }, null]],
+  ["deserializeFieldValue", [{ kind: "Json" }, "not json"]],
+  ["deserializeFieldValue", [{ kind: "Text" }, "left alone"]],
+  ["deserializeFieldValue", [{ kind: "Reference" }, "row-1"]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }, { name: "title", kind: "Text" }] },
+    { id: "r1", flag: 0, count: "7", meta: '{"a":1}', title: "kept" },
+  ]],
+  ["deserializeRow", [
+    { fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }] },
+    { id: "r2", flag: null, count: null, meta: null },
+  ]],
+  ["deserializeRow", [{ fields: [] }, { id: "r3", untouched: "value" }]],
+  ["deserializeRow", [{ fields: [{ name: "meta", kind: "Json" }] }, { id: "r4", meta: "not json" }]],
+];
+
 function bundleTemplateError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
@@ -620,6 +703,8 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "isPromiseLike",
   "thenIfPromise",
   "chainMaybePromise",
+  ...new Set(MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name]) => name)),
+  ...new Set(MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name]) => name)),
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -828,6 +913,17 @@ function describeMigratedModuleAnswers(module: any) {
           return [seen.join(","), module.isPromiseLike(chained) ? "promise" : String(chained)];
         }),
       ]),
+    ),
+    // Batch 7's two non-domain modules, asked directly. Both are also reached through the ACL
+    // limbs — `aclRowLogSnapshot` filters field names with `isSensitiveLogKey`, and the ACL helper
+    // state limb reads a row back through `deserializeRow` — but a limb that reached them only
+    // that way would report a skew in either of them under an ACL heading, and would go missing
+    // entirely if the ACL limbs were ever narrowed.
+    ...MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name, args]) =>
+      JSON.stringify([name, args, probedAnswer(() => module[name](...args))]),
+    ),
+    ...MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name, args]) =>
+      JSON.stringify([name, args, probedAnswer(() => module[name](...args))]),
     ),
   ];
 }

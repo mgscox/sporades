@@ -11,6 +11,8 @@ export * from "./jobs-runtime.js";
 export * from "./user-preferences-runtime.js";
 export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
+export * from "./runtime-log-policy.js";
+export * from "./stored-row-decoding.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;

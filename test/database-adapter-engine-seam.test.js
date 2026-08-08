@@ -227,6 +227,18 @@ const MIGRATED_RUNTIME_MODULES = [
   // defined in terms of it, so no honest edit removes it.
   { file: "maybe-promise.js", atLeast: 2, sentinel: "isPromiseLike" },
   { file: "file-storage-runtime.js", atLeast: 40, sentinel: "resolveLiveFileReference" },
+  // Batch 7's two non-domain modules, each holding two functions, so each floor is 1 — a floor only
+  // ever asserts that the parse returned something, and for a module this size "something" is both.
+  // Both sentinels are exported, as `mail-config`'s and `maybe-promise`'s are, because the monolith
+  // resolves every name in both files and neither has a private one.
+  //
+  // `isSensitiveLogKey` is the sentinel that matters here: it is the only thing in this runtime that
+  // decides which field names never reach the platform log, and it is read by the log redactor still
+  // in the monolith *and* by the ACL denial record that left it. It was an emitted-list entry until
+  // this batch, so it was visible to these guards by being registered; finding it here is the
+  // evidence that it did not leave the census by moving.
+  { file: "runtime-log-policy.js", atLeast: 1, sentinel: "isSensitiveLogKey" },
+  { file: "stored-row-decoding.js", atLeast: 1, sentinel: "deserializeRow" },
 ];
 
 function migratedModuleDeclaredFunctions() {
