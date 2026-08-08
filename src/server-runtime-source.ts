@@ -36,6 +36,10 @@ import {
   // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
   // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
   beginOAuthSignIn, resolvePasswordResetConfig,
+  // Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
+  // method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
+  // resolves it here for as long as that method set is still below.
+  createAnonymousAuthTables,
 } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
@@ -51,6 +55,13 @@ import {
 } from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+// Batch 9. The four names the shared Database adapter method set resolves in the Log index's
+// storage module — `ensureLogStorage()` and the three statements that write, prune and read the
+// index. The log sink in this file needs none of them: it reaches the same three through
+// `database.*`, which is an adapter method rather than a module binding.
+import {
+  createLogIndexTables, insertLogIndexEvent, pruneLogIndex, readRecentLogEvents,
+} from "./log-index-storage.js";
 import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFieldValue } from "./stored-value-coding.js";
 // Twenty-one names, which is what the three functions of that domain still in this file plus
 // `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
@@ -261,6 +272,29 @@ export * from "./maybe-promise.js";
 export * from "./runtime-log-policy.js";
 export * from "./stored-value-coding.js";
 
+// The Log index's storage left this file as part of batch 9 — the `sporades_log_events` table, its
+// additive migration, ADR-0036's runtime ordering sequence, and the three statements that write,
+// prune and read it. Nine declarations, of which five are private now.
+//
+// **It is a domain ticket 04's nine batches never named**, and it is worth saying so here rather
+// than only in the module. Batch 1 was the log-index *guard* — the four functions that conceal this
+// table from `sporades db query` — and nothing in the sequence was ever scoped to the index itself.
+// It surfaced as batch 9's blocker instead, because the only thing in the repository that calls it
+// is the shared Database adapter method set, which is what batch 9 moves. Extracted rather than
+// shrugged at, on the rule batch 6 established for `maybe-promise.ts`: a blocker owned by no batch
+// on the list is not a later batch's and never will be. Left here it would have held
+// `createSharedDatabaseAdapterMethods`, and through it every engine and every dialect.
+//
+// The platform log did not go with it, and the seam is the adapter. `createRuntimeLogSink` and
+// `createRuntimeLogger` are still in this file and reach the index through
+// `database.insertLogIndexEvent(…)`, `database.pruneLogIndex(…)` and `database.readRecentLogEvents(…)`
+// — adapter methods resolved at run time, not module bindings — so that half of the logging domain
+// cost this batch nothing and remains for ticket 05 to place.
+//
+// Re-exported whole for the reason the twelve above are. It declares no SCREAMING_CASE constant, so
+// it adds nothing to the constant probe.
+export * from "./log-index-storage.js";
+
 // The ACL and privileged-audit domain left this file as batch 7 — table ACL declaration and
 // resolution, the read and write enforcement paths, the frozen `ctx.acl` helpers and their bounded
 // read state, the ACL denial record, the privileged server role's `ctx.privileged` File and
@@ -409,14 +443,20 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // listing either again would declare the same top-level function twice in the emitted ES module —
   // a load-time `SyntaxError` rather than a drift.
   capLogEnvelope,
-  formatLogIndexSequence,
-  nextLogIndexSequence,
-  backfilledLogIndexSequence,
-  createLogIndexTables,
-  backfillLogIndexSequences,
-  insertLogIndexEvent,
-  pruneLogIndex,
-  readRecentLogEvents,
+  // The Log index's storage occupied the eight entries between `capLogEnvelope` and
+  // `readJsonlLogEvents` until batch 9 moved it to `log-index-storage.ts` — the table's bootstrap
+  // and its additive migration, ADR-0036's runtime sequence, and the write, prune and read. It is a
+  // domain ticket 04's nine batches never named, and it surfaced as batch 9's blocker rather than as
+  // a batch of its own, because the only thing that calls it is the shared adapter method set. The
+  // ninth declaration, `chainSchemaOperation`, went with it from further down this list. All nine
+  // are declarations inside a carried module now, so listing any of them again would declare the
+  // same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather than a
+  // drift.
+  //
+  // Nothing of the platform log went with them. `createRuntimeLogSink` below is still in this file
+  // and still reaches the index, through `database.insertLogIndexEvent(…)` and its two siblings —
+  // adapter methods on the adapter object rather than module bindings, which is why that seam cost
+  // this batch nothing.
   readJsonlLogEvents,
   logPayloadMaxBytes,
   logRedactedValue,
@@ -517,12 +557,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createEndpointLogger,
   isDuplicateColumnError,
   runSchemaExecIgnoringDuplicateColumn,
-  chainSchemaOperation,
-  createAnonymousAuthTables,
-  createProviderIdentityTables,
-  ensureOAuthStateColumns,
-  ensureSessionLifecycleColumns,
-  ensureSessionProvenanceColumn,
+  // `chainSchemaOperation` stood here and is in `log-index-storage.ts` now, private, with the two
+  // functions that are its only callers. The auth storage bootstrap's five entries followed it —
+  // `createAnonymousAuthTables` and the four migrations below it — and are in `auth-runtime.js`,
+  // where the rest of that domain has been since batch 3. They were held here by the one thing that
+  // calls them, the shared Database adapter method set, exactly as `createFileStorageTables` and
+  // `createUserPreferencesTables` were held by it before batches 6 and 5 moved them.
+  //
+  // All six are declarations inside carried modules now, so listing any of them again would declare
+  // the same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather
+  // than a drift.
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
@@ -3020,193 +3064,6 @@ function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
 // `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so a module-level binding one of them closes over does not
 // travel with it and becomes a `ReferenceError` the first time a deployed Capsule boots.
 
-// Nanoseconds since the epoch is around 1.76e18 today, so the 20-digit width below reaches the year
-// 5138. The width is fixed rather than natural because the values are compared as text: a value
-// that grew a digit would sort before every narrower one and silently invert the whole index.
-function formatLogIndexSequence(nanosSinceEpoch: bigint) {
-  return String(nanosSinceEpoch).padStart(20, "0");
-}
-
-// Nanoseconds since the epoch, strictly increasing for as long as this process lives.
-//
-// `Date.now()` alone is not enough: it has millisecond resolution, so events indexed in the same
-// burst — the routine case, not the exotic one — would tie, and a tie is exactly the undefined
-// order this field exists to remove. `process.hrtime.bigint()` alone is not enough either: its
-// origin is arbitrary per process, so two runs of the same Capsule would produce values that do not
-// order against each other. So the two clocks are read together, once, and every sequence is that
-// wall anchor plus the monotonic delta: ordered within the process, and correctly placed against
-// sequences any other run wrote.
-//
-// The previous value is carried forward and stepped past, which is what makes the field monotonic
-// by construction rather than by trusting the platform's clock resolution. `process.hrtime.bigint()`
-// is strictly increasing on the platforms Sporades runs on, but "increasing because the call takes
-// longer than the tick" is a property of the host rather than of this code, and a rare tie would
-// leave the order undefined in precisely the case the conformance specification asserts.
-function nextLogIndexSequence() {
-  const state = nextLogIndexSequence as LooseRecord;
-  state.anchor ??= { wallNanos: BigInt(Date.now()) * 1_000_000n, monotonic: process.hrtime.bigint() };
-  const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
-  const previous = state.previous ?? 0n;
-  state.previous = derived > previous ? derived : previous + 1n;
-  return formatLogIndexSequence(state.previous);
-}
-
-// The sequence a row stored before this field existed is given. Its envelope timestamp is the only
-// evidence of when it happened, so it is converted to the same units and the same width as a live
-// sequence; that is what lets a backfilled row and a newly indexed one sort against each other
-// rather than beside each other. Ties among already-stored rows are historical and unrecoverable,
-// so the backfill only has to preserve the order the timestamps do record.
-function backfilledLogIndexSequence(timestamp: any) {
-  const parsed = Date.parse(String(timestamp ?? ""));
-  return Number.isFinite(parsed) ? BigInt(parsed) * 1_000_000n : 0n;
-}
-
-function createLogIndexTables(sqlite: LooseRecord) {
-  // Kept outside any transaction by its caller. The ALTER below tolerates the column already
-  // existing by swallowing the engine's duplicate-column error, and on Postgres a swallowed error
-  // aborts the enclosing transaction, so everything after it would fail with `current transaction
-  // is aborted`. Storage bootstrap runs before the migration transaction opens; it has to stay
-  // there.
-  let chain = chainSchemaOperation(undefined, () =>
-    sqlite.exec(
-      sqlite.dialect.sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_log_events] (" +
-        "[id] TEXT PRIMARY KEY, " +
-        "[timestamp] TEXT NOT NULL, " +
-        "[category] TEXT NOT NULL, " +
-        "[event] TEXT NOT NULL, " +
-        "[level] TEXT NOT NULL, " +
-        "[message] TEXT NOT NULL, " +
-        "[capsuleName] TEXT, " +
-        "[capsuleId] TEXT, " +
-        "[releaseId] TEXT, " +
-        "[requestId] TEXT, " +
-        "[correlationId] TEXT, " +
-        "[indexSequence] TEXT, " +
-        "[payload] TEXT NOT NULL" +
-        ")",
-      ),
-    ),
-  );
-  // The additive migration for a Log index table that already exists. Declaring a column an older
-  // database may not have is a dialect entry, because the strategies genuinely differ: `PRAGMA
-  // table_info` is SQLite's alone, SQLite has no `ADD COLUMN IF NOT EXISTS`, and Postgres does.
-  chain = chainSchemaOperation(chain, () =>
-    sqlite.dialect.addMissingColumn(sqlite, "sporades_log_events", "indexSequence", "TEXT"),
-  );
-  return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
-}
-
-// Gives every row stored before the ordering field existed a sequence derived from its timestamp.
-// After the first Capsule start that runs it the selection is empty, so later starts cost one
-// bounded read and write nothing.
-function backfillLogIndexSequences(sqlite: LooseRecord) {
-  return thenIfPromise(
-    sqlite
-      .prepare(
-        sqlite.dialect.sql(
-          "SELECT [id], [timestamp] FROM [sporades_log_events] WHERE [indexSequence] IS NULL " +
-          "ORDER BY [timestamp] ASC, [id] ASC",
-        ),
-      )
-      .all(),
-    (rows: { id: any; timestamp: any; }[]) => {
-      // Rows sharing a timestamp are separated by a nanosecond each, in the order the read
-      // returned them, so that the backfilled values are distinct and the result of running the
-      // backfill is the same on every engine. Which of two historically tied rows comes first is
-      // not recoverable; that they come back in a defined order is.
-      let previous = 0n;
-      let chain = undefined;
-      for (const row of rows) {
-        const derived = backfilledLogIndexSequence(row.timestamp);
-        previous = derived > previous ? derived : previous + 1n;
-        const sequence = formatLogIndexSequence(previous);
-        chain = chainSchemaOperation(chain, () =>
-          sqlite
-            .prepare(sqlite.dialect.sql("UPDATE [sporades_log_events] SET [indexSequence] = ? WHERE [id] = ?"))
-            .run(sequence, row.id),
-        );
-      }
-      return chain;
-    },
-  );
-}
-
-function insertLogIndexEvent(sqlite: LooseRecord, event: LooseRecord) {
-  // ADR-0034: a Database adapter method that writes returns its statement result rather than
-  // discarding it. Without the return the caller has nothing to await, so the write has landed on
-  // SQLite and has not landed on Postgres or libSQL by the time the method returns — and the Log
-  // index caller's `isPromiseLike` probe can never fire.
-  return sqlite
-    .prepare(
-      sqlite.dialect.sql(
-        "INSERT INTO [sporades_log_events] " +
-        "([id], [timestamp], [category], [event], [level], [message], [capsuleName], [capsuleId], [releaseId], " +
-        "[requestId], [correlationId], [indexSequence], [payload]) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ),
-    )
-    .run(
-      randomUUID(),
-      event.timestamp,
-      event.category,
-      event.event,
-      event.level,
-      event.message,
-      event.capsule?.name ?? null,
-      event.capsule?.id ?? null,
-      event.release?.id ?? event.release ?? null,
-      event.request?.id ?? null,
-      event.correlation?.id ?? event.correlation ?? null,
-      // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
-      // envelope that is stringified into `payload` below. The field orders the Log index; it is
-      // not part of what a log event says.
-      nextLogIndexSequence(),
-      JSON.stringify(event),
-    );
-}
-
-function pruneLogIndex(sqlite: LooseRecord, limit: any) {
-  // ADR-0034: returned rather than discarded, for the same reason as the insert above.
-  //
-  // ADR-0036: the bound is expressed as "keep the most recently indexed N" rather than "delete
-  // everything past offset N". The offset form needed `LIMIT -1 OFFSET ?`, which is SQLite's alone
-  // and is why Postgres carried its own copy of this method; naming the kept set instead is
-  // portable, so there is one definition and one answer. It also states the intent directly: this
-  // is the same subset a bounded `readRecentLogEvents` returns, which is what stops two Capsules on
-  // different engines retaining different history.
-  //
-  // A bound of zero keeps nothing, so `NOT IN` an empty set removes every row. `id` is the primary
-  // key and never null, so the `NOT IN` has no null to be confused by.
-  return sqlite
-    .prepare(
-      sqlite.dialect.sql(
-        "DELETE FROM [sporades_log_events] WHERE [id] NOT IN (" +
-        "SELECT [id] FROM (" +
-        "SELECT [id] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?" +
-        ") AS [retained]" +
-        ")",
-      ),
-    )
-    .run(limit);
-}
-
-function readRecentLogEvents(sqlite: LooseRecord, limit = 200) {
-  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-  // ADR-0034: the rows are reversed and parsed, so they must be resolved first. Reading them
-  // unresolved reversed and mapped a Promise, which is why libSQL carried an await-shim.
-  //
-  // ADR-0036: ordered by the runtime-assigned sequence alone. The envelope `timestamp` no longer
-  // participates, because it is a millisecond-resolution value that ties routinely and left the
-  // order to a tie-break that differed by engine.
-  return thenIfPromise(
-    sqlite
-      .prepare(sqlite.dialect.sql("SELECT [payload] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?"))
-      .all(safeLimit),
-    (rows: { payload: string; }[]) => rows.reverse().map((row) => JSON.parse(row.payload)),
-  );
-}
-
 export function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
   let raw = "";
   try {
@@ -4089,15 +3946,6 @@ function runSchemaExecIgnoringDuplicateColumn(sqlite: LooseRecord, sql: string) 
     return undefined;
   }
 }
-
-function chainSchemaOperation(previous: any, operation: () => any) {
-  if (isPromiseLike(previous)) {
-    return previous.then(operation);
-  }
-  return operation();
-}
-
-
 
 async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
   const handler =
@@ -5471,178 +5319,6 @@ export async function sendEmailPasswordResetLink(
     // Job execution is at least once; the key keeps one Reset code to one mail.
   }, `password-reset:${issued.selector}`);
   return { ok: true };
-}
-
-// The one definition of the auth storage bootstrap, for every engine.
-//
-// Each step is chained rather than fired: on a synchronous engine that is the order the statements
-// already ran in, and on an asynchronous one it is the difference between a sequence and a race.
-// The unchained form worked on SQLite alone, which is why Postgres and libSQL each carried a copy
-// that awaited the same statements in order.
-//
-// Kept outside any transaction by its caller. `addMissingColumn` tolerates a column that is
-// already there, and on Postgres a swallowed duplicate-column error would abort the enclosing
-// transaction and fail everything after it. The Postgres dialect asks the engine not to raise the
-// error at all, but storage bootstrap still runs before the migration transaction opens; it has to
-// stay there.
-function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_users] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[displayName] TEXT NOT NULL, " +
-          "[email] TEXT, " +
-          "[picture] TEXT, " +
-          "[isAuthenticated] INTEGER NOT NULL, " +
-          "[isGuest] INTEGER NOT NULL, " +
-          "[provider] TEXT NOT NULL" +
-          ")",
-        ),
-      ),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] (" +
-          "[token] TEXT PRIMARY KEY, " +
-          "[userId] TEXT NOT NULL, " +
-          "[provider] TEXT NOT NULL, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[expiresAt] TEXT NOT NULL" +
-          ")",
-        ),
-      ),
-    () => ensureSessionLifecycleColumns(sqlite),
-    () => ensureSessionProvenanceColumn(sqlite),
-    () => createProviderIdentityTables(sqlite),
-    ...(authConfig?.providers?.email?.enabled
-      ? [
-        () =>
-          sqlite.exec(
-            sql(
-              "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
-              "[email] TEXT PRIMARY KEY, " +
-              "[userId] TEXT NOT NULL, " +
-              "[passwordHash] TEXT NOT NULL, " +
-              "[passwordSalt] TEXT NOT NULL, " +
-              "[createdAt] TEXT NOT NULL" +
-              ")",
-            ),
-          ),
-        () =>
-          sqlite.exec(
-            sql(
-              "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] (" +
-              "[selector] TEXT PRIMARY KEY, " +
-              "[verifierHash] TEXT NOT NULL, " +
-              "[email] TEXT NOT NULL, " +
-              "[userId] TEXT NOT NULL, " +
-              "[createdAt] TEXT NOT NULL, " +
-              "[expiresAt] TEXT NOT NULL" +
-              ")",
-            ),
-          ),
-      ]
-      : []),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] (" +
-          "[state] TEXT PRIMARY KEY, " +
-          "[provider] TEXT NOT NULL, " +
-          "[sessionToken] TEXT NOT NULL, " +
-          "[returnTo] TEXT NOT NULL, " +
-          "[redirectUri] TEXT NOT NULL, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[expiresAt] TEXT NOT NULL, " +
-          "[nonce] TEXT, " +
-          "[pkceVerifier] TEXT" +
-          ")",
-        ),
-      ),
-    () => ensureOAuthStateColumns(sqlite),
-  ]);
-}
-
-function ensureOAuthStateColumns(sqlite: LooseRecord) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    ...[
-      ["provider", "TEXT"],
-      ["expiresAt", "TEXT"],
-      ["nonce", "TEXT"],
-      ["pkceVerifier", "TEXT"],
-    ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),
-  ]);
-}
-
-function createProviderIdentityTables(sqlite: LooseRecord) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[userId] TEXT NOT NULL, " +
-          "[provider] TEXT NOT NULL, " +
-          "[subject] TEXT NOT NULL, " +
-          "[email] TEXT, " +
-          "[displayName] TEXT, " +
-          "[picture] TEXT, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[updatedAt] TEXT NOT NULL, " +
-          "UNIQUE([provider], [subject])" +
-          ")",
-        ),
-      ),
-    () =>
-      sqlite.exec(
-        sql(
-          "INSERT INTO [sporades_auth_identities] " +
-          "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
-          "SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], " +
-          "[createdAt], [createdAt] " +
-          "FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' " +
-          "AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] " +
-          "WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])",
-        ),
-      ),
-  ]);
-}
-
-// The backfill runs unconditionally rather than only when the column was just added. It was
-// conditional because the `PRAGMA table_info` probe happened to say whether the ALTER had fired,
-// and the probe is SQLite's alone; the predicate does the same work portably, because a session
-// that already has an expiry has a non-null one.
-function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
-  return chainMaybePromise([
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
-    () =>
-      sqlite
-        .prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL"))
-        .run(sessionExpiresAt(new Date().toISOString())),
-  ]);
-}
-
-function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
-  return chainMaybePromise([
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
-    () =>
-      sqlite.exec(
-        sqlite.dialect.sql(
-          "UPDATE [sporades_auth_sessions] SET [provider] = " +
-          "COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] " +
-          "WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') " +
-          "WHERE [provider] IS NULL",
-        ),
-      ),
-  ]);
 }
 
 function splitSqlStatements(sql: any) {

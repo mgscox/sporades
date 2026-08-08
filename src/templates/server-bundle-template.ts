@@ -10,6 +10,7 @@ import * as httpRuntime from "../http-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
 import * as jobsRuntime from "../jobs-runtime.js";
 import * as logIndexGuard from "../log-index-guard.js";
+import * as logIndexStorage from "../log-index-storage.js";
 import * as mailConfig from "../mail-config.js";
 import * as mailRuntime from "../mail-runtime.js";
 import * as maybePromise from "../maybe-promise.js";
@@ -86,6 +87,12 @@ const MIGRATED_RUNTIME_MODULES = [
   // safe because every binding across it is a hoisted `function` declaration referenced only inside
   // a body that runs on a request. See `http-runtime.ts`'s header.
   { file: "http-runtime.js", loaded: httpRuntime as Record<string, unknown> },
+  // Batch 9's first module: the Log index's storage. Not a domain on ticket 04's list at all — it is
+  // what closing the Database adapter domain's reference graph left outside it, extracted for the
+  // reason `maybe-promise.js` and the two above were. It imports `maybe-promise.js` and nothing else
+  // in this set, and reaches `randomUUID` through the Web Crypto global rather than a builtin
+  // (ADR-0042 rule 1), so the metafile check has no external of any kind to judge here.
+  { file: "log-index-storage.js", loaded: logIndexStorage as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call

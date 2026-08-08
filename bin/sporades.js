@@ -3231,6 +3231,7 @@ __export(auth_runtime_exports, {
   completeMicrosoftOAuth: () => completeMicrosoftOAuth,
   completeOpenIdOAuthCodeExchange: () => completeOpenIdOAuthCodeExchange,
   confirmPasswordReset: () => confirmPasswordReset,
+  createAnonymousAuthTables: () => createAnonymousAuthTables,
   createAppleClientSecret: () => createAppleClientSecret,
   createEmailPasswordResetLink: () => createEmailPasswordResetLink,
   createSessionToken: () => createSessionToken,
@@ -6371,6 +6372,86 @@ function resolvePasswordResetConfig(config) {
     ttlMs
   };
 }
+function createAnonymousAuthTables(sqlite, authConfig = null) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] ([token] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
+      )
+    ),
+    () => ensureSessionLifecycleColumns(sqlite),
+    () => ensureSessionProvenanceColumn(sqlite),
+    () => createProviderIdentityTables(sqlite),
+    ...authConfig?.providers?.email?.enabled ? [
+      () => sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+        )
+      ),
+      () => sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
+        )
+      )
+    ] : [],
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT)"
+      )
+    ),
+    () => ensureOAuthStateColumns(sqlite)
+  ]);
+}
+function ensureOAuthStateColumns(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    ...[
+      ["provider", "TEXT"],
+      ["expiresAt", "TEXT"],
+      ["nonce", "TEXT"],
+      ["pkceVerifier", "TEXT"]
+    ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
+  ]);
+}
+function createProviderIdentityTables(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [subject] TEXT NOT NULL, [email] TEXT, [displayName] TEXT, [picture] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE([provider], [subject]))"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], [createdAt], [createdAt] FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])"
+      )
+    )
+  ]);
+}
+function ensureSessionLifecycleColumns(sqlite) {
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
+    () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL")).run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()))
+  ]);
+}
+function ensureSessionProvenanceColumn(sqlite) {
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
+    () => sqlite.exec(
+      sqlite.dialect.sql(
+        "UPDATE [sporades_auth_sessions] SET [provider] = COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') WHERE [provider] IS NULL"
+      )
+    )
+  ]);
+}
 
 // src/jobs-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
@@ -8163,6 +8244,112 @@ function isInternalLogIndexMetadataRow(row, sql = "") {
   );
 }
 
+// src/log-index-storage.ts
+var log_index_storage_exports = {};
+__export(log_index_storage_exports, {
+  createLogIndexTables: () => createLogIndexTables,
+  insertLogIndexEvent: () => insertLogIndexEvent,
+  pruneLogIndex: () => pruneLogIndex,
+  readRecentLogEvents: () => readRecentLogEvents
+});
+function formatLogIndexSequence(nanosSinceEpoch) {
+  return String(nanosSinceEpoch).padStart(20, "0");
+}
+function nextLogIndexSequence() {
+  const state = nextLogIndexSequence;
+  state.anchor ??= { wallNanos: BigInt(Date.now()) * 1000000n, monotonic: process.hrtime.bigint() };
+  const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
+  const previous = state.previous ?? 0n;
+  state.previous = derived > previous ? derived : previous + 1n;
+  return formatLogIndexSequence(state.previous);
+}
+function backfilledLogIndexSequence(timestamp) {
+  const parsed = Date.parse(String(timestamp ?? ""));
+  return Number.isFinite(parsed) ? BigInt(parsed) * 1000000n : 0n;
+}
+function createLogIndexTables(sqlite) {
+  let chain = chainSchemaOperation(
+    void 0,
+    () => sqlite.exec(
+      sqlite.dialect.sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_log_events] ([id] TEXT PRIMARY KEY, [timestamp] TEXT NOT NULL, [category] TEXT NOT NULL, [event] TEXT NOT NULL, [level] TEXT NOT NULL, [message] TEXT NOT NULL, [capsuleName] TEXT, [capsuleId] TEXT, [releaseId] TEXT, [requestId] TEXT, [correlationId] TEXT, [indexSequence] TEXT, [payload] TEXT NOT NULL)"
+      )
+    )
+  );
+  chain = chainSchemaOperation(
+    chain,
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_log_events", "indexSequence", "TEXT")
+  );
+  return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
+}
+function backfillLogIndexSequences(sqlite) {
+  return thenIfPromise(
+    sqlite.prepare(
+      sqlite.dialect.sql(
+        "SELECT [id], [timestamp] FROM [sporades_log_events] WHERE [indexSequence] IS NULL ORDER BY [timestamp] ASC, [id] ASC"
+      )
+    ).all(),
+    (rows) => {
+      let previous = 0n;
+      let chain = void 0;
+      for (const row of rows) {
+        const derived = backfilledLogIndexSequence(row.timestamp);
+        previous = derived > previous ? derived : previous + 1n;
+        const sequence = formatLogIndexSequence(previous);
+        chain = chainSchemaOperation(
+          chain,
+          () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_log_events] SET [indexSequence] = ? WHERE [id] = ?")).run(sequence, row.id)
+        );
+      }
+      return chain;
+    }
+  );
+}
+function insertLogIndexEvent(sqlite, event) {
+  return sqlite.prepare(
+    sqlite.dialect.sql(
+      "INSERT INTO [sporades_log_events] ([id], [timestamp], [category], [event], [level], [message], [capsuleName], [capsuleId], [releaseId], [requestId], [correlationId], [indexSequence], [payload]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+  ).run(
+    crypto.randomUUID(),
+    event.timestamp,
+    event.category,
+    event.event,
+    event.level,
+    event.message,
+    event.capsule?.name ?? null,
+    event.capsule?.id ?? null,
+    event.release?.id ?? event.release ?? null,
+    event.request?.id ?? null,
+    event.correlation?.id ?? event.correlation ?? null,
+    // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
+    // envelope that is stringified into `payload` below. The field orders the Log index; it is
+    // not part of what a log event says.
+    nextLogIndexSequence(),
+    JSON.stringify(event)
+  );
+}
+function pruneLogIndex(sqlite, limit) {
+  return sqlite.prepare(
+    sqlite.dialect.sql(
+      "DELETE FROM [sporades_log_events] WHERE [id] NOT IN (SELECT [id] FROM (SELECT [id] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?) AS [retained])"
+    )
+  ).run(limit);
+}
+function readRecentLogEvents(sqlite, limit = 200) {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
+  return thenIfPromise(
+    sqlite.prepare(sqlite.dialect.sql("SELECT [payload] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?")).all(safeLimit),
+    (rows) => rows.reverse().map((row) => JSON.parse(row.payload))
+  );
+}
+function chainSchemaOperation(previous, operation) {
+  if (isPromiseLike(previous)) {
+    return previous.then(operation);
+  }
+  return operation();
+}
+
 // src/mail-config.ts
 var mail_config_exports = {};
 __export(mail_config_exports, {
@@ -9500,14 +9687,20 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // listing either again would declare the same top-level function twice in the emitted ES module —
   // a load-time `SyntaxError` rather than a drift.
   capLogEnvelope,
-  formatLogIndexSequence,
-  nextLogIndexSequence,
-  backfilledLogIndexSequence,
-  createLogIndexTables,
-  backfillLogIndexSequences,
-  insertLogIndexEvent,
-  pruneLogIndex,
-  readRecentLogEvents,
+  // The Log index's storage occupied the eight entries between `capLogEnvelope` and
+  // `readJsonlLogEvents` until batch 9 moved it to `log-index-storage.ts` — the table's bootstrap
+  // and its additive migration, ADR-0036's runtime sequence, and the write, prune and read. It is a
+  // domain ticket 04's nine batches never named, and it surfaced as batch 9's blocker rather than as
+  // a batch of its own, because the only thing that calls it is the shared adapter method set. The
+  // ninth declaration, `chainSchemaOperation`, went with it from further down this list. All nine
+  // are declarations inside a carried module now, so listing any of them again would declare the
+  // same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather than a
+  // drift.
+  //
+  // Nothing of the platform log went with them. `createRuntimeLogSink` below is still in this file
+  // and still reaches the index, through `database.insertLogIndexEvent(…)` and its two siblings —
+  // adapter methods on the adapter object rather than module bindings, which is why that seam cost
+  // this batch nothing.
   readJsonlLogEvents,
   logPayloadMaxBytes,
   logRedactedValue,
@@ -9608,12 +9801,16 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createEndpointLogger,
   isDuplicateColumnError,
   runSchemaExecIgnoringDuplicateColumn,
-  chainSchemaOperation,
-  createAnonymousAuthTables,
-  createProviderIdentityTables,
-  ensureOAuthStateColumns,
-  ensureSessionLifecycleColumns,
-  ensureSessionProvenanceColumn,
+  // `chainSchemaOperation` stood here and is in `log-index-storage.ts` now, private, with the two
+  // functions that are its only callers. The auth storage bootstrap's five entries followed it —
+  // `createAnonymousAuthTables` and the four migrations below it — and are in `auth-runtime.js`,
+  // where the rest of that domain has been since batch 3. They were held here by the one thing that
+  // calls them, the shared Database adapter method set, exactly as `createFileStorageTables` and
+  // `createUserPreferencesTables` were held by it before batches 6 and 5 moved them.
+  //
+  // All six are declarations inside carried modules now, so listing any of them again would declare
+  // the same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather
+  // than a drift.
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
@@ -11780,97 +11977,6 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
-function formatLogIndexSequence(nanosSinceEpoch) {
-  return String(nanosSinceEpoch).padStart(20, "0");
-}
-function nextLogIndexSequence() {
-  const state = nextLogIndexSequence;
-  state.anchor ??= { wallNanos: BigInt(Date.now()) * 1000000n, monotonic: process.hrtime.bigint() };
-  const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
-  const previous = state.previous ?? 0n;
-  state.previous = derived > previous ? derived : previous + 1n;
-  return formatLogIndexSequence(state.previous);
-}
-function backfilledLogIndexSequence(timestamp) {
-  const parsed = Date.parse(String(timestamp ?? ""));
-  return Number.isFinite(parsed) ? BigInt(parsed) * 1000000n : 0n;
-}
-function createLogIndexTables(sqlite) {
-  let chain = chainSchemaOperation(
-    void 0,
-    () => sqlite.exec(
-      sqlite.dialect.sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_log_events] ([id] TEXT PRIMARY KEY, [timestamp] TEXT NOT NULL, [category] TEXT NOT NULL, [event] TEXT NOT NULL, [level] TEXT NOT NULL, [message] TEXT NOT NULL, [capsuleName] TEXT, [capsuleId] TEXT, [releaseId] TEXT, [requestId] TEXT, [correlationId] TEXT, [indexSequence] TEXT, [payload] TEXT NOT NULL)"
-      )
-    )
-  );
-  chain = chainSchemaOperation(
-    chain,
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_log_events", "indexSequence", "TEXT")
-  );
-  return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
-}
-function backfillLogIndexSequences(sqlite) {
-  return thenIfPromise(
-    sqlite.prepare(
-      sqlite.dialect.sql(
-        "SELECT [id], [timestamp] FROM [sporades_log_events] WHERE [indexSequence] IS NULL ORDER BY [timestamp] ASC, [id] ASC"
-      )
-    ).all(),
-    (rows) => {
-      let previous = 0n;
-      let chain = void 0;
-      for (const row of rows) {
-        const derived = backfilledLogIndexSequence(row.timestamp);
-        previous = derived > previous ? derived : previous + 1n;
-        const sequence = formatLogIndexSequence(previous);
-        chain = chainSchemaOperation(
-          chain,
-          () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_log_events] SET [indexSequence] = ? WHERE [id] = ?")).run(sequence, row.id)
-        );
-      }
-      return chain;
-    }
-  );
-}
-function insertLogIndexEvent(sqlite, event) {
-  return sqlite.prepare(
-    sqlite.dialect.sql(
-      "INSERT INTO [sporades_log_events] ([id], [timestamp], [category], [event], [level], [message], [capsuleName], [capsuleId], [releaseId], [requestId], [correlationId], [indexSequence], [payload]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-  ).run(
-    randomUUID(),
-    event.timestamp,
-    event.category,
-    event.event,
-    event.level,
-    event.message,
-    event.capsule?.name ?? null,
-    event.capsule?.id ?? null,
-    event.release?.id ?? event.release ?? null,
-    event.request?.id ?? null,
-    event.correlation?.id ?? event.correlation ?? null,
-    // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
-    // envelope that is stringified into `payload` below. The field orders the Log index; it is
-    // not part of what a log event says.
-    nextLogIndexSequence(),
-    JSON.stringify(event)
-  );
-}
-function pruneLogIndex(sqlite, limit) {
-  return sqlite.prepare(
-    sqlite.dialect.sql(
-      "DELETE FROM [sporades_log_events] WHERE [id] NOT IN (SELECT [id] FROM (SELECT [id] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?) AS [retained])"
-    )
-  ).run(limit);
-}
-function readRecentLogEvents(sqlite, limit = 200) {
-  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-  return thenIfPromise(
-    sqlite.prepare(sqlite.dialect.sql("SELECT [payload] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?")).all(safeLimit),
-    (rows) => rows.reverse().map((row) => JSON.parse(row.payload))
-  );
-}
 function readJsonlLogEvents(logPath, limit = 200) {
   let raw = "";
   try {
@@ -12585,12 +12691,6 @@ function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
     if (!isDuplicateColumnError(error)) throw error;
     return void 0;
   }
-}
-function chainSchemaOperation(previous, operation) {
-  if (isPromiseLike(previous)) {
-    return previous.then(operation);
-  }
-  return operation();
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
@@ -13854,86 +13954,6 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   }, `password-reset:${issued.selector}`);
   return { ok: true };
 }
-function createAnonymousAuthTables(sqlite, authConfig = null) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
-      )
-    ),
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] ([token] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
-      )
-    ),
-    () => ensureSessionLifecycleColumns(sqlite),
-    () => ensureSessionProvenanceColumn(sqlite),
-    () => createProviderIdentityTables(sqlite),
-    ...authConfig?.providers?.email?.enabled ? [
-      () => sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-        )
-      ),
-      () => sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
-        )
-      )
-    ] : [],
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT)"
-      )
-    ),
-    () => ensureOAuthStateColumns(sqlite)
-  ]);
-}
-function ensureOAuthStateColumns(sqlite) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    ...[
-      ["provider", "TEXT"],
-      ["expiresAt", "TEXT"],
-      ["nonce", "TEXT"],
-      ["pkceVerifier", "TEXT"]
-    ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
-    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
-  ]);
-}
-function createProviderIdentityTables(sqlite) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () => sqlite.exec(
-      sql(
-        "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [subject] TEXT NOT NULL, [email] TEXT, [displayName] TEXT, [picture] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE([provider], [subject]))"
-      )
-    ),
-    () => sqlite.exec(
-      sql(
-        "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], [createdAt], [createdAt] FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])"
-      )
-    )
-  ]);
-}
-function ensureSessionLifecycleColumns(sqlite) {
-  return chainMaybePromise([
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
-    () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL")).run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()))
-  ]);
-}
-function ensureSessionProvenanceColumn(sqlite) {
-  return chainMaybePromise([
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
-    () => sqlite.exec(
-      sqlite.dialect.sql(
-        "UPDATE [sporades_auth_sessions] SET [provider] = COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') WHERE [provider] IS NULL"
-      )
-    )
-  ]);
-}
 function splitSqlStatements(sql) {
   const statements = [];
   let start = 0;
@@ -14941,7 +14961,13 @@ var MIGRATED_RUNTIME_MODULES = [
   // resolves every other edge here; the order remains documentation and nothing more. The cycle is
   // safe because every binding across it is a hoisted `function` declaration referenced only inside
   // a body that runs on a request. See `http-runtime.ts`'s header.
-  { file: "http-runtime.js", loaded: http_runtime_exports }
+  { file: "http-runtime.js", loaded: http_runtime_exports },
+  // Batch 9's first module: the Log index's storage. Not a domain on ticket 04's list at all — it is
+  // what closing the Database adapter domain's reference graph left outside it, extracted for the
+  // reason `maybe-promise.js` and the two above were. It imports `maybe-promise.js` and nothing else
+  // in this set, and reaches `randomUUID` through the Web Crypto global rather than a builtin
+  // (ADR-0042 rule 1), so the metafile check has no external of any kind to judge here.
+  { file: "log-index-storage.js", loaded: log_index_storage_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [

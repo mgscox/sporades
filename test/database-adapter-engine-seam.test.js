@@ -270,6 +270,19 @@ const MIGRATED_RUNTIME_MODULES = [
   // The floor is 24 against 32, the same proportion as the entries above: room for an honest edit
   // to fold a helper away, and not enough for a parse that returned a fraction of the module.
   { file: "http-runtime.js", atLeast: 24, sentinel: "serializeCspDirectives" },
+  // Batch 9's first module: the Log index's storage, nine functions of which five are private. The
+  // sentinel is private for the ninth time running. `nextLogIndexSequence` is ADR-0036's ordering
+  // field itself — the only thing that decides what order a Capsule's log events come back in, and
+  // the reason the index no longer ties on a millisecond timestamp — so no honest edit removes it
+  // while the index is ordered at all. It was an emitted-list entry until this batch, so it was
+  // visible to these guards by being registered; finding it here is the evidence that it did not
+  // leave the census by becoming private.
+  //
+  // This module matters to the emitted-SQL quoting guards below more than its size suggests: four of
+  // its nine functions build statement text carrying identifier markers, and `pruneLogIndex`'s is
+  // the nested-subquery retained-set form ADR-0036 replaced `LIMIT -1 OFFSET ?` with. The floor is 6
+  // against 9.
+  { file: "log-index-storage.js", atLeast: 6, sentinel: "nextLogIndexSequence" },
 ];
 
 function migratedModuleDeclaredFunctions() {
