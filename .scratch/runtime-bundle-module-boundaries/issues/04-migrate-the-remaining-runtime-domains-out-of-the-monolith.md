@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Migrate The Remaining Runtime Domains Out Of The Monolith
 
@@ -251,3 +251,36 @@ exist and still ship. Removing them is ticket 05, which is blocked by this one.
 ## Blocked by
 
 - .scratch/runtime-bundle-module-boundaries/issues/03-move-the-read-only-inspection-validator-into-a-module.md
+
+## Comments
+
+All nine batches landed. `src/server-runtime-source.ts` went **14,148 → 4,063 lines**,
+`SERVER_RUNTIME_SOURCE_FUNCTIONS` **537 → 107 entries**, and the constant preamble **17 → 0**.
+The full suite was green at 1,455 tests after every batch, with the test *count* checked each
+time as the canary for a file silently failing to import.
+
+Four things the sequence found that this ticket did not anticipate:
+
+**A tenth domain existed.** Batch 9 found the log index's *storage* — nine declarations that
+no batch was ever scoped to. Batch 1 moved the log-index *guard*; the index itself was never
+named. It became `log-index-storage.ts`. The log *sink* stayed behind, because the seam is
+the adapter call.
+
+**Two more domains remain and are ticket 05's to decide, not inherit.** Of the 107
+declarations left, a 29-function Capsule source parser and a 12-function platform log are
+domains rather than composition. Both are now reachable only from the composition core.
+
+**The census guard has a hole in exactly the case it was built for.** Every batch ran the
+counterfactual — plant still shipping, module entry removed from the guard-subject list — and
+batches 1 through 8 found both walker guards go green. Batch 9's failed instead, but only
+because its domain owns pre-existing census entries that disappeared with the entry. As it
+put it, that is luck, not protection: **the `atLeast` floor and the sentinel are not consulted
+at all when the entry is absent.** `acl-runtime`, `http-runtime` and `log-index-storage` own
+no census entries, so for them an unlisted module is still silent. Worth closing before
+ticket 05.
+
+**Discovery needs two passes, and the second must be sharpened per layer.** The reverse-graph
+pass finds foreigners you seeded; it structurally cannot flag what was never seeded. Batch 8's
+content sweep finds those — but batch 9 showed that on the bottom layer the naive form selects
+*consumers* rather than members, because every domain emits SQL through the adapters. Sharpened
+to what only a member has, it took 16 and nothing else, overlapping the reverse pass on nothing.
