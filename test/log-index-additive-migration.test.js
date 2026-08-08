@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
+// `createLogIndexTables` is imported by name rather than searched for in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS`, which is what it was until batch 9 moved the Log index's
+// storage into `log-index-storage.ts`. That lookup answers `undefined` the moment a domain stops
+// being entries in that list; here it was inside a helper rather than at module scope, so it failed
+// this file's own assertion rather than its import — which is the luckier of the two shapes and not
+// one to rely on. It resolves through `dist/server-runtime-source.js` still, because that module
+// re-exports the storage module whole.
+import { createLogIndexTables, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqliteAdapter } from "./support/database-adapter-engines.js";
 
 // The upgrade path for ADR-0036's ordering column, exercised from the table shape that existed
@@ -50,12 +57,6 @@ const BACKFILLED_SEQUENCES = [
   "01783159202000000000",
 ];
 
-function runtimeFunction(name) {
-  const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((candidate) => candidate.name === name);
-  assert.ok(fn, `${name} is not a server runtime source function`);
-  return fn;
-}
-
 // The pre-change table shape, derived from the shipping DDL rather than copied from it.
 //
 // `createLogIndexTables` builds its `CREATE TABLE` as a literal, so the only way to get at it
@@ -83,7 +84,7 @@ function logIndexBootstrapStatements() {
       },
     },
   };
-  runtimeFunction("createLogIndexTables")(recorder);
+  createLogIndexTables(recorder);
   return statements;
 }
 

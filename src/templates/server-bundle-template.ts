@@ -9,6 +9,7 @@ import * as fileStorageRuntime from "../file-storage-runtime.js";
 import * as httpRuntime from "../http-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
 import * as jobsRuntime from "../jobs-runtime.js";
+import * as databaseRuntime from "../database-runtime.js";
 import * as logIndexGuard from "../log-index-guard.js";
 import * as logIndexStorage from "../log-index-storage.js";
 import * as mailConfig from "../mail-config.js";
@@ -93,6 +94,17 @@ const MIGRATED_RUNTIME_MODULES = [
   // in this set, and reaches `randomUUID` through the Web Crypto global rather than a builtin
   // (ADR-0042 rule 1), so the metafile check has no external of any kind to judge here.
   { file: "log-index-storage.js", loaded: logIndexStorage as Record<string, unknown> },
+  // Batch 9: the Database adapters and dialect, and the last domain of ticket 04's nine. Listed last
+  // because it imports from *nine* of the modules above — more than any other entry here — and no
+  // module in the set imports it, so unlike batch 8's pair this edge is not a cycle. The order is
+  // documentation; esbuild resolves the graph either way.
+  //
+  // It is the first module to need three of ADR-0042's four routes to a Node builtin: `await import`
+  // for `node:sqlite`, `node:path`, `node:net` and `node:crypto` in the asynchronous engine
+  // constructors, and `process.getBuiltinModule` for `node:crypto` and `node:fs` where the call is
+  // synchronous. Neither accessor is an external, so the metafile check below judges only the four
+  // dynamic imports and passes unweakened.
+  { file: "database-runtime.js", loaded: databaseRuntime as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -958,6 +970,245 @@ function migratedModuleHttpSecurityAnswer(module: any, config: Record<string, un
   };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Batch 9: the Database adapters and dialect.
+//
+// **What this domain's answers travel on, and what a limb comparing the obvious thing would drop.**
+// Batch 3's denial record and batch 7's ACL refusal hung on a thrown error; batch 8's
+// `prepareHttpSecurity` answered a bare boolean identical across allowed and refused. This domain
+// has a third shape and it is the emptiest of the three: **almost nothing here returns its own
+// answer.** A dialect's `listTables` and `describeColumns` build a catalog query and hand it to an
+// adapter; `addMissingColumn` hands it an ALTER; and every one of the seventy-odd bodies in
+// `createSharedDatabaseAdapterMethods` builds a statement and hands it to `this.prepare(…)` or
+// `this.exec(…)`. What each returns is whatever the adapter gave back — so a limb that compared
+// return values would compare one stub against the same stub while a carried copy queried
+// `pg_catalog` instead of `information_schema`, dropped the `NOT LIKE 'sqlite_%'` filter that hides
+// SQLite's internals from `sporades db tables`, emitted `INSERT OR REPLACE` where Postgres needs
+// `ON CONFLICT`, or dropped the `ownerId` predicate from `updateAppRow` — which is ADR-0039's
+// original defect, and the one that failed every owner-scoped update on Postgres outright.
+//
+// So the limb drives them through a **recorder**: an adapter that answers every primitive, executes
+// nothing, and keeps the statement text it was asked. The statements are the answer.
+//
+// **Parameter *values* are deliberately not recorded, and that is this limb's stated residual.**
+// Some bodies bind a fresh UUID or a clock read — `insertLogIndexEvent` mints both — so recording
+// values would make two honest copies disagree on every build. The recorder keeps each statement's
+// parameter *count*, which still catches a copy that bound a different number of them, and the
+// values themselves are outside what this comparison can see.
+//
+// **`probedAnswer` drops the hint, and here the hint is half the answer.** `createDatabaseDialect`
+// and `createDatabaseNormalization` refuse an incomplete seam by throwing a `commandError`, whose
+// `hint` is the sentence that tells whoever is adding an engine what to do about it — and
+// `commandError` leaves `code` null, so `probedAnswer` would compare two refusals on the message
+// alone. `dialectProbedAnswer` below adds it, the way `authProbedAnswer` and `aclProbedAnswer` add
+// what their refusals travel on.
+//
+// No clock, no I/O, and nothing that outlives the call.
+function migratedModuleStatementRecorder(dialect: unknown) {
+  const statements: unknown[] = [];
+  const record = (sql: unknown, params: unknown[]) => {
+    statements.push([String(sql), params.length]);
+  };
+  const adapter: any = {
+    dialect,
+    engine: "recorder",
+    exec(sql: unknown) {
+      record(sql, []);
+      return { changes: 0 };
+    },
+    prepare(sql: unknown) {
+      return {
+        // `get` answers null so every branch that asks "is there a recorded schema / an existing
+        // row" takes its absent arm. That is what makes the walk deterministic, and it is the arm
+        // that reaches `createAppTable` through `migrateAppSchema`.
+        get: (...params: unknown[]) => { record(sql, params); return null; },
+        all: (...params: unknown[]) => { record(sql, params); return []; },
+        run: (...params: unknown[]) => { record(sql, params); return { changes: 0, lastInsertRowid: 0 }; },
+        columns: () => [{ name: "recorded" }],
+      };
+    },
+    withTransaction: (fn: (a: unknown) => unknown) => fn(adapter),
+    withReadOnlySnapshot: (fn: (a: unknown) => unknown) => fn(adapter),
+    close: () => undefined,
+  };
+  return { adapter, statements };
+}
+
+// A table carrying every field kind and both default shapes, so `createAppTable`'s column
+// definitions, `appFieldColumnDefinition`'s NOT NULL rule, `fieldDefaultIsSqlNull` and
+// `fieldColumnDefaultSql` are all reached — and `toSqlLiteral` through the last of them, including
+// its Date branch, which is the call that reaches `normalizeDateValue` in `stored-value-coding.js`
+// from this limb.
+const MIGRATED_MODULE_DATABASE_PROBE_TABLE = {
+  name: "notes",
+  fields: [
+    { name: "title", kind: "Text", sqliteType: "TEXT", defaultValue: undefined },
+    { name: "flag", kind: "Boolean", sqliteType: "INTEGER", defaultValue: true },
+    { name: "count", kind: "Number", sqliteType: "REAL", defaultValue: 0 },
+    { name: "meta", kind: "Json", sqliteType: "TEXT", defaultValue: null },
+    { name: "due", kind: "Date", sqliteType: "TEXT", defaultValue: "2024-03-05T06:07:08.900Z" },
+    { name: "ownerId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: null },
+  ],
+};
+
+// Each case is `[label, method, args]`, run against the recorder for both dialects. The set is chosen
+// so that every statement whose text varies with its arguments varies here: the owner-scoped update
+// against the unscoped one, `selectAppRows` with each clause it can assemble, the upsert form that
+// is a dialect entry, and the migration that rebuilds a table.
+const MIGRATED_MODULE_DATABASE_METHOD_PROBE: [string, string, unknown[]][] = [
+  ["system-table", "ensureSystemTable", []],
+  ["read-metadata", "readSystemMetadata", ["schema"]],
+  ["write-metadata", "writeSystemMetadata", ["schema", "{}"]],
+  ["write-schema-metadata", "writeSchemaMetadata", [{ schemaVersion: "v1:additive-fields", schemaHash: "h", schemaJson: "{}" }]],
+  ["create-app-table", "createAppTable", [MIGRATED_MODULE_DATABASE_PROBE_TABLE]],
+  ["create-app-table-named", "createAppTable", [MIGRATED_MODULE_DATABASE_PROBE_TABLE, "notes_copy"]],
+  ["migrate-app-schema", "migrateAppSchema", [{ tables: [MIGRATED_MODULE_DATABASE_PROBE_TABLE] }]],
+  ["migrate-existing-table", "migrateExistingAppTable", [
+    { name: "notes", fields: [{ name: "title", kind: "Text", sqliteType: "TEXT", defaultValue: undefined }] },
+    MIGRATED_MODULE_DATABASE_PROBE_TABLE,
+  ]],
+  ["insert-app-row", "insertAppRow", [{ name: "notes" }, { id: "r1", title: "t", ownerId: "u1" }]],
+  ["select-app-row", "selectAppRowById", [{ name: "notes" }, "r1"]],
+  ["update-app-row", "updateAppRow", [{ name: "notes" }, "r1", { title: "t" }, {}]],
+  ["update-app-row-owner-scoped", "updateAppRow", [{ name: "notes" }, "r1", { title: "t" }, { ownerId: "u1" }]],
+  ["update-app-row-no-columns", "updateAppRow", [{ name: "notes" }, "r1", {}, {}]],
+  ["delete-app-row", "deleteAppRow", [{ name: "notes" }, "r1"]],
+  ["select-app-rows", "selectAppRows", [{ name: "notes" }, {}]],
+  ["select-app-rows-scoped", "selectAppRows", [{ name: "notes" }, { ownerId: "u1" }]],
+  ["select-app-rows-where", "selectAppRows", [{ name: "notes" }, { where: { fieldName: "title", value: "t" } }]],
+  ["select-app-rows-ordered", "selectAppRows", [{ name: "notes" }, { orderBy: { fieldName: "createdAt", direction: "DESC" } }]],
+  ["select-app-rows-limited", "selectAppRows", [{ name: "notes" }, { columns: ["id", "title"], limit: 5 }]],
+  ["reference-exists", "referenceExists", [{ targetTable: "users" }, "u1"]],
+  ["user-preferences-read", "readUserPreferences", ["u1"]],
+  ["user-preferences-save", "saveUserPreferences", [{ userId: "u1", value: "{}", updatedAt: "2024-01-01T00:00:00.000Z" }]],
+  ["auth-identity-by-subject", "findAuthIdentityByProviderSubject", ["google", "s1"]],
+  ["auth-session-with-user", "readAuthSessionWithUser", ["tok"]],
+  ["auth-session-rotate", "rotateAuthSession", ["old", { token: "new", userId: "u1", provider: "google", createdAt: "c", expiresAt: "e" }]],
+  ["password-reset-count", "countPasswordResetCodesForEmail", ["a@b.c", "2024-01-01T00:00:00.000Z"]],
+  ["password-reset-prune", "prunePasswordResetCodes", ["2024-01-01T00:00:00.000Z"]],
+  ["public-file-row", "selectPublicFileRow", ["p1"]],
+  ["live-file-by-path", "selectLiveFileByPath", ["/a/b"]],
+  ["file-row-for-owner", "fileRowForOwner", ["f1", "u1"]],
+  ["log-prune", "pruneLogIndex", [25]],
+  ["log-read", "readRecentLogEvents", [10]],
+  ["log-storage", "ensureLogStorage", []],
+  ["file-storage", "ensureFileStorage", []],
+  ["auth-storage", "ensureAuthStorage", [{ email: { enabled: true } }]],
+  ["preferences-storage", "ensureUserPreferencesStorage", []],
+  ["inspect-tables", "listInspectableTables", []],
+  ["health", "checkHealth", []],
+  ["inspection-refused", "runReadOnlyInspectionQuery", ["DROP TABLE t"]],
+  ["inspection-admitted", "runReadOnlyInspectionQuery", ["SELECT 1 AS s"]],
+  ["inspection-log-index", "runReadOnlyInspectionQuery", ["SELECT * FROM sporades_log_events"]],
+];
+
+// The dialect seam, driven entry by entry. The three that take an adapter go through the recorder
+// for the reason above; the rest answer text directly.
+function migratedModuleDialectAnswer(module: any, name: string) {
+  const dialect = probedAnswer(() => module[name]());
+  if (!("returned" in dialect)) return { dialect };
+  const d: any = dialect.returned;
+  const catalog = migratedModuleStatementRecorder(d);
+  const listed = probedAnswer(() => d.listTables(catalog.adapter));
+  const described = probedAnswer(() => d.describeColumns(catalog.adapter, "notes"));
+  const altered = probedAnswer(() => d.addMissingColumn(catalog.adapter, "notes", "indexSequence", "TEXT"));
+  const methods = migratedModuleStatementRecorder(d);
+  const set = probedAnswer(() => module.createSharedDatabaseAdapterMethods(d));
+  const emitted = "returned" in set
+    ? MIGRATED_MODULE_DATABASE_METHOD_PROBE.map(([label, method, args]) => {
+      const before = methods.statements.length;
+      const answer = probedAnswer(() => Object.assign(methods.adapter, set.returned)[method](...args));
+      return [label, methods.statements.slice(before), "threw" in answer ? answer : null];
+    })
+    : set;
+  return {
+    name: d.name,
+    columnType: probedAnswer(() => d.columnType({ sqliteType: "REAL" })),
+    upsert: probedAnswer(() => d.upsertSql("sporades", ["key", "value"], ["key"])),
+    // The marker substitution ADR-0039 turns every identifier into, including one inside a string
+    // literal that must be left alone and a quote character that must be doubled.
+    sql: probedAnswer(() => d.sql("SELECT [id], [ownerId] FROM [notes] WHERE [name] = '[notLiteral]'")),
+    quoted: ["plain", "camelCase", 'has"quote', "sqlite_schema", ""].map((identifier) =>
+      probedAnswer(() => d.quoteIdentifier(identifier))),
+    catalog: { listed: "threw" in listed ? listed : null, described: "threw" in described ? described : null, altered: "threw" in altered ? altered : null, statements: catalog.statements },
+    emitted,
+  };
+}
+
+// The same as `probedAnswer`, plus the hint an incomplete-seam refusal travels on. Both seam
+// factories refuse by throwing a `commandError`, which leaves `code` null and puts the whole
+// actionable half of the answer in `hint` — the sentence that tells whoever is adding a fourth
+// engine which entries they still owe. `probedAnswer` drops it, so a carried copy that refused the
+// right specs while naming the wrong missing entries, or that had lost the hint entirely, would
+// compare clean.
+function dialectProbedAnswer(call: () => unknown) {
+  try {
+    return { returned: call() };
+  } catch (error: any) {
+    return { threw: { code: error?.code ?? null, message: String(error?.message ?? error), hint: error?.hint ?? null } };
+  }
+}
+
+// The seam's own refusals. Every entry removed in turn from an otherwise complete spec, because the
+// factories report *which* are missing and a copy that had stopped checking one of them answers a
+// shorter list rather than throwing something different. The `null` cases are the `== null` rule
+// rather than `=== undefined`: an entry explicitly set to null must be refused too, or it passes
+// construction and fails at the first statement that needed it.
+export const MIGRATED_MODULE_DIALECT_SPEC_SKEW_PROBE: [string, Record<string, unknown>][] = [
+  ["complete", { name: "x", quoteIdentifier: (i: string) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "", listTables: () => [], describeColumns: () => [], addMissingColumn: () => undefined }],
+  ["missing-quote", { name: "x", columnType: () => "TEXT", upsertSql: () => "", listTables: () => [], describeColumns: () => [], addMissingColumn: () => undefined }],
+  ["missing-catalog", { name: "x", quoteIdentifier: (i: string) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "" }],
+  ["null-entry", { name: "x", quoteIdentifier: (i: string) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "", listTables: null, describeColumns: () => [], addMissingColumn: () => undefined }],
+  ["empty", {}],
+];
+
+export const MIGRATED_MODULE_NORMALIZATION_SPEC_SKEW_PROBE: [string, Record<string, unknown>][] = [
+  ["complete", { name: "x", columnName: (n: string) => n, value: (v: unknown) => v }],
+  ["missing-value", { name: "x", columnName: (n: string) => n }],
+  ["missing-column-name", { name: "x", value: (v: unknown) => v }],
+  ["null-value", { name: "x", columnName: (n: string) => n, value: null }],
+  ["empty", {}],
+];
+
+// The row and value normalization each engine answers. libSQL's is the one with work to do — the
+// pipeline protocol tags every value with its type — so a copy that had lost a tag would answer a
+// wrapper object where the runtime expects a JavaScript value.
+export const MIGRATED_MODULE_NORMALIZATION_VALUE_PROBE: unknown[] = [
+  null,
+  { type: "null" },
+  { type: "integer", value: "42" },
+  { type: "float", value: 1.5 },
+  { type: "text", value: "t" },
+  { type: "blob", base64: "AAEC" },
+  "left alone",
+  7,
+];
+
+// Bind placeholders, statement splitting and the identifier quoting, driven over text this project
+// has actually got wrong. `postgresInterpolate` is on the inspection path — it is what turns a bound
+// `?` into literal text for an engine with no placeholder in its simple query protocol — so a copy
+// whose quote or comment walk had drifted would interpolate inside a string literal.
+export const MIGRATED_MODULE_SQL_TEXT_PROBE: [string, string, unknown[]][] = [
+  ["no-params", "SELECT 1 AS s", []],
+  ["one-param", "SELECT * FROM t WHERE a = ?", ["v"]],
+  ["param-in-single-quotes", "SELECT '?' AS s, ? AS t", ["v"]],
+  ["param-in-double-quotes", 'SELECT "?" AS s, ? AS t', ["v"]],
+  ["param-in-dollar-quote", "SELECT $$?$$ AS s, ? AS t", ["v"]],
+  ["param-in-line-comment", "SELECT 1 AS s -- ?\n, ? AS t", ["v"]],
+  ["param-in-block-comment", "SELECT 1 AS s /* ? */, ? AS t", ["v"]],
+  ["escaped-quote", "SELECT 'a\\'?' AS s, ? AS t", ["v"]],
+  ["too-few", "SELECT ?, ?", ["only-one"]],
+  ["too-many", "SELECT ?", ["a", "b"]],
+  ["null-param", "SELECT ?", [null]],
+  ["boolean-param", "SELECT ?", [true]],
+  ["number-param", "SELECT ?", [1.5]],
+  ["quote-in-param", "SELECT ?", ["it's"]],
+  ["multi-statement", "SELECT 1; SELECT 2", []],
+  ["semicolon-in-string", "SELECT ';' AS s; SELECT 2", []],
+  ["semicolon-in-comment", "SELECT 1 -- ;\n; SELECT 2", []],
+  ["trailing-semicolon", "SELECT 1;", []],
+];
+
 // The names the comparison below calls, so it can say what is missing instead of dying on it. A
 // probe that names a function no listed module exports is otherwise a bare `TypeError` out of the
 // middle of a bundle build — which is how it first failed, when the two lists were deliberately put
@@ -1003,6 +1254,18 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "websocketOriginAllowed",
   "resolveHttpMaxBodyBytes",
   "injectPageConnectionToken",
+  // Batch 9.
+  "createDatabaseDialect",
+  "createDatabaseNormalization",
+  "sqliteDatabaseDialect",
+  "postgresDatabaseDialect",
+  "sqliteRowNormalization",
+  "postgresRowNormalization",
+  "libsqlRowNormalization",
+  "createSharedDatabaseAdapterMethods",
+  "quoteIdentifier",
+  "postgresInterpolate",
+  "splitSqlStatements",
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -1345,6 +1608,56 @@ function describeMigratedModuleAnswers(module: any) {
       ["token-needs-escaping", "<html><head></head></html>", '</script><script>alert("x")'],
     ] as [string, string, string][]).map(([label, html, token]) =>
       JSON.stringify([label, probedAnswer(() => module.injectPageConnectionToken(html, token))]),
+    ),
+    // Batch 9: the Database adapters and dialect. Four limbs, because this domain answers in four
+    // shapes and only one of them is a return value.
+    //
+    // The first is the whole of it: for each engine dialect, every seam entry, and then the shared
+    // method set driven case by case against a recorder so that the *statements* are what gets
+    // compared. That one limb reaches all thirteen app-schema DDL declarations, `toSqlLiteral` and
+    // through it `normalizeDateValue`, `runSchemaExecIgnoringDuplicateColumn` and
+    // `isDuplicateColumnError` through SQLite's `addMissingColumn`, the catalog queries, the
+    // read-only inspection method and its two gates, and every SQL string in a method body — none of
+    // which any return value carries. See the recorder's own comment for what it deliberately does
+    // not record.
+    ...["sqliteDatabaseDialect", "postgresDatabaseDialect"].map((name) =>
+      JSON.stringify([name, migratedModuleDialectAnswer(module, name)]),
+    ),
+    // The seam's refusals, with the hint they travel on.
+    ...MIGRATED_MODULE_DIALECT_SPEC_SKEW_PROBE.map(([label, spec]) =>
+      JSON.stringify([label, dialectProbedAnswer(() => {
+        const built: any = module.createDatabaseDialect(spec);
+        return [built.name, typeof built.sql, built.sql("SELECT [a]")];
+      })]),
+    ),
+    ...MIGRATED_MODULE_NORMALIZATION_SPEC_SKEW_PROBE.map(([label, spec]) =>
+      JSON.stringify([label, dialectProbedAnswer(() => {
+        const built: any = module.createDatabaseNormalization(spec);
+        return [built.name, typeof built.row, built.row({ a: 1 })];
+      })]),
+    ),
+    // The three engines' normalization, compared over the same values. `row` is derived from
+    // `columnName` and `value` rather than supplied, so driving it drives both.
+    ...["sqliteRowNormalization", "postgresRowNormalization", "libsqlRowNormalization"].map((name) =>
+      JSON.stringify([name, probedAnswer(() => {
+        const normalization: any = module[name]();
+        return [
+          normalization.name,
+          MIGRATED_MODULE_NORMALIZATION_VALUE_PROBE.map((value) => normalization.value(value)),
+          normalization.columnName("camelCase"),
+          normalization.row({ camelCase: { type: "integer", value: "7" }, plain: null }),
+        ];
+      })]),
+    ),
+    // The bind-placeholder walk, the statement splitter and the quoting, over text whose quotes,
+    // comments and dollar quotes are what a drifted copy would get wrong.
+    ...MIGRATED_MODULE_SQL_TEXT_PROBE.map(([label, sql, params]) =>
+      JSON.stringify([
+        label,
+        probedAnswer(() => module.postgresInterpolate(sql, params)),
+        probedAnswer(() => module.splitSqlStatements(sql)),
+        probedAnswer(() => module.quoteIdentifier(sql)),
+      ]),
     ),
   ];
 }

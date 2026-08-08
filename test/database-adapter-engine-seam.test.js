@@ -12,6 +12,12 @@ import {
   createSqliteDatabaseAdapter,
   libsqlRowNormalization,
   postgresDatabaseDialect,
+  // Imported by name rather than searched for in `SERVER_RUNTIME_SOURCE_FUNCTIONS`, which is what it
+  // was until batch 9 moved the Database adapters and dialect into `database-runtime.ts`. That
+  // lookup answers `undefined` the moment a domain stops being entries in that list, and the value
+  // it binds here is *called* — so the case below would have failed with "interpolate is not a
+  // function" rather than saying which of two copies of a module disagreed.
+  postgresInterpolate,
   postgresRowNormalization,
   skipSqlQuotedOrCommented,
   sqlContentFingerprint,
@@ -270,19 +276,43 @@ const MIGRATED_RUNTIME_MODULES = [
   // The floor is 24 against 32, the same proportion as the entries above: room for an honest edit
   // to fold a helper away, and not enough for a parse that returned a fraction of the module.
   { file: "http-runtime.js", atLeast: 24, sentinel: "serializeCspDirectives" },
-  // Batch 9's first module: the Log index's storage, nine functions of which five are private. The
-  // sentinel is private for the ninth time running. `nextLogIndexSequence` is ADR-0036's ordering
-  // field itself — the only thing that decides what order a Capsule's log events come back in, and
-  // the reason the index no longer ties on a millisecond timestamp — so no honest edit removes it
-  // while the index is ordered at all. It was an emitted-list entry until this batch, so it was
-  // visible to these guards by being registered; finding it here is the evidence that it did not
-  // leave the census by becoming private.
+  // Batch 9's first module: the Log index's storage, nine functions of which two are private. The
+  // sentinel is private for the ninth time running, and it is the one batch 6 named without being
+  // able to move: its reverse-graph pass found `chainSchemaOperation` inside the file-storage region
+  // with no file caller and called it the log index's. Both of its callers are in this file, nothing
+  // else in the repository has ever called it, and every schema step of the Log index bootstrap goes
+  // through it — so no honest edit removes it while that bootstrap runs on an asynchronous engine at
+  // all. It was an emitted-list entry until this batch, so it was visible to these guards by being
+  // registered; finding it here is the evidence that it did not leave the census by becoming private.
+  //
+  // Only two are private because seven are resolved from outside — four by the shared adapter method
+  // set and three by `test/log-index-sequence.test.js`, which is where this batch found out.
   //
   // This module matters to the emitted-SQL quoting guards below more than its size suggests: four of
   // its nine functions build statement text carrying identifier markers, and `pruneLogIndex`'s is
   // the nested-subquery retained-set form ADR-0036 replaced `LIMIT -1 OFFSET ?` with. The floor is 6
   // against 9.
-  { file: "log-index-storage.js", atLeast: 6, sentinel: "nextLogIndexSequence" },
+  { file: "log-index-storage.js", atLeast: 6, sentinel: "chainSchemaOperation" },
+  // Batch 9: the Database adapters and dialect, 59 functions of which 38 are private. The sentinel is
+  // private for the tenth time running, and this module is the one these guards care about most —
+  // every walker guard below exists for SQL this file emits.
+  //
+  // `postgresValueFromText` is the sentinel: the Postgres wire parser's per-column coercion, which is
+  // what turns an engine's text representation back into the JavaScript a Capsule author reads. No
+  // honest edit removes it while this runtime speaks Postgres at all, and it is exported from nothing
+  // and registered in nothing. It was an emitted-list entry until this batch, so it was visible to
+  // these guards by being registered; finding it here is the evidence that 38 newly-private
+  // declarations — the whole SCRAM handshake, the libSQL pipeline and every line of app-table DDL
+  // among them — did not leave the census by becoming private.
+  //
+  // Two of this module's functions are census subjects in their own right and both stayed exported
+  // for it: `postgresInterpolate`, which walks quotes and comments to find bind placeholders, and
+  // `splitSqlStatements`. The census reads *declarations* rather than exports precisely so that
+  // privacy cannot become a way out of it, but these two are also resolved by name from this file.
+  //
+  // The floor is 45 against 59, the same proportion as the entries above: room for an honest edit to
+  // fold a helper away, and not enough for a parse that returned a fraction of the module.
+  { file: "database-runtime.js", atLeast: 45, sentinel: "postgresValueFromText" },
 ];
 
 function migratedModuleDeclaredFunctions() {
@@ -1174,10 +1204,9 @@ test("no second function decides where a SQL comment or quoted run ends", () => 
   // The alphabet below has `?` in it deliberately. It is the only character this function acts on,
   // so a corpus without it reports inertness for the same reason a corpus without `\r` reported the
   // line-comment class clean.
-  const interpolate = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "postgresInterpolate");
   const identityOrThrow = (sql) => {
     try {
-      return interpolate(sql) === sql ? "identity" : "REWROTE";
+      return postgresInterpolate(sql) === sql ? "identity" : "REWROTE";
     } catch {
       return "threw";
     }

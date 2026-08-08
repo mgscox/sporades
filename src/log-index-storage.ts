@@ -41,15 +41,27 @@
 // requires. The mail domain does the same. `insertLogIndexEvent` is the one call site.
 //
 // **Nothing is redesigned.** Every body is byte-identical to the declaration it moved from, apart
-// from that one `crypto.` prefix. Four names are exported, which is what the shared adapter method
-// set resolves; the other five are private and each was an entry in
-// `SERVER_RUNTIME_SOURCE_FUNCTIONS` until this batch, because under the emitted list a helper of a
-// registered function had to be registered too or it was a `ReferenceError` in a deployed Capsule.
+// from that one `crypto.` prefix.
 //
-// `chainSchemaOperation` is the fifth private one, and batch 6 predicted where it would land: its
+// **Seven of the nine are exported, and only two of those seven for the adapter.** The exports are
+// not a designed interface — they are the names something outside this file resolves, which is the
+// rule `auth-runtime.ts` states. Four are what the shared adapter method set calls
+// (`createLogIndexTables`, `insertLogIndexEvent`, `pruneLogIndex`, `readRecentLogEvents`); the other
+// three are ADR-0036's sequence itself, and `test/log-index-sequence.test.js` resolves all three by
+// name. That test found the boundary the way this migration keeps finding boundaries: it looked them
+// up through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find(…)`, which answers `undefined` the moment a
+// domain stops being entries in that list, and its lookup is at *module scope* — so the whole test
+// file failed to import rather than one case going red. Batch 4 shipped that shape once and reported
+// 1,438 tests where there were 1,455. Both files import from here now.
+//
+// `backfillLogIndexSequences` and `chainSchemaOperation` are the two that stay private, and
+// `chainSchemaOperation` is this module's census sentinel in
+// `test/database-adapter-engine-seam.test.js`. Batch 6 predicted where it would land: its
 // reverse-graph pass found it sitting inside the file-storage region with no file caller and named
 // it "the log index's". Its two callers are `createLogIndexTables` and `backfillLogIndexSequences`,
-// both here, and nothing else in the repository has ever called it.
+// both here, and nothing else in the repository has ever called it. Under the emitted list both were
+// entries all the same, because a helper of a registered function had to be registered too or it was
+// a `ReferenceError` in a deployed Capsule.
 
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 
@@ -60,7 +72,7 @@ type LooseRecord = Record<string, any>;
 // Nanoseconds since the epoch is around 1.76e18 today, so the 20-digit width below reaches the year
 // 5138. The width is fixed rather than natural because the values are compared as text: a value
 // that grew a digit would sort before every narrower one and silently invert the whole index.
-function formatLogIndexSequence(nanosSinceEpoch: bigint) {
+export function formatLogIndexSequence(nanosSinceEpoch: bigint) {
   return String(nanosSinceEpoch).padStart(20, "0");
 }
 
@@ -79,7 +91,7 @@ function formatLogIndexSequence(nanosSinceEpoch: bigint) {
 // is strictly increasing on the platforms Sporades runs on, but "increasing because the call takes
 // longer than the tick" is a property of the host rather than of this code, and a rare tie would
 // leave the order undefined in precisely the case the conformance specification asserts.
-function nextLogIndexSequence() {
+export function nextLogIndexSequence() {
   const state = nextLogIndexSequence as LooseRecord;
   state.anchor ??= { wallNanos: BigInt(Date.now()) * 1_000_000n, monotonic: process.hrtime.bigint() };
   const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
@@ -93,7 +105,7 @@ function nextLogIndexSequence() {
 // sequence; that is what lets a backfilled row and a newly indexed one sort against each other
 // rather than beside each other. Ties among already-stored rows are historical and unrecoverable,
 // so the backfill only has to preserve the order the timestamps do record.
-function backfilledLogIndexSequence(timestamp: any) {
+export function backfilledLogIndexSequence(timestamp: any) {
   const parsed = Date.parse(String(timestamp ?? ""));
   return Number.isFinite(parsed) ? BigInt(parsed) * 1_000_000n : 0n;
 }

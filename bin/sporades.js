@@ -8194,6 +8194,32 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
   return index;
 }
 
+// src/database-runtime.ts
+var database_runtime_exports = {};
+__export(database_runtime_exports, {
+  createAppTable: () => createAppTable,
+  createDatabaseDialect: () => createDatabaseDialect,
+  createDatabaseNormalization: () => createDatabaseNormalization,
+  createLibsqlDatabaseAdapter: () => createLibsqlDatabaseAdapter,
+  createPostgresConnection: () => createPostgresConnection,
+  createPostgresDatabaseAdapter: () => createPostgresDatabaseAdapter,
+  createRuntimeDatabaseAdapter: () => createRuntimeDatabaseAdapter,
+  createRuntimeInspectionAdapter: () => createRuntimeInspectionAdapter,
+  createSharedDatabaseAdapterMethods: () => createSharedDatabaseAdapterMethods,
+  createSqliteDatabaseAdapter: () => createSqliteDatabaseAdapter,
+  dumpDatabase: () => dumpDatabase,
+  libsqlRowNormalization: () => libsqlRowNormalization,
+  listDatabaseTables: () => listDatabaseTables,
+  postgresDatabaseDialect: () => postgresDatabaseDialect,
+  postgresInterpolate: () => postgresInterpolate,
+  postgresRowNormalization: () => postgresRowNormalization,
+  quoteIdentifier: () => quoteIdentifier,
+  runReadOnlyQuery: () => runReadOnlyQuery,
+  splitSqlStatements: () => splitSqlStatements,
+  sqliteDatabaseDialect: () => sqliteDatabaseDialect,
+  sqliteRowNormalization: () => sqliteRowNormalization
+});
+
 // src/log-index-guard.ts
 var log_index_guard_exports = {};
 __export(log_index_guard_exports, {
@@ -8247,8 +8273,11 @@ function isInternalLogIndexMetadataRow(row, sql = "") {
 // src/log-index-storage.ts
 var log_index_storage_exports = {};
 __export(log_index_storage_exports, {
+  backfilledLogIndexSequence: () => backfilledLogIndexSequence,
   createLogIndexTables: () => createLogIndexTables,
+  formatLogIndexSequence: () => formatLogIndexSequence,
   insertLogIndexEvent: () => insertLogIndexEvent,
+  nextLogIndexSequence: () => nextLogIndexSequence,
   pruneLogIndex: () => pruneLogIndex,
   readRecentLogEvents: () => readRecentLogEvents
 });
@@ -8348,6 +8377,1786 @@ function chainSchemaOperation(previous, operation) {
     return previous.then(operation);
   }
   return operation();
+}
+
+// src/database-runtime.ts
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
+var nodeFsModule = process.getBuiltinModule("node:fs");
+async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
+  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createLibsqlDatabaseAdapter({
+      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
+      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN
+    });
+  }
+  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createPostgresDatabaseAdapter({
+      url: serverEnv.SPORADES_SERVICE_DATABASE_URL
+    });
+  }
+  return await createSqliteDatabaseAdapter(databasePath);
+}
+async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, config = {}) {
+  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
+  }
+  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
+  }
+  if (!nodeFsModule.existsSync(String(databasePath))) return null;
+  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
+}
+function createDatabaseDialect(spec) {
+  const required = [
+    "name",
+    "quoteIdentifier",
+    "columnType",
+    "upsertSql",
+    "listTables",
+    "describeColumns",
+    "addMissingColumn"
+  ];
+  const missing = required.filter((key) => spec[key] == null);
+  if (missing.length > 0) {
+    throw commandError(
+      `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry."
+    );
+  }
+  return { ...spec, sql: (statement) => quoteSqlIdentifiers(spec.quoteIdentifier, statement) };
+}
+function quoteSqlIdentifiers(quoteIdentifier2, statement) {
+  return String(statement).replace(/\[([A-Za-z_][A-Za-z0-9_]*)\]/g, (_marker, identifier) => quoteIdentifier2(identifier));
+}
+function createDatabaseNormalization(spec) {
+  const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
+  if (missing.length > 0) {
+    throw commandError(
+      `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry."
+    );
+  }
+  return {
+    ...spec,
+    row: (raw) => Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)]))
+  };
+}
+function sqliteRowNormalization() {
+  return createDatabaseNormalization({
+    name: "sqlite",
+    columnName: (name) => name,
+    value: (value) => value
+  });
+}
+function postgresRowNormalization() {
+  return createDatabaseNormalization({
+    name: "postgres",
+    // The identity, like the other two engines. Postgres folds an unquoted identifier to lower
+    // case, and a hand-maintained table of declared spellings used to fold it back — a registry
+    // nothing failed for omitting, which is how a missing `verifierHash` entry rejected every valid
+    // password Reset code here while presenting an ordinary "invalid code". Because that table was
+    // applied per result key with no table provenance, it also renamed a Capsule field literally
+    // called `errorcode` or `jobid`. ADR-0039 removed both by quoting every identifier the runtime
+    // emits: nothing folds, so there is nothing to restore and no name to collide with.
+    columnName: (name) => name,
+    // Values are already coerced by the wire parser, which reads each column's type oid from the
+    // row description. The row does not carry the oid, so the per-value entry cannot repeat that
+    // work and does not need to.
+    value: (value) => value
+  });
+}
+function libsqlRowNormalization() {
+  return createDatabaseNormalization({
+    name: "libsql",
+    // libSQL preserves declared case, so there is nothing to restore.
+    columnName: (name) => name,
+    // The pipeline protocol tags every value with its type, and this turns the tagged form back
+    // into JavaScript.
+    value: libsqlValueToJs
+  });
+}
+function sqliteDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "sqlite",
+    quoteIdentifier,
+    // The declared field type is emitted verbatim. `sqliteType` is what the Capsule schema carries,
+    // and an engine whose type names differ maps them here rather than in a copy of every DDL
+    // method.
+    columnType: (field) => field.sqliteType,
+    // Write-or-replace a row identified by its key columns. Table and column names arrive
+    // unquoted and are quoted here, so the upsert asks for the columns in the style every other
+    // statement names them.
+    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    // The catalog. Both entries answer rows carrying a `name`, whatever the engine's catalog calls
+    // the column, so the shared inspection methods read one shape.
+    listTables: (adapter) => adapter.prepare(
+      `SELECT ${quoteIdentifier("name")} FROM ${quoteIdentifier("sqlite_schema")} WHERE ${quoteIdentifier("type")} = 'table' AND ${quoteIdentifier("name")} NOT LIKE 'sqlite_%' ORDER BY ${quoteIdentifier("name")}`
+    ).all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
+    // Declare a column that an older database may not have. SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`, so the ALTER is issued and a duplicate-column error swallowed.
+    // Probing `PRAGMA table_info` first would work here and nowhere else, which is exactly why the
+    // strategy is a dialect entry rather than a line in a shared body.
+    addMissingColumn: (adapter, table, column, type) => runSchemaExecIgnoringDuplicateColumn(
+      adapter,
+      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN ${quoteIdentifier(column)} ${type}`
+    )
+  });
+}
+function postgresDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "postgres",
+    quoteIdentifier,
+    // TEXT, INTEGER and REAL all name real Postgres types, so the mapping is the identity here.
+    // That is a fact about Postgres rather than a reason to drop the entry: the seam exists for the
+    // engine whose type names do differ, and an identity mapping written down is checkable where an
+    // absent one is not.
+    columnType: (field) => field.sqliteType,
+    // Postgres has no `INSERT OR REPLACE`; the same intent is `ON CONFLICT ... DO UPDATE`, which
+    // updates the non-key columns from the row that was offered.
+    upsertSql: (table, columns, conflictColumns) => {
+      const updated = columns.filter((column) => !conflictColumns.includes(column));
+      return `INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictColumns.map(quoteIdentifier).join(", ")}) DO UPDATE SET ` + updated.map((column) => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`).join(", ");
+    },
+    // `sqlite_schema` and `PRAGMA table_info` are SQLite's alone; `information_schema` is the
+    // standard catalog. Both answer rows carrying a `name`, which is the shape the shared
+    // inspection methods read.
+    listTables: (adapter) => adapter.prepare(
+      `SELECT ${quoteIdentifier("table_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("tables")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_type")} = 'BASE TABLE' ORDER BY ${quoteIdentifier("table_name")}`
+    ).all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(
+      `SELECT ${quoteIdentifier("column_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("columns")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_name")} = ? ORDER BY ${quoteIdentifier("ordinal_position")}`
+    ).all(tableName),
+    // Postgres has `ADD COLUMN IF NOT EXISTS`, and using it is not merely tidier than swallowing a
+    // duplicate-column error. A swallowed error on Postgres aborts the enclosing transaction, so
+    // every statement after it fails with `current transaction is aborted`. Storage bootstrap runs
+    // outside the migration transaction to keep that hazard out of reach; asking the engine not to
+    // raise the error in the first place removes it.
+    addMissingColumn: (adapter, table, column, type) => adapter.exec(
+      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN IF NOT EXISTS ${quoteIdentifier(column)} ${type}`
+    )
+  });
+}
+function createSharedDatabaseAdapterMethods(dialect) {
+  const sql = dialect.sql;
+  return {
+    ensureSystemTable() {
+      return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+    },
+    readSystemMetadata(key) {
+      return this.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
+    },
+    writeSystemMetadata(key, value) {
+      return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
+    },
+    readSchemaMetadata() {
+      return this.readSystemMetadata("schema");
+    },
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+      return chainMaybePromise([
+        () => this.writeSystemMetadata("schemaVersion", schemaVersion),
+        () => this.writeSystemMetadata("schemaHash", schemaHash),
+        () => this.writeSystemMetadata("schema", schemaJson)
+      ]);
+    },
+    ensureLogStorage() {
+      return createLogIndexTables(this);
+    },
+    insertLogIndexEvent(event) {
+      return insertLogIndexEvent(this, event);
+    },
+    pruneLogIndex(limit) {
+      return pruneLogIndex(this, limit);
+    },
+    readRecentLogEvents(limit) {
+      return readRecentLogEvents(this, limit);
+    },
+    ensureFileStorage() {
+      return createFileStorageTables(this);
+    },
+    findFileBucket(ownerId, name) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name) ?? null;
+    },
+    createFileBucket(row) {
+      return this.prepare(
+        sql("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)")
+      ).run(
+        row.id,
+        row.ownerId,
+        row.name,
+        row.createdAt
+      );
+    },
+    insertFileRow(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
+        )
+      ).run(
+        row.id,
+        row.ownerId,
+        row.bucketId,
+        row.bucketName,
+        row.path,
+        row.name,
+        row.type,
+        row.size,
+        row.version,
+        row.status,
+        row.createdAt,
+        row.updatedAt
+      );
+    },
+    updatePendingFileRow(row) {
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?"
+        )
+      ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
+    },
+    insertFileUpload(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_file_uploads] ([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(
+        row.id,
+        row.fileId,
+        row.ownerId,
+        row.bucketId,
+        row.bucketName,
+        row.path,
+        row.name,
+        row.type,
+        row.version,
+        row.expectedSize,
+        row.createdAt
+      );
+    },
+    selectFileById(fileId) {
+      return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
+    },
+    selectLiveFileByPath(path13) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
+      ).all(path13, "uploaded");
+    },
+    selectActiveFileByPath(path13) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
+      ).all(
+        path13,
+        "pending",
+        "uploaded"
+      );
+    },
+    selectPendingFileUploadByPath(path13) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
+      ).get(path13) ?? null;
+    },
+    selectFileUpload(uploadId) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
+    },
+    completeFileUpload(upload, size, updatedAt) {
+      return thenIfPromise(
+        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+          upload.id,
+          upload.fileId,
+          upload.version
+        ),
+        (consumed) => {
+          if (consumed.changes === 0) {
+            return consumed;
+          }
+          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
+            if (existing) {
+              if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
+                return { changes: 0 };
+              }
+              return this.prepare(
+                sql(
+                  "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL"
+                )
+              ).run(
+                upload.bucketId,
+                upload.bucketName,
+                upload.path,
+                upload.name,
+                upload.type,
+                size,
+                upload.version,
+                "uploaded",
+                updatedAt,
+                upload.fileId
+              );
+            }
+            return this.insertFileRow({
+              id: upload.fileId,
+              ownerId: upload.ownerId,
+              bucketId: upload.bucketId,
+              bucketName: upload.bucketName,
+              path: upload.path,
+              name: upload.name,
+              type: upload.type,
+              size,
+              version: upload.version,
+              status: "uploaded",
+              createdAt: upload.createdAt,
+              updatedAt
+            });
+          });
+        }
+      );
+    },
+    deleteFileUploadsForPath(path13) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path13);
+    },
+    deleteFileUploadsForFile(ownerId, fileId) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
+    },
+    deleteFileUpload(uploadId) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
+    },
+    selectPublicFileRow(publicUrlId) {
+      return this.prepare(
+        sql(
+          "SELECT [p].[id] AS [publicUrlId], [p].[fileId], [p].[version] AS [publicVersion], [p].[expiresAt], [p].[revokedAt], [f].[id], [f].[ownerId], [f].[bucketId], [f].[bucketName], [f].[path], [f].[name], [f].[type], [f].[size], [f].[version], [f].[status], [f].[createdAt], [f].[updatedAt], [f].[deletedAt] FROM [sporades_file_public_urls] [p] JOIN [sporades_files] [f] ON [f].[id] = [p].[fileId] WHERE [p].[id] = ?"
+        )
+      ).get(publicUrlId) ?? null;
+    },
+    insertPublicFileUrl(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_file_public_urls] ([id], [fileId], [ownerId], [version], [expiresAt], [createdAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, NULL)"
+        )
+      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
+    },
+    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL")
+      ).run(
+        revokedAt,
+        publicUrlId,
+        ownerId
+      );
+    },
+    revokePublicFileUrlsForFile(fileId, revokedAt) {
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL")
+      ).run(
+        revokedAt,
+        fileId
+      );
+    },
+    markFileDeleted(fileId, deletedAt) {
+      return this.prepare(sql("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
+    },
+    fileRowForOwner(fileId, ownerId) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?")
+      ).get(
+        fileId,
+        ownerId,
+        "uploaded"
+      ) ?? null;
+    },
+    ensureAuthStorage(authConfig = null) {
+      return createAnonymousAuthTables(this, authConfig);
+    },
+    ensureUserPreferencesStorage() {
+      return createUserPreferencesTables(this);
+    },
+    readUserPreferences(userId) {
+      return this.prepare(
+        sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")
+      ).get(userId) ?? null;
+    },
+    saveUserPreferences(row) {
+      return this.prepare(
+        dialect.upsertSql("sporades_user_preferences", ["userId", "value", "updatedAt"], ["userId"])
+      ).run(row.userId, row.value, row.updatedAt);
+    },
+    findAuthIdentityByProviderSubject(provider, subject) {
+      const row = this.prepare(
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [subject] = ?"
+        )
+      ).get(provider, subject) ?? null;
+      return authIdentityRowUnlessReserved(row);
+    },
+    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
+      const rows = this.prepare(
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [email] = ? AND [subject] LIKE 'legacy:%' ORDER BY [createdAt], [id]"
+        )
+      ).all(provider, email);
+      return authIdentityRowsUnlessReserved(rows);
+    },
+    insertAuthIdentity(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
+    },
+    updateAuthIdentity(row) {
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_identities] SET [subject] = ?, [email] = ?, [displayName] = ?, [picture] = ?, [updatedAt] = ? WHERE [id] = ?"
+        )
+      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
+    },
+    insertAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+    },
+    updateAuthUserProfile(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+        )
+      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
+    },
+    linkAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+        )
+      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
+    },
+    insertAuthSession(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"
+        )
+      ).run(
+        row.token,
+        row.userId,
+        row.provider,
+        row.createdAt,
+        row.expiresAt
+      );
+    },
+    deleteAuthSession(token) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
+    },
+    refreshAuthSession(token, expiresAt) {
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
+    },
+    setAuthSessionProvider(token, provider) {
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
+    },
+    rotateAuthSession(previousToken, row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, [expiresAt] = ? WHERE [token] = ?"
+        )
+      ).run(
+        row.token,
+        row.userId,
+        row.provider,
+        row.createdAt,
+        row.expiresAt,
+        previousToken
+      );
+    },
+    readAuthSessionWithUser(token) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
+          )
+        ).get(token),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
+    },
+    insertOAuthState(row) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+    },
+    // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
+    // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
+    // asynchronous engine the two were in flight together. Both service engines carried their own
+    // `DELETE ... RETURNING` copy for exactly that reason, and node:sqlite speaks RETURNING too, so
+    // there is one definition and no ordering left to get wrong.
+    consumeOAuthState(state) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]"
+          )
+        ).get(state),
+        (row) => row ?? null
+      );
+    },
+    emailCredentialExists(email) {
+      return thenIfPromise(
+        this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
+        (row) => Boolean(row)
+      );
+    },
+    insertEmailCredential(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) VALUES (?, ?, ?, ?, ?)"
+        )
+      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
+    },
+    updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
+      return this.prepare(
+        sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")
+      ).run(passwordHash, passwordSalt, email);
+    },
+    findEmailCredentialWithUser(email) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ?"
+          )
+        ).get(email),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
+    },
+    deleteAuthSessionsForUser(userId) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
+    },
+    insertPasswordResetCode(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_password_reset_codes] ([selector], [verifierHash], [email], [userId], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
+    },
+    findPasswordResetCode(selector) {
+      return this.prepare(
+        sql(
+          "SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?"
+        )
+      ).get(selector) ?? null;
+    },
+    countPasswordResetCodesForEmail(email, now) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ? AND [expiresAt] > ?"
+          )
+        ).get(email, now),
+        (row) => Number(row?.count ?? 0)
+      );
+    },
+    deletePasswordResetCodesForUser(userId) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
+    },
+    prunePasswordResetCodes(now) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now);
+    },
+    // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
+    // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
+    // and COMMIT itself. Doing it with bare statements only worked on a synchronous engine: an
+    // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
+    // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
+    migrateAppSchema(schema) {
+      return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
+    },
+    createAppTable(table, tableName = table.name) {
+      return createAppTable(this, table, tableName);
+    },
+    migrateExistingAppTable(existingTable, nextTable) {
+      return this.withTransaction(
+        (transaction) => migrateExistingAppTableInTransaction(transaction, existingTable, nextTable)
+      );
+    },
+    referenceExists(field, value) {
+      return thenIfPromise(
+        this.prepare(
+          `SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE ${dialect.quoteIdentifier("id")} = ? LIMIT 1`
+        ).get(String(value)),
+        (row) => Boolean(row)
+      );
+    },
+    insertAppRow(table, row) {
+      const columns = Object.keys(row);
+      return this.prepare(
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
+      ).run(...columns.map((column) => row[column]));
+    },
+    selectAppRowById(table, id) {
+      return this.prepare(
+        `SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
+      ).get(String(id)) ?? null;
+    },
+    updateAppRow(table, id, values, options = {}) {
+      const columns = Object.keys(values);
+      if (columns.length === 0) {
+        return { changes: 0 };
+      }
+      return this.prepare(
+        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} WHERE ${dialect.quoteIdentifier("id")} = ?` + (options.ownerId === void 0 ? "" : ` AND ${dialect.quoteIdentifier("ownerId")} = ?`)
+      ).run(
+        ...columns.map((column) => values[column]),
+        String(id),
+        ...options.ownerId === void 0 ? [] : [options.ownerId]
+      );
+    },
+    deleteAppRow(table, id) {
+      return this.prepare(
+        `DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
+      ).run(String(id));
+    },
+    selectAppRows(table, query = {}) {
+      const columns = query.columns ?? ["*"];
+      const whereClauses = [];
+      const params = [];
+      if (query.ownerId !== void 0) {
+        whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
+        params.push(query.ownerId);
+      }
+      if (query.where) {
+        whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
+        params.push(query.where.value);
+      }
+      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
+      const orderSql = query.orderBy ? ` ORDER BY ${dialect.quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"}` : "";
+      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+      const limitSql = limit === null ? "" : " LIMIT ?";
+      return this.prepare(
+        `SELECT ${columns.map((column) => column === "*" ? "*" : dialect.quoteIdentifier(column)).join(", ")} FROM ${dialect.quoteIdentifier(
+          table.name
+        )}${whereSql}${orderSql}${limitSql}`
+      ).all(...limit === null ? params : [...params, limit]);
+    },
+    // The three inspection methods below each derive from a statement result, so each resolves it
+    // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
+    // on the asynchronous engines only because each engine shadowed them with an await-shim.
+    listInspectableTables() {
+      return thenIfPromise(
+        dialect.listTables(this),
+        (rows) => rows.map((row) => row.name).filter(
+          (name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"
+        )
+      );
+    },
+    dumpInspectableDatabase() {
+      const dumpTable = (tableName) => thenIfPromise(
+        dialect.describeColumns(this, tableName),
+        (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(tableName)}`).all(), (rows) => ({
+          name: tableName,
+          columns: columnRows.map((column) => column.name),
+          rows
+        }))
+      );
+      return thenIfPromise(
+        this.listInspectableTables(),
+        (tableNames) => tableNames.reduce(
+          (pending, tableName) => thenIfPromise(pending, (tables) => thenIfPromise(dumpTable(tableName), (table) => [...tables, table])),
+          []
+        )
+      );
+    },
+    runReadOnlyInspectionQuery(sql2) {
+      const inspectionQueryFailure = (error) => ({
+        ok: false,
+        data: null,
+        error: {
+          message: error?.message,
+          hint: "Check the SQL syntax and table names, then retry the query."
+        }
+      });
+      try {
+        const validation = validateReadOnlyInspectionSql(sql2);
+        if (!validation.ok) {
+          return validation;
+        }
+        if (targetsInternalLogIndexTable(sql2)) {
+          return {
+            ok: false,
+            data: null,
+            error: {
+              message: "Internal log index tables are not available through generic DB inspection.",
+              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
+            }
+          };
+        }
+        const statement = this.prepare(sqlWithoutTrailingTerminator(sql2));
+        const result = thenIfPromise(
+          statement.columns(),
+          (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
+            ok: true,
+            data: {
+              columns: columnMetadata.map((column) => column.name),
+              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql2))
+            },
+            error: null
+          }))
+        );
+        return isPromiseLike(result) ? result.then((value) => value, inspectionQueryFailure) : result;
+      } catch (error) {
+        return inspectionQueryFailure(error);
+      }
+    },
+    checkHealth() {
+      try {
+        const probe = this.prepare(sql("SELECT 1 AS [ok]")).get();
+        return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    }
+  };
+}
+async function createSqliteDatabaseAdapter(databasePath, options = {}) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const path13 = await import("node:path");
+  if (!options.readOnly) nodeFsModule.mkdirSync(path13.dirname(String(databasePath)), { recursive: true });
+  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  const dialect = sqliteDatabaseDialect();
+  const adapter = {
+    ...createSharedDatabaseAdapterMethods(dialect),
+    engine: "sqlite",
+    dialect,
+    normalization: sqliteRowNormalization(),
+    exec(sql) {
+      return connection.exec(sql);
+    },
+    prepare(sql) {
+      const statement = connection.prepare(sql);
+      return {
+        all(...params) {
+          return statement.all(...params);
+        },
+        get(...params) {
+          return statement.get(...params);
+        },
+        run(...params) {
+          return statement.run(...params);
+        },
+        columns() {
+          return statement.columns();
+        }
+      };
+    },
+    async withTransaction(fn) {
+      this.exec("BEGIN");
+      try {
+        const result = await fn(this);
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    async withReadOnlySnapshot(fn) {
+      this.exec("BEGIN");
+      this.exec("PRAGMA query_only = ON");
+      try {
+        const result = await fn(this);
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      } finally {
+        if (!options.readOnly) this.exec("PRAGMA query_only = OFF");
+      }
+    },
+    close() {
+      return connection.close();
+    }
+  };
+  if (!options.readOnly) {
+    adapter.exec("PRAGMA journal_mode = WAL");
+  }
+  return adapter;
+}
+async function createPostgresDatabaseAdapter(options) {
+  const url = typeof options === "string" ? options : options?.url;
+  if (!url) {
+    throw commandError(
+      "Missing Postgres database service URL.",
+      "Start a Dev session or local Container session with services.database.engine set to postgres."
+    );
+  }
+  const client = await createPostgresConnection(url);
+  let closed = false;
+  const dialect = postgresDatabaseDialect();
+  const normalization = postgresRowNormalization();
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("database is not open");
+    }
+  };
+  const query = async (sql, params = []) => {
+    assertOpen();
+    return await client.query(postgresInterpolate(sql, params));
+  };
+  const adapter = {
+    ...createSharedDatabaseAdapterMethods(dialect),
+    engine: "postgres",
+    dialect,
+    normalization,
+    exec(sql) {
+      return query(sql).then(() => void 0);
+    },
+    prepare(sql) {
+      assertOpen();
+      return {
+        all(...params) {
+          return query(sql, params).then((result) => postgresRowsFromResult(normalization, result));
+        },
+        get(...params) {
+          return this.all(...params).then((rows) => rows[0] ?? null);
+        },
+        run(...params) {
+          return query(sql, params).then((result) => ({
+            changes: Number(result.rowCount ?? 0),
+            lastInsertRowid: void 0
+          }));
+        },
+        // Postgres has no way to ask a statement for its result shape without running something,
+        // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
+        // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
+        // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
+        // follows it. Both are legal input that `validateReadOnlyInspectionSql` deliberately
+        // admits, and `sporades db query <sql>` is typed by a human, so a semicolon is ordinary.
+        // Left unhandled, the same query answers on SQLite and libSQL and fails here — the
+        // divergence this feature exists to close, reintroduced by the seam meant to prevent it.
+        // Stripping the terminator and any trailing trivia first is what makes the wrap safe.
+        //
+        // This leaves the inspection path issuing two statements on Postgres where the method
+        // override it replaced issued one, and that is a deliberate choice rather than an
+        // oversight. Merging them would mean caching a result on the prepared-statement object so
+        // that `columns()` and a later `all()` share it — which SQLite's and libSQL's statements do
+        // not do, so a statement held across two reads would answer stale rows here and fresh rows
+        // there. That is a new per-engine behavioural difference, bought in the feature whose
+        // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
+        // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
+        // plans the statement and stops before materializing a row.
+        columns() {
+          return query(
+            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`
+          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
+        }
+      };
+    },
+    // No behavioural method body lives here, deliberately (ADR-0037). Eleven used to: the upsert
+    // form, the auth and File metadata storage bootstraps, the catalog queries behind the three
+    // inspection methods, the app-table DDL, the OAuth state consume, and two await-shims. Each is
+    // now either a dialect entry or a corrected shared definition, and ADR-0034 and ADR-0036 record
+    // why each existed. `test/database-adapter-engine-seam.test.js` is what stops another appearing.
+    //
+    // The hazard that made removing them better than maintaining them, rather than merely tidier: a
+    // shared body an engine shadows is dormant, not correct. It becomes live the moment the shadow
+    // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
+    // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
+    // that silently never ran ADR-0036's ordering migration.
+    async withTransaction(fn) {
+      await this.exec("BEGIN");
+      try {
+        const result = await fn(this);
+        await this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          await this.exec("ROLLBACK");
+        } catch {
+        }
+        throw error;
+      }
+    },
+    async withReadOnlySnapshot(fn) {
+      await this.exec("BEGIN TRANSACTION READ ONLY");
+      try {
+        const result = await fn(this);
+        await this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          await this.exec("ROLLBACK");
+        } catch {
+        }
+        throw error;
+      }
+    },
+    async close() {
+      closed = true;
+      await client.close();
+    }
+  };
+  return adapter;
+}
+async function createPostgresConnection(url) {
+  const net = await import("node:net");
+  const crypto2 = await import("node:crypto");
+  const options = postgresUrlOptions(url);
+  const socket = net.createConnection({ host: options.host, port: options.port });
+  socket.setNoDelay(true);
+  let buffer = Buffer.alloc(0);
+  let ready = false;
+  let closed = false;
+  let backendKeyData = null;
+  let queryQueue = Promise.resolve();
+  const waiters = [];
+  socket.on("data", (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    wakePostgresWaiters(waiters);
+  });
+  socket.on("error", (error) => {
+    for (const waiter of waiters.splice(0)) {
+      waiter.reject(error);
+    }
+  });
+  socket.on("close", () => {
+    closed = true;
+    for (const waiter of waiters.splice(0)) {
+      waiter.reject(new Error("database is not open"));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  let scram = null;
+  socket.write(postgresStartupMessage(options));
+  while (!ready) {
+    const message = await readPostgresMessage();
+    if (message.type === "R") {
+      const authType = message.body.readInt32BE(0);
+      if (authType === 0) {
+        continue;
+      }
+      if (authType === 3) {
+        socket.write(postgresPasswordMessage(Buffer.from(`${options.password}\0`, "utf8")));
+        continue;
+      }
+      if (authType === 10) {
+        const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
+        if (!mechanisms.includes("SCRAM-SHA-256")) {
+          throw commandError(
+            "Unsupported Postgres SASL mechanism.",
+            "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
+          );
+        }
+        scram = createPostgresScramSession(crypto2, options.password);
+        const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
+        socket.write(
+          postgresPasswordMessage(
+            Buffer.concat([Buffer.from("SCRAM-SHA-256\0", "utf8"), postgresInt32(clientFirst.length), clientFirst])
+          )
+        );
+        continue;
+      }
+      if (authType === 11 && scram) {
+        const clientFinal = scram.continue(message.body.subarray(4).toString("utf8"));
+        socket.write(postgresPasswordMessage(Buffer.from(clientFinal, "utf8")));
+        continue;
+      }
+      if (authType === 12 && scram) {
+        scram.verify(message.body.subarray(4).toString("utf8"));
+        continue;
+      }
+      throw commandError(
+        "Unsupported Postgres authentication method.",
+        "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials."
+      );
+    }
+    if (message.type === "K") {
+      backendKeyData = message.body;
+      continue;
+    }
+    if (message.type === "E") {
+      throw postgresErrorFromBody(message.body);
+    }
+    if (message.type === "Z") {
+      ready = true;
+    }
+  }
+  return {
+    get backendKeyData() {
+      return backendKeyData;
+    },
+    query(sql) {
+      if (closed) {
+        throw new Error("database is not open");
+      }
+      const pending = queryQueue.then(
+        () => executePostgresQuery(sql),
+        () => executePostgresQuery(sql)
+      );
+      queryQueue = pending.catch(() => {
+      });
+      return pending;
+    },
+    async close() {
+      await queryQueue.catch(() => {
+      });
+      if (closed) {
+        return;
+      }
+      closed = true;
+      socket.write(Buffer.from([88, 0, 0, 0, 4]));
+      socket.end();
+    }
+  };
+  async function executePostgresQuery(sql) {
+    if (closed) {
+      throw new Error("database is not open");
+    }
+    socket.write(postgresQueryMessage(sql));
+    const fields = [];
+    const rows = [];
+    let rowCount = 0;
+    let queryError = null;
+    while (true) {
+      const message = await readPostgresMessage();
+      if (message.type === "T") {
+        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+        continue;
+      }
+      if (message.type === "D") {
+        rows.push(postgresParseDataRow(message.body, fields));
+        continue;
+      }
+      if (message.type === "C") {
+        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+        continue;
+      }
+      if (message.type === "E") {
+        queryError = postgresErrorFromBody(message.body);
+        continue;
+      }
+      if (message.type === "Z") {
+        if (queryError) {
+          throw queryError;
+        }
+        return { fields, rows, rowCount };
+      }
+    }
+  }
+  async function readPostgresMessage() {
+    while (buffer.length < 5) {
+      await waitForPostgresData(waiters);
+    }
+    const type = String.fromCharCode(buffer[0]);
+    const length = buffer.readInt32BE(1);
+    while (buffer.length < 1 + length) {
+      await waitForPostgresData(waiters);
+    }
+    const body = buffer.subarray(5, 1 + length);
+    buffer = buffer.subarray(1 + length);
+    return { type, body };
+  }
+}
+function postgresUrlOptions(url) {
+  const parsed = new URL(String(url));
+  return {
+    host: parsed.hostname || "127.0.0.1",
+    port: parsed.port ? Number(parsed.port) : 5432,
+    user: decodeURIComponent(parsed.username || "sporades"),
+    password: decodeURIComponent(parsed.password || ""),
+    database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades")
+  };
+}
+function postgresPasswordMessage(body) {
+  const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
+}
+function createPostgresScramSession(crypto2, password) {
+  const clientNonce = crypto2.randomBytes(18).toString("base64");
+  const clientFirstBare = `n=,r=${clientNonce}`;
+  let serverSignature = null;
+  return {
+    clientFirstMessage: `n,,${clientFirstBare}`,
+    continue(serverFirstMessage) {
+      const attributes = new Map(serverFirstMessage.split(",").map((part) => [part.slice(0, 1), part.slice(2)]));
+      const serverNonce = attributes.get("r") ?? "";
+      const salt = Buffer.from(attributes.get("s") ?? "", "base64");
+      const iterations = Number(attributes.get("i") ?? "0");
+      if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
+        throw new Error("Invalid Postgres SCRAM server-first message.");
+      }
+      const saltedPassword = crypto2.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto2.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto2.createHash("sha256").update(clientKey).digest();
+      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
+      const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
+      const clientSignature = crypto2.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
+      const serverKey = crypto2.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto2.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
+    },
+    verify(serverFinalMessage) {
+      if (serverFinalMessage !== `v=${serverSignature}`) {
+        throw new Error("Postgres SCRAM server signature verification failed.");
+      }
+    }
+  };
+}
+function postgresStartupMessage(options) {
+  const params = [
+    ["user", options.user],
+    ["database", options.database],
+    ["client_encoding", "UTF8"]
+  ];
+  const bodyParts = [postgresInt32(196608)];
+  for (const [key, value] of params) {
+    bodyParts.push(Buffer.from(`${key}\0${value}\0`, "utf8"));
+  }
+  bodyParts.push(Buffer.from([0]));
+  const body = Buffer.concat(bodyParts);
+  return Buffer.concat([postgresInt32(body.length + 4), body]);
+}
+function postgresQueryMessage(sql) {
+  const body = Buffer.from(`${sql}\0`, "utf8");
+  return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
+}
+function postgresInt32(value) {
+  const buffer = Buffer.alloc(4);
+  buffer.writeInt32BE(value, 0);
+  return buffer;
+}
+function waitForPostgresData(waiters) {
+  return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+}
+function wakePostgresWaiters(waiters) {
+  for (const waiter of waiters.splice(0)) {
+    waiter.resolve();
+  }
+}
+function postgresParseRowDescription(body) {
+  const fields = [];
+  let offset = 0;
+  const count = body.readInt16BE(offset);
+  offset += 2;
+  for (let index = 0; index < count; index += 1) {
+    const nameEnd = body.indexOf(0, offset);
+    const name = body.subarray(offset, nameEnd).toString("utf8");
+    offset = nameEnd + 1;
+    offset += 6;
+    const dataTypeID = body.readInt32BE(offset);
+    offset += 4;
+    offset += 8;
+    fields.push({ name, dataTypeID });
+  }
+  return fields;
+}
+function postgresParseDataRow(body, fields) {
+  const row = {};
+  let offset = 0;
+  const count = body.readInt16BE(offset);
+  offset += 2;
+  for (let index = 0; index < count; index += 1) {
+    const field = fields[index];
+    if (!field) {
+      throw new Error("Postgres protocol error: data row did not match row description.");
+    }
+    const length = body.readInt32BE(offset);
+    offset += 4;
+    if (length === -1) {
+      row[field.name] = null;
+      continue;
+    }
+    const raw = body.subarray(offset, offset + length).toString("utf8");
+    offset += length;
+    row[field.name] = postgresValueFromText(raw, field.dataTypeID);
+  }
+  return row;
+}
+function postgresValueFromText(value, dataTypeID) {
+  if ([20, 21, 23].includes(dataTypeID)) {
+    return Number(value);
+  }
+  if ([700, 701, 1700].includes(dataTypeID)) {
+    return Number(value);
+  }
+  if (dataTypeID === 16) {
+    return value === "t";
+  }
+  return value;
+}
+function postgresRowCountFromCommand(tag) {
+  const match = tag.match(/\s(\d+)$/);
+  return match ? Number(match[1]) : 0;
+}
+function postgresErrorFromBody(body) {
+  const fields = {};
+  let offset = 0;
+  while (offset < body.length && body[offset] !== 0) {
+    const type = String.fromCharCode(body[offset]);
+    offset += 1;
+    const end = body.indexOf(0, offset);
+    fields[type] = body.subarray(offset, end).toString("utf8");
+    offset = end + 1;
+  }
+  return new Error(fields.M ?? "Postgres query failed.");
+}
+function postgresInterpolate(sql, params = []) {
+  let index = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let result = "";
+  const text = String(sql ?? "");
+  for (let position = 0; position < text.length; position += 1) {
+    const char = text[position];
+    const next = text[position + 1];
+    if (lineComment) {
+      result += char;
+      if (char === "\n") {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      result += char;
+      if (char === "*" && next === "/") {
+        result += next;
+        position += 1;
+        blockComment = false;
+      }
+      continue;
+    }
+    if (quote) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      result += char + next;
+      position += 1;
+      lineComment = true;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      result += char + next;
+      position += 1;
+      blockComment = true;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      result += char;
+      continue;
+    }
+    if (char === "?") {
+      if (index >= params.length) {
+        throw new Error("Missing Postgres query parameter.");
+      }
+      result += toSqlLiteral(params[index]);
+      index += 1;
+      continue;
+    }
+    result += char;
+  }
+  if (index < params.length) {
+    throw new Error("Too many Postgres query parameters.");
+  }
+  return result;
+}
+function postgresRowsFromResult(normalization, result) {
+  return result.rows.map((row) => normalization.row(row));
+}
+async function createLibsqlDatabaseAdapter(options) {
+  const url = typeof options === "string" ? options : options?.url;
+  if (!url) {
+    throw commandError(
+      "Missing libSQL database service URL.",
+      "Start a Dev session or local Container session with services.database.engine set to libsql."
+    );
+  }
+  const endpoint = libsqlPipelineUrl(url);
+  const authToken = typeof options === "object" ? options.authToken : null;
+  let closed = false;
+  const activeTransactions = /* @__PURE__ */ new Set();
+  const dialect = sqliteDatabaseDialect();
+  const normalization = libsqlRowNormalization();
+  const createOperations = (transaction = null) => ({
+    exec(sql) {
+      assertLibsqlOpen(closed);
+      const request = libsqlHasMultipleStatements(sql) ? { type: "sequence", sql } : { type: "execute", stmt: { sql } };
+      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
+    },
+    prepare(sql) {
+      assertLibsqlOpen(closed);
+      return {
+        all(...params) {
+          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
+            (result) => libsqlRowsFromResult(normalization, result)
+          );
+        },
+        get(...params) {
+          return this.all(...params).then((rows) => rows[0] ?? null);
+        },
+        run(...params) {
+          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+            lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
+          }));
+        },
+        columns() {
+          return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+        }
+      };
+    }
+  });
+  const adapter = {
+    ...createSharedDatabaseAdapterMethods(dialect),
+    ...createOperations(),
+    engine: "libsql",
+    dialect,
+    normalization,
+    // No behavioural method body lives here either, for the reasons ADR-0037 records and the
+    // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
+    // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
+    // body instead.
+    async withTransaction(fn) {
+      const transaction = { baton: null, baseUrl: endpoint };
+      const transactionAdapter = {
+        ...adapter,
+        ...createOperations(transaction),
+        async withTransaction() {
+          throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
+        }
+      };
+      activeTransactions.add(transaction);
+      try {
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+        const result = await fn(transactionAdapter);
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+        return result;
+      } catch (error) {
+        try {
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+        } catch {
+        }
+        throw error;
+      } finally {
+        activeTransactions.delete(transaction);
+      }
+    },
+    async withReadOnlySnapshot(fn) {
+      const transaction = { baton: null, baseUrl: endpoint };
+      const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
+      activeTransactions.add(transaction);
+      try {
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
+        const result = await fn(snapshotAdapter);
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+        return result;
+      } catch (error) {
+        try {
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+        } catch {
+        }
+        throw error;
+      } finally {
+        activeTransactions.delete(transaction);
+      }
+    },
+    async close() {
+      closed = true;
+      for (const transaction of activeTransactions) {
+        if (transaction.baton) {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => {
+          });
+        }
+      }
+      activeTransactions.clear();
+    }
+  };
+  return adapter;
+}
+function libsqlPipelineUrl(url) {
+  const parsed = new URL(String(url));
+  parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/v2/pipeline`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+function assertLibsqlOpen(closed) {
+  if (closed) {
+    throw new Error("database is not open");
+  }
+}
+function libsqlHasMultipleStatements(sql) {
+  return splitSqlStatements(sql).length > 1;
+}
+async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }) {
+  const [result] = await libsqlPipeline({
+    endpoint,
+    authToken,
+    transaction,
+    requests: [{ type: "execute", stmt: { sql, args: params.map(libsqlValueFromJs) } }],
+    close
+  });
+  return result.result;
+}
+async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) {
+  const [result] = await libsqlPipeline({
+    endpoint,
+    authToken,
+    transaction,
+    requests: [{ type: "describe", sql }],
+    close
+  });
+  return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
+}
+async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }) {
+  const requestUrl = transaction?.baseUrl ?? endpoint;
+  const payload = {
+    ...transaction ? { baton: transaction.baton } : {},
+    requests: close ? [...requests, { type: "close" }] : requests
+  };
+  const response = await fetch(requestUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...authToken ? { authorization: `Bearer ${authToken}` } : {}
+    },
+    body: JSON.stringify(payload)
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.error?.message ?? `libSQL request failed with HTTP ${response.status}.`);
+  }
+  if (transaction) {
+    transaction.baton = body.baton ?? null;
+    transaction.baseUrl = body.base_url ? new URL("/v2/pipeline", body.base_url).toString() : requestUrl;
+  }
+  const results = body.results ?? [];
+  const errorResult = results.find((result) => result.type === "error");
+  if (errorResult) {
+    throw new Error(errorResult.error?.message ?? "libSQL statement failed.");
+  }
+  return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
+}
+function libsqlRowsFromResult(normalization, result) {
+  const columns = (result.cols ?? []).map((column) => column.name);
+  return (result.rows ?? []).map(
+    (row) => normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column, index) => [column, row[index]])) : row)
+  );
+}
+function libsqlValueFromJs(value) {
+  if (value === null || value === void 0) {
+    return { type: "null" };
+  }
+  if (typeof value === "boolean") {
+    return { type: "integer", value: value ? "1" : "0" };
+  }
+  if (typeof value === "bigint") {
+    return { type: "integer", value: String(value) };
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return { type: "integer", value: String(value) };
+  }
+  if (typeof value === "number") {
+    return { type: "float", value };
+  }
+  if (value instanceof Uint8Array) {
+    return { type: "blob", base64: Buffer.from(value).toString("base64") };
+  }
+  return { type: "text", value: String(value) };
+}
+function libsqlValueToJs(value) {
+  if (value === null || value === void 0 || value.type === "null") {
+    return null;
+  }
+  if (value.type === "integer") {
+    const number = Number(value.value);
+    return Number.isSafeInteger(number) ? number : String(value.value);
+  }
+  if (value.type === "float") {
+    return Number(value.value);
+  }
+  if (value.type === "blob") {
+    return Buffer.from(value.base64 ?? "", "base64");
+  }
+  if (Object.hasOwn(value, "value")) {
+    return value.value;
+  }
+  return value;
+}
+function migrateAppSchemaInTransaction(sqlite, schema) {
+  const nextSchema = normalizeSchema(schema);
+  const nextSchemaJson = JSON.stringify(nextSchema);
+  const nextSchemaHash = hashSchema(nextSchemaJson);
+  return thenIfPromise(sqlite.readSchemaMetadata(), (existingSchemaRow) => {
+    let existingSchema = null;
+    let schemaChanged = false;
+    if (existingSchemaRow) {
+      try {
+        existingSchema = JSON.parse(existingSchemaRow.value);
+      } catch {
+        throw commandError(
+          "Invalid Sporades schema metadata.",
+          "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
+        );
+      }
+      schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+      if (schemaChanged) {
+        assertAdditiveSchemaMigration(existingSchema, nextSchema);
+      }
+    }
+    const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+    return chainMaybePromise([
+      ...schema.tables.map((table) => () => {
+        const existingTable = existingTables.get(table.name);
+        return schemaChanged && existingTable ? migrateExistingAppTableInTransaction(sqlite, existingTable, table) : sqlite.createAppTable(table);
+      }),
+      () => sqlite.writeSchemaMetadata({
+        schemaVersion: "v1:additive-fields",
+        schemaHash: nextSchemaHash,
+        schemaJson: nextSchemaJson
+      })
+    ]);
+  });
+}
+function normalizeSchema(schema) {
+  return {
+    tables: schema.tables.map((table) => ({
+      name: table.name,
+      fields: table.fields.map((field) => ({
+        name: field.name,
+        kind: field.kind,
+        sqliteType: field.sqliteType,
+        targetTable: field.targetTable,
+        defaultValue: field.defaultValue
+      }))
+    })).sort((left, right) => left.name.localeCompare(right.name))
+  };
+}
+function hashSchema(schemaJson) {
+  return nodeCryptoModule4.createHash("sha256").update(schemaJson).digest("hex");
+}
+function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
+  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
+  for (const existingTable of existingSchema.tables ?? []) {
+    const nextTable = nextTables.get(existingTable.name);
+    if (!nextTable) {
+      throw commandError(
+        "Unsupported Capsule schema change.",
+        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
+      );
+    }
+    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
+    for (const existingField of existingTable.fields ?? []) {
+      const nextField = nextFields.get(existingField.name);
+      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
+        throw commandError(
+          "Unsupported Capsule schema change.",
+          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
+        );
+      }
+    }
+  }
+}
+function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
+  const dialect = sqlite.dialect;
+  const tempTableName = `__sporades_migrating_${nextTable.name}`;
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
+  return chainMaybePromise([
+    ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
+      (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+        if (!exists) {
+          throw invalidReferenceError(field);
+        }
+      })
+    ),
+    () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
+    () => sqlite.createAppTable(nextTable, tempTableName),
+    () => sqlite.exec(
+      `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
+    ),
+    () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
+    () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
+  ]);
+}
+function columnSelectExpressionForMigration(dialect, existingTable, nextTable, columnName) {
+  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
+    return dialect.quoteIdentifier(columnName);
+  }
+  if ((existingTable.fields ?? []).some((field2) => field2.name === columnName)) {
+    return dialect.quoteIdentifier(columnName);
+  }
+  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
+  return field?.defaultValue === void 0 ? "NULL" : toSqlLiteral(field.defaultValue, field);
+}
+function addedFieldsForTable(existingTable, nextTable) {
+  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
+  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
+}
+function createAppTable(sqlite, table, tableName = table.name) {
+  return sqlite.exec(
+    `CREATE TABLE IF NOT EXISTS ${sqlite.dialect.quoteIdentifier(tableName)} (` + appTableColumnDefinitions(sqlite.dialect, table).join(", ") + ")"
+  );
+}
+function appTableColumnDefinitions(dialect, table) {
+  return [
+    `${dialect.quoteIdentifier("id")} TEXT PRIMARY KEY`,
+    `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
+    `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
+    ...table.fields.map((field) => appFieldColumnDefinition(dialect, field))
+  ];
+}
+function appFieldColumnDefinition(dialect, field) {
+  const defaultSql = fieldColumnDefaultSql(field);
+  const notNullSql = field.defaultValue !== void 0 && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
+  return `${dialect.quoteIdentifier(field.name)} ${dialect.columnType(field)}${notNullSql}${defaultSql}`;
+}
+function fieldDefaultIsSqlNull(field) {
+  return field.defaultValue === null && field.kind !== "Json";
+}
+function fieldColumnDefaultSql(field) {
+  return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
+}
+function isDuplicateColumnError(error) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /duplicate column|already exists/i.test(text);
+}
+function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
+  try {
+    const result = sqlite.exec(sql);
+    if (isPromiseLike(result)) {
+      return result.catch((error) => {
+        if (!isDuplicateColumnError(error)) throw error;
+      });
+    }
+    return result;
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    return void 0;
+  }
+}
+function toSqlLiteral(value, field = null) {
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
+  }
+  if (value === null) {
+    return "NULL";
+  }
+  if (field?.kind === "Date") {
+    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
+  }
+  if (typeof value === "boolean") {
+    return value ? "1" : "0";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+async function listDatabaseTables(database) {
+  return await (database.adapter ?? database.adapter).listInspectableTables();
+}
+async function dumpDatabase(database) {
+  return await (database.adapter ?? database.adapter).dumpInspectableDatabase();
+}
+async function runReadOnlyQuery(database, sql) {
+  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
+}
+function splitSqlStatements(sql) {
+  const statements = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  const text = String(sql ?? "");
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (lineComment) {
+      if (char === "\n") {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        if (text[index + 1] === quote && quote !== "`") {
+          index += 1;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === ";") {
+      const statement = text.slice(start, index).trim();
+      if (statement) {
+        statements.push(statement);
+      }
+      start = index + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) {
+    statements.push(last);
+  }
+  return statements;
+}
+function quoteIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
 // src/mail-config.ts
@@ -9604,7 +11413,7 @@ function resolveSporadesPackageRoot() {
 
 // src/server-runtime-source.ts
 import { createHash as createHash2, randomBytes as randomBytes2, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
   // and `mail-config.ts`. They are carried into the emitted-list bundle as those modules' own
@@ -9615,19 +11424,19 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   normalizeJourneyState,
   validateJourneyJson,
   journeyError,
-  createDatabaseDialect,
-  quoteSqlIdentifiers,
-  sqliteDatabaseDialect,
-  postgresDatabaseDialect,
-  createDatabaseNormalization,
-  sqliteRowNormalization,
-  postgresRowNormalization,
-  libsqlRowNormalization,
-  createSharedDatabaseAdapterMethods,
-  createSqliteDatabaseAdapter,
-  createLibsqlDatabaseAdapter,
-  createPostgresDatabaseAdapter,
-  createRuntimeDatabaseAdapter,
+  // The Database adapters and dialect occupied fifty-nine entries in this list until batch 9, in six
+  // runs: the thirteen that stood here, `createRuntimeInspectionAdapter` below, the twenty-six of the
+  // Postgres wire protocol and the libSQL pipeline further down, the thirteen of app-schema DDL and
+  // migration among the schema extractors, the duplicate-column pair, and `quoteIdentifier` at the
+  // very end. All fifty-nine are declarations inside `./database-runtime.js` now and reach the
+  // generated Capsule bundle as that module's own text, so listing any of them again would declare
+  // the same top-level function twice in an ES module — a load-time `SyntaxError` rather than a
+  // drift.
+  //
+  // Thirty-eight of them are private to that module now. Under this list none could be: a helper
+  // reached the bundle as its own source text, so the whole Postgres SCRAM handshake, the libSQL
+  // pipeline and every line of app-table DDL had to be registered here and were therefore reachable
+  // by name from five hundred unrelated runtime functions.
   resolveJourneySessionInactivityMinutes,
   claimScheduledOccurrence,
   recoverPendingScheduleOccurrences,
@@ -9636,39 +11445,12 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   startStaticSchedules,
   recordScheduledOccurrence,
   enqueueScheduledOccurrence,
-  createRuntimeInspectionAdapter,
   createCurrentUserJobApi,
   createPrivilegedJobApi,
   flushPendingJobEnqueues,
   scheduleCurrentUserJobWorker,
   scheduleNextDelayedJob,
   runCurrentUserJobWorker,
-  postgresInterpolate,
-  createPostgresConnection,
-  postgresUrlOptions,
-  postgresPasswordMessage,
-  createPostgresScramSession,
-  postgresStartupMessage,
-  postgresQueryMessage,
-  postgresInt32,
-  waitForPostgresData,
-  wakePostgresWaiters,
-  postgresParseRowDescription,
-  postgresParseDataRow,
-  postgresValueFromText,
-  postgresRowCountFromCommand,
-  postgresErrorFromBody,
-  postgresRowsFromResult,
-  libsqlPipelineUrl,
-  assertLibsqlOpen,
-  libsqlHasMultipleStatements,
-  libsqlExecute,
-  libsqlDescribe,
-  libsqlPipeline,
-  libsqlRowsFromResult,
-  libsqlValueFromJs,
-  libsqlValueToJs,
-  splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
   enqueueRuntimeJob,
@@ -9742,23 +11524,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractObjectPropertySource,
   findMatchingDelimiter,
   splitTopLevelList,
-  migrateAppSchemaInTransaction,
-  normalizeSchema,
-  hashSchema,
   assertValidReferenceTargets,
-  assertAdditiveSchemaMigration,
-  migrateExistingAppTableInTransaction,
-  columnSelectExpressionForMigration,
-  addedFieldsForTable,
-  createAppTable,
-  appTableColumnDefinitions,
-  appFieldColumnDefinition,
-  fieldDefaultIsSqlNull,
-  fieldColumnDefaultSql,
   // `commandError` stood here until batch 3 moved it to `runtime-errors.ts`. It is a declaration
   // inside a carried module now, so listing it again would declare the same top-level function
   // twice in the emitted ES module — a load-time `SyntaxError` rather than a drift.
-  toSqlLiteral,
   findMatchingParen,
   createTransactionDatabase,
   readEndpointRequest,
@@ -9799,8 +11568,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // module — a load-time `SyntaxError` rather than a drift.
   readEndpointBody,
   createEndpointLogger,
-  isDuplicateColumnError,
-  runSchemaExecIgnoringDuplicateColumn,
   // `chainSchemaOperation` stood here and is in `log-index-storage.ts` now, private, with the two
   // functions that are its only callers. The auth storage bootstrap's five entries followed it —
   // `createAnonymousAuthTables` and the four migrations below it — and are in `auth-runtime.js`,
@@ -9843,8 +11610,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   resolveTableForAddMutation,
   resolveTableForUpdateMutation,
   tableNameForSingular,
-  rowToApiValue,
-  quoteIdentifier
+  rowToApiValue
 ];
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path13 = await import("node:path");
@@ -10171,1530 +11937,6 @@ async function recoverExpiredJobLeases(database) {
     } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
   }
   if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
-}
-async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
-  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createLibsqlDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
-      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN
-    });
-  }
-  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createPostgresDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL
-    });
-  }
-  return await createSqliteDatabaseAdapter(databasePath);
-}
-async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, config = {}) {
-  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
-  }
-  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
-  }
-  if (!existsSync2(String(databasePath))) return null;
-  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
-}
-function createDatabaseDialect(spec) {
-  const required = [
-    "name",
-    "quoteIdentifier",
-    "columnType",
-    "upsertSql",
-    "listTables",
-    "describeColumns",
-    "addMissingColumn"
-  ];
-  const missing = required.filter((key) => spec[key] == null);
-  if (missing.length > 0) {
-    throw commandError(
-      `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
-      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry."
-    );
-  }
-  return { ...spec, sql: (statement) => quoteSqlIdentifiers(spec.quoteIdentifier, statement) };
-}
-function quoteSqlIdentifiers(quoteIdentifier2, statement) {
-  return String(statement).replace(/\[([A-Za-z_][A-Za-z0-9_]*)\]/g, (_marker, identifier) => quoteIdentifier2(identifier));
-}
-function createDatabaseNormalization(spec) {
-  const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
-  if (missing.length > 0) {
-    throw commandError(
-      `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
-      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry."
-    );
-  }
-  return {
-    ...spec,
-    row: (raw) => Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)]))
-  };
-}
-function sqliteRowNormalization() {
-  return createDatabaseNormalization({
-    name: "sqlite",
-    columnName: (name) => name,
-    value: (value) => value
-  });
-}
-function postgresRowNormalization() {
-  return createDatabaseNormalization({
-    name: "postgres",
-    // The identity, like the other two engines. Postgres folds an unquoted identifier to lower
-    // case, and a hand-maintained table of declared spellings used to fold it back — a registry
-    // nothing failed for omitting, which is how a missing `verifierHash` entry rejected every valid
-    // password Reset code here while presenting an ordinary "invalid code". Because that table was
-    // applied per result key with no table provenance, it also renamed a Capsule field literally
-    // called `errorcode` or `jobid`. ADR-0039 removed both by quoting every identifier the runtime
-    // emits: nothing folds, so there is nothing to restore and no name to collide with.
-    columnName: (name) => name,
-    // Values are already coerced by the wire parser, which reads each column's type oid from the
-    // row description. The row does not carry the oid, so the per-value entry cannot repeat that
-    // work and does not need to.
-    value: (value) => value
-  });
-}
-function libsqlRowNormalization() {
-  return createDatabaseNormalization({
-    name: "libsql",
-    // libSQL preserves declared case, so there is nothing to restore.
-    columnName: (name) => name,
-    // The pipeline protocol tags every value with its type, and this turns the tagged form back
-    // into JavaScript.
-    value: libsqlValueToJs
-  });
-}
-function sqliteDatabaseDialect() {
-  return createDatabaseDialect({
-    name: "sqlite",
-    quoteIdentifier,
-    // The declared field type is emitted verbatim. `sqliteType` is what the Capsule schema carries,
-    // and an engine whose type names differ maps them here rather than in a copy of every DDL
-    // method.
-    columnType: (field) => field.sqliteType,
-    // Write-or-replace a row identified by its key columns. Table and column names arrive
-    // unquoted and are quoted here, so the upsert asks for the columns in the style every other
-    // statement names them.
-    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-    // The catalog. Both entries answer rows carrying a `name`, whatever the engine's catalog calls
-    // the column, so the shared inspection methods read one shape.
-    listTables: (adapter) => adapter.prepare(
-      `SELECT ${quoteIdentifier("name")} FROM ${quoteIdentifier("sqlite_schema")} WHERE ${quoteIdentifier("type")} = 'table' AND ${quoteIdentifier("name")} NOT LIKE 'sqlite_%' ORDER BY ${quoteIdentifier("name")}`
-    ).all(),
-    describeColumns: (adapter, tableName) => adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
-    // Declare a column that an older database may not have. SQLite has no
-    // `ADD COLUMN IF NOT EXISTS`, so the ALTER is issued and a duplicate-column error swallowed.
-    // Probing `PRAGMA table_info` first would work here and nowhere else, which is exactly why the
-    // strategy is a dialect entry rather than a line in a shared body.
-    addMissingColumn: (adapter, table, column, type) => runSchemaExecIgnoringDuplicateColumn(
-      adapter,
-      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN ${quoteIdentifier(column)} ${type}`
-    )
-  });
-}
-function postgresDatabaseDialect() {
-  return createDatabaseDialect({
-    name: "postgres",
-    quoteIdentifier,
-    // TEXT, INTEGER and REAL all name real Postgres types, so the mapping is the identity here.
-    // That is a fact about Postgres rather than a reason to drop the entry: the seam exists for the
-    // engine whose type names do differ, and an identity mapping written down is checkable where an
-    // absent one is not.
-    columnType: (field) => field.sqliteType,
-    // Postgres has no `INSERT OR REPLACE`; the same intent is `ON CONFLICT ... DO UPDATE`, which
-    // updates the non-key columns from the row that was offered.
-    upsertSql: (table, columns, conflictColumns) => {
-      const updated = columns.filter((column) => !conflictColumns.includes(column));
-      return `INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictColumns.map(quoteIdentifier).join(", ")}) DO UPDATE SET ` + updated.map((column) => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`).join(", ");
-    },
-    // `sqlite_schema` and `PRAGMA table_info` are SQLite's alone; `information_schema` is the
-    // standard catalog. Both answer rows carrying a `name`, which is the shape the shared
-    // inspection methods read.
-    listTables: (adapter) => adapter.prepare(
-      `SELECT ${quoteIdentifier("table_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("tables")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_type")} = 'BASE TABLE' ORDER BY ${quoteIdentifier("table_name")}`
-    ).all(),
-    describeColumns: (adapter, tableName) => adapter.prepare(
-      `SELECT ${quoteIdentifier("column_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("columns")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_name")} = ? ORDER BY ${quoteIdentifier("ordinal_position")}`
-    ).all(tableName),
-    // Postgres has `ADD COLUMN IF NOT EXISTS`, and using it is not merely tidier than swallowing a
-    // duplicate-column error. A swallowed error on Postgres aborts the enclosing transaction, so
-    // every statement after it fails with `current transaction is aborted`. Storage bootstrap runs
-    // outside the migration transaction to keep that hazard out of reach; asking the engine not to
-    // raise the error in the first place removes it.
-    addMissingColumn: (adapter, table, column, type) => adapter.exec(
-      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN IF NOT EXISTS ${quoteIdentifier(column)} ${type}`
-    )
-  });
-}
-function createSharedDatabaseAdapterMethods(dialect) {
-  const sql = dialect.sql;
-  return {
-    ensureSystemTable() {
-      return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
-    },
-    readSystemMetadata(key) {
-      return this.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
-    },
-    writeSystemMetadata(key, value) {
-      return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
-    },
-    readSchemaMetadata() {
-      return this.readSystemMetadata("schema");
-    },
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      return chainMaybePromise([
-        () => this.writeSystemMetadata("schemaVersion", schemaVersion),
-        () => this.writeSystemMetadata("schemaHash", schemaHash),
-        () => this.writeSystemMetadata("schema", schemaJson)
-      ]);
-    },
-    ensureLogStorage() {
-      return createLogIndexTables(this);
-    },
-    insertLogIndexEvent(event) {
-      return insertLogIndexEvent(this, event);
-    },
-    pruneLogIndex(limit) {
-      return pruneLogIndex(this, limit);
-    },
-    readRecentLogEvents(limit) {
-      return readRecentLogEvents(this, limit);
-    },
-    ensureFileStorage() {
-      return createFileStorageTables(this);
-    },
-    findFileBucket(ownerId, name) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name) ?? null;
-    },
-    createFileBucket(row) {
-      return this.prepare(
-        sql("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)")
-      ).run(
-        row.id,
-        row.ownerId,
-        row.name,
-        row.createdAt
-      );
-    },
-    insertFileRow(row) {
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
-        )
-      ).run(
-        row.id,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.size,
-        row.version,
-        row.status,
-        row.createdAt,
-        row.updatedAt
-      );
-    },
-    updatePendingFileRow(row) {
-      return this.prepare(
-        sql(
-          "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?"
-        )
-      ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
-    },
-    insertFileUpload(row) {
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_file_uploads] ([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-      ).run(
-        row.id,
-        row.fileId,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.version,
-        row.expectedSize,
-        row.createdAt
-      );
-    },
-    selectFileById(fileId) {
-      return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
-    },
-    selectLiveFileByPath(path13) {
-      return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).all(path13, "uploaded");
-    },
-    selectActiveFileByPath(path13) {
-      return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
-      ).all(
-        path13,
-        "pending",
-        "uploaded"
-      );
-    },
-    selectPendingFileUploadByPath(path13) {
-      return this.prepare(
-        sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
-      ).get(path13) ?? null;
-    },
-    selectFileUpload(uploadId) {
-      return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
-    },
-    completeFileUpload(upload, size, updatedAt) {
-      return thenIfPromise(
-        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
-          upload.id,
-          upload.fileId,
-          upload.version
-        ),
-        (consumed) => {
-          if (consumed.changes === 0) {
-            return consumed;
-          }
-          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
-            if (existing) {
-              if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
-                return { changes: 0 };
-              }
-              return this.prepare(
-                sql(
-                  "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL"
-                )
-              ).run(
-                upload.bucketId,
-                upload.bucketName,
-                upload.path,
-                upload.name,
-                upload.type,
-                size,
-                upload.version,
-                "uploaded",
-                updatedAt,
-                upload.fileId
-              );
-            }
-            return this.insertFileRow({
-              id: upload.fileId,
-              ownerId: upload.ownerId,
-              bucketId: upload.bucketId,
-              bucketName: upload.bucketName,
-              path: upload.path,
-              name: upload.name,
-              type: upload.type,
-              size,
-              version: upload.version,
-              status: "uploaded",
-              createdAt: upload.createdAt,
-              updatedAt
-            });
-          });
-        }
-      );
-    },
-    deleteFileUploadsForPath(path13) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path13);
-    },
-    deleteFileUploadsForFile(ownerId, fileId) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
-    },
-    deleteFileUpload(uploadId) {
-      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
-    },
-    selectPublicFileRow(publicUrlId) {
-      return this.prepare(
-        sql(
-          "SELECT [p].[id] AS [publicUrlId], [p].[fileId], [p].[version] AS [publicVersion], [p].[expiresAt], [p].[revokedAt], [f].[id], [f].[ownerId], [f].[bucketId], [f].[bucketName], [f].[path], [f].[name], [f].[type], [f].[size], [f].[version], [f].[status], [f].[createdAt], [f].[updatedAt], [f].[deletedAt] FROM [sporades_file_public_urls] [p] JOIN [sporades_files] [f] ON [f].[id] = [p].[fileId] WHERE [p].[id] = ?"
-        )
-      ).get(publicUrlId) ?? null;
-    },
-    insertPublicFileUrl(row) {
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_file_public_urls] ([id], [fileId], [ownerId], [version], [expiresAt], [createdAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, NULL)"
-        )
-      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
-    },
-    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
-      return this.prepare(
-        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL")
-      ).run(
-        revokedAt,
-        publicUrlId,
-        ownerId
-      );
-    },
-    revokePublicFileUrlsForFile(fileId, revokedAt) {
-      return this.prepare(
-        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL")
-      ).run(
-        revokedAt,
-        fileId
-      );
-    },
-    markFileDeleted(fileId, deletedAt) {
-      return this.prepare(sql("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
-    },
-    fileRowForOwner(fileId, ownerId) {
-      return this.prepare(
-        sql("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).get(
-        fileId,
-        ownerId,
-        "uploaded"
-      ) ?? null;
-    },
-    ensureAuthStorage(authConfig = null) {
-      return createAnonymousAuthTables(this, authConfig);
-    },
-    ensureUserPreferencesStorage() {
-      return createUserPreferencesTables(this);
-    },
-    readUserPreferences(userId) {
-      return this.prepare(
-        sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")
-      ).get(userId) ?? null;
-    },
-    saveUserPreferences(row) {
-      return this.prepare(
-        dialect.upsertSql("sporades_user_preferences", ["userId", "value", "updatedAt"], ["userId"])
-      ).run(row.userId, row.value, row.updatedAt);
-    },
-    findAuthIdentityByProviderSubject(provider, subject) {
-      const row = this.prepare(
-        sql(
-          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [subject] = ?"
-        )
-      ).get(provider, subject) ?? null;
-      return authIdentityRowUnlessReserved(row);
-    },
-    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
-      const rows = this.prepare(
-        sql(
-          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [email] = ? AND [subject] LIKE 'legacy:%' ORDER BY [createdAt], [id]"
-        )
-      ).all(provider, email);
-      return authIdentityRowsUnlessReserved(rows);
-    },
-    insertAuthIdentity(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
-    },
-    updateAuthIdentity(row) {
-      return this.prepare(
-        sql(
-          "UPDATE [sporades_auth_identities] SET [subject] = ?, [email] = ?, [displayName] = ?, [picture] = ?, [updatedAt] = ? WHERE [id] = ?"
-        )
-      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
-    },
-    insertAuthUser(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
-    },
-    updateAuthUserProfile(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        sql(
-          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
-        )
-      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    linkAuthUser(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        sql(
-          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
-        )
-      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    insertAuthSession(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"
-        )
-      ).run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt
-      );
-    },
-    deleteAuthSession(token) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
-    },
-    refreshAuthSession(token, expiresAt) {
-      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
-    },
-    setAuthSessionProvider(token, provider) {
-      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
-    },
-    rotateAuthSession(previousToken, row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        sql(
-          "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, [expiresAt] = ? WHERE [token] = ?"
-        )
-      ).run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt,
-        previousToken
-      );
-    },
-    readAuthSessionWithUser(token) {
-      return thenIfPromise(
-        this.prepare(
-          sql(
-            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
-          )
-        ).get(token),
-        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
-      );
-    },
-    insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
-    // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
-    // asynchronous engine the two were in flight together. Both service engines carried their own
-    // `DELETE ... RETURNING` copy for exactly that reason, and node:sqlite speaks RETURNING too, so
-    // there is one definition and no ordering left to get wrong.
-    consumeOAuthState(state) {
-      return thenIfPromise(
-        this.prepare(
-          sql(
-            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]"
-          )
-        ).get(state),
-        (row) => row ?? null
-      );
-    },
-    emailCredentialExists(email) {
-      return thenIfPromise(
-        this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
-        (row) => Boolean(row)
-      );
-    },
-    insertEmailCredential(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) VALUES (?, ?, ?, ?, ?)"
-        )
-      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
-    },
-    updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
-      return this.prepare(
-        sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")
-      ).run(passwordHash, passwordSalt, email);
-    },
-    findEmailCredentialWithUser(email) {
-      return thenIfPromise(
-        this.prepare(
-          sql(
-            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ?"
-          )
-        ).get(email),
-        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
-      );
-    },
-    deleteAuthSessionsForUser(userId) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
-    },
-    insertPasswordResetCode(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        sql(
-          "INSERT INTO [sporades_auth_password_reset_codes] ([selector], [verifierHash], [email], [userId], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)"
-        )
-      ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
-    },
-    findPasswordResetCode(selector) {
-      return this.prepare(
-        sql(
-          "SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?"
-        )
-      ).get(selector) ?? null;
-    },
-    countPasswordResetCodesForEmail(email, now) {
-      return thenIfPromise(
-        this.prepare(
-          sql(
-            "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ? AND [expiresAt] > ?"
-          )
-        ).get(email, now),
-        (row) => Number(row?.count ?? 0)
-      );
-    },
-    deletePasswordResetCodesForUser(userId) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
-    },
-    prunePasswordResetCodes(now) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now);
-    },
-    // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
-    // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
-    // and COMMIT itself. Doing it with bare statements only worked on a synchronous engine: an
-    // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
-    // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
-    migrateAppSchema(schema) {
-      return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
-    },
-    createAppTable(table, tableName = table.name) {
-      return createAppTable(this, table, tableName);
-    },
-    migrateExistingAppTable(existingTable, nextTable) {
-      return this.withTransaction(
-        (transaction) => migrateExistingAppTableInTransaction(transaction, existingTable, nextTable)
-      );
-    },
-    referenceExists(field, value) {
-      return thenIfPromise(
-        this.prepare(
-          `SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE ${dialect.quoteIdentifier("id")} = ? LIMIT 1`
-        ).get(String(value)),
-        (row) => Boolean(row)
-      );
-    },
-    insertAppRow(table, row) {
-      const columns = Object.keys(row);
-      return this.prepare(
-        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
-      ).run(...columns.map((column) => row[column]));
-    },
-    selectAppRowById(table, id) {
-      return this.prepare(
-        `SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
-      ).get(String(id)) ?? null;
-    },
-    updateAppRow(table, id, values, options = {}) {
-      const columns = Object.keys(values);
-      if (columns.length === 0) {
-        return { changes: 0 };
-      }
-      return this.prepare(
-        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} WHERE ${dialect.quoteIdentifier("id")} = ?` + (options.ownerId === void 0 ? "" : ` AND ${dialect.quoteIdentifier("ownerId")} = ?`)
-      ).run(
-        ...columns.map((column) => values[column]),
-        String(id),
-        ...options.ownerId === void 0 ? [] : [options.ownerId]
-      );
-    },
-    deleteAppRow(table, id) {
-      return this.prepare(
-        `DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
-      ).run(String(id));
-    },
-    selectAppRows(table, query = {}) {
-      const columns = query.columns ?? ["*"];
-      const whereClauses = [];
-      const params = [];
-      if (query.ownerId !== void 0) {
-        whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
-        params.push(query.ownerId);
-      }
-      if (query.where) {
-        whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
-        params.push(query.where.value);
-      }
-      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
-      const orderSql = query.orderBy ? ` ORDER BY ${dialect.quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"}` : "";
-      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const limitSql = limit === null ? "" : " LIMIT ?";
-      return this.prepare(
-        `SELECT ${columns.map((column) => column === "*" ? "*" : dialect.quoteIdentifier(column)).join(", ")} FROM ${dialect.quoteIdentifier(
-          table.name
-        )}${whereSql}${orderSql}${limitSql}`
-      ).all(...limit === null ? params : [...params, limit]);
-    },
-    // The three inspection methods below each derive from a statement result, so each resolves it
-    // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
-    // on the asynchronous engines only because each engine shadowed them with an await-shim.
-    listInspectableTables() {
-      return thenIfPromise(
-        dialect.listTables(this),
-        (rows) => rows.map((row) => row.name).filter(
-          (name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"
-        )
-      );
-    },
-    dumpInspectableDatabase() {
-      const dumpTable = (tableName) => thenIfPromise(
-        dialect.describeColumns(this, tableName),
-        (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(tableName)}`).all(), (rows) => ({
-          name: tableName,
-          columns: columnRows.map((column) => column.name),
-          rows
-        }))
-      );
-      return thenIfPromise(
-        this.listInspectableTables(),
-        (tableNames) => tableNames.reduce(
-          (pending, tableName) => thenIfPromise(pending, (tables) => thenIfPromise(dumpTable(tableName), (table) => [...tables, table])),
-          []
-        )
-      );
-    },
-    runReadOnlyInspectionQuery(sql2) {
-      const inspectionQueryFailure = (error) => ({
-        ok: false,
-        data: null,
-        error: {
-          message: error?.message,
-          hint: "Check the SQL syntax and table names, then retry the query."
-        }
-      });
-      try {
-        const validation = validateReadOnlyInspectionSql(sql2);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql2)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const statement = this.prepare(sqlWithoutTrailingTerminator(sql2));
-        const result = thenIfPromise(
-          statement.columns(),
-          (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
-            ok: true,
-            data: {
-              columns: columnMetadata.map((column) => column.name),
-              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql2))
-            },
-            error: null
-          }))
-        );
-        return isPromiseLike(result) ? result.then((value) => value, inspectionQueryFailure) : result;
-      } catch (error) {
-        return inspectionQueryFailure(error);
-      }
-    },
-    checkHealth() {
-      try {
-        const probe = this.prepare(sql("SELECT 1 AS [ok]")).get();
-        return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    }
-  };
-}
-async function createSqliteDatabaseAdapter(databasePath, options = {}) {
-  const { DatabaseSync } = await import("node:sqlite");
-  const path13 = await import("node:path");
-  if (!options.readOnly) mkdirSync(path13.dirname(String(databasePath)), { recursive: true });
-  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
-  const dialect = sqliteDatabaseDialect();
-  const adapter = {
-    ...createSharedDatabaseAdapterMethods(dialect),
-    engine: "sqlite",
-    dialect,
-    normalization: sqliteRowNormalization(),
-    exec(sql) {
-      return connection.exec(sql);
-    },
-    prepare(sql) {
-      const statement = connection.prepare(sql);
-      return {
-        all(...params) {
-          return statement.all(...params);
-        },
-        get(...params) {
-          return statement.get(...params);
-        },
-        run(...params) {
-          return statement.run(...params);
-        },
-        columns() {
-          return statement.columns();
-        }
-      };
-    },
-    async withTransaction(fn) {
-      this.exec("BEGIN");
-      try {
-        const result = await fn(this);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    async withReadOnlySnapshot(fn) {
-      this.exec("BEGIN");
-      this.exec("PRAGMA query_only = ON");
-      try {
-        const result = await fn(this);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      } finally {
-        if (!options.readOnly) this.exec("PRAGMA query_only = OFF");
-      }
-    },
-    close() {
-      return connection.close();
-    }
-  };
-  if (!options.readOnly) {
-    adapter.exec("PRAGMA journal_mode = WAL");
-  }
-  return adapter;
-}
-async function createPostgresDatabaseAdapter(options) {
-  const url = typeof options === "string" ? options : options?.url;
-  if (!url) {
-    throw commandError(
-      "Missing Postgres database service URL.",
-      "Start a Dev session or local Container session with services.database.engine set to postgres."
-    );
-  }
-  const client = await createPostgresConnection(url);
-  let closed = false;
-  const dialect = postgresDatabaseDialect();
-  const normalization = postgresRowNormalization();
-  const assertOpen = () => {
-    if (closed) {
-      throw new Error("database is not open");
-    }
-  };
-  const query = async (sql, params = []) => {
-    assertOpen();
-    return await client.query(postgresInterpolate(sql, params));
-  };
-  const adapter = {
-    ...createSharedDatabaseAdapterMethods(dialect),
-    engine: "postgres",
-    dialect,
-    normalization,
-    exec(sql) {
-      return query(sql).then(() => void 0);
-    },
-    prepare(sql) {
-      assertOpen();
-      return {
-        all(...params) {
-          return query(sql, params).then((result) => postgresRowsFromResult(normalization, result));
-        },
-        get(...params) {
-          return this.all(...params).then((rows) => rows[0] ?? null);
-        },
-        run(...params) {
-          return query(sql, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: void 0
-          }));
-        },
-        // Postgres has no way to ask a statement for its result shape without running something,
-        // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
-        // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
-        // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
-        // follows it. Both are legal input that `validateReadOnlyInspectionSql` deliberately
-        // admits, and `sporades db query <sql>` is typed by a human, so a semicolon is ordinary.
-        // Left unhandled, the same query answers on SQLite and libSQL and fails here — the
-        // divergence this feature exists to close, reintroduced by the seam meant to prevent it.
-        // Stripping the terminator and any trailing trivia first is what makes the wrap safe.
-        //
-        // This leaves the inspection path issuing two statements on Postgres where the method
-        // override it replaced issued one, and that is a deliberate choice rather than an
-        // oversight. Merging them would mean caching a result on the prepared-statement object so
-        // that `columns()` and a later `all()` share it — which SQLite's and libSQL's statements do
-        // not do, so a statement held across two reads would answer stale rows here and fresh rows
-        // there. That is a new per-engine behavioural difference, bought in the feature whose
-        // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
-        // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
-        // plans the statement and stops before materializing a row.
-        columns() {
-          return query(
-            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`
-          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
-        }
-      };
-    },
-    // No behavioural method body lives here, deliberately (ADR-0037). Eleven used to: the upsert
-    // form, the auth and File metadata storage bootstraps, the catalog queries behind the three
-    // inspection methods, the app-table DDL, the OAuth state consume, and two await-shims. Each is
-    // now either a dialect entry or a corrected shared definition, and ADR-0034 and ADR-0036 record
-    // why each existed. `test/database-adapter-engine-seam.test.js` is what stops another appearing.
-    //
-    // The hazard that made removing them better than maintaining them, rather than merely tidier: a
-    // shared body an engine shadows is dormant, not correct. It becomes live the moment the shadow
-    // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
-    // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
-    // that silently never ran ADR-0036's ordering migration.
-    async withTransaction(fn) {
-      await this.exec("BEGIN");
-      try {
-        const result = await fn(this);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try {
-          await this.exec("ROLLBACK");
-        } catch {
-        }
-        throw error;
-      }
-    },
-    async withReadOnlySnapshot(fn) {
-      await this.exec("BEGIN TRANSACTION READ ONLY");
-      try {
-        const result = await fn(this);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try {
-          await this.exec("ROLLBACK");
-        } catch {
-        }
-        throw error;
-      }
-    },
-    async close() {
-      closed = true;
-      await client.close();
-    }
-  };
-  return adapter;
-}
-async function createPostgresConnection(url) {
-  const net = await import("node:net");
-  const crypto2 = await import("node:crypto");
-  const options = postgresUrlOptions(url);
-  const socket = net.createConnection({ host: options.host, port: options.port });
-  socket.setNoDelay(true);
-  let buffer = Buffer.alloc(0);
-  let ready = false;
-  let closed = false;
-  let backendKeyData = null;
-  let queryQueue = Promise.resolve();
-  const waiters = [];
-  socket.on("data", (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    wakePostgresWaiters(waiters);
-  });
-  socket.on("error", (error) => {
-    for (const waiter of waiters.splice(0)) {
-      waiter.reject(error);
-    }
-  });
-  socket.on("close", () => {
-    closed = true;
-    for (const waiter of waiters.splice(0)) {
-      waiter.reject(new Error("database is not open"));
-    }
-  });
-  await new Promise((resolve, reject) => {
-    socket.once("connect", resolve);
-    socket.once("error", reject);
-  });
-  let scram = null;
-  socket.write(postgresStartupMessage(options));
-  while (!ready) {
-    const message = await readPostgresMessage();
-    if (message.type === "R") {
-      const authType = message.body.readInt32BE(0);
-      if (authType === 0) {
-        continue;
-      }
-      if (authType === 3) {
-        socket.write(postgresPasswordMessage(Buffer.from(`${options.password}\0`, "utf8")));
-        continue;
-      }
-      if (authType === 10) {
-        const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
-        if (!mechanisms.includes("SCRAM-SHA-256")) {
-          throw commandError(
-            "Unsupported Postgres SASL mechanism.",
-            "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
-          );
-        }
-        scram = createPostgresScramSession(crypto2, options.password);
-        const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
-        socket.write(
-          postgresPasswordMessage(
-            Buffer.concat([Buffer.from("SCRAM-SHA-256\0", "utf8"), postgresInt32(clientFirst.length), clientFirst])
-          )
-        );
-        continue;
-      }
-      if (authType === 11 && scram) {
-        const clientFinal = scram.continue(message.body.subarray(4).toString("utf8"));
-        socket.write(postgresPasswordMessage(Buffer.from(clientFinal, "utf8")));
-        continue;
-      }
-      if (authType === 12 && scram) {
-        scram.verify(message.body.subarray(4).toString("utf8"));
-        continue;
-      }
-      throw commandError(
-        "Unsupported Postgres authentication method.",
-        "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials."
-      );
-    }
-    if (message.type === "K") {
-      backendKeyData = message.body;
-      continue;
-    }
-    if (message.type === "E") {
-      throw postgresErrorFromBody(message.body);
-    }
-    if (message.type === "Z") {
-      ready = true;
-    }
-  }
-  return {
-    get backendKeyData() {
-      return backendKeyData;
-    },
-    query(sql) {
-      if (closed) {
-        throw new Error("database is not open");
-      }
-      const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql)
-      );
-      queryQueue = pending.catch(() => {
-      });
-      return pending;
-    },
-    async close() {
-      await queryQueue.catch(() => {
-      });
-      if (closed) {
-        return;
-      }
-      closed = true;
-      socket.write(Buffer.from([88, 0, 0, 0, 4]));
-      socket.end();
-    }
-  };
-  async function executePostgresQuery(sql) {
-    if (closed) {
-      throw new Error("database is not open");
-    }
-    socket.write(postgresQueryMessage(sql));
-    const fields = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          throw queryError;
-        }
-        return { fields, rows, rowCount };
-      }
-    }
-  }
-  async function readPostgresMessage() {
-    while (buffer.length < 5) {
-      await waitForPostgresData(waiters);
-    }
-    const type = String.fromCharCode(buffer[0]);
-    const length = buffer.readInt32BE(1);
-    while (buffer.length < 1 + length) {
-      await waitForPostgresData(waiters);
-    }
-    const body = buffer.subarray(5, 1 + length);
-    buffer = buffer.subarray(1 + length);
-    return { type, body };
-  }
-}
-function postgresUrlOptions(url) {
-  const parsed = new URL(String(url));
-  return {
-    host: parsed.hostname || "127.0.0.1",
-    port: parsed.port ? Number(parsed.port) : 5432,
-    user: decodeURIComponent(parsed.username || "sporades"),
-    password: decodeURIComponent(parsed.password || ""),
-    database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades")
-  };
-}
-function postgresPasswordMessage(body) {
-  const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
-  return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
-}
-function createPostgresScramSession(crypto2, password) {
-  const clientNonce = crypto2.randomBytes(18).toString("base64");
-  const clientFirstBare = `n=,r=${clientNonce}`;
-  let serverSignature = null;
-  return {
-    clientFirstMessage: `n,,${clientFirstBare}`,
-    continue(serverFirstMessage) {
-      const attributes = new Map(serverFirstMessage.split(",").map((part) => [part.slice(0, 1), part.slice(2)]));
-      const serverNonce = attributes.get("r") ?? "";
-      const salt = Buffer.from(attributes.get("s") ?? "", "base64");
-      const iterations = Number(attributes.get("i") ?? "0");
-      if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
-        throw new Error("Invalid Postgres SCRAM server-first message.");
-      }
-      const saltedPassword = crypto2.pbkdf2Sync(password, salt, iterations, 32, "sha256");
-      const clientKey = crypto2.createHmac("sha256", saltedPassword).update("Client Key").digest();
-      const storedKey = crypto2.createHash("sha256").update(clientKey).digest();
-      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
-      const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
-      const clientSignature = crypto2.createHmac("sha256", storedKey).update(authMessage).digest();
-      const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
-      const serverKey = crypto2.createHmac("sha256", saltedPassword).update("Server Key").digest();
-      serverSignature = crypto2.createHmac("sha256", serverKey).update(authMessage).digest("base64");
-      return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
-    },
-    verify(serverFinalMessage) {
-      if (serverFinalMessage !== `v=${serverSignature}`) {
-        throw new Error("Postgres SCRAM server signature verification failed.");
-      }
-    }
-  };
-}
-function postgresStartupMessage(options) {
-  const params = [
-    ["user", options.user],
-    ["database", options.database],
-    ["client_encoding", "UTF8"]
-  ];
-  const bodyParts = [postgresInt32(196608)];
-  for (const [key, value] of params) {
-    bodyParts.push(Buffer.from(`${key}\0${value}\0`, "utf8"));
-  }
-  bodyParts.push(Buffer.from([0]));
-  const body = Buffer.concat(bodyParts);
-  return Buffer.concat([postgresInt32(body.length + 4), body]);
-}
-function postgresQueryMessage(sql) {
-  const body = Buffer.from(`${sql}\0`, "utf8");
-  return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
-}
-function postgresInt32(value) {
-  const buffer = Buffer.alloc(4);
-  buffer.writeInt32BE(value, 0);
-  return buffer;
-}
-function waitForPostgresData(waiters) {
-  return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
-}
-function wakePostgresWaiters(waiters) {
-  for (const waiter of waiters.splice(0)) {
-    waiter.resolve();
-  }
-}
-function postgresParseRowDescription(body) {
-  const fields = [];
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
-  for (let index = 0; index < count; index += 1) {
-    const nameEnd = body.indexOf(0, offset);
-    const name = body.subarray(offset, nameEnd).toString("utf8");
-    offset = nameEnd + 1;
-    offset += 6;
-    const dataTypeID = body.readInt32BE(offset);
-    offset += 4;
-    offset += 8;
-    fields.push({ name, dataTypeID });
-  }
-  return fields;
-}
-function postgresParseDataRow(body, fields) {
-  const row = {};
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
-  for (let index = 0; index < count; index += 1) {
-    const field = fields[index];
-    if (!field) {
-      throw new Error("Postgres protocol error: data row did not match row description.");
-    }
-    const length = body.readInt32BE(offset);
-    offset += 4;
-    if (length === -1) {
-      row[field.name] = null;
-      continue;
-    }
-    const raw = body.subarray(offset, offset + length).toString("utf8");
-    offset += length;
-    row[field.name] = postgresValueFromText(raw, field.dataTypeID);
-  }
-  return row;
-}
-function postgresValueFromText(value, dataTypeID) {
-  if ([20, 21, 23].includes(dataTypeID)) {
-    return Number(value);
-  }
-  if ([700, 701, 1700].includes(dataTypeID)) {
-    return Number(value);
-  }
-  if (dataTypeID === 16) {
-    return value === "t";
-  }
-  return value;
-}
-function postgresRowCountFromCommand(tag) {
-  const match = tag.match(/\s(\d+)$/);
-  return match ? Number(match[1]) : 0;
-}
-function postgresErrorFromBody(body) {
-  const fields = {};
-  let offset = 0;
-  while (offset < body.length && body[offset] !== 0) {
-    const type = String.fromCharCode(body[offset]);
-    offset += 1;
-    const end = body.indexOf(0, offset);
-    fields[type] = body.subarray(offset, end).toString("utf8");
-    offset = end + 1;
-  }
-  return new Error(fields.M ?? "Postgres query failed.");
-}
-function postgresInterpolate(sql, params = []) {
-  let index = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let result = "";
-  const text = String(sql ?? "");
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
-    if (lineComment) {
-      result += char;
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      result += char;
-      if (char === "*" && next === "/") {
-        result += next;
-        position += 1;
-        blockComment = false;
-      }
-      continue;
-    }
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      result += char + next;
-      position += 1;
-      lineComment = true;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      result += char + next;
-      position += 1;
-      blockComment = true;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (char === "?") {
-      if (index >= params.length) {
-        throw new Error("Missing Postgres query parameter.");
-      }
-      result += toSqlLiteral(params[index]);
-      index += 1;
-      continue;
-    }
-    result += char;
-  }
-  if (index < params.length) {
-    throw new Error("Too many Postgres query parameters.");
-  }
-  return result;
-}
-function postgresRowsFromResult(normalization, result) {
-  return result.rows.map((row) => normalization.row(row));
-}
-async function createLibsqlDatabaseAdapter(options) {
-  const url = typeof options === "string" ? options : options?.url;
-  if (!url) {
-    throw commandError(
-      "Missing libSQL database service URL.",
-      "Start a Dev session or local Container session with services.database.engine set to libsql."
-    );
-  }
-  const endpoint = libsqlPipelineUrl(url);
-  const authToken = typeof options === "object" ? options.authToken : null;
-  let closed = false;
-  const activeTransactions = /* @__PURE__ */ new Set();
-  const dialect = sqliteDatabaseDialect();
-  const normalization = libsqlRowNormalization();
-  const createOperations = (transaction = null) => ({
-    exec(sql) {
-      assertLibsqlOpen(closed);
-      const request = libsqlHasMultipleStatements(sql) ? { type: "sequence", sql } : { type: "execute", stmt: { sql } };
-      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
-    },
-    prepare(sql) {
-      assertLibsqlOpen(closed);
-      return {
-        all(...params) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
-            (result) => libsqlRowsFromResult(normalization, result)
-          );
-        },
-        get(...params) {
-          return this.all(...params).then((rows) => rows[0] ?? null);
-        },
-        run(...params) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-            lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
-          }));
-        },
-        columns() {
-          return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
-        }
-      };
-    }
-  });
-  const adapter = {
-    ...createSharedDatabaseAdapterMethods(dialect),
-    ...createOperations(),
-    engine: "libsql",
-    dialect,
-    normalization,
-    // No behavioural method body lives here either, for the reasons ADR-0037 records and the
-    // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
-    // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
-    // body instead.
-    async withTransaction(fn) {
-      const transaction = { baton: null, baseUrl: endpoint };
-      const transactionAdapter = {
-        ...adapter,
-        ...createOperations(transaction),
-        async withTransaction() {
-          throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
-        }
-      };
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        const result = await fn(transactionAdapter);
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) {
-        try {
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
-        } catch {
-        }
-        throw error;
-      } finally {
-        activeTransactions.delete(transaction);
-      }
-    },
-    async withReadOnlySnapshot(fn) {
-      const transaction = { baton: null, baseUrl: endpoint };
-      const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
-        const result = await fn(snapshotAdapter);
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) {
-        try {
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
-        } catch {
-        }
-        throw error;
-      } finally {
-        activeTransactions.delete(transaction);
-      }
-    },
-    async close() {
-      closed = true;
-      for (const transaction of activeTransactions) {
-        if (transaction.baton) {
-          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => {
-          });
-        }
-      }
-      activeTransactions.clear();
-    }
-  };
-  return adapter;
-}
-function libsqlPipelineUrl(url) {
-  const parsed = new URL(String(url));
-  parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/v2/pipeline`;
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString();
-}
-function assertLibsqlOpen(closed) {
-  if (closed) {
-    throw new Error("database is not open");
-  }
-}
-function libsqlHasMultipleStatements(sql) {
-  return splitSqlStatements(sql).length > 1;
-}
-async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }) {
-  const [result] = await libsqlPipeline({
-    endpoint,
-    authToken,
-    transaction,
-    requests: [{ type: "execute", stmt: { sql, args: params.map(libsqlValueFromJs) } }],
-    close
-  });
-  return result.result;
-}
-async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) {
-  const [result] = await libsqlPipeline({
-    endpoint,
-    authToken,
-    transaction,
-    requests: [{ type: "describe", sql }],
-    close
-  });
-  return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
-}
-async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }) {
-  const requestUrl = transaction?.baseUrl ?? endpoint;
-  const payload = {
-    ...transaction ? { baton: transaction.baton } : {},
-    requests: close ? [...requests, { type: "close" }] : requests
-  };
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...authToken ? { authorization: `Bearer ${authToken}` } : {}
-    },
-    body: JSON.stringify(payload)
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body?.error?.message ?? `libSQL request failed with HTTP ${response.status}.`);
-  }
-  if (transaction) {
-    transaction.baton = body.baton ?? null;
-    transaction.baseUrl = body.base_url ? new URL("/v2/pipeline", body.base_url).toString() : requestUrl;
-  }
-  const results = body.results ?? [];
-  const errorResult = results.find((result) => result.type === "error");
-  if (errorResult) {
-    throw new Error(errorResult.error?.message ?? "libSQL statement failed.");
-  }
-  return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
-}
-function libsqlRowsFromResult(normalization, result) {
-  const columns = (result.cols ?? []).map((column) => column.name);
-  return (result.rows ?? []).map(
-    (row) => normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column, index) => [column, row[index]])) : row)
-  );
-}
-function libsqlValueFromJs(value) {
-  if (value === null || value === void 0) {
-    return { type: "null" };
-  }
-  if (typeof value === "boolean") {
-    return { type: "integer", value: value ? "1" : "0" };
-  }
-  if (typeof value === "bigint") {
-    return { type: "integer", value: String(value) };
-  }
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return { type: "integer", value: String(value) };
-  }
-  if (typeof value === "number") {
-    return { type: "float", value };
-  }
-  if (value instanceof Uint8Array) {
-    return { type: "blob", base64: Buffer.from(value).toString("base64") };
-  }
-  return { type: "text", value: String(value) };
-}
-function libsqlValueToJs(value) {
-  if (value === null || value === void 0 || value.type === "null") {
-    return null;
-  }
-  if (value.type === "integer") {
-    const number = Number(value.value);
-    return Number.isSafeInteger(number) ? number : String(value.value);
-  }
-  if (value.type === "float") {
-    return Number(value.value);
-  }
-  if (value.type === "blob") {
-    return Buffer.from(value.base64 ?? "", "base64");
-  }
-  if (Object.hasOwn(value, "value")) {
-    return value.value;
-  }
-  return value;
 }
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
@@ -12055,58 +12297,6 @@ function sqliteTypeForFieldKind(kind) {
   }
   return "TEXT";
 }
-function migrateAppSchemaInTransaction(sqlite, schema) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  return thenIfPromise(sqlite.readSchemaMetadata(), (existingSchemaRow) => {
-    let existingSchema = null;
-    let schemaChanged = false;
-    if (existingSchemaRow) {
-      try {
-        existingSchema = JSON.parse(existingSchemaRow.value);
-      } catch {
-        throw commandError(
-          "Invalid Sporades schema metadata.",
-          "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
-        );
-      }
-      schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-      if (schemaChanged) {
-        assertAdditiveSchemaMigration(existingSchema, nextSchema);
-      }
-    }
-    const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-    return chainMaybePromise([
-      ...schema.tables.map((table) => () => {
-        const existingTable = existingTables.get(table.name);
-        return schemaChanged && existingTable ? migrateExistingAppTableInTransaction(sqlite, existingTable, table) : sqlite.createAppTable(table);
-      }),
-      () => sqlite.writeSchemaMetadata({
-        schemaVersion: "v1:additive-fields",
-        schemaHash: nextSchemaHash,
-        schemaJson: nextSchemaJson
-      })
-    ]);
-  });
-}
-function normalizeSchema(schema) {
-  return {
-    tables: schema.tables.map((table) => ({
-      name: table.name,
-      fields: table.fields.map((field) => ({
-        name: field.name,
-        kind: field.kind,
-        sqliteType: field.sqliteType,
-        targetTable: field.targetTable,
-        defaultValue: field.defaultValue
-      }))
-    })).sort((left, right) => left.name.localeCompare(right.name))
-  };
-}
-function hashSchema(schemaJson) {
-  return createHash2("sha256").update(schemaJson).digest("hex");
-}
 function assertValidReferenceTargets(schema) {
   const tableNames = new Set(schema.tables.map((table) => table.name));
   for (const table of schema.tables) {
@@ -12119,87 +12309,6 @@ function assertValidReferenceTargets(schema) {
       }
     }
   }
-}
-function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
-  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
-  for (const existingTable of existingSchema.tables ?? []) {
-    const nextTable = nextTables.get(existingTable.name);
-    if (!nextTable) {
-      throw commandError(
-        "Unsupported Capsule schema change.",
-        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
-      );
-    }
-    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
-    for (const existingField of existingTable.fields ?? []) {
-      const nextField = nextFields.get(existingField.name);
-      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
-        throw commandError(
-          "Unsupported Capsule schema change.",
-          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
-        );
-      }
-    }
-  }
-}
-function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
-  const dialect = sqlite.dialect;
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  return chainMaybePromise([
-    ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
-      (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
-        if (!exists) {
-          throw invalidReferenceError(field);
-        }
-      })
-    ),
-    () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
-    () => sqlite.createAppTable(nextTable, tempTableName),
-    () => sqlite.exec(
-      `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
-    ),
-    () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
-    () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
-  ]);
-}
-function columnSelectExpressionForMigration(dialect, existingTable, nextTable, columnName) {
-  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
-    return dialect.quoteIdentifier(columnName);
-  }
-  if ((existingTable.fields ?? []).some((field2) => field2.name === columnName)) {
-    return dialect.quoteIdentifier(columnName);
-  }
-  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
-  return field?.defaultValue === void 0 ? "NULL" : toSqlLiteral(field.defaultValue, field);
-}
-function addedFieldsForTable(existingTable, nextTable) {
-  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
-  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
-}
-function createAppTable(sqlite, table, tableName = table.name) {
-  return sqlite.exec(
-    `CREATE TABLE IF NOT EXISTS ${sqlite.dialect.quoteIdentifier(tableName)} (` + appTableColumnDefinitions(sqlite.dialect, table).join(", ") + ")"
-  );
-}
-function appTableColumnDefinitions(dialect, table) {
-  return [
-    `${dialect.quoteIdentifier("id")} TEXT PRIMARY KEY`,
-    `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
-    `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field) => appFieldColumnDefinition(dialect, field))
-  ];
-}
-function appFieldColumnDefinition(dialect, field) {
-  const defaultSql = fieldColumnDefaultSql(field);
-  const notNullSql = field.defaultValue !== void 0 && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
-  return `${dialect.quoteIdentifier(field.name)} ${dialect.columnType(field)}${notNullSql}${defaultSql}`;
-}
-function fieldDefaultIsSqlNull(field) {
-  return field.defaultValue === null && field.kind !== "Json";
-}
-function fieldColumnDefaultSql(field) {
-  return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 function extractSchema(serverSource) {
   const tables = [];
@@ -12674,24 +12783,6 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
-function isDuplicateColumnError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /duplicate column|already exists/i.test(text);
-}
-function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
-  try {
-    const result = sqlite.exec(sql);
-    if (isPromiseLike(result)) {
-      return result.catch((error) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-    }
-    return result;
-  } catch (error) {
-    if (!isDuplicateColumnError(error)) throw error;
-    return void 0;
-  }
-}
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
@@ -13070,34 +13161,6 @@ function parseDateFieldDefault(rawDefault) {
       "Pass an ISO 8601 date string or JavaScript Date value to Date().default(...)."
     );
   }
-}
-function toSqlLiteral(value, field = null) {
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
-  }
-  if (value === null) {
-    return "NULL";
-  }
-  if (field?.kind === "Date") {
-    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
-  }
-  if (typeof value === "boolean") {
-    return value ? "1" : "0";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
-async function listDatabaseTables(database) {
-  return await (database.adapter ?? database.adapter).listInspectableTables();
-}
-async function dumpDatabase(database) {
-  return await (database.adapter ?? database.adapter).dumpInspectableDatabase();
-}
-async function runReadOnlyQuery(database, sql) {
-  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
 }
 function normalizeJourneyPolicy(value) {
   if (value == null) return null;
@@ -13954,76 +14017,6 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   }, `password-reset:${issued.selector}`);
   return { ok: true };
 }
-function splitSqlStatements(sql) {
-  const statements = [];
-  let start = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  const text = String(sql ?? "");
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (lineComment) {
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        if (text[index + 1] === quote && quote !== "`") {
-          index += 1;
-          continue;
-        }
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === ";") {
-      const statement = text.slice(start, index).trim();
-      if (statement) {
-        statements.push(statement);
-      }
-      start = index + 1;
-    }
-  }
-  const last = text.slice(start).trim();
-  if (last) {
-    statements.push(last);
-  }
-  return statements;
-}
 function createWebSocketAccept(key) {
   return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
@@ -14847,9 +14840,6 @@ function rowToApiValue(row, table) {
   }
   return value;
 }
-function quoteIdentifier(identifier) {
-  return `"${String(identifier).replaceAll('"', '""')}"`;
-}
 
 // src/public-tree-contract.ts
 var PUBLIC_TREE_LIMITS = {
@@ -14967,7 +14957,18 @@ var MIGRATED_RUNTIME_MODULES = [
   // reason `maybe-promise.js` and the two above were. It imports `maybe-promise.js` and nothing else
   // in this set, and reaches `randomUUID` through the Web Crypto global rather than a builtin
   // (ADR-0042 rule 1), so the metafile check has no external of any kind to judge here.
-  { file: "log-index-storage.js", loaded: log_index_storage_exports }
+  { file: "log-index-storage.js", loaded: log_index_storage_exports },
+  // Batch 9: the Database adapters and dialect, and the last domain of ticket 04's nine. Listed last
+  // because it imports from *nine* of the modules above — more than any other entry here — and no
+  // module in the set imports it, so unlike batch 8's pair this edge is not a cycle. The order is
+  // documentation; esbuild resolves the graph either way.
+  //
+  // It is the first module to need three of ADR-0042's four routes to a Node builtin: `await import`
+  // for `node:sqlite`, `node:path`, `node:net` and `node:crypto` in the asynchronous engine
+  // constructors, and `process.getBuiltinModule` for `node:crypto` and `node:fs` where the call is
+  // synchronous. Neither accessor is an external, so the metafile check below judges only the four
+  // dynamic imports and passes unweakened.
+  { file: "database-runtime.js", loaded: database_runtime_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [
@@ -15499,6 +15500,179 @@ function migratedModuleHttpSecurityAnswer(module, config, request) {
     websocketAllowed: probedAnswer(() => module.websocketOriginAllowed(policy.returned, request))
   };
 }
+function migratedModuleStatementRecorder(dialect) {
+  const statements = [];
+  const record = (sql, params) => {
+    statements.push([String(sql), params.length]);
+  };
+  const adapter = {
+    dialect,
+    engine: "recorder",
+    exec(sql) {
+      record(sql, []);
+      return { changes: 0 };
+    },
+    prepare(sql) {
+      return {
+        // `get` answers null so every branch that asks "is there a recorded schema / an existing
+        // row" takes its absent arm. That is what makes the walk deterministic, and it is the arm
+        // that reaches `createAppTable` through `migrateAppSchema`.
+        get: (...params) => {
+          record(sql, params);
+          return null;
+        },
+        all: (...params) => {
+          record(sql, params);
+          return [];
+        },
+        run: (...params) => {
+          record(sql, params);
+          return { changes: 0, lastInsertRowid: 0 };
+        },
+        columns: () => [{ name: "recorded" }]
+      };
+    },
+    withTransaction: (fn) => fn(adapter),
+    withReadOnlySnapshot: (fn) => fn(adapter),
+    close: () => void 0
+  };
+  return { adapter, statements };
+}
+var MIGRATED_MODULE_DATABASE_PROBE_TABLE = {
+  name: "notes",
+  fields: [
+    { name: "title", kind: "Text", sqliteType: "TEXT", defaultValue: void 0 },
+    { name: "flag", kind: "Boolean", sqliteType: "INTEGER", defaultValue: true },
+    { name: "count", kind: "Number", sqliteType: "REAL", defaultValue: 0 },
+    { name: "meta", kind: "Json", sqliteType: "TEXT", defaultValue: null },
+    { name: "due", kind: "Date", sqliteType: "TEXT", defaultValue: "2024-03-05T06:07:08.900Z" },
+    { name: "ownerId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: null }
+  ]
+};
+var MIGRATED_MODULE_DATABASE_METHOD_PROBE = [
+  ["system-table", "ensureSystemTable", []],
+  ["read-metadata", "readSystemMetadata", ["schema"]],
+  ["write-metadata", "writeSystemMetadata", ["schema", "{}"]],
+  ["write-schema-metadata", "writeSchemaMetadata", [{ schemaVersion: "v1:additive-fields", schemaHash: "h", schemaJson: "{}" }]],
+  ["create-app-table", "createAppTable", [MIGRATED_MODULE_DATABASE_PROBE_TABLE]],
+  ["create-app-table-named", "createAppTable", [MIGRATED_MODULE_DATABASE_PROBE_TABLE, "notes_copy"]],
+  ["migrate-app-schema", "migrateAppSchema", [{ tables: [MIGRATED_MODULE_DATABASE_PROBE_TABLE] }]],
+  ["migrate-existing-table", "migrateExistingAppTable", [
+    { name: "notes", fields: [{ name: "title", kind: "Text", sqliteType: "TEXT", defaultValue: void 0 }] },
+    MIGRATED_MODULE_DATABASE_PROBE_TABLE
+  ]],
+  ["insert-app-row", "insertAppRow", [{ name: "notes" }, { id: "r1", title: "t", ownerId: "u1" }]],
+  ["select-app-row", "selectAppRowById", [{ name: "notes" }, "r1"]],
+  ["update-app-row", "updateAppRow", [{ name: "notes" }, "r1", { title: "t" }, {}]],
+  ["update-app-row-owner-scoped", "updateAppRow", [{ name: "notes" }, "r1", { title: "t" }, { ownerId: "u1" }]],
+  ["update-app-row-no-columns", "updateAppRow", [{ name: "notes" }, "r1", {}, {}]],
+  ["delete-app-row", "deleteAppRow", [{ name: "notes" }, "r1"]],
+  ["select-app-rows", "selectAppRows", [{ name: "notes" }, {}]],
+  ["select-app-rows-scoped", "selectAppRows", [{ name: "notes" }, { ownerId: "u1" }]],
+  ["select-app-rows-where", "selectAppRows", [{ name: "notes" }, { where: { fieldName: "title", value: "t" } }]],
+  ["select-app-rows-ordered", "selectAppRows", [{ name: "notes" }, { orderBy: { fieldName: "createdAt", direction: "DESC" } }]],
+  ["select-app-rows-limited", "selectAppRows", [{ name: "notes" }, { columns: ["id", "title"], limit: 5 }]],
+  ["reference-exists", "referenceExists", [{ targetTable: "users" }, "u1"]],
+  ["user-preferences-read", "readUserPreferences", ["u1"]],
+  ["user-preferences-save", "saveUserPreferences", [{ userId: "u1", value: "{}", updatedAt: "2024-01-01T00:00:00.000Z" }]],
+  ["auth-identity-by-subject", "findAuthIdentityByProviderSubject", ["google", "s1"]],
+  ["auth-session-with-user", "readAuthSessionWithUser", ["tok"]],
+  ["auth-session-rotate", "rotateAuthSession", ["old", { token: "new", userId: "u1", provider: "google", createdAt: "c", expiresAt: "e" }]],
+  ["password-reset-count", "countPasswordResetCodesForEmail", ["a@b.c", "2024-01-01T00:00:00.000Z"]],
+  ["password-reset-prune", "prunePasswordResetCodes", ["2024-01-01T00:00:00.000Z"]],
+  ["public-file-row", "selectPublicFileRow", ["p1"]],
+  ["live-file-by-path", "selectLiveFileByPath", ["/a/b"]],
+  ["file-row-for-owner", "fileRowForOwner", ["f1", "u1"]],
+  ["log-prune", "pruneLogIndex", [25]],
+  ["log-read", "readRecentLogEvents", [10]],
+  ["log-storage", "ensureLogStorage", []],
+  ["file-storage", "ensureFileStorage", []],
+  ["auth-storage", "ensureAuthStorage", [{ email: { enabled: true } }]],
+  ["preferences-storage", "ensureUserPreferencesStorage", []],
+  ["inspect-tables", "listInspectableTables", []],
+  ["health", "checkHealth", []],
+  ["inspection-refused", "runReadOnlyInspectionQuery", ["DROP TABLE t"]],
+  ["inspection-admitted", "runReadOnlyInspectionQuery", ["SELECT 1 AS s"]],
+  ["inspection-log-index", "runReadOnlyInspectionQuery", ["SELECT * FROM sporades_log_events"]]
+];
+function migratedModuleDialectAnswer(module, name) {
+  const dialect = probedAnswer(() => module[name]());
+  if (!("returned" in dialect)) return { dialect };
+  const d = dialect.returned;
+  const catalog = migratedModuleStatementRecorder(d);
+  const listed = probedAnswer(() => d.listTables(catalog.adapter));
+  const described = probedAnswer(() => d.describeColumns(catalog.adapter, "notes"));
+  const altered = probedAnswer(() => d.addMissingColumn(catalog.adapter, "notes", "indexSequence", "TEXT"));
+  const methods = migratedModuleStatementRecorder(d);
+  const set = probedAnswer(() => module.createSharedDatabaseAdapterMethods(d));
+  const emitted = "returned" in set ? MIGRATED_MODULE_DATABASE_METHOD_PROBE.map(([label, method, args]) => {
+    const before = methods.statements.length;
+    const answer = probedAnswer(() => Object.assign(methods.adapter, set.returned)[method](...args));
+    return [label, methods.statements.slice(before), "threw" in answer ? answer : null];
+  }) : set;
+  return {
+    name: d.name,
+    columnType: probedAnswer(() => d.columnType({ sqliteType: "REAL" })),
+    upsert: probedAnswer(() => d.upsertSql("sporades", ["key", "value"], ["key"])),
+    // The marker substitution ADR-0039 turns every identifier into, including one inside a string
+    // literal that must be left alone and a quote character that must be doubled.
+    sql: probedAnswer(() => d.sql("SELECT [id], [ownerId] FROM [notes] WHERE [name] = '[notLiteral]'")),
+    quoted: ["plain", "camelCase", 'has"quote', "sqlite_schema", ""].map((identifier) => probedAnswer(() => d.quoteIdentifier(identifier))),
+    catalog: { listed: "threw" in listed ? listed : null, described: "threw" in described ? described : null, altered: "threw" in altered ? altered : null, statements: catalog.statements },
+    emitted
+  };
+}
+function dialectProbedAnswer(call) {
+  try {
+    return { returned: call() };
+  } catch (error) {
+    return { threw: { code: error?.code ?? null, message: String(error?.message ?? error), hint: error?.hint ?? null } };
+  }
+}
+var MIGRATED_MODULE_DIALECT_SPEC_SKEW_PROBE = [
+  ["complete", { name: "x", quoteIdentifier: (i) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "", listTables: () => [], describeColumns: () => [], addMissingColumn: () => void 0 }],
+  ["missing-quote", { name: "x", columnType: () => "TEXT", upsertSql: () => "", listTables: () => [], describeColumns: () => [], addMissingColumn: () => void 0 }],
+  ["missing-catalog", { name: "x", quoteIdentifier: (i) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "" }],
+  ["null-entry", { name: "x", quoteIdentifier: (i) => `"${i}"`, columnType: () => "TEXT", upsertSql: () => "", listTables: null, describeColumns: () => [], addMissingColumn: () => void 0 }],
+  ["empty", {}]
+];
+var MIGRATED_MODULE_NORMALIZATION_SPEC_SKEW_PROBE = [
+  ["complete", { name: "x", columnName: (n) => n, value: (v) => v }],
+  ["missing-value", { name: "x", columnName: (n) => n }],
+  ["missing-column-name", { name: "x", value: (v) => v }],
+  ["null-value", { name: "x", columnName: (n) => n, value: null }],
+  ["empty", {}]
+];
+var MIGRATED_MODULE_NORMALIZATION_VALUE_PROBE = [
+  null,
+  { type: "null" },
+  { type: "integer", value: "42" },
+  { type: "float", value: 1.5 },
+  { type: "text", value: "t" },
+  { type: "blob", base64: "AAEC" },
+  "left alone",
+  7
+];
+var MIGRATED_MODULE_SQL_TEXT_PROBE = [
+  ["no-params", "SELECT 1 AS s", []],
+  ["one-param", "SELECT * FROM t WHERE a = ?", ["v"]],
+  ["param-in-single-quotes", "SELECT '?' AS s, ? AS t", ["v"]],
+  ["param-in-double-quotes", 'SELECT "?" AS s, ? AS t', ["v"]],
+  ["param-in-dollar-quote", "SELECT $$?$$ AS s, ? AS t", ["v"]],
+  ["param-in-line-comment", "SELECT 1 AS s -- ?\n, ? AS t", ["v"]],
+  ["param-in-block-comment", "SELECT 1 AS s /* ? */, ? AS t", ["v"]],
+  ["escaped-quote", "SELECT 'a\\'?' AS s, ? AS t", ["v"]],
+  ["too-few", "SELECT ?, ?", ["only-one"]],
+  ["too-many", "SELECT ?", ["a", "b"]],
+  ["null-param", "SELECT ?", [null]],
+  ["boolean-param", "SELECT ?", [true]],
+  ["number-param", "SELECT ?", [1.5]],
+  ["quote-in-param", "SELECT ?", ["it's"]],
+  ["multi-statement", "SELECT 1; SELECT 2", []],
+  ["semicolon-in-string", "SELECT ';' AS s; SELECT 2", []],
+  ["semicolon-in-comment", "SELECT 1 -- ;\n; SELECT 2", []],
+  ["trailing-semicolon", "SELECT 1;", []]
+];
 var MIGRATED_MODULE_PROBE_NAMES = [
   "validateReadOnlyInspectionSql",
   "sqlWithoutTrailingTerminator",
@@ -15538,7 +15712,19 @@ var MIGRATED_MODULE_PROBE_NAMES = [
   "resolveOAuthRequestOrigin",
   "websocketOriginAllowed",
   "resolveHttpMaxBodyBytes",
-  "injectPageConnectionToken"
+  "injectPageConnectionToken",
+  // Batch 9.
+  "createDatabaseDialect",
+  "createDatabaseNormalization",
+  "sqliteDatabaseDialect",
+  "postgresDatabaseDialect",
+  "sqliteRowNormalization",
+  "postgresRowNormalization",
+  "libsqlRowNormalization",
+  "createSharedDatabaseAdapterMethods",
+  "quoteIdentifier",
+  "postgresInterpolate",
+  "splitSqlStatements"
 ];
 function probedAnswer(call) {
   try {
@@ -15835,6 +16021,56 @@ function describeMigratedModuleAnswers(module) {
       ["token-needs-escaping", "<html><head></head></html>", '</script><script>alert("x")']
     ].map(
       ([label, html, token]) => JSON.stringify([label, probedAnswer(() => module.injectPageConnectionToken(html, token))])
+    ),
+    // Batch 9: the Database adapters and dialect. Four limbs, because this domain answers in four
+    // shapes and only one of them is a return value.
+    //
+    // The first is the whole of it: for each engine dialect, every seam entry, and then the shared
+    // method set driven case by case against a recorder so that the *statements* are what gets
+    // compared. That one limb reaches all thirteen app-schema DDL declarations, `toSqlLiteral` and
+    // through it `normalizeDateValue`, `runSchemaExecIgnoringDuplicateColumn` and
+    // `isDuplicateColumnError` through SQLite's `addMissingColumn`, the catalog queries, the
+    // read-only inspection method and its two gates, and every SQL string in a method body — none of
+    // which any return value carries. See the recorder's own comment for what it deliberately does
+    // not record.
+    ...["sqliteDatabaseDialect", "postgresDatabaseDialect"].map(
+      (name) => JSON.stringify([name, migratedModuleDialectAnswer(module, name)])
+    ),
+    // The seam's refusals, with the hint they travel on.
+    ...MIGRATED_MODULE_DIALECT_SPEC_SKEW_PROBE.map(
+      ([label, spec]) => JSON.stringify([label, dialectProbedAnswer(() => {
+        const built = module.createDatabaseDialect(spec);
+        return [built.name, typeof built.sql, built.sql("SELECT [a]")];
+      })])
+    ),
+    ...MIGRATED_MODULE_NORMALIZATION_SPEC_SKEW_PROBE.map(
+      ([label, spec]) => JSON.stringify([label, dialectProbedAnswer(() => {
+        const built = module.createDatabaseNormalization(spec);
+        return [built.name, typeof built.row, built.row({ a: 1 })];
+      })])
+    ),
+    // The three engines' normalization, compared over the same values. `row` is derived from
+    // `columnName` and `value` rather than supplied, so driving it drives both.
+    ...["sqliteRowNormalization", "postgresRowNormalization", "libsqlRowNormalization"].map(
+      (name) => JSON.stringify([name, probedAnswer(() => {
+        const normalization = module[name]();
+        return [
+          normalization.name,
+          MIGRATED_MODULE_NORMALIZATION_VALUE_PROBE.map((value) => normalization.value(value)),
+          normalization.columnName("camelCase"),
+          normalization.row({ camelCase: { type: "integer", value: "7" }, plain: null })
+        ];
+      })])
+    ),
+    // The bind-placeholder walk, the statement splitter and the quoting, over text whose quotes,
+    // comments and dollar quotes are what a drifted copy would get wrong.
+    ...MIGRATED_MODULE_SQL_TEXT_PROBE.map(
+      ([label, sql, params]) => JSON.stringify([
+        label,
+        probedAnswer(() => module.postgresInterpolate(sql, params)),
+        probedAnswer(() => module.splitSqlStatements(sql)),
+        probedAnswer(() => module.quoteIdentifier(sql))
+      ])
     )
   ];
 }

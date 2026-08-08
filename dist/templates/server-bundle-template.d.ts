@@ -18,6 +18,10 @@ export declare const MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE: [string, string, stri
 export declare const MIGRATED_MODULE_ACL_READ_SKEW_PROBE: [string, string, string][];
 export declare const MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE: [string, Record<string, unknown>, Record<string, unknown>][];
 export declare const MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE: [string, unknown][];
+export declare const MIGRATED_MODULE_DIALECT_SPEC_SKEW_PROBE: [string, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_NORMALIZATION_SPEC_SKEW_PROBE: [string, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_NORMALIZATION_VALUE_PROBE: unknown[];
+export declare const MIGRATED_MODULE_SQL_TEXT_PROBE: [string, string, unknown[]][];
 export declare function migratedRuntimeModulesBlockFrom(distDir: string): string;
 export declare function createServerBundleSource({ config, serverEnv, sealedServerEnv, serverSource, serverModuleSource }: {
     config: any;
