@@ -1,9 +1,12 @@
+import { isBuiltin } from "node:module";
 import path from "node:path";
 
 import { buildSync } from "esbuild";
 
 import * as inspectionSql from "../inspection-sql.js";
 import * as logIndexGuard from "../log-index-guard.js";
+import * as mailConfig from "../mail-config.js";
+import * as mailRuntime from "../mail-runtime.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import {
   ACL_HELPER_STATE,
@@ -50,7 +53,15 @@ const MIGRATED_MODULES_NAMESPACE = "__sporadesMigratedRuntimeModules";
 const MIGRATED_RUNTIME_MODULES = [
   { file: "inspection-sql.js", loaded: inspectionSql as Record<string, unknown> },
   { file: "log-index-guard.js", loaded: logIndexGuard as Record<string, unknown> },
+  { file: "mail-config.js", loaded: mailConfig as Record<string, unknown> },
+  { file: "mail-runtime.js", loaded: mailRuntime as Record<string, unknown> },
 ];
+
+// The same list as file names, for guards that have to read the modules off disk rather than call
+// them. Exported so that `test/server-bundle-free-bindings.test.js` cannot go out of step with what
+// is actually carried — the one thing this migration keeps proving is that a second, hand-kept copy
+// of this list is how a guard quietly stops covering a domain.
+export const MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 
 // Statements the carried copies of the migrated modules and the loaded ones must agree about,
 // checked at every bundle build. Half are refused by the inspection gate and half admitted, and the
@@ -101,6 +112,57 @@ export const MIGRATED_MODULE_ROW_SKEW_PROBE: [Record<string, any>, string][] = [
   [{}, ""],
 ];
 
+// Mail configurations the carried copy of `mail-config` and the running one must judge the same way.
+// Six are refused and four admitted, for the same reason the statement probe above is split both
+// ways: a carried `validateMailConfig` replaced by one that returns its input unchanged answers
+// every admitted case correctly and is caught only by a refused one, and one that refuses
+// everything is caught only by an admitted one.
+//
+// The refused half is drawn from what this validator exists to stop rather than from what is merely
+// malformed — credentials offered over a plaintext or opportunistically-encrypted hop, a Server env
+// reference reaching into the reserved `SPORADES_` namespace, a header-splitting sender, and a TLS
+// mode that is not one of the four. Those are the limbs whose loss would be silent.
+export const MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE: any[] = [
+  undefined,
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 587, tls: { mode: "required-starttls" }, auth: { method: "PLAIN", usernameEnv: "SMTP_USERNAME", passwordEnv: "SMTP_PASSWORD" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 465, tls: { mode: "implicit", rejectUnauthorized: false, servername: "mail.example.com" }, auth: { method: "LOGIN", usernameEnv: "U", passwordEnv: "P" }, defaultFrom: "a@example.com", connectionTimeoutMs: 5000, socketTimeoutMs: 30000 } },
+  { smtp: { vendor: "generic", host: "127.0.0.1", port: 25, tls: { mode: "disabled" }, auth: { method: "none" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 25, tls: { mode: "opportunistic" }, auth: { method: "PLAIN", usernameEnv: "U", passwordEnv: "P" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 25, tls: { mode: "disabled" }, auth: { method: "PLAIN", usernameEnv: "U", passwordEnv: "P" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 587, tls: { mode: "required-starttls" }, auth: { method: "PLAIN", usernameEnv: "SPORADES_SECRET", passwordEnv: "P" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 587, tls: { mode: "starttls" }, auth: { method: "none" } } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 587, tls: { mode: "required-starttls" }, auth: { method: "none" }, defaultFrom: "a@example.com\r\nBcc: b@example.com" } },
+  { smtp: { vendor: "generic", host: "smtp.example.com", port: 0, tls: { mode: "required-starttls" }, auth: { method: "none" } } },
+];
+
+// Messages the carried copy of `mail-runtime` and the running one must assemble into identical MIME.
+// This domain's header folding, RFC 2047 encoding, base64 wrapping and Mailgun JSON folding are all
+// private to that module, and `buildSmtpMessage` is the only exported name that reaches them — so a
+// probe that did not call it could not see any of the four change. The shapes below are chosen to
+// reach one limb each.
+//
+// What this probe does *not* reach is the rest of the domain: the SMTP conversation, the transport's
+// error normalization, and the message and provider normalizers upstream of it. Those need a socket
+// or an exported entry point, and stating the gap is better than implying the probe covers a domain
+// it covers one half of. `test/mail.test.js` is what covers the rest, against `dist/`.
+//
+// Every message pins `messageId` and carries exactly one body. Both are deliberate:
+// `buildSmtpMessage` mints a `randomUUID()` for an absent Message-ID and another for the multipart
+// boundary, and two bodies are what make it multipart — so either would make the two copies disagree
+// on every build for no reason. The `Date` header is generated the same way and cannot be pinned at
+// all, so the comparison below strips it.
+export const MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE: any[] = [
+  { from: { email: "a@example.com" }, to: [{ email: "b@example.com" }], cc: [], subject: "Plain", messageId: "<1@sporades.local>", textBody: "hello" },
+  { from: { email: "a@example.com", name: "Ada Lovelace" }, to: [{ email: "b@example.com", name: "Bob" }], cc: [{ email: "c@example.com" }], replyTo: { email: "r@example.com" }, subject: "Uberändert — café naïve 🚀", messageId: "<2@sporades.local>", htmlBody: "<p>hi</p>" },
+  { from: { email: "a@example.com", name: 'Quote "me", back\\slash' }, to: [{ email: "b@example.com" }], cc: [], subject: "x".repeat(200), messageId: "<3@sporades.local>", textBody: "body" },
+  // The Mailgun value is two tokens rather than one long one on purpose: `foldMailgunJsonHeader`
+  // refuses any single JSON token over 997 characters, so a 1,200-character value would exercise
+  // that refusal instead of the folding this message is here to compare. Two 400-character values
+  // put the header past SMTP's 998-character line limit while leaving every token foldable.
+  { from: { email: "a@example.com" }, to: [{ email: "b@example.com" }], cc: [], subject: "Provider headers", messageId: "<4@sporades.local>", textBody: "body", providerHeaders: [{ name: "X-PM-Tag", value: "welcome" }, { name: "X-Mailgun-Variables", value: `{"a":"${"v".repeat(400)}","b":"${"w".repeat(400)}"}`, json: true }, { name: "X-Verbatim", value: "kept as-is" }] },
+  { from: { email: "a@example.com" }, to: [{ email: "b@example.com" }, { email: "c@example.com" }, { email: "d@example.com" }], cc: [], subject: "Folding a long recipient list across the SMTP line limit for good measure", messageId: "<5@sporades.local>", textBody: "z".repeat(300) },
+];
+
 function bundleTemplateError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
@@ -132,12 +194,36 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "targetsInternalLogIndexTable",
   "readSqlTableReference",
   "isInternalLogIndexMetadataRow",
+  "validateMailConfig",
+  "buildSmtpMessage",
 ];
+
+// What a probed call answered, as one comparable string, whether it returned or threw. The mail
+// limbs need this and the inspection ones do not: `validateReadOnlyInspectionSql` reports a refusal
+// by returning `{ ok: false }`, while `validateMailConfig` reports one by throwing, and a comparison
+// that let the throw escape would fail the build with the validator's own message and no indication
+// that two copies of a module were being compared. The error's `code` and `message` are part of the
+// answer, so a carried copy that refuses the right configurations for the wrong reason is a
+// disagreement rather than a match.
+function probedAnswer(call: () => unknown) {
+  try {
+    return { returned: call() };
+  } catch (error: any) {
+    return { threw: { code: error?.code ?? null, message: String(error?.message ?? error) } };
+  }
+}
 
 // What the two copies of the migrated modules answer, as comparable text. The inspection gate over
 // the statement probe, then the log-index guard over the same statements and over the row probe —
 // the guard reads rows as well as SQL, and a check that only asked about SQL could not see half of
-// it go missing.
+// it go missing. Then the mail domain, which answers a question in a different shape again: a
+// configuration is judged by throwing rather than by returning a verdict, and a message is answered
+// with the MIME text it assembles.
+//
+// Every migrated module needs a limb here or it is carried without being compared, which is the
+// state this whole check exists to make unreachable. A batch that adds a module to
+// `MIGRATED_RUNTIME_MODULES` and nothing to this function has bought the export-surface check and
+// none of the behavioural one.
 function describeMigratedModuleAnswers(module: any) {
   const absent = MIGRATED_MODULE_PROBE_NAMES.filter((name) => typeof module[name] !== "function");
   if (absent.length > 0) {
@@ -158,6 +244,25 @@ function describeMigratedModuleAnswers(module: any) {
     ),
     ...MIGRATED_MODULE_ROW_SKEW_PROBE.map(([row, sql]) =>
       JSON.stringify([row, sql, module.isInternalLogIndexMetadataRow(row, sql)]),
+    ),
+    ...MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE.map((config) =>
+      JSON.stringify([config, probedAnswer(() => module.validateMailConfig(config))]),
+    ),
+    // The `Date` header is `new Date().toUTCString()` and cannot be pinned from outside, so the two
+    // copies are compared without it. Stripped rather than tolerated: a comparison that ignored any
+    // line beginning `Date:` would also ignore one a skewed copy had emitted wrongly, and dropping
+    // exactly one line keeps the rest of the message — every folded header, every encoded word, the
+    // base64 body — under comparison.
+    ...MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE.map((message) =>
+      JSON.stringify([
+        message.messageId,
+        probedAnswer(() => {
+          const mime = module.buildSmtpMessage(message);
+          return typeof mime === "string"
+            ? mime.split("\r\n").filter((line: string) => !line.startsWith("Date: ")).join("\r\n")
+            : mime;
+        }),
+      ]),
     ),
   ];
 }
@@ -253,19 +358,37 @@ export function migratedRuntimeModulesBlockFrom(distDir: string) {
   }
 
   // ADR-0040: a deployed Capsule runs `node /app/server.mjs` in an image with no `node_modules`, so
-  // this block must resolve nothing at runtime. Asked of esbuild's metafile rather than of the text,
-  // because this is exactly where the property stops holding by construction: the moment a migrated
-  // module imports something outside this list, `format: "iife"` emits a `require(…)` for it and the
-  // Capsule dies at boot rather than at build. A builtin is no better than a package here — the
-  // block is spliced into an ES module, where `require` is not defined at all.
+  // this block must resolve nothing at runtime that the image cannot supply. Asked of esbuild's
+  // metafile rather than of the text, because this is exactly where the property stops holding by
+  // construction: the moment a migrated module imports something outside this list, `format: "iife"`
+  // emits a `require(…)` for it and the Capsule dies at boot rather than at build.
+  //
+  // **One kind of external is allowed, and only because it is not lowered.** A *static* import — of a
+  // package or of a builtin, it makes no difference — becomes `__require("node:crypto")`, which
+  // throws `Dynamic require of "node:crypto" is not supported` on the first line of a bundle that is
+  // an ES module. That was executed, not assumed, and it is why the mail domain reaches the Web
+  // Crypto global instead of importing `randomUUID`. A *dynamic* `import(…)` is different in kind:
+  // esbuild emits it verbatim, so `await import("node:tls")` survives into the block as itself and a
+  // deployed Capsule resolves it exactly as it resolves the bundle's own top-level
+  // `import … from "node:crypto"`. The mail transport has opened its TLS and TCP sockets that way
+  // since long before any of this, through the same text, and refusing it here would have forced
+  // that one function to stay behind in the monolith for a reason that does not exist.
+  //
+  // So the rule is narrower than "no externals" and stricter than the module-graph builder's: a
+  // dynamic import of a Node builtin, and nothing else. A dynamic import of a *package* is still
+  // refused — it survives verbatim too, and then finds no `node_modules` in the image.
+  //
+  // ADR-0041 named this as the untested case; batch 2 is where it was executed. `isBuiltin` rather
+  // than a `node:` prefix test, matching `createServerBundleModuleSource`: an unprefixed `tls`
+  // resolves in the container exactly as well as `node:tls` does.
   const unresolved = Object.values(result.metafile.outputs)
     .flatMap((entry) => entry.imports)
-    .filter((entry) => entry.external)
+    .filter((entry) => entry.external && !(entry.kind === "dynamic-import" && isBuiltin(entry.path)))
     .map((entry) => entry.path);
   if (unresolved.length > 0) {
     throw bundleTemplateError(
       `Server bundle failed: the migrated runtime modules would resolve ${[...new Set(unresolved)].sort().join(", ")} at runtime.`,
-      "A migrated runtime module may only import another migrated module. Add the dependency to MIGRATED_RUNTIME_MODULES, or inline what it needs.",
+      "A migrated runtime module may import another migrated module, or a Node builtin through a dynamic `import(…)`. A static import of anything outside the migrated set becomes a `require(…)` the bundle cannot execute: add the dependency to MIGRATED_RUNTIME_MODULES, or inline what it needs.",
     );
   }
 
@@ -320,7 +443,10 @@ export function migratedRuntimeModulesBlockFrom(distDir: string) {
   const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
   if (disagreement >= 0) {
     throw bundleTemplateError(
-      `Server bundle failed: the migrated runtime modules in ${distDir} answer the read-only inspection surface differently `
+      // Not "the read-only inspection surface" any more. That is what the probe was when the only
+      // migrated modules were the inspection gate and the log-index guard, and it became wrong the
+      // moment a mail disagreement started reporting itself under an inspection heading.
+      `Server bundle failed: the migrated runtime modules in ${distDir} answer the skew probe differently `
         + `than the running CLI's copies of them, starting at ${carriedAnswers[disagreement]}.`,
       "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.",
     );

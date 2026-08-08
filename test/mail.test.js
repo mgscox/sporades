@@ -9,16 +9,27 @@ import { test } from "node:test";
 import * as tls from "node:tls";
 
 import { validateMailConfig } from "../dist/cli/project-config.js";
-import { openDevDatabase, runMutation, runQuery, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+// `buildSmtpMessage`, `createMailTransport` and `connectSmtpSocket` are imported by name rather than
+// searched for in `SERVER_RUNTIME_SOURCE_FUNCTIONS` the way the three below still are. The mail
+// domain is a module now (ADR-0041), so it is no longer in that list at all and the search would
+// return `undefined` — which is the whole reason `server-runtime-source.ts` re-exports the migrated
+// modules whole. Nothing else in this file changed: these are the same three functions, resolved
+// through the bridge instead of through the list.
+import {
+  buildSmtpMessage,
+  connectSmtpSocket,
+  createMailTransport,
+  openDevDatabase,
+  runMutation,
+  runQuery,
+  SERVER_RUNTIME_SOURCE_FUNCTIONS,
+} from "../dist/server-runtime-source.js";
 import { job, mutation, query } from "../dist/server.js";
 import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
 
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
-const buildSmtpMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "buildSmtpMessage");
-const createMailTransport = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createMailTransport");
-const connectSmtpSocket = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "connectSmtpSocket");
 
 function readMimeHeader(message, name) {
   const lines = message.split("\r\n\r\n")[0].split("\r\n");
