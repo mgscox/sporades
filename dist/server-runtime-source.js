@@ -89,12 +89,15 @@ export * from "./runtime-errors.js";
 // occurrence calculation and the payload-factory lanes. One module and not two, because they share
 // the queue and the occurrence machinery.
 //
-// **Seventeen of the domain's fifty-one declarations are still in this file**, and the reference
-// graph says why: `runCurrentUserJobWorker` and `enqueueScheduledOccurrence` build a handler context
-// with `createMutationContext`, which is the composition point this file retains, and
-// `assertActivePrivilegedJobAccess` reaches `hasPrivilegedDbAccess`, which is batch 6's ACL. The
-// twenty-four names imported below are what those seventeen call. See `jobs-runtime.ts` for the
-// per-function account.
+// **Fifteen of the domain's fifty-one declarations are still in this file.** It was seventeen until
+// batch 7, and the reference graph says why for both numbers: `runCurrentUserJobWorker` and
+// `enqueueScheduledOccurrence` build a handler context with `createMutationContext`, which is the
+// composition point this file retains, and `assertActivePrivilegedJobAccess` reached
+// `hasPrivilegedDbAccess`, which is the ACL domain — batch *7*, which this note called batch 6
+// before that batch ran. Batch 7 cleared it and `createPrivilegedScheduleApi` with it;
+// `createPrivilegedJobApi` did not follow them, because it reaches `createCurrentUserJobApi`, which
+// is one of the fifteen. The names imported below are what those fifteen call. See
+// `jobs-runtime.ts` for the per-function account.
 //
 // **`enqueueRuntimeJob` is one of the seventeen, so batch 3's `sendEmailPasswordResetLink` is still
 // blocked.** Auth's blocker moved one link down the chain rather than away: `enqueueRuntimeJob`
