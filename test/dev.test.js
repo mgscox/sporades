@@ -4019,6 +4019,14 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }
       }
 
+      // The scaffolded capsule schedules `timestampPhotoNames` on `* * * * *`, and that job rewrites
+      // every photo's title and fileName with an `HH:MM ` prefix. This test is about which rows a
+      // gallery query returns, not about what the timestamp job does to them — so a run that happens
+      // to cross a minute boundary used to fail here with `'08:11 Shoreline'` against `'Shoreline'`.
+      // Reading the titles back without the prefix keeps the assertions about gallery membership and
+      // leaves the scaffold's scheduling demonstration alone.
+      const photoTitles = (rows) => rows.map((photo) => String(photo.title).replace(/^\d{2}:\d{2}\s+/, ""));
+
       async function uploadImage(socket, id, name, body) {
         socket.send(
           JSON.stringify({
@@ -4114,7 +4122,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
 
       googleSocket.send(JSON.stringify({ id: "google-public", type: "query.subscribe", query: "publicPhotos" }));
       const googleInitialGallery = await waitForPhotoMessage(googleSocket, "google gallery initial", (message) => message.id === "google-public");
-      assert.deepEqual(googleInitialGallery.data.map((photo) => photo.title), ["Shoreline"]);
+      assert.deepEqual(photoTitles(googleInitialGallery.data), ["Shoreline"]);
       googleSocket.send(JSON.stringify({ id: "google-personal", type: "query.subscribe", query: "personalPhotos" }));
       assert.deepEqual((await waitForPhotoMessage(googleSocket, "google personal initial", (message) => message.id === "google-personal")).data, []);
 
@@ -4190,7 +4198,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         "google expanded gallery refresh",
         (message) => message.id === "google-public-after-publish",
       );
-      assert.deepEqual(expandedGallery.data.map((photo) => photo.title).toSorted(), ["Hidden cove", "Shoreline"]);
+      assert.deepEqual(photoTitles(expandedGallery.data).toSorted(), ["Hidden cove", "Shoreline"]);
 
       const hiddenLibraryPromise = waitForPhotoMessage(
         googleSocket,
@@ -4214,7 +4222,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         "google reduced gallery refresh",
         (message) => message.id === "google-public-after-hide",
       );
-      assert.deepEqual(reducedGallery.data.map((photo) => photo.title), ["Shoreline"]);
+      assert.deepEqual(photoTitles(reducedGallery.data), ["Shoreline"]);
     } finally {
       anonymousSocket?.close();
       googleSocket?.close();

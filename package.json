@@ -40,7 +40,7 @@
     "prepublishOnly": "npm test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.3.0"
   },
   "dependencies": {
     "esbuild": "0.25.12",

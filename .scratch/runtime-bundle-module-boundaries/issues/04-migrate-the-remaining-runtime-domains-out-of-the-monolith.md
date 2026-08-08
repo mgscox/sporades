@@ -12,7 +12,7 @@ The rest of the runtime leaves `src/server-runtime-source.ts` and becomes module
 domain per batch, until nothing but composition and wiring remains behind.
 
 Ticket 03 moved the first region and established the mechanics, so this is no longer a
-sizing question. It is a sequence of eight batches, listed below in the order they should
+sizing question. It is a sequence of nine batches, listed below in the order they should
 land. Each batch is one commit and one review cycle: it moves one domain, keeps both
 bundles building, and lands green on its own.
 
@@ -43,13 +43,26 @@ and the HTTP layer and almost nothing calls out of them.
    thresholds; they move with it.
 4. **Jobs and schedules** (~26 + ~26). One batch, not two: they share the queue and
    occurrence machinery, and splitting them would put that shared surface on a boundary.
-5. **File and object storage** (~54). Includes the S3 path and the upload lifecycle.
-6. **ACL and privileged audit** (~61). Carries `ACL_HELPER_STATE`, whose Symbol identity
+5. **User preferences** (6 functions), **and the six auth stragglers it unblocks.** Small,
+   and deliberately early rather than last. `migrateAnonymousPreferences` is the only thing
+   keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them
+   `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`, `rotateSession` and
+   `moveSessionToUser` — inside the monolith after batch 3 moved the rest of auth. Running
+   it here lets auth finish instead of staying half-migrated through four more batches,
+   each of which would otherwise work around the same blocked functions. It carries those
+   six into `auth-runtime.ts` as a rider, so no tenth pass is needed.
+6. **File and object storage** (~54). Includes the S3 path and the upload lifecycle.
+7. **ACL and privileged audit** (~61). Carries `ACL_HELPER_STATE`, whose Symbol identity
    was analysed at length in issue 16 — read that before moving it.
-7. **HTTP and security policy** (~17). CORS, CSP and the request/response plumbing.
-8. **Database adapters and dialect** (~55). Last, deliberately. Every other domain reaches
+8. **HTTP and security policy** (~17). CORS, CSP and the request/response plumbing.
+9. **Database adapters and dialect** (~55). Last, deliberately. Every other domain reaches
    the engines through it, so it has the most inbound edges and moving it earlier would
    put a boundary under every other batch.
+
+Batch 5 was added after batch 3 reported that user preferences sat on no batch's list. It
+is its own batch rather than a rider on storage, ACL or HTTP because folding an unrelated
+six-function domain into one of those would put a second boundary decision inside a review
+that already has one.
 
 ## Mechanics established by ticket 03
 
@@ -127,18 +140,12 @@ working; use the full suite as the gate before the batch is done.
 
 ## Open items raised by the batches, not yet actioned
 
-- **`engines` understates the Node floor.** Batch 3 used `process.getBuiltinModule("node:crypto")`
-  (ADR-0042) because the credential path is synchronous and `scryptSync`/`timingSafeEqual`
-  have no synchronous Web Crypto equivalent. That API landed in **Node 22.3.0**, while
-  `package.json` declares `"node": ">=22"`. The shipped `node:22-alpine` is far past it, so
-  this is a gap in the declared range rather than an observed failure — but a user on
-  22.0–22.2 gets no warning and a runtime crash. Narrowing `engines` is a packaging call
-  and was deliberately left to the maintainer.
-- **User preferences are on no batch's list.** `migrateAnonymousPreferences` blocks six auth
-  functions from leaving (`rotateSessionOnAdapter`, `moveSessionToUserOnAdapter`, and
-  through them `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`,
-  `rotateSession`, `moveSessionToUser`). Someone must own that domain or auth never fully
-  detaches.
+- **~~`engines` understates the Node floor.~~ Resolved.** `package.json` now declares
+  `"node": ">=22.3.0"`, matching the floor `process.getBuiltinModule` (ADR-0042) actually
+  requires. Previously `">=22"`, which gave a user on 22.0–22.2 no warning and a runtime
+  crash.
+- **~~User preferences are on no batch's list.~~ Resolved** — they are batch 5, carrying the
+  six auth stragglers they unblock.
 - **Nothing parses the built bundle for duplicate top-level declarations.** Batch 3 found
   `commandError` declared twice — an emitted-list entry *and* a carried declaration, which
   is a load-time `SyntaxError` in a deployed Capsule — and no test caught it, because the
