@@ -1,5 +1,6 @@
 import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 type LooseRecord = Record<string, any>;
 export declare const PRIVILEGED_AUTH_USER_ID = "__privileged__";
 export declare const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
@@ -228,5 +229,26 @@ export declare function authProvidersForClient(authConfig: LooseRecord, origin?:
 export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
 export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
 export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord): Promise<any>;
+export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
+    req: IncomingMessage;
+}): Promise<boolean>;
+export declare function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, provider: string, options: LooseRecord): Promise<{
+    ok: boolean;
+    error: {
+        code: string;
+        message: string;
+        hint: string;
+    };
+    url?: undefined;
+} | {
+    ok: boolean;
+    url: any;
+    error?: undefined;
+}>;
+export declare function resolvePasswordResetConfig(config: LooseRecord): {
+    path: string;
+    origin: string;
+    ttlMs: number;
+};
 export {};
 //# sourceMappingURL=auth-runtime.d.ts.map

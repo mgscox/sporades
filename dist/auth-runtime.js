@@ -21,14 +21,21 @@
 // for, which resolved through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find(name)` before batch 3 and return
 // `undefined` the moment a domain stops being entries in it.
 //
-// **Seven auth functions are still in the monolith, and each is blocked by a domain that has not
-// migrated yet.** `routeSporadesAuth`, `readOAuthCallbackParameters`, `oauthFormContentTypeValid`,
-// `beginOAuthSignIn`, `resolveOAuthRequestOrigin` and `resolvePasswordResetConfig` reach the HTTP
+// **Six of those seven arrived in batch 8, and one auth function is still in the monolith.**
+// `routeSporadesAuth`, `readOAuthCallbackParameters`, `oauthFormContentTypeValid`,
+// `beginOAuthSignIn`, `resolveOAuthRequestOrigin` and `resolvePasswordResetConfig` reached the HTTP
 // layer (`writeEndpointError`, `readLimitedRequestBody`, `normalizeOrigin`, `singleHttpHeader`,
-// `validatedRequestHost`), which is batch 8. `sendEmailPasswordResetLink` reaches
-// `enqueueRuntimeJob`, which batch 4 could not move either — it needs `createMutationContext`, the
-// composition point `server-runtime-source.ts` retains, so it is not waiting on a batch at all.
-// A migrated module may not import from the monolith, so those seven follow their blockers.
+// `validatedRequestHost`), which is batch 8, and that batch moved every one of them out of the
+// monolith. Five are at the end of this file as batch 8's riders, the way batch 5 carried the seven
+// above; the sixth, `resolveOAuthRequestOrigin`, is in `http-runtime.ts` instead, because its body
+// validates a request origin against the CORS policy and reaches no auth name — see that module's
+// header. So this is batch 5's case rather than batch 4's a second time: a blocker that named a
+// later batch, and that batch cleared it.
+//
+// `sendEmailPasswordResetLink` is the one that did not move, and it is not waiting on a batch at
+// all. It reaches `enqueueRuntimeJob`, which batch 4 could not move either — it needs
+// `createMutationContext`, the composition point `server-runtime-source.ts` retains — so it is
+// ticket 05's rather than batch 9's.
 //
 // **Why `node:crypto` is reached through `process.getBuiltinModule` and not imported.** ADR-0042.
 // The emitted-list bundle carries this module as one esbuild IIFE (ADR-0041), and `format: "iife"`
@@ -44,8 +51,11 @@
 //
 // `process.getBuiltinModule` resolves a builtin synchronously off a global, so esbuild sees no
 // import at all: the carrier's metafile check passes unweakened rather than being relaxed for this
-// module. The seventeen call sites carry the `nodeCryptoModule.` prefix and are the only lines here
-// that are not byte-identical to the region they moved out of.
+// module. The twenty-three call sites carry the `nodeCryptoModule.` prefix and are the only lines
+// here that are not byte-identical to the region they moved out of. Nineteen arrived with batch 3
+// and batch 5; the last four are in `beginOAuthSignIn`, one of batch 8's riders, which mints its
+// OAuth state, nonce and PKCE pair with `randomBytes` and `createHash`. (This paragraph said
+// "seventeen" from batch 3 until batch 8 counted them; it was two short from batch 5 onwards.)
 //
 // **The accessor is one namespace binding and not a destructuring**, and that is the second
 // deliberate line. `const { createHash, randomBytes, scryptSync, timingSafeEqual } = …` reads
@@ -60,6 +70,13 @@ import { commandError } from "./runtime-errors.js";
 // functions at the end of this file inside the monolith after batch 3. The dependency runs one way
 // — user preferences imports `runtime-errors.js` and nothing else — so this introduces no cycle.
 import { migrateAnonymousPreferences } from "./user-preferences-runtime.js";
+// Batch 8. The four HTTP primitives the five OAuth riders at the end of this file need: the body
+// reader and its size limit, the single-valued header accessor, the origin normalizer and the
+// endpoint error writer. `http-runtime.ts` imports `resolveAnonymousSession` from here in turn, for
+// the private File route's authentication — a cycle, and a safe one, because every binding across it
+// is a hoisted `function` declaration used only inside a body that runs on a request rather than at
+// module initialization. See `http-runtime.ts`'s header.
+import { normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
 // the emitted-list bundle splices into a deployed Capsule.
@@ -2553,5 +2570,239 @@ async function moveSessionToUserOnAdapter(database, sqlite, session, userId, pro
         createdAt: now,
         expiresAt: sessionExpiresAt(now),
     });
+}
+// ---------------------------------------------------------------------------------------------
+// Batch 8's riders. These five stood in `server-runtime-source.ts` until the HTTP layer left it,
+// held there by four names that are now imports at the top of this file. They are this domain's —
+// the OAuth callback route, the OAuth sign-in start, the callback parameter reader and its
+// content-type check, and the password-reset link configuration — and they arrive unchanged.
+//
+// `routeSporadesAuth` is exported for the two servers and three OAuth suites;
+// `beginOAuthSignIn` for three OAuth suites, which resolved it through
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS.find` until this batch and would have bound `undefined` rather
+// than gone red; `resolvePasswordResetConfig` for `openDevDatabase`. The remaining two are private,
+// because only the two above call them.
+// ---------------------------------------------------------------------------------------------
+export async function routeSporadesAuth(database, request, response) {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+    if (!match) {
+        return false;
+    }
+    const provider = match[1];
+    let callbackParameters;
+    try {
+        callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
+    }
+    catch (error) {
+        writeEndpointError(response, error);
+        return true;
+    }
+    const parameters = callbackParameters.parameters;
+    const states = parameters.getAll("state");
+    const state = states.length === 1 ? states[0] : null;
+    if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
+        writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
+        return true;
+    }
+    const stateRow = await database.adapter.consumeOAuthState(state);
+    if (!stateRow) {
+        writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
+        return true;
+    }
+    try {
+        if (callbackParameters.error) {
+            throw callbackParameters.error;
+        }
+        validateConsumedOAuthCallbackParameters(parameters);
+        if (stateRow.provider !== provider) {
+            throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+        }
+        if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
+            throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+        }
+        const adapter = oauthProviderAdapter(database, provider);
+        if (!adapter?.enabled) {
+            throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+        }
+        if ((adapter.responseMode === "form_post" && request.method !== "POST") ||
+            (adapter.responseMode !== "form_post" && request.method !== "GET")) {
+            throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+        }
+        const providerError = parameters.get("error");
+        if (providerError) {
+            const mappedError = adapter.callbackError?.(parameters);
+            if (mappedError) {
+                throw mappedError;
+            }
+            const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
+            const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
+            throw commandError(actionRequired
+                ? "OAuth provider requires additional user action."
+                : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.", actionRequired
+                ? "Retry sign-in and complete the provider's consent or account prompt."
+                : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.", actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED");
+        }
+        const code = parameters.get("code");
+        if (!code) {
+            throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+        }
+        const profile = await adapter.complete({
+            provider,
+            code,
+            redirectUri: stateRow.redirectUri,
+            nonce: stateRow.nonce,
+            pkceVerifier: stateRow.pkceVerifier,
+            parameters,
+        });
+        const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+        let result;
+        try {
+            result = await linkProviderIdentity(database, session, provider, profile);
+        }
+        catch {
+            throw commandError("OAuth account linking failed.", "Retry sign-in. If the problem persists, check the database connection.", "AUTH_TRANSACTION_FAILED");
+        }
+        if (!result.ok) {
+            throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
+        }
+        writeRedirect(response, stateRow.returnTo);
+    }
+    catch (error) {
+        writeEndpointError(response, error);
+    }
+    return true;
+}
+async function readOAuthCallbackParameters(request, requestUrl) {
+    if (request.method === "GET") {
+        return {
+            parameters: requestUrl.searchParams,
+            error: null,
+            stateTrustworthy: true,
+        };
+    }
+    if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
+        throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+    const body = await readLimitedRequestBody(request, 16 * 1024);
+    return parseOAuthFormBody(body);
+}
+function oauthFormContentTypeValid(value) {
+    const raw = singleHttpHeader(value);
+    if (!raw)
+        return false;
+    const parts = raw.split(";").map((part) => part.trim());
+    if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded")
+        return false;
+    if (parts.length === 0)
+        return true;
+    if (parts.length !== 1)
+        return false;
+    const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
+    return Boolean(match);
+}
+export async function beginOAuthSignIn(database, session, provider, options) {
+    const adapter = oauthProviderAdapter(database, provider);
+    if (!adapter?.enabled) {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_PROVIDER_NOT_CONFIGURED",
+                message: `${provider || "OAuth"} provider is not configured.`,
+                hint: provider === "google"
+                    ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+                    : "Configure this OAuth provider before retrying sign-in.",
+            },
+        };
+    }
+    const origin = options.origin;
+    if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_ORIGIN_INVALID",
+                message: "OAuth sign-in requires a trusted request origin.",
+                hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy.",
+            },
+        };
+    }
+    if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
+                message: "Apple sign-in requires an HTTPS domain origin.",
+                hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL.",
+            },
+        };
+    }
+    const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
+    const returnTo = normalizeReturnTo(options.returnTo, origin);
+    const state = nodeCryptoModule.randomBytes(32).toString("base64url");
+    const nonce = nodeCryptoModule.randomBytes(32).toString("base64url");
+    const pkceVerifier = nodeCryptoModule.randomBytes(48).toString("base64url");
+    const pkceChallenge = nodeCryptoModule.createHash("sha256").update(pkceVerifier).digest("base64url");
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    let started;
+    try {
+        started = await adapter.begin({
+            provider,
+            state,
+            nonce,
+            redirectUri,
+            pkceChallenge,
+            pkceChallengeMethod: "S256",
+        });
+    }
+    catch {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_PROVIDER_START_FAILED",
+                message: "OAuth sign-in could not be started.",
+                hint: "Check the provider configuration and retry sign-in.",
+            },
+        };
+    }
+    if (!started?.url) {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_PROVIDER_START_FAILED",
+                message: "OAuth provider did not return an authorization URL.",
+                hint: "Check the provider configuration and retry sign-in.",
+            },
+        };
+    }
+    await database.adapter.insertOAuthState({
+        state,
+        provider,
+        sessionToken: session.token,
+        returnTo,
+        redirectUri,
+        createdAt: now,
+        expiresAt,
+        nonce,
+        pkceVerifier,
+    });
+    return { ok: true, url: started.url };
+}
+// The reset link origin and page path come from Capsule configuration only.
+// Deriving either from a request header would let an attacker who can reach the
+// Capsule mail a victim a genuine reset link pointing at the attacker's server.
+export function resolvePasswordResetConfig(config) {
+    const passwordReset = config.auth?.email?.passwordReset ?? {};
+    const port = typeof config.dev?.port === "number"
+        ? config.dev.port
+        : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
+    const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs)
+        ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS)
+        : PASSWORD_RESET_DEFAULT_TTL_MS;
+    return {
+        path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
+        origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+        ttlMs,
+    };
 }
 //# sourceMappingURL=auth-runtime.js.map

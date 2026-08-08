@@ -15,8 +15,13 @@ import { promisify } from "node:util";
 // worse, assert against a value derived from one. Named imports through the re-export bridge on
 // `server-runtime-source.js` fail at load instead, which is the point of converting them.
 //
-// `beginOAuthSignIn` and `resolveOAuthRequestOrigin` are still found by name because they are still
-// in the monolith: they reach the HTTP layer, so they follow batch 8 rather than batch 3.
+// `beginOAuthSignIn` and `resolveOAuthRequestOrigin` joined them in batch 8, which moved the HTTP
+// layer that had been holding them — the first into `auth-runtime.ts` with the rest of its domain,
+// the second into `http-runtime.ts`, because its body validates a request origin against the CORS
+// policy and reaches no auth name. Both resolve through the re-export bridge either way. They were
+// the last two `.find` lookups in this file, and converting them is not optional: a module-scope
+// `.find` that binds `undefined` does not fail the test that uses it, it fails the *import* of the
+// whole file, which reports as fewer tests run rather than as a red.
 //
 // `linkProviderIdentity` joined the named imports in batch 5, which moved the user-preferences
 // domain and with it the seven auth functions `migrateAnonymousPreferences` had been holding. It is
@@ -25,6 +30,7 @@ import { promisify } from "node:util";
 // `undefined(…)` rather than going red at load.
 import {
   appleOAuthOriginEligible,
+  beginOAuthSignIn,
   linkProviderIdentity,
   completeMicrosoftOAuth,
   completeOpenIdOAuthCodeExchange,
@@ -37,6 +43,7 @@ import {
   oauthProviderTestEndpoint,
   openDevDatabase,
   resolveAnonymousSession,
+  resolveOAuthRequestOrigin,
   routeSporadesAuth,
   verifyAppleIdentityToken,
   verifyGoogleIdentityToken,
@@ -44,8 +51,6 @@ import {
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 
-const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
-const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
 const execFileAsync = promisify(execFile);
 
 test("provider endpoint overrides require the explicit loopback-only test seam", () => {
