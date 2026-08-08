@@ -170,6 +170,9 @@ var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 
+// src/jobs-runtime.ts
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+
 // src/server-runtime-source.ts
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);

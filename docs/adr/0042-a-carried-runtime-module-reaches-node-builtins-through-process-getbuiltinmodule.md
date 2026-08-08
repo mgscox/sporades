@@ -112,9 +112,24 @@ imports these modules directly and a static `import … from "node:crypto"` is
 unremarkable there. **This ADR expires with the emitted list**, and the seventeen
 prefixed call sites can go back to an ordinary import at that point.
 
-It also does not claim the accessor is needed anywhere else yet. Batches 4 to 8 may
-find their own domains reach builtins only asynchronously or not at all, in which
-case rule 2 stays where it is: available, used once, and explained.
+It also did not claim the accessor was needed anywhere else yet, and named batches 4
+to 8 as the ones that might find otherwise. **Batch 4 did.** `scheduledOccurrenceIdentity`
+derives a Scheduled occurrence's idempotency key with `createHash("sha256")`, and it
+is called from inside the transaction that claims the occurrence — synchronous, with
+no Web Crypto equivalent that does not change its signature and every caller's. So
+`jobs-runtime.ts` reaches the builtin the same way, at one call site, and the rule is
+used twice rather than once.
+
+Two things that were properties of a single use are now properties of a pattern, and
+both were checked rather than assumed. The accessor is a *namespace* binding in both
+modules for the `bin/` reason above — and because both modules spell it
+`nodeCryptoModule`, esbuild renames one to `nodeCryptoModule2` inside `bin/sporades.js`
+and inside the carried IIFE. That is harmless where the monolith case is not, because a
+private module-scope name never leaves its module and so its declaration and its uses
+are renamed together; the generated bundle was confirmed to declare both names with
+every use resolving. And the pairing that keeps the narrowing safe — the static form
+still refused — is now tested against a skewed `dist/` for this domain as well as for
+auth.
 
 ## Relationship to existing decisions
 

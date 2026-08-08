@@ -1553,7 +1553,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -1890,6 +1890,79 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         "the auth domain reaching node:crypto through a static import instead of the accessor",
         "auth-runtime.js",
         `import { scryptSync } from "node:crypto";\n${originals["auth-runtime.js"].replace("const actual = nodeCryptoModule.scryptSync(password, salt, 64);", "const actual = scryptSync(password, salt, 64);")}`,
+        /would resolve node:crypto at runtime/,
+      ],
+      // Batch 4's domain, jobs and schedules. The first is the shape peculiar to a scheduler: an
+      // occurrence calculator that is merely *late*. Every export survives, every Schedule still
+      // fires, and each one fires at the wrong minute — which no export-surface check can see and
+      // which is why the schedule limb of the probe compares a returned instant rather than a
+      // verdict.
+      [
+        "an occurrence calculator that returns every Schedule one minute late",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace("return new Date(candidate);", "return new Date(candidate.getTime() + 60000);"),
+        /answer the skew probe differently/,
+      ],
+      // A private helper of `jobs-runtime`, reached only through `nextScheduleOccurrence` — the same
+      // case as the auth and mail ones above, at this domain's scale. `scheduleWallClockParts` is
+      // where a Schedule's local weekday is decided, so a mis-mapped table sends every day-of-week
+      // Schedule to the wrong day while every exported name still answers.
+      [
+        "a private schedule helper that mis-maps a weekday",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace(
+          "{ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }",
+          "{ Sun: 1, Mon: 2, Tue: 3, Wed: 4, Thu: 5, Fri: 6, Sat: 0 }",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The bound every Job payload, result and failure passes through. Dropping it is the shape that
+      // reaches production as an oversized row rather than an error.
+      [
+        "a Job payload bound that stopped enforcing its byte limit",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace('if (Buffer.byteLength(serialized, "utf8") > limit)', "if (false)"),
+        /answer the skew probe differently/,
+      ],
+      // The failure sanitizer, which is a containment rather than a calculation: it decides which
+      // internal codes a Capsule author is allowed to see, so a copy that passed them through leaks.
+      [
+        "a Job failure sanitizer that leaks internal codes",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace(
+          'const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";',
+          'const code = error?.code ?? "JOB_FAILED";',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The Schedule fingerprint decides whether a redeployed Schedule counts as changed. A copy that
+      // computed it differently would re-reconcile every Schedule on every boot — a behaviour change
+      // that never throws and that only a value comparison catches.
+      [
+        "a Schedule fingerprint computed differently",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace(
+          "const fingerprint = JSON.stringify({ expression: normalizedExpression,",
+          'const fingerprint = JSON.stringify({ expression: normalizedExpression + " ",',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on the module the monolith imports twenty-four names from. `boundedJobJson`
+      // is one of them, so this is the "stopped exporting what its consumer imports" case again.
+      [
+        "a jobs module that stopped exporting what the monolith imports",
+        "jobs-runtime.js",
+        originals["jobs-runtime.js"].replace("export function boundedJobJson", "function boundedJobJson"),
+        /did not build|export a different set of names/,
+      ],
+      // And the ADR-0042 accessor written the way ADR-0041 refuses, asked of the second domain to
+      // need it. `scheduledOccurrenceIdentity` is synchronous and inside a transaction, so the
+      // dynamic form is not open to it either; if the accessor were ever replaced by the import it
+      // reads like, the build must refuse it.
+      [
+        "the jobs domain reaching node:crypto through a static import instead of the accessor",
+        "jobs-runtime.js",
+        `import { createHash } from "node:crypto";\n${originals["jobs-runtime.js"].replace('return nodeCryptoModule.createHash("sha256")', 'return createHash("sha256")')}`,
         /would resolve node:crypto at runtime/,
       ],
     ];

@@ -5,6 +5,7 @@ import { buildSync } from "esbuild";
 
 import * as authRuntime from "../auth-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
+import * as jobsRuntime from "../jobs-runtime.js";
 import * as logIndexGuard from "../log-index-guard.js";
 import * as mailConfig from "../mail-config.js";
 import * as mailRuntime from "../mail-runtime.js";
@@ -15,7 +16,6 @@ import {
   PRIVILEGED_AUDIT_ACTOR_KINDS,
   PRIVILEGED_AUDIT_OUTCOMES,
   PRIVILEGED_AUDIT_SCHEMA,
-  RESERVED_JOB_NAME_PREFIX,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
@@ -49,6 +49,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // does not matter to esbuild, which resolves the graph, but it matches the dependency direction.
   { file: "runtime-errors.js", loaded: runtimeErrors as Record<string, unknown> },
   { file: "auth-runtime.js", loaded: authRuntime as Record<string, unknown> },
+  // Batch 4. Imports `runtime-errors.js` for `commandError` and `assertJsonCompatible`, and
+  // `auth-runtime.js` for `PASSWORD_RESET_MAIL_JOB` and `privilegedAuthUserId` — so it is listed
+  // after both, matching the dependency direction. esbuild resolves the graph either way.
+  { file: "jobs-runtime.js", loaded: jobsRuntime as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -225,6 +229,98 @@ export const MIGRATED_MODULE_AUTH_SKEW_PROBE: [string, any[]][] = [
   ["requireAuth", [{ kind: "endpoint" }, {}]],
 ];
 
+// The jobs and schedules domain, batch 4. Two limbs, because the domain answers two different
+// shapes of question and a probe that asked only one would compare a skewed copy of the other as
+// clean — the failure ADR-0041 records the statement probe making before the log-index guard's rows
+// were added to it.
+//
+// The schedule limb is `[cron, timezone, afterISO]` and is deliberately routed through
+// `nextScheduleOccurrence` rather than `parseScheduleExpression` alone. That call reaches
+// `scheduleWallClockParts`, one of this module's five private helpers, which converts every
+// candidate instant to local wall-clock fields before the cron match — so a carried copy whose
+// privacy hid a broken helper is caught here rather than only by the census. Comparing a returned
+// `Date` also gives the probe a value that skew cannot preserve accidentally: an occurrence
+// calculator off by one minute, one hour or one DST transition disagrees visibly.
+//
+// It does *not* reach `resolveScheduleTimezone`, because `nextScheduleOccurrence` takes the zone as
+// an argument and hands it straight to `Intl`. That helper is reached by the definition limb below
+// instead, which is why both exist — stated rather than left for the next reader to assume the
+// first limb covers more than it does.
+//
+// The cases are the ones this cron implementation has actually got wrong: the day-of-month /
+// day-of-week OR rule when both fields are restricted, a step, a range, a list, a leap-day
+// occurrence, a DST spring-forward hour that does not exist locally, and three inputs that must
+// throw rather than return.
+//
+// **Every case must resolve within a few thousand minutes of its `after` instant, and that is a
+// correctness requirement of this probe rather than a preference.** `nextScheduleOccurrence` scans
+// minute by minute with an `Intl.DateTimeFormat.formatToParts` call per candidate, bounded at
+// `8 * 366 * 24 * 60` = 4,207,680 iterations; this whole function runs twice per bundle build, once
+// for the carried copy and once for the loaded one, and a bundle is built on every `sporades dev`
+// start. The first version of this list asked for `0 0 29 2 *` after 2096-03-01, whose next
+// occurrence is 2104-02-29 because 2100 is not a leap year — the full eight-year bound, measured at
+// **9,254 ms per copy**, so 18.5 s added to every dev start. That is not a hang and nothing throws;
+// it simply moved dev startup from 0.3 s to 19.5 s and blew the ten-second process and socket
+// budgets in `test/password-reset-transport.test.js` and `test/require-auth.test.js`.
+//
+// So the leap-day case starts the day before the occurrence it is looking for. It still proves the
+// carried copy agrees about 29 February — which is the property worth comparing — and costs about a
+// thousand iterations rather than four million. The eight-year bound itself is not probe material.
+const MIGRATED_MODULE_SCHEDULE_SKEW_PROBE: [string, string, string][] = [
+  ["*/15 * * * *", "UTC", "2031-03-01T09:07:00.000Z"],
+  ["0 9 * * *", "America/New_York", "2031-03-08T00:00:00.000Z"],
+  ["30 2 * * *", "America/New_York", "2031-03-09T00:00:00.000Z"],
+  ["0 0 29 2 *", "UTC", "2096-02-28T12:00:00.000Z"],
+  ["0 12 13 * 5", "UTC", "2031-01-01T00:00:00.000Z"],
+  ["0,30 1-3 * * *", "Australia/Adelaide", "2031-06-01T00:00:00.000Z"],
+  ["0 0 * * 0", "Europe/London", "2031-10-25T00:00:00.000Z"],
+  ["not a cron", "UTC", "2031-01-01T00:00:00.000Z"],
+  ["* * * *", "UTC", "2031-01-01T00:00:00.000Z"],
+  ["0 9 * * *", "Not/AZone", "2031-01-01T00:00:00.000Z"],
+];
+
+// The definition limb: whole Capsule `schedules` maps put through `scheduleDefinitionsFromCapsule`,
+// which is the domain's validation front door and the only exported path to `resolveScheduleTimezone`.
+// Its `effectiveTimezone` and `fingerprint` outputs are what a skewed copy would have to reproduce,
+// and the fingerprint is what decides whether a redeployed Schedule is treated as changed — so a
+// copy that computed it differently would silently re-reconcile every Schedule on every boot.
+//
+// Cases: a valid definition with a zone alias, one whose Job is not declared, a duplicate name, an
+// invalid missed-run policy, and a payload that is not JSON-compatible — which is the path through
+// `boundedJobJson` into `assertJsonCompatible`.
+const MIGRATED_MODULE_SCHEDULE_DEFINITION_SKEW_PROBE: [Record<string, unknown>, string[]][] = [
+  [{ nightly: { kind: "schedule", expression: "0 3 * * *", timezone: "Asia/Calcutta", job: "cleanup" } }, ["cleanup"]],
+  [{ hourly: { kind: "schedule", expression: "0 * * * *", job: "cleanup", retry: { maxAttempts: 3, delayMs: 100 } } }, ["cleanup"]],
+  [{ orphan: { kind: "schedule", expression: "0 * * * *", job: "missing" } }, ["cleanup"]],
+  [{ bad: { kind: "schedule", expression: "0 * * * *", job: "cleanup", missedRun: "sometimes" } }, ["cleanup"]],
+  [{ zone: { kind: "schedule", expression: "0 * * * *", timezone: "Not/AZone", job: "cleanup" } }, ["cleanup"]],
+];
+
+// The Job limb. `boundedJobJson` is the one every Job payload, result and failure passes through,
+// and it is the function this batch moved `assertJsonCompatible` into `runtime-errors.js` for — so
+// a carried copy that lost the JSON check or the byte bound answers differently here. The rest are
+// the queue's pure boundaries: the retry normalizer's range checks, the cursor codec, and the
+// failure sanitizer that decides which internal codes a Capsule author is allowed to see.
+const MIGRATED_MODULE_JOB_SKEW_PROBE: [string, unknown[]][] = [
+  ["boundedJobJson", [{ ok: 1 }, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload"]],
+  ["boundedJobJson", ["x".repeat(200), 64, "JOB_RESULT_TOO_LARGE", "Job result"]],
+  ["boundedJobJson", [undefined, 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload"]],
+  ["normalizeJobRetry", [undefined]],
+  ["normalizeJobRetry", [{ maxAttempts: 3, delayMs: 500 }]],
+  ["normalizeJobRetry", [{ maxAttempts: 21, delayMs: 0 }]],
+  ["normalizeJobRetry", [{ maxAttempts: 3, delayMs: -1 }]],
+  ["encodeJobCursor", [{ createdAt: "2031-01-01T00:00:00.000Z", id: "job-1" }]],
+  ["decodeJobCursor", ["eyJjcmVhdGVkQXQiOiIyMDMxLTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6ImpvYi0xIn0"]],
+  ["decodeJobCursor", [undefined]],
+  ["decodeJobCursor", ["not-a-cursor"]],
+  ["safeJobFailure", [Object.assign(new Error("boom"), { code: "UNKNOWN_JOB_HANDLER" })]],
+  ["safeJobFailure", [Object.assign(new Error("leak"), { code: "SOME_INTERNAL_CODE" })]],
+  ["jobSummary", [{ id: "j", handler: "h", status: "queued", attempts: "2" }]],
+  // Exercises the `nodeCryptoModule.createHash` call site — the one line of this module that is not
+  // byte-identical to the region it moved out of, and the one a bad builtin binding would break.
+  ["scheduledOccurrenceIdentity", [{ capsuleIdentity: "capsule-a" }, "nightly", "2031-01-01T00:00:00.000Z"]],
+];
+
 function bundleTemplateError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
@@ -260,6 +356,10 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "buildSmtpMessage",
   "verifyEmailPassword",
   ...new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.map(([name]) => name)),
+  "parseScheduleExpression",
+  "nextScheduleOccurrence",
+  "scheduleDefinitionsFromCapsule",
+  ...new Set(MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name]) => name)),
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -360,6 +460,34 @@ function describeMigratedModuleAnswers(module: any) {
     ),
     ...MIGRATED_MODULE_AUTH_SKEW_PROBE.map(([name, args]) =>
       JSON.stringify([name, args, authProbedAnswer(() => module[name](...args))]),
+    ),
+    // The jobs and schedules domain. The schedule limb goes through `nextScheduleOccurrence`, which
+    // reaches both of this module's private helpers on the way; see the probe's own comment.
+    ...MIGRATED_MODULE_SCHEDULE_SKEW_PROBE.map(([expression, timezone, after]) =>
+      JSON.stringify([
+        expression,
+        timezone,
+        after,
+        probedAnswer(() => {
+          const fields = module.parseScheduleExpression(expression);
+          return module.nextScheduleOccurrence(fields, new Date(after), timezone).toISOString();
+        }),
+      ]),
+    ),
+    ...MIGRATED_MODULE_SCHEDULE_DEFINITION_SKEW_PROBE.map(([schedules, jobNames]) =>
+      JSON.stringify([
+        schedules,
+        probedAnswer(() =>
+          module
+            .scheduleDefinitionsFromCapsule({ schedules }, jobNames.map((name) => ({ name })))
+            // `fields` is an array of `Set`s and serializes as `{}`, so it is replaced with a
+            // comparable form rather than left to compare as nothing.
+            .map((definition: any) => ({ ...definition, fields: definition.fields.map((set: Set<number>) => [...set]) })),
+        ),
+      ]),
+    ),
+    ...MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name, args]) =>
+      JSON.stringify([name, probedAnswer(() => module[name](...args))]),
     ),
   ];
 }
@@ -603,10 +731,15 @@ export function createServerBundleSource({
   // `runtimeOwnedJobHandlers` resolve them, and how the constant probe in
   // `test/server-bundle-module-graph.test.js` reads them.
   //
-  // The five that remain are the ones whose domains have not migrated: the reserved job-name prefix
-  // is batch 4's, and the privileged-audit trio and `ACL_HELPER_STATE` are batch 6's.
+  // **`RESERVED_JOB_NAME_PREFIX` left in batch 4, for exactly the same reason and with the same
+  // constraint.** It is a declaration in `jobs-runtime.js` now, whose text is spliced in below this
+  // preamble alongside `auth-runtime.js`'s, so serializing it here as well would declare the name
+  // twice. `isReservedJobName` is its only reader and moved with it; it stays exported so the
+  // carried block destructures it and so the constant probe keeps comparing it.
+  //
+  // The four that remain are the ones whose domain has not migrated: the privileged-audit trio and
+  // `ACL_HELPER_STATE` are batch 6's.
   const runtimeConstants = ([
-    ["RESERVED_JOB_NAME_PREFIX", RESERVED_JOB_NAME_PREFIX],
     ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
     ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
     ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],

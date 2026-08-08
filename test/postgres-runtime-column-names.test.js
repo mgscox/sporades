@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS, postgresRowNormalization, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
+import { ensureJobStorage, ensureScheduleStorage, postgresRowNormalization, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqliteAdapter } from "./support/database-adapter-engines.js";
 
 // Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
@@ -28,14 +28,12 @@ import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqlit
 // reached through raw statements rather than through adapter methods, so they are outside that
 // specification by design — which is also why nothing had ever read them back on Postgres.
 
-function runtimeFunction(name) {
-  const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((candidate) => candidate.name === name);
-  assert.ok(fn, `${name} is not a server runtime source function`);
-  return fn;
-}
-
-const ensureJobStorage = runtimeFunction("ensureJobStorage");
-const ensureScheduleStorage = runtimeFunction("ensureScheduleStorage");
+// The two bootstraps are imported by name rather than looked up in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS`. That lookup returned them until batch 4 moved the jobs and
+// schedules domain into `jobs-runtime.js`, at which point it returns `undefined` — and because
+// these two were resolved at module scope, the whole file failed to import rather than failing one
+// assertion. They resolve through `server-runtime-source.js` because it re-exports the module
+// whole; this is the same edit batch 3 made to thirteen call sites when auth moved.
 
 // Postgres is the only engine that ever folded, so it is the only engine the round-trip is in
 // doubt on; the other two are where the declared spellings can be enumerated. Every engine runs the

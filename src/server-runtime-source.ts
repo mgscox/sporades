@@ -9,7 +9,7 @@ import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
-import { HelperError, commandError } from "./runtime-errors.js";
+import { HelperError, assertJsonCompatible, commandError } from "./runtime-errors.js";
 import {
   PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_MAIL_JOB,
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
@@ -25,6 +25,14 @@ import {
   setOwnEmailPassword, validateConsumedOAuthCallbackParameters, verifyEmailPassword,
   verifyPasswordResetCode, writeRedirect,
 } from "./auth-runtime.js";
+import {
+  abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
+  createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
+  finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition,
+  jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload,
+  resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
+} from "./jobs-runtime.js";
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -92,6 +100,33 @@ export * from "./mail-runtime.js";
 export * from "./auth-runtime.js";
 export * from "./runtime-errors.js";
 
+// The jobs and schedules domain left this file as batch 4 — the Job Queue's storage, cursors, retry
+// normalization and inspection, and the Schedule machinery: cron parsing, timezone resolution,
+// occurrence calculation and the payload-factory lanes. One module and not two, because they share
+// the queue and the occurrence machinery.
+//
+// **Seventeen of the domain's fifty-one declarations are still in this file**, and the reference
+// graph says why: `runCurrentUserJobWorker` and `enqueueScheduledOccurrence` build a handler context
+// with `createMutationContext`, which is the composition point this file retains, and
+// `assertActivePrivilegedJobAccess` reaches `hasPrivilegedDbAccess`, which is batch 6's ACL. The
+// twenty-four names imported below are what those seventeen call. See `jobs-runtime.ts` for the
+// per-function account.
+//
+// **`enqueueRuntimeJob` is one of the seventeen, so batch 3's `sendEmailPasswordResetLink` is still
+// blocked.** Auth's blocker moved one link down the chain rather than away: `enqueueRuntimeJob`
+// reaches `scheduleCurrentUserJobWorker`, which reaches `runCurrentUserJobWorker`, which needs
+// `createMutationContext`. Both leave together or neither does.
+//
+// Re-exported whole for the reason the six above are. `RESERVED_JOB_NAME_PREFIX` makes that
+// load-bearing rather than convenient: it is a SCREAMING_CASE export and the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from *this* module's
+// SCREAMING_CASE exports, so a narrower re-export would not fail — it would quietly stop comparing
+// the reserved job-name prefix between the two bundles. Four more names
+// (`createControllableRuntimeClock`, `ensureJobStorage`, `ensureScheduleStorage`,
+// `parseScheduleExpression`) are resolved through here by the job, schedule, clock, password-reset
+// and Postgres suites.
+export * from "./jobs-runtime.js";
+
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -119,18 +154,6 @@ type S3RequestResult = {
   headers: IncomingHttpHeaders | LooseRecord;
   body: Buffer;
 };
-// Exported because the generated Capsule bundle carries it in its constant preamble. A runtime
-// function reaches the bundle as its own source text and the module-level bindings it closes over
-// do not follow, so the preamble declares it — serialized from this declaration rather than
-// restated, which is what `PUBLIC_TREE_LIMITS` and the inspection keyword Sets already do.
-//
-// Twelve constants stood beside this one until batch 3 moved the auth domain: the privileged user
-// ID, the four email sign-in throttle thresholds, the six password-reset bounds and the reset mail
-// job's name. They are declarations in `auth-runtime.ts` now and they left the preamble in the same
-// commit, because that module's text is spliced into the bundle right after it and a name declared
-// in both places is a load-time `SyntaxError`. This one stays because the job domain has not
-// migrated — it is batch 4's.
-export const RESERVED_JOB_NAME_PREFIX = "_sporades";
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
   // and `mail-config.ts`. They are carried into the emitted-list bundle as those modules' own
@@ -176,50 +199,22 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
-  createRuntimeClock,
-  resolveSchedulePayloadFactoryTimeoutMs,
   resolveJourneySessionInactivityMinutes,
-  scheduleDefinitionsFromCapsule,
-  resolveScheduleTimezone,
-  parseScheduleExpression,
-  scheduleWallClockParts,
-  nextScheduleOccurrence,
-  ensureScheduleStorage,
-  scheduledOccurrenceIdentity,
   claimScheduledOccurrence,
   recoverPendingScheduleOccurrences,
   schedulePendingOccurrenceRecovery,
   reconcileSchedules,
   startStaticSchedules,
-  finishFailedScheduledOccurrence,
   recordScheduledOccurrence,
-  acquireSchedulePayloadFactoryLane,
-  acquireSchedulePayloadFactorySlot,
-  resolveSchedulePayload,
-  abortSchedulePayloadFactories,
   enqueueScheduledOccurrence,
   createRuntimeInspectionAdapter,
-  inspectRuntimeJobs,
-  inspectRuntimeSchedules,
-  scheduleSummary,
-  jobError,
-  boundedJobJson,
-  jobState,
-  jobActorProvider,
-  normalizeJobRetry,
-  cancelJob,
-  jobSummary,
   createCurrentUserJobApi,
   createPrivilegedJobApi,
-  assertJobScheduleProvenance,
   assertActivePrivilegedJobAccess,
-  encodeJobCursor,
-  decodeJobCursor,
   flushPendingJobEnqueues,
   scheduleCurrentUserJobWorker,
   scheduleNextDelayedJob,
   runCurrentUserJobWorker,
-  safeJobFailure,
   postgresInterpolate,
   createPostgresConnection,
   postgresUrlOptions,
@@ -248,11 +243,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
-  isReservedJobName,
-  runtimeOwnedJobHandlers,
   enqueueRuntimeJob,
-  jobHandlersFromCapsuleDefinition,
-  ensureJobStorage,
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
@@ -408,8 +399,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   deserializeFieldValue,
   normalizeDateValue,
   dateValueError,
-  assertJsonCompatible,
-  invalidJsonFieldValueError,
   deserializeRow,
   readEndpointBody,
   createEndpointLogger,
@@ -1009,126 +998,6 @@ function resolveJourneySessionInactivityMinutes(config: RuntimeConfig = {}) {
   return Math.min(1_440, Math.max(1, Math.round(value)));
 }
 
-function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
-  const schedules: any[] = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {}) as [string, any][]) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
-    const expression = parseScheduleExpression(definition.expression);
-    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
-    const payload = definition.payload === undefined ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    const retry = normalizeJobRetry(definition.retry);
-    const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
-    const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
-  }
-  return schedules;
-}
-
-function resolveSchedulePayloadFactoryTimeoutMs(config: RuntimeConfig = {}) {
-  const scheduling = config.scheduling;
-  if (scheduling === undefined) return 30_000;
-  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  return seconds * 1000;
-}
-
-function parseScheduleExpression(value: any) {
-  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
-  const ranges = [[0,59],[0,23],[1,31],[1,12],[0,7]];
-  const fields: any = parts.map((part, index) => {
-    const values = new Set<number>();
-    for (const item of part.split(",")) {
-      const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || (stepText !== undefined && (!/^\d+$/.test(stepText) || Number(stepText) < 1))) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
-      const step = stepText === undefined ? 1 : Number(stepText);
-      let start: number, end: number;
-      if (base === "*") [start,end] = ranges[index];
-      else if (/^\d+$/.test(base)) start = end = Number(base);
-      else { const match = /^(\d+)-(\d+)$/.exec(base); if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps."); start=Number(match[1]); end=Number(match[2]); }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current=start; current<=end; current+=step) values.add(index === 4 && current === 7 ? 0 : current);
-    }
-    return values;
-  });
-  fields.restricted = parts.map((part) => part !== "*");
-  return fields;
-}
-
-function resolveScheduleTimezone(value: any) {
-  if (value !== undefined && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
-  const requested = value === undefined ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
-  } catch {
-    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
-  }
-}
-
-function scheduleWallClockParts(formatter: Intl.DateTimeFormat, instant: Date) {
-  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
-}
-
-function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone: timezone, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  });
-  const candidate = new Date(after.getTime());
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  // Eight years covers the longest gap between valid annual Gregorian dates:
-  // leap day immediately before a non-leap century (for example 2096 to 2104).
-  for (let count=0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes()+1)) {
-    const local = scheduleWallClockParts(formatter, candidate);
-    const dom = fields[2].has(local.day); const dow = fields[4].has(local.weekday);
-    const domRestricted = (fields as any).restricted?.[2] ?? fields[2].size !== 31; const dowRestricted = (fields as any).restricted?.[4] ?? fields[4].size !== 7;
-    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
-  }
-  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
-}
-
-async function ensureScheduleStorage(sqlite: LooseRecord) {
-  const sql = sqlite.dialect.sql;
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, " +
-      "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
-      "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
-      "[latestJobId] TEXT, [latestErrorCode] TEXT)",
-    ),
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
-      "[scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
-      "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
-    ),
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
-      "ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])",
-    ),
-  );
-}
-
 async function reconcileSchedules(database: LooseRecord) {
   const now = database.clock.now();
   const sql = database.adapter.dialect.sql;
@@ -1211,18 +1080,6 @@ async function startStaticSchedules(database: LooseRecord) {
   }
 }
 
-async function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any) {
-  const scheduledFor = occurrence.toISOString();
-  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const completedAt = database.clock.now().toISOString();
-  const code = "SCHEDULE_ENQUEUE_FAILED";
-  const sql = database.adapter.dialect.sql;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
-}
-
 async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
   const sql = database.adapter.dialect.sql;
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
@@ -1242,10 +1099,6 @@ async function recordScheduledOccurrence(database: LooseRecord, definition: any,
   definition.nextOccurrence = next;
   await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
   return state;
-}
-
-function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string) {
-  return createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
 }
 
 async function claimScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
@@ -1320,207 +1173,12 @@ export async function enqueueScheduledOccurrence(database: LooseRecord, definiti
   return state;
 }
 
-async function acquireSchedulePayloadFactorySlot(database: LooseRecord) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise<void>((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
-  };
-}
-
-async function acquireSchedulePayloadFactoryLane(database: LooseRecord, scheduleName: string) {
-  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
-  let unlock: () => void = () => {};
-  const current = new Promise<void>((resolve) => { unlock = resolve; });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current);
-  if (previous) await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
-  };
-}
-
-async function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord) {
-  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
-  let releaseSlot: (() => void) | undefined;
-  const controller = new AbortController();
-  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? new Set();
-  controllers.add(controller);
-  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
-  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
-  let timeout: any;
-  try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
-    const timeoutFailure = new Promise((_resolve, reject) => {
-      timeout = database.clock.setTimer(() => {
-        controller.abort();
-        const error: any = new Error("Schedule payload factory timed out.");
-        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
-        reject(error);
-      }, database.schedulePayloadFactoryTimeoutMs);
-    });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error: any = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
-    database.clock.clearTimer(timeout);
-    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    return { ok: true, value };
-  } catch (error: any) {
-    database.clock.clearTimer(timeout);
-    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code
-      : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}`
-      : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
-    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
-    return { ok: false };
-  } finally {
-    controllers.delete(controller);
-    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
-    releaseSlot?.();
-    releaseLane();
-  }
-}
-
-function abortSchedulePayloadFactories(database: LooseRecord) {
-  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
-}
-
 async function recoverExpiredJobLeases(database: LooseRecord) {
   const recoveredAt = database.clock.now(); const recoveredIso = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
   for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
   if(rows.some((row: any) => Number(row.attempts) < JSON.parse(row.retryJson||'{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
-}
-
-function createRuntimeClock(clock: LooseRecord | undefined) {
-  if (clock) return clock;
-  return {
-    now: () => new Date(),
-    setTimer: (callback: () => any, delayMs: number) => setTimeout(callback, delayMs),
-    clearTimer: (timer: any) => clearTimeout(timer),
-  };
-}
-
-/** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
-export function createControllableRuntimeClock(initialInstant: string | number | Date) {
-  let nowMs = new Date(initialInstant).getTime();
-  if (!Number.isFinite(nowMs)) throw new TypeError("Invalid initial runtime clock instant.");
-  let nextId = 1;
-  const timers = new Map<number, { id: number; dueAt: number; callback: () => any }>();
-  return {
-    now: () => new Date(nowMs),
-    setInstant(instant: string | number | Date) {
-      const next = new Date(instant).getTime();
-      if (!Number.isFinite(next)) throw new TypeError("Invalid runtime clock instant.");
-      nowMs = next;
-    },
-    advanceBy(delayMs: number) {
-      if (!Number.isFinite(delayMs) || delayMs < 0) throw new TypeError("Runtime clock advance must be non-negative.");
-      nowMs += delayMs;
-    },
-    setTimer(callback: () => any, delayMs: number) {
-      const id = nextId++;
-      timers.set(id, { id, dueAt: nowMs + Math.max(0, delayMs), callback });
-      return id;
-    },
-    clearTimer(id: number) { timers.delete(id); },
-    async runDueTimers() {
-      while (true) {
-        const due = [...timers.values()].filter((timer) => timer.dueAt <= nowMs)
-          .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
-        if (!due) return;
-        timers.delete(due.id);
-        await due.callback();
-      }
-    },
-  };
-}
-
-// Jobs the runtime enqueues for itself. They live in the reserved `_sporades`
-// namespace, which Capsule definitions cannot claim.
-function runtimeOwnedJobHandlers() {
-  return [
-    {
-      name: PASSWORD_RESET_MAIL_JOB,
-      handler: async (ctx: LooseRecord, payload: LooseRecord) => ctx.mail.send({
-        to: payload.to,
-        subject: payload.subject,
-        textBody: payload.textBody,
-        htmlBody: payload.htmlBody,
-      }),
-    },
-  ];
-}
-
-function isReservedJobName(name: string) {
-  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
-}
-
-function jobHandlersFromCapsuleDefinition(capsuleDefinition: any) {
-  const handlers: any[] = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {}) as [string, any][]) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
-    }
-    // The runtime enqueues its own Jobs, such as password reset delivery. A
-    // Capsule handler with the same name would capture that work, so the whole
-    // prefix is reserved rather than any single name.
-    if (isReservedJobName(name)) {
-      throw commandError(
-        `Reserved Job handler name: ${name}`,
-        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
-        "RESERVED_JOB_NAME",
-      );
-    }
-    if (handlers.some((handler) => handler.name === name)) {
-      throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
-    }
-    handlers.push({ name, handler: definition.handler });
-  }
-  return handlers;
-}
-
-async function ensureJobStorage(sqlite: LooseRecord) {
-  const sql = sqlite.dialect.sql;
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_jobs] (" +
-      "[id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, " +
-      "[actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, " +
-      "[attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, " +
-      "[startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)",
-    ),
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] " +
-      "ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL",
-    ),
-  );
-  await sqlite.exec(
-    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])"),
-  );
-  // The columns added to the Job queue after its first release are declared through the dialect's
-  // add-missing-column strategy rather than probed for first. `PRAGMA table_info` is SQLite's
-  // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
-  // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
-  // "PRAGMA"` before the Job queue existed.
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
-  await sqlite.exec(
-    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"),
-  );
 }
 
 async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
@@ -4037,40 +3695,6 @@ function createPrivilegedScheduleApi(database: LooseRecord, contextGetter: () =>
       for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
       return summaries;
     },
-  };
-}
-
-async function scheduleSummary(sqlite: LooseRecord, row: any) {
-  const invalid = (field: string) => {
-    const error: any = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
-    error.scheduleName = typeof row?.name === "string" ? row.name : null; error.field = field; return error;
-  };
-  if (typeof row.name !== "string" || !row.name) throw invalid("name");
-  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
-  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
-  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
-  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
-  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
-  let latestOccurrence = null;
-  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
-  if (latestOutcome === "enqueued") {
-    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
-    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
-    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
-    if (!job) throw invalid("latestOccurrence.jobId");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
-  } else if (latestOutcome === "payload-failed") {
-    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
-    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
-    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
-  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
-  return {
-    name: String(row.name), expression: String(row.expression), timezone: String(row.effectiveTimezone),
-    missedRun: String(row.missedRunPolicy), enabled: Boolean(row.enabled), nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence), latestOccurrence,
   };
 }
 
@@ -7081,29 +6705,6 @@ function dateValueError(fieldName: any) {
   );
 }
 
-function assertJsonCompatible(value: any) {
-  let context: LooseRecord | undefined;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) {
-      throw invalidJsonFieldValueError();
-    }
-    JSON.parse(serialized);
-  } catch (error: any) {
-    if ((error as any)?.hint) {
-      throw error;
-    }
-    throw invalidJsonFieldValueError();
-  }
-}
-
-function invalidJsonFieldValueError() {
-  return commandError(
-    "Invalid JSON field value.",
-    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null.",
-  );
-}
-
 function deserializeRow(table: LooseRecord, row: LooseRecord) {
   const output = { ...row };
   for (const field of table.fields) {
@@ -9524,102 +9125,6 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
   };
 }
 
-function assertJobScheduleProvenance(row: any, expected: any) {
-  if (!expected) return;
-  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
-    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
-  }
-}
-
-function jobError(code: string, message: string, hint: string) {
-  const error: any = new Error(message); error.code = code; error.hint = hint; return error;
-}
-
-function boundedJobJson(value: any, limit: number, code: string, label: string) {
-  let serialized: string;
-  try { assertJsonCompatible(value); serialized = JSON.stringify(value); } catch { throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects."); }
-  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized;
-}
-
-function jobState(row: any, includeDetail: boolean) {
-  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
-  const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
-  if (includeDetail && row.result) state.result = JSON.parse(row.result);
-  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
-  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
-  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
-  return state;
-}
-
-function jobActorProvider(auth: LooseRecord) {
-  const provider = auth?.provider;
-  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
-  return auth?.isGuest ? "anonymous" : "authenticated";
-}
-
-/** Read the bounded operator view of every Job in one adapter snapshot. */
-export async function inspectRuntimeJobs(adapter: LooseRecord) {
-  const decode = (row: LooseRecord, field: string, value: unknown, fallback: unknown) => {
-    if (value === null || value === undefined || value === "") return fallback;
-    try { return JSON.parse(String(value)); }
-    catch {
-      const error: any = jobError("JOB_INSPECTION_INVALID_STATE", "Stored Job state is invalid.", "Repair or remove the malformed Job before retrying inspection.");
-      error.jobId = String(row.id); error.field = field; throw error;
-    }
-  };
-  const read = async (tx: LooseRecord) => {
-    let rows: LooseRecord[];
-    try {
-      rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_jobs] ORDER BY [createdAt] DESC, [id] DESC")).all();
-    } catch (error) {
-      const message = String((error as any)?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    return rows.map((row) => ({
-      id: String(row.id), handler: String(row.handler), status: String(row.status),
-      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
-      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
-      attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
-      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,
-      availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
-      completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
-      leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
-      // until the runtime has a separate safe-result metadata classifier.
-      result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
-    }));
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-
-/** Read the bounded operator view of every Schedule in one adapter snapshot. */
-export async function inspectRuntimeSchedules(adapter: LooseRecord) {
-  const read = async (tx: LooseRecord) => {
-    let rows: LooseRecord[];
-    try {
-      rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
-    } catch (error) {
-      const message = String((error as any)?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    const summaries = [];
-    for (const row of rows) summaries.push(await scheduleSummary(tx, row));
-    return summaries;
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("SCHEDULE_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Schedule inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-
-function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
-async function cancelJob(database: LooseRecord, context: any, id: any) { const sql = database.adapter.dialect.sql; const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId); if (!row) return null; const now=database.clock.now().toISOString(); if (["queued","delayed"].includes(row.status)) { await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now,id); return jobState({...row,status:"cancelled",completedAt:now},true); } if(row.status==="running"){ database.__jobAbortControllers?.get(id)?.abort(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now,id); return jobState({...row,cancelRequestedAt:now},true);} throw jobError("INVALID_JOB_STATE","Job cannot be cancelled from its current state.","Only queued, delayed, or running Jobs can be cancelled."); }
-
-function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
-
 function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   const current = createCurrentUserJobApi(database, contextGetter);
   return {
@@ -9649,16 +9154,6 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
 function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord) {
   if (hasPrivilegedDbAccess(contextGetter?.())) return;
   throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-
-function encodeJobCursor(row: any) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
-function decodeJobCursor(value: any) {
-  if (value === undefined) return null;
-  try {
-    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
-    return cursor;
-  } catch { throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call."); }
 }
 
 async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
@@ -9736,19 +9231,6 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
       }
     }
   } finally { database.__jobWorkerRunning = false; }
-}
-
-function safeJobFailure(error: any) {
-  const knownCodes = new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
-  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
-  const messages: LooseRecord = {
-    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
-    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
-    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
-    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
-    JOB_FAILED: "Job handler failed.",
-  };
-  return { code, message: messages[code] };
 }
 
 async function drainPendingAclWrites(context: LooseRecord) {

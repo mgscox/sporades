@@ -264,6 +264,27 @@ monolith's top-level namespace shared with every migrated module**, because a
 stringified function carries the names its own scope resolved rather than the
 bindings. That is one more thing the emitted list costs, and it goes away with it.
 
+**Two migrated modules may share a private top-level name, and batch 4 is where
+that first happened.** `jobs-runtime.ts` and `auth-runtime.ts` both open with
+`const nodeCryptoModule = process.getBuiltinModule("node:crypto")`, so esbuild
+renames one to `nodeCryptoModule2` — in `bin/sporades.js` and again inside the
+carried IIFE. Checked rather than assumed: the generated bundle declares both names
+and every use resolves to a declaration.
+
+It is safe for the reason the monolith case is not. The rename hazard needs a
+*stringified* function that references the renamed name, because only source text
+carries names rather than bindings; a private module-scope name never leaves its
+module's scope, so esbuild renames the declaration and its uses together. The
+collision guard therefore compares migrated modules against `server-runtime-source.ts`
+and deliberately not against each other.
+
+What is *not* safe, and is worth naming because nothing above implies it: two
+migrated modules **exporting** the same name. Those are destructured side by side at
+the bundle's top level, which is a duplicate declaration and a load-time
+`SyntaxError`. No guard tests for it directly; it is caught by parsing the built
+bundle for duplicate top-level declarations, which is the check ticket 04 records as
+missing and which batch 4 ran by hand at 534 top-level names and zero duplicates.
+
 **The walker census had to stop reading a list.** The census in
 `test/database-adapter-engine-seam.test.js` flagged emitted runtime functions
 whose source names comment or quote delimiters, and asserted the detected set
@@ -327,13 +348,37 @@ this gate's tokenizer; `transformSync` over its compiled text emits
 **The case that section named as untested — a migrated module importing something
 outside the migrated set — was executed in batch 2 and is where the "any external"
 rule was narrowed.** See the self-containment section above. The mechanism is now
-proven for six modules: two that import nothing (`inspection-sql`, `mail-config`),
-two that import another migrated module (`log-index-guard`, `auth-runtime`), one
-that reaches Node builtins through dynamic `import(…)` (`mail-runtime`), and one
-that exists only so a second can import it (`runtime-errors`). The case still
-untested is a migrated module importing a *package*, which the metafile check turns
-into a build error rather than a boot failure and which nothing in this runtime has
-yet wanted to do.
+proven for seven modules: two that import nothing (`inspection-sql`, `mail-config`),
+three that import another migrated module (`log-index-guard`, `auth-runtime`,
+`jobs-runtime`), one that reaches Node builtins through dynamic `import(…)`
+(`mail-runtime`), and one that exists only so others can import it
+(`runtime-errors`). `jobs-runtime` is the first to import *two* other migrated
+modules — `runtime-errors` for `commandError` and `assertJsonCompatible`, and
+`auth-runtime` for `PASSWORD_RESET_MAIL_JOB` and `privilegedAuthUserId` — which the
+carrier resolves without comment, because bundling the whole migrated set together
+was already forced for the reason recorded above. The case still untested is a
+migrated module importing a *package*, which the metafile check turns into a build
+error rather than a boot failure and which nothing in this runtime has yet wanted
+to do.
+
+**Batch 4 is the first batch whose domain did not detach, and that is a finding
+rather than a shortfall.** Jobs and schedules are 51 declarations and 34 of them
+moved; the other seventeen are held by `createMutationContext`, which is the point
+where every domain's API is composed into one handler context and which ticket 04
+names as what `server-runtime-source.ts` retains, and by `hasPrivilegedDbAccess`,
+which is batch 6's. So the queue's worker, its enqueue path and the Schedule
+reconciler are still in the monolith while the storage, the cron machinery, the
+cursors and the inspection are not.
+
+The consequence worth recording is for the sequencing rather than for this batch:
+**`enqueueRuntimeJob` did not travel, so batch 3's `sendEmailPasswordResetLink` is
+still blocked.** ADR-0041's account of the auth batch names `enqueueRuntimeJob` as
+one of four things outside the auth closure and batch 4 as its owner. Batch 4 owns
+it and could not move it, because it reaches `scheduleCurrentUserJobWorker` and
+through it `runCurrentUserJobWorker`, which builds a context. A blocker naming a
+later batch is therefore not a promise that the later batch clears it — the chain
+has to be closed at the end that holds it, and here that end is the composition
+core rather than any domain on the list.
 
 **Batch 3 found the third way to reach a builtin, and it needed its own decision.**
 The two routes above are asynchronous or global-only, and the auth domain's
