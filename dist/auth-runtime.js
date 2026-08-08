@@ -70,6 +70,10 @@ import { commandError } from "./runtime-errors.js";
 // functions at the end of this file inside the monolith after batch 3. The dependency runs one way
 // — user preferences imports `runtime-errors.js` and nothing else — so this introduces no cycle.
 import { migrateAnonymousPreferences } from "./user-preferences-runtime.js";
+// Batch 9. The sync/async bridge every step of the auth storage bootstrap at the end of this file
+// chains through: on a synchronous engine that is the order the statements already ran in, and on an
+// asynchronous one it is the difference between a sequence and a race.
+import { chainMaybePromise } from "./maybe-promise.js";
 // Batch 8. The four HTTP primitives the five OAuth riders at the end of this file need: the body
 // reader and its size limit, the single-valued header accessor, the origin normalizer and the
 // endpoint error writer. `http-runtime.ts` imports `resolveAnonymousSession` from here in turn, for
@@ -2804,5 +2808,158 @@ export function resolvePasswordResetConfig(config) {
         origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
         ttlMs,
     };
+}
+// ---------------------------------------------------------------------------------------------
+// Batch 9's riders. The auth storage bootstrap: the five functions that declare this domain's own
+// tables and migrate the ones an older database already has.
+//
+// They stood in `server-runtime-source.ts` through batch 3, and the reason is the one batch 6
+// recorded for `createFileStorageTables` and batch 5 for `createUserPreferencesTables`. A domain's
+// table bootstrap is called from exactly one place — the shared Database adapter method set, as
+// `ensureAuthStorage()` — and that method set was still in the monolith. A migrated module may not
+// import from the monolith, so these five could not follow the rest of auth out.
+//
+// Batch 9 is the batch that moves the method set, so they come home. `database-runtime.ts` imports
+// `createAnonymousAuthTables` the same way it imports `createFileStorageTables` from storage and
+// `createUserPreferencesTables` from preferences: the adapter delegates each domain's bootstrap to
+// the module that owns those tables, and owns none of them itself. That is the seam this migration
+// keeps finding rather than one batch 9 drew — three domains had already been split this way, and
+// auth was the one still waiting for its caller to move.
+//
+// Only `createAnonymousAuthTables` is exported, because it is the only one the adapter calls. The
+// other four are private — the OAuth state columns, the provider identity table and its legacy
+// backfill, and the two session-column migrations — and each was an entry in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS` until this batch, because under the emitted list a helper of a
+// registered function had to be registered too or it was a `ReferenceError` in a deployed Capsule.
+//
+// They arrive unchanged. `chainMaybePromise` is a new import at the top of this file; every other
+// name they resolve was already here, `sessionExpiresAt` among them — which is the second reason
+// this is where they belong rather than in the adapter module.
+// ---------------------------------------------------------------------------------------------
+// The one definition of the auth storage bootstrap, for every engine.
+//
+// Each step is chained rather than fired: on a synchronous engine that is the order the statements
+// already ran in, and on an asynchronous one it is the difference between a sequence and a race.
+// The unchained form worked on SQLite alone, which is why Postgres and libSQL each carried a copy
+// that awaited the same statements in order.
+//
+// Kept outside any transaction by its caller. `addMissingColumn` tolerates a column that is
+// already there, and on Postgres a swallowed duplicate-column error would abort the enclosing
+// transaction and fail everything after it. The Postgres dialect asks the engine not to raise the
+// error at all, but storage bootstrap still runs before the migration transaction opens; it has to
+// stay there.
+export function createAnonymousAuthTables(sqlite, authConfig = null) {
+    const sql = sqlite.dialect.sql;
+    return chainMaybePromise([
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_users] (" +
+            "[id] TEXT PRIMARY KEY, " +
+            "[createdAt] TEXT NOT NULL, " +
+            "[displayName] TEXT NOT NULL, " +
+            "[email] TEXT, " +
+            "[picture] TEXT, " +
+            "[isAuthenticated] INTEGER NOT NULL, " +
+            "[isGuest] INTEGER NOT NULL, " +
+            "[provider] TEXT NOT NULL" +
+            ")")),
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] (" +
+            "[token] TEXT PRIMARY KEY, " +
+            "[userId] TEXT NOT NULL, " +
+            "[provider] TEXT NOT NULL, " +
+            "[createdAt] TEXT NOT NULL, " +
+            "[expiresAt] TEXT NOT NULL" +
+            ")")),
+        () => ensureSessionLifecycleColumns(sqlite),
+        () => ensureSessionProvenanceColumn(sqlite),
+        () => createProviderIdentityTables(sqlite),
+        ...(authConfig?.providers?.email?.enabled
+            ? [
+                () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
+                    "[email] TEXT PRIMARY KEY, " +
+                    "[userId] TEXT NOT NULL, " +
+                    "[passwordHash] TEXT NOT NULL, " +
+                    "[passwordSalt] TEXT NOT NULL, " +
+                    "[createdAt] TEXT NOT NULL" +
+                    ")")),
+                () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] (" +
+                    "[selector] TEXT PRIMARY KEY, " +
+                    "[verifierHash] TEXT NOT NULL, " +
+                    "[email] TEXT NOT NULL, " +
+                    "[userId] TEXT NOT NULL, " +
+                    "[createdAt] TEXT NOT NULL, " +
+                    "[expiresAt] TEXT NOT NULL" +
+                    ")")),
+            ]
+            : []),
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] (" +
+            "[state] TEXT PRIMARY KEY, " +
+            "[provider] TEXT NOT NULL, " +
+            "[sessionToken] TEXT NOT NULL, " +
+            "[returnTo] TEXT NOT NULL, " +
+            "[redirectUri] TEXT NOT NULL, " +
+            "[createdAt] TEXT NOT NULL, " +
+            "[expiresAt] TEXT NOT NULL, " +
+            "[nonce] TEXT, " +
+            "[pkceVerifier] TEXT" +
+            ")")),
+        () => ensureOAuthStateColumns(sqlite),
+    ]);
+}
+function ensureOAuthStateColumns(sqlite) {
+    const sql = sqlite.dialect.sql;
+    return chainMaybePromise([
+        ...[
+            ["provider", "TEXT"],
+            ["expiresAt", "TEXT"],
+            ["nonce", "TEXT"],
+            ["pkceVerifier", "TEXT"],
+        ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
+        () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
+        () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL")),
+    ]);
+}
+function createProviderIdentityTables(sqlite) {
+    const sql = sqlite.dialect.sql;
+    return chainMaybePromise([
+        () => sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_auth_identities] (" +
+            "[id] TEXT PRIMARY KEY, " +
+            "[userId] TEXT NOT NULL, " +
+            "[provider] TEXT NOT NULL, " +
+            "[subject] TEXT NOT NULL, " +
+            "[email] TEXT, " +
+            "[displayName] TEXT, " +
+            "[picture] TEXT, " +
+            "[createdAt] TEXT NOT NULL, " +
+            "[updatedAt] TEXT NOT NULL, " +
+            "UNIQUE([provider], [subject])" +
+            ")")),
+        () => sqlite.exec(sql("INSERT INTO [sporades_auth_identities] " +
+            "([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) " +
+            "SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], " +
+            "[createdAt], [createdAt] " +
+            "FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' " +
+            "AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] " +
+            "WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])")),
+    ]);
+}
+// The backfill runs unconditionally rather than only when the column was just added. It was
+// conditional because the `PRAGMA table_info` probe happened to say whether the ALTER had fired,
+// and the probe is SQLite's alone; the predicate does the same work portably, because a session
+// that already has an expiry has a non-null one.
+function ensureSessionLifecycleColumns(sqlite) {
+    return chainMaybePromise([
+        () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
+        () => sqlite
+            .prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL"))
+            .run(sessionExpiresAt(new Date().toISOString())),
+    ]);
+}
+function ensureSessionProvenanceColumn(sqlite) {
+    return chainMaybePromise([
+        () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
+        () => sqlite.exec(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [provider] = " +
+            "COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] " +
+            "WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') " +
+            "WHERE [provider] IS NULL")),
+    ]);
 }
 //# sourceMappingURL=auth-runtime.js.map

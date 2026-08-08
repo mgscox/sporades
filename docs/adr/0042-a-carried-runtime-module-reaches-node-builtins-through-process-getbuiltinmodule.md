@@ -137,8 +137,33 @@ call sites, and this ADR now says so rather than leaving the two readings open.
 
 The check that the ranking still matters: a module that needs *only* `randomUUID`
 must take the global, because binding the namespace for one call would be reaching
-for a heavier route than the work requires. Nothing in the runtime has that shape
-except mail, which does take the global.
+for a heavier route than the work requires. Mail was the only module with that shape
+until batch 9, and `log-index-storage.ts` is the second: `insertLogIndexEvent` mints
+one id per indexed event and the module reaches `node:crypto` for nothing else, so it
+takes `crypto.randomUUID()` and binds no namespace at all.
+
+**Batch 9 is the fourth module to need the accessor, the first to need two builtins
+through it, and the first to use three of the four routes above in one file.**
+`database-runtime.ts` reaches `node:sqlite`, `node:path`, `node:net` and `node:crypto`
+with `await import(…)` inside the asynchronous engine constructors, which is rule 3 and
+was already how those bodies were written. It also has two calls that are synchronous
+and have no `await` to spare: `hashSchema` derives a Capsule schema's hash with
+`createHash("sha256")` from inside a migration chain, and `createRuntimeInspectionAdapter`
+and `createSqliteDatabaseAdapter` probe and create a directory with `existsSync` and
+`mkdirSync`. Those take rule 2, as `nodeCryptoModule` and `nodeFsModule`.
+
+`nodeFsModule` is the first name this ADR adds beside `nodeCryptoModule`, and it is
+bound the same way and for the same reason: a destructured `mkdirSync` would collide
+inside `bin/sporades.js` with `server-runtime-source.ts`'s own `import … from "node:fs"`,
+which still has a consumer there in the log sink. Four modules now spell the crypto
+accessor `nodeCryptoModule`, so esbuild renames three of them inside `bin/` and inside
+the carried IIFE — harmless for the reason ADR-0041 records, since a private module-scope
+name has its declaration and its uses renamed together.
+
+That a module may mix rules 2 and 3 is worth stating plainly, because the ordering above
+reads like a choice made once per file. It is not: it is made per call, by whether the
+call site has an `await` available. What a module should not do is reach one builtin two
+different ways.
 
 Two things that were properties of a single use are now properties of a pattern, and
 both were checked rather than assumed. The accessor is a *namespace* binding in all three

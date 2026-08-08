@@ -1561,7 +1561,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-row-decoding.js", "acl-runtime.js", "http-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-value-coding.js", "acl-runtime.js", "http-runtime.js", "log-index-storage.js", "database-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -2374,10 +2374,129 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
       // then denies every row, with nothing in any log to say why.
       [
         "a stored-row decoder that stopped parsing Json",
-        "stored-row-decoding.js",
-        originals["stored-row-decoding.js"].replace(
+        "stored-value-coding.js",
+        originals["stored-value-coding.js"].replace(
           "output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);",
           "output[field.name] = output[field.name];",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The writing half, which arrived beside it in batch 9. A copy whose Date branch stopped
+      // normalizing stores whatever string the Capsule author passed, so two Capsules on the same
+      // engine sort their Date columns differently — and `toSqlLiteral` in `database-runtime.js`
+      // renders a column default through this same call.
+      [
+        "a stored-value encoder that stopped normalizing Date columns",
+        "stored-value-coding.js",
+        originals["stored-value-coding.js"].replace(
+          "export function normalizeDateValue(value, fieldName) {",
+          "export function normalizeDateValue(value, fieldName) {\n  if (typeof value === \"string\") return value;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // ---------------------------------------------------------------------------------------
+      // Batch 9: the Database adapters and dialect. Every case below is one this project has
+      // actually got wrong, or one the seam exists to make impossible — and not one of them changes
+      // a return value, which is why the limb records statements instead. See
+      // `migratedModuleStatementRecorder` in `server-bundle-template.ts`.
+      //
+      // ADR-0039's original defect, exactly: the owner-scope predicate emitted unquoted. Postgres
+      // folds it to `ownerid` against a column created as `"ownerId"`, so every owner-scoped update
+      // on an app table — the tables Capsule code reaches through `ctx.db` — fails outright.
+      [
+        "an owner-scope predicate that bypasses the dialect's quoting",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          '` AND ${dialect.quoteIdentifier("ownerId")} = ?`',
+          '` AND ownerId = ?`',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The catalog query that hides SQLite's own tables from `sporades db tables`. A copy without
+      // the filter lists `sqlite_sequence` and every other internal table as if it were the
+      // Capsule's.
+      [
+        "a catalog query that stopped hiding SQLite's internal tables",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          `WHERE \${quoteIdentifier("type")} = 'table' AND \${quoteIdentifier("name")} NOT LIKE 'sqlite_%' `,
+          `WHERE \${quoteIdentifier("type")} = 'table' `,
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The upsert form is a dialect entry because the engines genuinely cannot agree on it. A copy
+      // that emitted SQLite's on Postgres is a syntax error at the first preference save.
+      [
+        "a Postgres dialect emitting SQLite's upsert form",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          "const updated = columns.filter((column) => !conflictColumns.includes(column));",
+          "const updated = columns.filter((column) => !conflictColumns.includes(column));\n            if (true) return `INSERT OR REPLACE INTO ${quoteIdentifier(table)}`;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // ADR-0037's whole point: a dialect that half-answers the seam must fail at construction
+      // rather than at the first statement that needed the missing entry — which, on this seam, is
+      // the first Capsule boot on the engine nobody ran the suite against. A copy that stopped
+      // requiring an entry admits the incomplete spec instead.
+      [
+        "a dialect factory that stopped requiring every seam entry",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          "  const missing = required.filter((key) => spec[key] == null);",
+          "  const missing = [];",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The `== null` rule rather than `=== undefined`. An entry explicitly set to null would
+      // otherwise pass construction and fail at the statement that needed it.
+      [
+        "a dialect factory that admits a null seam entry",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          "  const missing = required.filter((key) => spec[key] == null);",
+          "  const missing = required.filter((key) => spec[key] === undefined);",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The bind-placeholder walk on the inspection path. A copy whose quote handling drifted
+      // interpolates a parameter into what the human typed inside a string literal.
+      [
+        "a Postgres interpolator that stopped honouring quoted runs",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          'if (char === \'"\' || char === "\'" || char === "`") {',
+          'if (false) {',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // ADR-0039's marker substitution. A copy that resolved a marker inside a string literal
+      // rewrites a Capsule's data, not its identifiers.
+      [
+        "a marker substitution that no longer stops at an identifier shape",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace(
+          "/\\[([A-Za-z_][A-Za-z0-9_]*)\\]/g",
+          "/\\[([^\\]]*)\\]/g",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // A structural skew on this module, so the export-surface half is exercised for batch 9 as
+      // well as the answers half.
+      [
+        "a Database module missing an export the running one has",
+        "database-runtime.js",
+        originals["database-runtime.js"].replace("export function splitSqlStatements(", "function splitSqlStatements("),
+        /export a different set of names.*missing splitSqlStatements/s,
+      ],
+      // The Log index's storage, batch 9's other module. ADR-0036's bound is expressed as the
+      // retained set; a copy that dropped the ordering keeps a different history on every engine.
+      [
+        "a Log index prune that stopped ordering by the runtime sequence",
+        "log-index-storage.js",
+        originals["log-index-storage.js"].replace(
+          'ORDER BY [indexSequence] DESC LIMIT ?" +',
+          'LIMIT ?" +',
         ),
         /answer the skew probe differently/,
       ],
@@ -2442,6 +2561,17 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     // now exported from nothing and named in no list.
     "s3Hmac",
     "resolveLiveFileReference",
+    // The Database adapters and dialect, batch 9, and the same story again at thirty-eight — the
+    // largest set of newly-private declarations in the sequence. `createPostgresScramSession` is the
+    // whole of this runtime's Postgres authentication and `migrateAppSchemaInTransaction` the one
+    // definition of what a Capsule schema migration does; both were emitted-list entries purely
+    // because a helper the list did not carry could not be called from one it did, and both are now
+    // exported from nothing and named in no list.
+    "createPostgresScramSession",
+    "migrateAppSchemaInTransaction",
+    // The Log index's storage, batch 9's other module, and the one batch 6's reverse-graph pass
+    // named without being able to move.
+    "chainSchemaOperation",
   ]) {
     assert.equal(
       Object.keys(migratedModules).includes(helper),
@@ -2482,6 +2612,21 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     "createPendingFileUpload",
     "createFileStorageTables",
     "isPromiseLike",
+    // Batch 9's entry points, one per shape the Database domain reaches the bundle in: the seam
+    // factory every engine's dialect is built through, the one shared method set, an engine
+    // constructor, and the adapter the bundle's own `db` action opens. `createSharedDatabaseAdapterMethods`
+    // is the one that matters — every behavioural call in a deployed Capsule goes through it.
+    "createDatabaseDialect",
+    "createSharedDatabaseAdapterMethods",
+    "createSqliteDatabaseAdapter",
+    "createRuntimeInspectionAdapter",
+    // And the Log index's storage, whose four exported names are what that method set calls.
+    "createLogIndexTables",
+    "insertLogIndexEvent",
+    // The auth storage bootstrap, which went home to `auth-runtime.js` in the same batch.
+    "createAnonymousAuthTables",
+    // The stored-value codec's writing half, which joined its reading half in `stored-value-coding.js`.
+    "serializeFieldValue",
   ]) {
     assert.equal(
       SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),

@@ -178,8 +178,12 @@ function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
-// src/jobs-runtime.ts
+// src/database-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeFsModule = process.getBuiltinModule("node:fs");
+
+// src/jobs-runtime.ts
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { PathLike, PathOrFileDescriptor } from "node:fs";
+import { PathOrFileDescriptor } from "node:fs";
 import { Duplex } from "stream";
 export * from "./inspection-sql.js";
 export * from "./log-index-guard.js";
@@ -12,7 +12,9 @@ export * from "./user-preferences-runtime.js";
 export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
 export * from "./runtime-log-policy.js";
-export * from "./stored-row-decoding.js";
+export * from "./stored-value-coding.js";
+export * from "./log-index-storage.js";
+export * from "./database-runtime.js";
 export * from "./acl-runtime.js";
 export * from "./http-runtime.js";
 type LooseRecord = Record<string, any>;
@@ -21,50 +23,6 @@ type RuntimeEnv = Record<string, string | undefined>;
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
-export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
-export declare function createDatabaseDialect(spec: LooseRecord): LooseRecord;
-export declare function quoteSqlIdentifiers(quoteIdentifier: (identifier: string) => string, statement: string): string;
-export declare function createDatabaseNormalization(spec: LooseRecord): LooseRecord;
-export declare function sqliteRowNormalization(): LooseRecord;
-export declare function postgresRowNormalization(): LooseRecord;
-export declare function libsqlRowNormalization(): LooseRecord;
-export declare function sqliteDatabaseDialect(): LooseRecord;
-export declare function postgresDatabaseDialect(): LooseRecord;
-export declare function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord;
-export declare function createSqliteDatabaseAdapter(databasePath: PathLike, options?: LooseRecord): Promise<LooseRecord>;
-export declare function createPostgresDatabaseAdapter(options: {
-    url: any;
-}): Promise<LooseRecord>;
-export declare function createPostgresConnection(url: any): Promise<{
-    readonly backendKeyData: Buffer<ArrayBuffer> | null;
-    query(sql: string): Promise<{
-        fields: any[];
-        rows: LooseRecord[];
-        rowCount: number;
-    }>;
-    close(): Promise<void>;
-}>;
-export declare function createLibsqlDatabaseAdapter(options: {
-    url: any;
-    authToken: any;
-}): Promise<{
-    engine: string;
-    dialect: LooseRecord;
-    normalization: LooseRecord;
-    withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
-    withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
-    close(): Promise<void>;
-    exec(sql: string): Promise<undefined>;
-    prepare(sql: string): {
-        all(...params: (number | undefined)[]): Promise<any>;
-        get(...params: undefined[]): Promise<any>;
-        run(...params: string[]): Promise<{
-            changes: number;
-            lastInsertRowid: bigint | undefined;
-        }>;
-        columns(): Promise<any>;
-    };
-}>;
 export declare function createLogEnvelope(input: {
     config: LooseRecord;
     timestamp: any;
@@ -103,18 +61,6 @@ export declare function routeEndpoint(database: {
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
-export declare function listDatabaseTables(database: {
-    adapter: any;
-    sqlite: any;
-}): Promise<any>;
-export declare function dumpDatabase(database: {
-    adapter: any;
-    sqlite: any;
-}): Promise<any>;
-export declare function runReadOnlyQuery(database: {
-    adapter: any;
-    sqlite: any;
-}, sql: any): Promise<any>;
 type TrustedRefreshTransport = {
     subscribeType: "dev.refresh.subscribe";
     receivedType: "dev.refresh.received";

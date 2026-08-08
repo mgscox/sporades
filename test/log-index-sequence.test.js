@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+// Imported by name rather than searched for in `SERVER_RUNTIME_SOURCE_FUNCTIONS`, which is what
+// these three were until batch 9 moved the Log index's storage into `log-index-storage.ts`. The
+// lookup was `SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === …)` at *module scope*, and a
+// domain that stops being entries in that list makes it answer `undefined` — so this whole file
+// would have failed to import rather than one case going red, which is how batch 4 came to report
+// 1,438 tests where there were 1,455. It resolves through `dist/server-runtime-source.js` still,
+// because that module re-exports the storage module whole.
+import { backfilledLogIndexSequence, formatLogIndexSequence, nextLogIndexSequence } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqliteAdapter } from "./support/database-adapter-engines.js";
 
 // The construction behind ADR-0036's ordering field, checked where it is generated rather than
@@ -12,16 +19,6 @@ import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqlit
 // value that ties, that loses digits on the way to storage, or that restarts from an arbitrary
 // origin would satisfy a single ordering assertion and then leave the order undefined in the case
 // nobody wrote a case for. Each property below is one of the three ways that could happen.
-
-function runtimeFunction(name) {
-  const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((candidate) => candidate.name === name);
-  assert.ok(fn, `${name} is not a server runtime source function`);
-  return fn;
-}
-
-const nextLogIndexSequence = runtimeFunction("nextLogIndexSequence");
-const formatLogIndexSequence = runtimeFunction("formatLogIndexSequence");
-const backfilledLogIndexSequence = runtimeFunction("backfilledLogIndexSequence");
 
 const SEQUENCE_WIDTH = 20;
 const NANOS_PER_MILLISECOND = 1_000_000n;

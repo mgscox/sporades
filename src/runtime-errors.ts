@@ -76,6 +76,20 @@ export function assertJsonCompatible(value: any) {
   }
 }
 
+// The Reference-field rejection, admitted in batch 9 on the same cohesion argument
+// `assertJsonCompatible` was: it does nothing but build a `commandError`, which already lives here.
+//
+// It is here rather than in `database-runtime.ts` because it has two callers on opposite sides of
+// that module's boundary. `migrateExistingAppTableInTransaction` — a body of the shared adapter
+// method set — throws it when an added Reference field's default names a row that does not exist,
+// and `fieldValueForWrite`, still in the monolith at the mutation layer, throws it when a write
+// does. Putting it in the adapter module would have made the mutation layer import a *reference
+// validity error* from the database engines, which reads backwards; putting it here costs one
+// import each and says what it is.
+export function invalidReferenceError(field: LooseRecord) {
+  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
+}
+
 // Private, and this is the first name in this module that gets to be. Nothing outside
 // `assertJsonCompatible` has ever called it, but under the emitted list it was an entry in
 // `SERVER_RUNTIME_SOURCE_FUNCTIONS` all the same — a helper of a registered function had to be
