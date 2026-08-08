@@ -231,14 +231,29 @@ export const MIGRATED_MODULE_AUTH_SKEW_PROBE = [
 // first limb covers more than it does.
 //
 // The cases are the ones this cron implementation has actually got wrong: the day-of-month /
-// day-of-week OR rule when both fields are restricted, a step, a range, a list, the leap-day gap
-// that sets the eight-year search bound, a DST spring-forward hour that does not exist locally, and
-// two malformed expressions that must throw rather than return.
+// day-of-week OR rule when both fields are restricted, a step, a range, a list, a leap-day
+// occurrence, a DST spring-forward hour that does not exist locally, and three inputs that must
+// throw rather than return.
+//
+// **Every case must resolve within a few thousand minutes of its `after` instant, and that is a
+// correctness requirement of this probe rather than a preference.** `nextScheduleOccurrence` scans
+// minute by minute with an `Intl.DateTimeFormat.formatToParts` call per candidate, bounded at
+// `8 * 366 * 24 * 60` = 4,207,680 iterations; this whole function runs twice per bundle build, once
+// for the carried copy and once for the loaded one, and a bundle is built on every `sporades dev`
+// start. The first version of this list asked for `0 0 29 2 *` after 2096-03-01, whose next
+// occurrence is 2104-02-29 because 2100 is not a leap year — the full eight-year bound, measured at
+// **9,254 ms per copy**, so 18.5 s added to every dev start. That is not a hang and nothing throws;
+// it simply moved dev startup from 0.3 s to 19.5 s and blew the ten-second process and socket
+// budgets in `test/password-reset-transport.test.js` and `test/require-auth.test.js`.
+//
+// So the leap-day case starts the day before the occurrence it is looking for. It still proves the
+// carried copy agrees about 29 February — which is the property worth comparing — and costs about a
+// thousand iterations rather than four million. The eight-year bound itself is not probe material.
 const MIGRATED_MODULE_SCHEDULE_SKEW_PROBE = [
     ["*/15 * * * *", "UTC", "2031-03-01T09:07:00.000Z"],
     ["0 9 * * *", "America/New_York", "2031-03-08T00:00:00.000Z"],
     ["30 2 * * *", "America/New_York", "2031-03-09T00:00:00.000Z"],
-    ["0 0 29 2 *", "UTC", "2096-03-01T00:00:00.000Z"],
+    ["0 0 29 2 *", "UTC", "2096-02-28T12:00:00.000Z"],
     ["0 12 13 * 5", "UTC", "2031-01-01T00:00:00.000Z"],
     ["0,30 1-3 * * *", "Australia/Adelaide", "2031-06-01T00:00:00.000Z"],
     ["0 0 * * 0", "Europe/London", "2031-10-25T00:00:00.000Z"],
