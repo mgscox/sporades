@@ -32,10 +32,23 @@ import {
   // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
   // preferences stopped holding them.
   linkProviderIdentity, signInWithEmail, signUpWithEmail,
+  // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
+  // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
+  // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
+  beginOAuthSignIn, resolvePasswordResetConfig,
 } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
+// Batch 8. Eight names, which is what the one function of that domain still in this file
+// (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
+// `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
+// `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
+// policy, the WebSocket origin check and the request-origin resolver.
+import {
+  emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin,
+  resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult,
+} from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeFieldValue, deserializeRow } from "./stored-row-decoding.js";
@@ -273,28 +286,39 @@ export * from "./stored-row-decoding.js";
 // `test/mail.test.js` resolve `emitPrivilegedAuditEvent` and `createTableAclContext` through here.
 export * from "./acl-runtime.js";
 
+// The HTTP and security policy domain left this file as batch 8 — the CORS and CSP posture every
+// response carries, the origin and host-header validation behind it, the request body reader and
+// its size limit, the generic response writers, and the health and File routes. Thirty-two
+// declarations and two type aliases, of which fifteen are private to that module now; the eight
+// names imported above are what `routeEndpoint`, `readEndpointBody`, `openDevDatabase` and
+// `createWebSocketHub` still need from it.
+//
+// **One of the domain's thirty-three declarations is still here.** `routeEndpoint` reaches
+// `runEndpoint`, and `runEndpoint` reaches `createMutationContext`, `createContextHolder` and
+// `createEndpointDatabaseApi` — the composition core this file retains until ticket 05. That is
+// batch 4's case rather than batch 5's, so batch 9 does not clear it. The three response writers it
+// calls (`writeEndpointResult`, `writeEndpointError`, `emitHttpFailureLog`) moved anyway and are
+// imported back, which is the same trade batch 6 made in the other direction when `writeNotFound`
+// kept `handleFileHttpRoute` here.
+//
+// **The six auth functions batch 3 left behind are freed by this batch**, which makes them batch
+// 5's case rather than batch 4's: a blocker that named a later batch, and that batch cleared it.
+// Five are riders in `auth-runtime.ts` now and `resolveOAuthRequestOrigin` is in `http-runtime.ts`,
+// because its body validates a request origin against the CORS policy and reaches no auth name.
+// `sendEmailPasswordResetLink` is still here and is still not waiting on a batch: it reaches
+// `enqueueRuntimeJob`, which needs the composition core.
+//
+// Re-exported whole for the reason the thirteen above are. Two consumers make it load-bearing:
+// `src/cli/sporades.ts` and the generated bundle's boot program resolve `prepareHttpSecurity`,
+// `readJsonRequest`, `writeUnhandledHttpError`, `injectPageConnectionToken`, `routeRuntimeHealth`
+// and `handleFileHttpRoute` through here, and `test/host.test.js`, `test/database-adapter.test.js`
+// and `test/oauth-provider.test.js` resolve `prepareHttpSecurity`, `routeRuntimeHealth`,
+// `checkRuntimeSqlite` and `resolveOAuthRequestOrigin` through here.
+export * from "./http-runtime.js";
+
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
-type RuntimeSecurityPolicy = {
-  cors: {
-    sameOrigin: boolean;
-    publicDev: boolean;
-    allowedOrigins: string[];
-    allowedOriginPatterns: string[];
-    requireExplicitCrossOrigin: boolean;
-    publicOrigin: string | null;
-  };
-  csp: {
-    mode: string;
-    header: string;
-    directives: Record<string, string[] | string>;
-  };
-};
-type RuntimeRequestLike = {
-  headers: IncomingHttpHeaders | LooseRecord;
-  socket?: any;
-};
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
   // and `mail-config.ts`. They are carried into the emitted-list bundle as those modules' own
@@ -305,28 +329,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   normalizeJourneyState,
   validateJourneyJson,
   journeyError,
-  readJsonRequest,
-  readLimitedRequestBody,
-  resolveHttpMaxBodyBytes,
-  createPayloadTooLargeError,
-  isPayloadTooLargeError,
-  writeUnhandledHttpError,
-  emitHttpFailureLog,
-  prepareHttpSecurity,
-  resolveRuntimeSecurityPolicy,
-  defaultRuntimeCspDirectives,
-  serializeCspDirectives,
-  injectPageConnectionToken,
-  requestOriginAllowed,
-  websocketOriginAllowed,
-  isSameOriginRequest,
-  isLocalDevOrigin,
-  normalizeOrigin,
-  resolveOAuthRequestOrigin,
-  singleHttpHeader,
-  validatedRequestHost,
-  appendVaryHeader,
-  sanitizeResponseHeaders,
   createDatabaseDialect,
   quoteSqlIdentifiers,
   sqliteDatabaseDialect,
@@ -504,13 +506,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // for the reason recorded beside `isSensitiveLogKey` above.
   readEndpointBody,
   createEndpointLogger,
-  routeRuntimeHealth,
-  createRuntimeHealthResult,
-  checkRuntimeSqlite,
-  handleFileHttpRoute,
-  writeJsonHttpResponse,
-  writeNotFound,
-  sendFileHttpResponse,
   isDuplicateColumnError,
   runSchemaExecIgnoringDuplicateColumn,
   chainSchemaOperation,
@@ -519,15 +514,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   ensureOAuthStateColumns,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
-  routeSporadesAuth,
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
-  resolvePasswordResetConfig,
   sendEmailPasswordResetLink,
-  beginOAuthSignIn,
-  readOAuthCallbackParameters,
-  oauthFormContentTypeValid,
   createWebSocketAccept,
   createWebSocketHub,
   drainWebSocketFrames,
@@ -537,9 +527,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   sendJsonWithCompletion,
   routeEndpoint,
   runEndpoint,
-  writeEndpointResult,
-  writeEndpointError,
-  endpointResponseError,
   runQuery,
   runCustomQuery,
   runMutation,
@@ -564,321 +551,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   quoteIdentifier,
 ];
 
-export async function readJsonRequest(request: IncomingMessage, limitSource: LooseRecord | number | null = null): Promise<LooseRecord> {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
-}
-
-async function readLimitedRequestBody(request: any, limitSource: LooseRecord | number | null = null) {
-  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > maxBytes) {
-      throw createPayloadTooLargeError(maxBytes);
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-function resolveHttpMaxBodyBytes(source: LooseRecord | number | null = null) {
-  const configured = typeof source === "number"
-    ? source
-    : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
-}
-
-function createPayloadTooLargeError(maxBytes: number) {
-  const error: HelperError = new Error("Request body is too large.");
-  error.code = "PAYLOAD_TOO_LARGE";
-  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
-  return error;
-}
-
-function isPayloadTooLargeError(error: any) {
-  return error?.code === "PAYLOAD_TOO_LARGE";
-}
-
-export function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any) {
-  emitHttpFailureLog(database, request, error);
-  if (isPayloadTooLargeError(error)) {
-    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
-    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}\n`);
-    return;
-  }
-  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify({
-    ok: false,
-    data: null,
-    error: {
-      message: "Internal server error.",
-      hint: "Check server logs and retry the request.",
-    },
-  })}\n`);
-}
-
-function emitHttpFailureLog(database: LooseRecord, request: IncomingMessage | LooseRecord, error: any, context: LooseRecord = {}) {
-  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-  database.log?.emit?.({
-    category: "platform",
-    event: "http.request.failed",
-    level: "error",
-    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-    request: {
-      method: request.method ?? context.method ?? null,
-      path: requestUrl.pathname,
-    },
-    data: {
-      code: error?.code ?? null,
-      message: error?.message ?? String(error),
-      hint: error?.hint ?? null,
-      stack: error?.stack ?? null,
-    },
-  });
-}
-
-export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
-  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
-  const originalWriteHead = response.writeHead.bind(response);
-  response.writeHead = ((statusCode: number, statusMessageOrHeaders?: string | OutgoingHttpHeaders, maybeHeaders?: OutgoingHttpHeaders) => {
-    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
-    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
-    const headers: OutgoingHttpHeaders = {
-      ...sanitizeResponseHeaders(inputHeaders ?? {}),
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "x-frame-options": "DENY",
-      "permissions-policy": "camera=(), microphone=(), geolocation=()",
-      "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
-    };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
-      }
-    }
-    if (statusMessage) {
-      return originalWriteHead(statusCode, statusMessage, headers);
-    }
-    return originalWriteHead(statusCode, headers);
-  }) as typeof response.writeHead;
-
-  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
-    const headers: OutgoingHttpHeaders = {
-      "content-length": "0",
-    };
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
-      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-      headers["access-control-allow-headers"] = String(
-        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token",
-      );
-      headers["access-control-max-age"] = "600";
-      if (!policy.cors.publicDev) {
-        headers.vary = "Origin";
-      }
-    }
-    response.writeHead(204, headers);
-    response.end();
-    return true;
-  }
-
-  return false;
-}
-
-function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): RuntimeSecurityPolicy {
-  const security = config.security ?? {};
-  const cors = security.cors ?? {};
-  const csp = security.csp ?? {};
-  const session = config.__sporadesSession ?? "container";
-  const publicDev = session === "public-dev";
-  const dev = session === "dev" || publicDev;
-  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin: any) => typeof origin === "string") : [];
-  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
-  const directives = {
-    ...defaultRuntimeCspDirectives(),
-    ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
-  };
-  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
-
-  return {
-    cors: {
-      sameOrigin: !publicDev,
-      publicDev,
-      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
-      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
-      publicOrigin,
-    },
-    csp: {
-      mode,
-      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives,
-    },
-  };
-}
-
-function defaultRuntimeCspDirectives(): Record<string, string[]> {
-  return {
-    "default-src": ["'self'"],
-    "script-src": ["'self'", "'unsafe-inline'"],
-    "style-src": ["'self'", "'unsafe-inline'"],
-    "img-src": ["'self'", "data:", "blob:"],
-    "connect-src": ["'self'", "ws:", "wss:"],
-    "font-src": ["'self'", "data:"],
-    "object-src": ["'none'"],
-    "base-uri": ["'self'"],
-    "frame-ancestors": ["'none'"],
-  };
-}
-
-function serializeCspDirectives(directives: Record<string, unknown>) {
-  return Object.entries(directives)
-    .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
-    .join("; ");
-}
-
-export function injectPageConnectionToken(html: string, token: string) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
-  }
-  return `${script}\n${html}`;
-}
-
-function requestOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
-  const origin = request.headers.origin;
-  if (!origin) {
-    return false;
-  }
-  if (policy.cors.publicDev) {
-    return true;
-  }
-  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
-    return true;
-  }
-  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
-    return true;
-  }
-  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
-    return true;
-  }
-  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
-}
-
-function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
-  if (!request.headers.origin) {
-    return !policy.cors.publicOrigin;
-  }
-  return requestOriginAllowed(policy, request);
-}
-
-function isSameOriginRequest(request: RuntimeRequestLike, origin: string) {
-  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  if (!host) {
-    return false;
-  }
-  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
-  return origin === `${protocol}://${host}`;
-}
-
-function normalizeOrigin(value: any) {
-  if (typeof value !== "string" || value.trim() === "") {
-    return null;
-  }
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeRequestLike) {
-  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
-  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
-  const hostHeader = singleHttpHeader(request.headers.host);
-  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
-  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
-  if (
-    (request.headers.host !== undefined && !hostHeader) ||
-    (request.headers.origin !== undefined && !singleHttpHeader(request.headers.origin)) ||
-    (request.headers["x-forwarded-host"] !== undefined && !forwardedHost) ||
-    (request.headers["x-forwarded-proto"] !== undefined && !forwardedProto)
-  ) return null;
-
-  if (configuredOrigin) {
-    const configured = new URL(configuredOrigin);
-    if (originHeader && originHeader !== configuredOrigin) return null;
-    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
-    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
-    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
-    return configuredOrigin;
-  }
-
-  if (forwardedHost || forwardedProto) return null;
-  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
-  const host = validatedRequestHost(hostHeader, protocol);
-  if (!host) return null;
-  const actualOrigin = `${protocol}//${host}`;
-  if (originHeader && originHeader !== actualOrigin) return null;
-  return actualOrigin;
-}
-
-function singleHttpHeader(value: any) {
-  if (Array.isArray(value)) {
-    if (value.length !== 1) return null;
-    value = value[0];
-  }
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.includes(",")) return null;
-  return trimmed;
-}
-
-function validatedRequestHost(value: any, protocol: string) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
-  try {
-    const url = new URL(`${protocol}//${value}`);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    return url.host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function isLocalDevOrigin(origin: string | URL) {
-  try {
-    const parsed = new URL(origin);
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-  } catch {
-    return false;
-  }
-}
-
-function appendVaryHeader(existing: unknown, value: string) {
-  if (!existing) {
-    return value;
-  }
-  const parts = String(existing)
-    .split(",")
-    .map((part) => part.trim().toLowerCase());
-  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
-}
-
-function sanitizeResponseHeaders(headers: OutgoingHttpHeaders | LooseRecord) {
-  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
-  return Object.fromEntries(
-    [...entries].filter(([name]) => {
-      const normalized = String(name).toLowerCase();
-      return normalized !== "x-powered-by" && normalized !== "server";
-    }),
-  );
-}
 
 export async function openDevDatabase(
   databasePath: string,
@@ -4361,116 +4033,6 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   return true;
 }
 
-export async function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, websocketHub: any = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
-  if (uploadMatch && request.method === "PUT") {
-    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
-    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
-    return true;
-  }
-
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
-  if (privateMatch && request.method === "GET") {
-    const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, row);
-    return true;
-  }
-
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
-  if (publicMatch && request.method === "GET") {
-    const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
-    if (
-      !publicRow ||
-      publicRow.revokedAt ||
-      publicRow.deletedAt ||
-      (publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now()) ||
-      publicRow.publicVersion !== requestUrl.searchParams.get("v") ||
-      publicRow.publicVersion !== publicRow.version
-    ) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, publicRow);
-    return true;
-  }
-
-  return false;
-}
-
-export async function routeRuntimeHealth(database: any, request: { url: string | URL; method: string; headers: { [x: string]: any; }; }, response: any) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
-    return false;
-  }
-
-  const probe = request.headers["x-sporades-host-probe"];
-  if (typeof probe !== "string" || probe.length === 0) {
-    writeNotFound(response);
-    return true;
-  }
-
-  const result = await createRuntimeHealthResult(database);
-  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
-  return true;
-}
-
-async function createRuntimeHealthResult(database: any) {
-  const checks = {
-    sqlite: await checkRuntimeSqlite(database),
-    fileStorage: await checkRuntimeFileStorage(database),
-  };
-  const ready = checks.sqlite.ok && checks.fileStorage.ok;
-  return {
-    ok: ready,
-    data: {
-      runtime: { ready },
-      checks,
-    },
-    error: ready
-      ? null
-      : {
-        message: "Sporades runtime is not ready.",
-        hint: "Check Hosted Capsule logs and data volume permissions.",
-      },
-  };
-}
-
-export async function checkRuntimeSqlite(database: LooseRecord) {
-  return await (database.adapter ?? database.adapter).checkHealth();
-}
-
-
-
-
-function writeJsonHttpResponse(response: any, status: number, result: any) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(result)}\n`);
-}
-
-function writeNotFound(response: { writeHead: (arg0: number, arg1: { "content-type": string; }) => void; end: (arg0: string) => void; }) {
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("Not found");
-}
-
-async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord) {
-  try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
-    response.writeHead(200, {
-      "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable",
-    });
-    response.end(bytes);
-  } catch {
-    writeNotFound(response);
-  }
-}
 
 
 
@@ -4936,74 +4498,6 @@ function createEndpointLogger(database: any, context = {}) {
   });
 }
 
-function writeEndpointResult(response: any, result: any) {
-  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
-    const status = result.status ?? 200;
-    if (!Number.isInteger(status) || status < 100 || status > 599) {
-      throw endpointResponseError();
-    }
-    if (
-      result.headers !== undefined &&
-      (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))
-    ) {
-      throw endpointResponseError();
-    }
-    const headers = { ...(result.headers ?? {}) };
-    const body = result.body ?? null;
-    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
-      headers["content-type"] ??= "application/json; charset=utf-8";
-      let payload;
-      try {
-        payload = JSON.stringify(body);
-      } catch {
-        throw endpointResponseError();
-      }
-      response.writeHead(status, headers);
-      response.end(payload);
-      return;
-    }
-    headers["content-type"] ??= "text/plain; charset=utf-8";
-    response.writeHead(status, headers);
-    response.end(String(body ?? ""));
-    return;
-  }
-
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  response.end(String(result ?? ""));
-}
-
-function writeEndpointError(response: any, error: any) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
-  response.end(
-    `${JSON.stringify({
-      ok: false,
-      data: null as any,
-      error: {
-        ...(error?.code ? { code: error.code } : {}),
-        message: isPayloadTooLargeError(error)
-          ? error.message
-          : error?.hint
-          ? error.message
-          : error?.sporadesEndpointResponse
-            ? "Invalid endpoint response."
-            : "Endpoint handler failed.",
-        hint: error?.sporadesEndpointResponse
-          ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
-          : isPayloadTooLargeError(error)
-            ? error.hint
-          : error?.hint
-            ? error.hint
-            : "Check the endpoint handler and retry the request.",
-      },
-    })}\n`,
-  );
-}
-
-function endpointResponseError() {
-  const error: HelperError = new Error("Invalid endpoint response.");
-  error.sporadesEndpointResponse = true;
-  return error;
-}
 
 function parseFieldDefault(kind: string, rawDefault: string | undefined) {
   if (rawDefault === undefined) {
@@ -5942,232 +5436,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
   }
 }
 
-export async function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
-  if (!match) {
-    return false;
-  }
-  const provider = match[1];
-  let callbackParameters;
-  try {
-    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
-  } catch (error) {
-    writeEndpointError(response, error);
-    return true;
-  }
-  const parameters = callbackParameters.parameters;
-  const states = parameters.getAll("state");
-  const state = states.length === 1 ? states[0] : null;
-  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
-    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
-    return true;
-  }
-  const stateRow = await database.adapter.consumeOAuthState(state);
-  if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
-    return true;
-  }
-  try {
-    if (callbackParameters.error) {
-      throw callbackParameters.error;
-    }
-    validateConsumedOAuthCallbackParameters(parameters);
-    if (stateRow.provider !== provider) {
-      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
-    }
-    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
-      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
-    }
-    const adapter = oauthProviderAdapter(database, provider);
-    if (!adapter?.enabled) {
-      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
-    }
-    if ((adapter.responseMode === "form_post" && request.method !== "POST") ||
-        (adapter.responseMode !== "form_post" && request.method !== "GET")) {
-      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
-    }
-    const providerError = parameters.get("error");
-    if (providerError) {
-      const mappedError = adapter.callbackError?.(parameters);
-      if (mappedError) {
-        throw mappedError;
-      }
-      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
-      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
-      throw commandError(
-        actionRequired
-          ? "OAuth provider requires additional user action."
-          : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
-        actionRequired
-          ? "Retry sign-in and complete the provider's consent or account prompt."
-          : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
-        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED",
-      );
-    }
-    const code = parameters.get("code");
-    if (!code) {
-      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-    const profile = await adapter.complete({
-      provider,
-      code,
-      redirectUri: stateRow.redirectUri,
-      nonce: stateRow.nonce,
-      pkceVerifier: stateRow.pkceVerifier,
-      parameters,
-    });
-    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    let result;
-    try {
-      result = await linkProviderIdentity(database, session, provider, profile);
-    } catch {
-      throw commandError(
-        "OAuth account linking failed.",
-        "Retry sign-in. If the problem persists, check the database connection.",
-        "AUTH_TRANSACTION_FAILED",
-      );
-    }
-    if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
-    }
-    writeRedirect(response, stateRow.returnTo);
-  } catch (error: any) {
-    writeEndpointError(response, error);
-  }
-  return true;
-}
 
-async function readOAuthCallbackParameters(request: IncomingMessage, requestUrl: URL) {
-  if (request.method === "GET") {
-    return {
-      parameters: requestUrl.searchParams,
-      error: null,
-      stateTrustworthy: true,
-    };
-  }
-  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
-    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  const body = await readLimitedRequestBody(request, 16 * 1024);
-  return parseOAuthFormBody(body);
-}
-
-function oauthFormContentTypeValid(value: any) {
-  const raw = singleHttpHeader(value);
-  if (!raw) return false;
-  const parts = raw.split(";").map((part) => part.trim());
-  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
-  if (parts.length === 0) return true;
-  if (parts.length !== 1) return false;
-  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
-  return Boolean(match);
-}
-
-async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, provider: string, options: LooseRecord) {
-  const adapter = oauthProviderAdapter(database, provider);
-  if (!adapter?.enabled) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
-        message: `${provider || "OAuth"} provider is not configured.`,
-        hint: provider === "google"
-          ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
-          : "Configure this OAuth provider before retrying sign-in.",
-      },
-    };
-  }
-  const origin = options.origin;
-  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_ORIGIN_INVALID",
-        message: "OAuth sign-in requires a trusted request origin.",
-        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy.",
-      },
-    };
-  }
-  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
-        message: "Apple sign-in requires an HTTPS domain origin.",
-        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL.",
-      },
-    };
-  }
-  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
-  const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = randomBytes(32).toString("base64url");
-  const nonce = randomBytes(32).toString("base64url");
-  const pkceVerifier = randomBytes(48).toString("base64url");
-  const pkceChallenge = createHash("sha256").update(pkceVerifier).digest("base64url");
-  const now = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  let started;
-  try {
-    started = await adapter.begin({
-      provider,
-      state,
-      nonce,
-      redirectUri,
-      pkceChallenge,
-      pkceChallengeMethod: "S256",
-    });
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth sign-in could not be started.",
-        hint: "Check the provider configuration and retry sign-in.",
-      },
-    };
-  }
-  if (!started?.url) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth provider did not return an authorization URL.",
-        hint: "Check the provider configuration and retry sign-in.",
-      },
-    };
-  }
-  await database.adapter.insertOAuthState({
-    state,
-    provider,
-    sessionToken: session.token,
-    returnTo,
-    redirectUri,
-    createdAt: now,
-    expiresAt,
-    nonce,
-    pkceVerifier,
-  });
-  return { ok: true, url: started.url };
-}
-
-// The reset link origin and page path come from Capsule configuration only.
-// Deriving either from a request header would let an attacker who can reach the
-// Capsule mail a victim a genuine reset link pointing at the attacker's server.
-function resolvePasswordResetConfig(config: LooseRecord) {
-  const passwordReset = config.auth?.email?.passwordReset ?? {};
-  const port = typeof config.dev?.port === "number"
-    ? config.dev.port
-    : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
-  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs)
-    ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS)
-    : PASSWORD_RESET_DEFAULT_TTL_MS;
-  return {
-    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
-    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
-    ttlMs,
-  };
-}
 
 // Enqueues a runtime-owned Job under the reserved privileged actor. This writes
 // the queue row directly rather than going through the current-user Job API:

@@ -8,20 +8,23 @@ import test from "node:test";
 // `oauthProviderAdapter` and `authProvidersForClient` are named imports since batch 3 moved the auth
 // domain out of the emitted list; see the note in `test/oauth-provider.test.js` for why the `.find`
 // spelling is unsafe once a domain leaves it. `linkProviderIdentity` joined them in batch 5, which
-// moved it into `auth-runtime.ts` with the rest of the sessions-and-sign-in region. `beginOAuthSignIn`
-// below is still in the monolith, behind the HTTP layer.
+// moved it into `auth-runtime.ts` with the rest of the sessions-and-sign-in region.
+//
+// `beginOAuthSignIn` joined them in batch 8, which moved the HTTP layer and with it the six auth
+// functions that layer had been holding. It is the exact failure the note describes: it left the
+// emitted list in that batch, so the `.find` spelling would have bound `undefined` at module scope
+// and every `await beginOAuthSignIn(…)` below would have thrown `undefined is not a function` — or,
+// worse for a module-scope binding, taken the whole file out of the run.
 import {
   authProvidersForClient,
+  beginOAuthSignIn,
   linkProviderIdentity,
   oauthProviderAdapter,
   openDevDatabase,
   resolveAnonymousSession,
   routeSporadesAuth,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 import { authStatus } from "../dist/bundle-pipeline.js";
-
-const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 
 async function withFacebookDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-facebook-oauth-"));

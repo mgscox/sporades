@@ -14,33 +14,11 @@ export * from "./maybe-promise.js";
 export * from "./runtime-log-policy.js";
 export * from "./stored-row-decoding.js";
 export * from "./acl-runtime.js";
+export * from "./http-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
-type RuntimeSecurityPolicy = {
-    cors: {
-        sameOrigin: boolean;
-        publicDev: boolean;
-        allowedOrigins: string[];
-        allowedOriginPatterns: string[];
-        requireExplicitCrossOrigin: boolean;
-        publicOrigin: string | null;
-    };
-    csp: {
-        mode: string;
-        header: string;
-        directives: Record<string, string[] | string>;
-    };
-};
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
-export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
-export declare function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any): void;
-export declare function prepareHttpSecurity(database: {
-    securityPolicy?: RuntimeSecurityPolicy;
-}, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
-    req: IncomingMessage;
-}): boolean;
-export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
 export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
@@ -125,17 +103,6 @@ export declare function routeEndpoint(database: {
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
-export declare function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
-    req: IncomingMessage;
-}, websocketHub?: any): Promise<boolean>;
-export declare function routeRuntimeHealth(database: any, request: {
-    url: string | URL;
-    method: string;
-    headers: {
-        [x: string]: any;
-    };
-}, response: any): Promise<boolean>;
-export declare function checkRuntimeSqlite(database: LooseRecord): Promise<any>;
 export declare function listDatabaseTables(database: {
     adapter: any;
     sqlite: any;
@@ -189,9 +156,6 @@ export declare function createWebSocketHub(getDatabase: () => any, trustedRefres
         clients: number;
     };
 };
-export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
-    req: IncomingMessage;
-}): Promise<boolean>;
 export declare function sendEmailPasswordResetLink(database: LooseRecord, session: LooseRecord, email: string, options?: LooseRecord): Promise<{
     ok: boolean;
     error: {

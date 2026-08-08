@@ -3223,6 +3223,7 @@ __export(auth_runtime_exports, {
   authIdentityRowsUnlessReserved: () => authIdentityRowsUnlessReserved,
   authProvidersForClient: () => authProvidersForClient,
   authStatus: () => authStatus,
+  beginOAuthSignIn: () => beginOAuthSignIn,
   completeMicrosoftOAuth: () => completeMicrosoftOAuth,
   completeOpenIdOAuthCodeExchange: () => completeOpenIdOAuthCodeExchange,
   confirmPasswordReset: () => confirmPasswordReset,
@@ -3259,6 +3260,8 @@ __export(auth_runtime_exports, {
   requireAuth: () => requireAuth,
   resetEmailSignInAttempts: () => resetEmailSignInAttempts,
   resolveAnonymousSession: () => resolveAnonymousSession,
+  resolvePasswordResetConfig: () => resolvePasswordResetConfig,
+  routeSporadesAuth: () => routeSporadesAuth,
   serverAuthError: () => serverAuthError,
   sessionExpiresAt: () => sessionExpiresAt,
   setEmailPassword: () => setEmailPassword,
@@ -3376,6 +3379,449 @@ function normalizePreferencesPatch(patch) {
 }
 function createPreferencesError(message, hint, code) {
   return { code, message, hint };
+}
+
+// src/http-runtime.ts
+var http_runtime_exports = {};
+__export(http_runtime_exports, {
+  checkRuntimeSqlite: () => checkRuntimeSqlite,
+  emitHttpFailureLog: () => emitHttpFailureLog,
+  handleFileHttpRoute: () => handleFileHttpRoute,
+  injectPageConnectionToken: () => injectPageConnectionToken,
+  normalizeOrigin: () => normalizeOrigin,
+  prepareHttpSecurity: () => prepareHttpSecurity,
+  readJsonRequest: () => readJsonRequest,
+  readLimitedRequestBody: () => readLimitedRequestBody,
+  resolveHttpMaxBodyBytes: () => resolveHttpMaxBodyBytes,
+  resolveOAuthRequestOrigin: () => resolveOAuthRequestOrigin,
+  resolveRuntimeSecurityPolicy: () => resolveRuntimeSecurityPolicy,
+  routeRuntimeHealth: () => routeRuntimeHealth,
+  singleHttpHeader: () => singleHttpHeader,
+  websocketOriginAllowed: () => websocketOriginAllowed,
+  writeEndpointError: () => writeEndpointError,
+  writeEndpointResult: () => writeEndpointResult,
+  writeUnhandledHttpError: () => writeUnhandledHttpError
+});
+async function readJsonRequest(request, limitSource = null) {
+  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
+  return raw ? JSON.parse(raw) : {};
+}
+async function readLimitedRequestBody(request, limitSource = null) {
+  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw createPayloadTooLargeError(maxBytes);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+function resolveHttpMaxBodyBytes(source = null) {
+  const configured = typeof source === "number" ? source : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
+}
+function createPayloadTooLargeError(maxBytes) {
+  const error = new Error("Request body is too large.");
+  error.code = "PAYLOAD_TOO_LARGE";
+  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
+  return error;
+}
+function isPayloadTooLargeError(error) {
+  return error?.code === "PAYLOAD_TOO_LARGE";
+}
+function writeUnhandledHttpError(database, request, response, error) {
+  emitHttpFailureLog(database, request, error);
+  if (isPayloadTooLargeError(error)) {
+    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
+    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}
+`);
+    return;
+  }
+  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify({
+    ok: false,
+    data: null,
+    error: {
+      message: "Internal server error.",
+      hint: "Check server logs and retry the request."
+    }
+  })}
+`);
+}
+function emitHttpFailureLog(database, request, error, context = {}) {
+  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
+  database.log?.emit?.({
+    category: "platform",
+    event: "http.request.failed",
+    level: "error",
+    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+    request: {
+      method: request.method ?? context.method ?? null,
+      path: requestUrl.pathname
+    },
+    data: {
+      code: error?.code ?? null,
+      message: error?.message ?? String(error),
+      hint: error?.hint ?? null,
+      stack: error?.stack ?? null
+    }
+  });
+}
+function prepareHttpSecurity(database, request, response) {
+  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const originalWriteHead = response.writeHead.bind(response);
+  response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
+    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
+    const headers = {
+      ...sanitizeResponseHeaders(inputHeaders ?? {}),
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "x-frame-options": "DENY",
+      "permissions-policy": "camera=(), microphone=(), geolocation=()",
+      "cross-origin-opener-policy": "same-origin",
+      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
+    };
+    const origin = request.headers.origin;
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
+      if (!policy.cors.publicDev) {
+        headers.vary = appendVaryHeader(headers.vary, "Origin");
+      }
+    }
+    if (statusMessage) {
+      return originalWriteHead(statusCode, statusMessage, headers);
+    }
+    return originalWriteHead(statusCode, headers);
+  });
+  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
+    const headers = {
+      "content-length": "0"
+    };
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
+      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
+      headers["access-control-allow-headers"] = String(
+        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token"
+      );
+      headers["access-control-max-age"] = "600";
+      if (!policy.cors.publicDev) {
+        headers.vary = "Origin";
+      }
+    }
+    response.writeHead(204, headers);
+    response.end();
+    return true;
+  }
+  return false;
+}
+function resolveRuntimeSecurityPolicy(config = {}) {
+  const security = config.security ?? {};
+  const cors = security.cors ?? {};
+  const csp = security.csp ?? {};
+  const session = config.__sporadesSession ?? "container";
+  const publicDev = session === "public-dev";
+  const dev = session === "dev" || publicDev;
+  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
+  const directives = {
+    ...defaultRuntimeCspDirectives(),
+    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
+  };
+  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
+  return {
+    cors: {
+      sameOrigin: !publicDev,
+      publicDev,
+      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
+      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+      publicOrigin
+    },
+    csp: {
+      mode,
+      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      directives
+    }
+  };
+}
+function defaultRuntimeCspDirectives() {
+  return {
+    "default-src": ["'self'"],
+    "script-src": ["'self'", "'unsafe-inline'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "img-src": ["'self'", "data:", "blob:"],
+    "connect-src": ["'self'", "ws:", "wss:"],
+    "font-src": ["'self'", "data:"],
+    "object-src": ["'none'"],
+    "base-uri": ["'self'"],
+    "frame-ancestors": ["'none'"]
+  };
+}
+function serializeCspDirectives(directives) {
+  return Object.entries(directives).map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
+}
+function injectPageConnectionToken(html, token) {
+  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+  if (/<head(\s[^>]*)?>/i.test(html)) {
+    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
+${script}`);
+  }
+  return `${script}
+${html}`;
+}
+function requestOriginAllowed(policy, request) {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return false;
+  }
+  if (policy.cors.publicDev) {
+    return true;
+  }
+  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+    return true;
+  }
+  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
+    return true;
+  }
+  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
+    return true;
+  }
+  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
+}
+function websocketOriginAllowed(policy, request) {
+  if (!request.headers.origin) {
+    return !policy.cors.publicOrigin;
+  }
+  return requestOriginAllowed(policy, request);
+}
+function isSameOriginRequest(request, origin) {
+  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
+  if (!host) {
+    return false;
+  }
+  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
+  return origin === `${protocol}://${host}`;
+}
+function normalizeOrigin(value) {
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+function resolveOAuthRequestOrigin(policy, request) {
+  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
+  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
+  const hostHeader = singleHttpHeader(request.headers.host);
+  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
+  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
+  if (request.headers.host !== void 0 && !hostHeader || request.headers.origin !== void 0 && !singleHttpHeader(request.headers.origin) || request.headers["x-forwarded-host"] !== void 0 && !forwardedHost || request.headers["x-forwarded-proto"] !== void 0 && !forwardedProto) return null;
+  if (configuredOrigin) {
+    const configured = new URL(configuredOrigin);
+    if (originHeader && originHeader !== configuredOrigin) return null;
+    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
+    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
+    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
+    return configuredOrigin;
+  }
+  if (forwardedHost || forwardedProto) return null;
+  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
+  const host = validatedRequestHost(hostHeader, protocol);
+  if (!host) return null;
+  const actualOrigin = `${protocol}//${host}`;
+  if (originHeader && originHeader !== actualOrigin) return null;
+  return actualOrigin;
+}
+function singleHttpHeader(value) {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    value = value[0];
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes(",")) return null;
+  return trimmed;
+}
+function validatedRequestHost(value, protocol) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
+  try {
+    const url = new URL(`${protocol}//${value}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    return url.host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+function isLocalDevOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+function appendVaryHeader(existing, value) {
+  if (!existing) {
+    return value;
+  }
+  const parts = String(existing).split(",").map((part) => part.trim().toLowerCase());
+  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
+}
+function sanitizeResponseHeaders(headers) {
+  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
+  return Object.fromEntries(
+    [...entries].filter(([name]) => {
+      const normalized = String(name).toLowerCase();
+      return normalized !== "x-powered-by" && normalized !== "server";
+    })
+  );
+}
+async function handleFileHttpRoute(database, request, response, websocketHub = null) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
+  if (uploadMatch && request.method === "PUT") {
+    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
+    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
+    return true;
+  }
+  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
+  if (privateMatch && request.method === "GET") {
+    const token = request.headers["x-sporades-session-token"];
+    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
+    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    if (!row || row.version !== requestUrl.searchParams.get("v")) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, row);
+    return true;
+  }
+  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
+  if (publicMatch && request.method === "GET") {
+    const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
+    if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, publicRow);
+    return true;
+  }
+  return false;
+}
+async function routeRuntimeHealth(database, request, response) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
+    return false;
+  }
+  const probe = request.headers["x-sporades-host-probe"];
+  if (typeof probe !== "string" || probe.length === 0) {
+    writeNotFound(response);
+    return true;
+  }
+  const result = await createRuntimeHealthResult(database);
+  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
+  return true;
+}
+async function createRuntimeHealthResult(database) {
+  const checks = {
+    sqlite: await checkRuntimeSqlite(database),
+    fileStorage: await checkRuntimeFileStorage(database)
+  };
+  const ready = checks.sqlite.ok && checks.fileStorage.ok;
+  return {
+    ok: ready,
+    data: {
+      runtime: { ready },
+      checks
+    },
+    error: ready ? null : {
+      message: "Sporades runtime is not ready.",
+      hint: "Check Hosted Capsule logs and data volume permissions."
+    }
+  };
+}
+async function checkRuntimeSqlite(database) {
+  return await (database.adapter ?? database.adapter).checkHealth();
+}
+function writeJsonHttpResponse(response, status, result) {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify(result)}
+`);
+}
+function writeNotFound(response) {
+  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  response.end("Not found");
+}
+async function sendFileHttpResponse(database, response, row) {
+  try {
+    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+    response.writeHead(200, {
+      "content-type": contentTypeForFile(row.type),
+      "cache-control": "private, max-age=31536000, immutable"
+    });
+    response.end(bytes);
+  } catch {
+    writeNotFound(response);
+  }
+}
+function writeEndpointResult(response, result) {
+  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
+    const status = result.status ?? 200;
+    if (!Number.isInteger(status) || status < 100 || status > 599) {
+      throw endpointResponseError();
+    }
+    if (result.headers !== void 0 && (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))) {
+      throw endpointResponseError();
+    }
+    const headers = { ...result.headers ?? {} };
+    const body = result.body ?? null;
+    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
+      headers["content-type"] ??= "application/json; charset=utf-8";
+      let payload;
+      try {
+        payload = JSON.stringify(body);
+      } catch {
+        throw endpointResponseError();
+      }
+      response.writeHead(status, headers);
+      response.end(payload);
+      return;
+    }
+    headers["content-type"] ??= "text/plain; charset=utf-8";
+    response.writeHead(status, headers);
+    response.end(String(body ?? ""));
+    return;
+  }
+  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  response.end(String(result ?? ""));
+}
+function writeEndpointError(response, error) {
+  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
+  response.end(
+    `${JSON.stringify({
+      ok: false,
+      data: null,
+      error: {
+        ...error?.code ? { code: error.code } : {},
+        message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
+        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
+      }
+    })}
+`
+  );
+}
+function endpointResponseError() {
+  const error = new Error("Invalid endpoint response.");
+  error.sporadesEndpointResponse = true;
+  return error;
 }
 
 // src/auth-runtime.ts
@@ -5712,6 +6158,214 @@ async function moveSessionToUserOnAdapter(database, sqlite, session, userId, pro
     createdAt: now,
     expiresAt: sessionExpiresAt(now)
   });
+}
+async function routeSporadesAuth(database, request, response) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+  if (!match) {
+    return false;
+  }
+  const provider = match[1];
+  let callbackParameters;
+  try {
+    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
+  } catch (error) {
+    writeEndpointError(response, error);
+    return true;
+  }
+  const parameters = callbackParameters.parameters;
+  const states = parameters.getAll("state");
+  const state = states.length === 1 ? states[0] : null;
+  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
+    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
+    return true;
+  }
+  const stateRow = await database.adapter.consumeOAuthState(state);
+  if (!stateRow) {
+    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
+    return true;
+  }
+  try {
+    if (callbackParameters.error) {
+      throw callbackParameters.error;
+    }
+    validateConsumedOAuthCallbackParameters(parameters);
+    if (stateRow.provider !== provider) {
+      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+    }
+    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
+      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+    }
+    const adapter = oauthProviderAdapter(database, provider);
+    if (!adapter?.enabled) {
+      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+    }
+    if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
+      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+    }
+    const providerError = parameters.get("error");
+    if (providerError) {
+      const mappedError = adapter.callbackError?.(parameters);
+      if (mappedError) {
+        throw mappedError;
+      }
+      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
+      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
+      throw commandError(
+        actionRequired ? "OAuth provider requires additional user action." : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
+        actionRequired ? "Retry sign-in and complete the provider's consent or account prompt." : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
+        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED"
+      );
+    }
+    const code = parameters.get("code");
+    if (!code) {
+      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+    const profile = await adapter.complete({
+      provider,
+      code,
+      redirectUri: stateRow.redirectUri,
+      nonce: stateRow.nonce,
+      pkceVerifier: stateRow.pkceVerifier,
+      parameters
+    });
+    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+    let result;
+    try {
+      result = await linkProviderIdentity(database, session, provider, profile);
+    } catch {
+      throw commandError(
+        "OAuth account linking failed.",
+        "Retry sign-in. If the problem persists, check the database connection.",
+        "AUTH_TRANSACTION_FAILED"
+      );
+    }
+    if (!result.ok) {
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
+    }
+    writeRedirect(response, stateRow.returnTo);
+  } catch (error) {
+    writeEndpointError(response, error);
+  }
+  return true;
+}
+async function readOAuthCallbackParameters(request, requestUrl) {
+  if (request.method === "GET") {
+    return {
+      parameters: requestUrl.searchParams,
+      error: null,
+      stateTrustworthy: true
+    };
+  }
+  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
+    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  const body = await readLimitedRequestBody(request, 16 * 1024);
+  return parseOAuthFormBody(body);
+}
+function oauthFormContentTypeValid(value) {
+  const raw = singleHttpHeader(value);
+  if (!raw) return false;
+  const parts = raw.split(";").map((part) => part.trim());
+  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parts.length === 0) return true;
+  if (parts.length !== 1) return false;
+  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
+  return Boolean(match);
+}
+async function beginOAuthSignIn(database, session, provider, options) {
+  const adapter = oauthProviderAdapter(database, provider);
+  if (!adapter?.enabled) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
+        message: `${provider || "OAuth"} provider is not configured.`,
+        hint: provider === "google" ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`." : "Configure this OAuth provider before retrying sign-in."
+      }
+    };
+  }
+  const origin = options.origin;
+  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_ORIGIN_INVALID",
+        message: "OAuth sign-in requires a trusted request origin.",
+        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy."
+      }
+    };
+  }
+  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
+        message: "Apple sign-in requires an HTTPS domain origin.",
+        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL."
+      }
+    };
+  }
+  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
+  const returnTo = normalizeReturnTo(options.returnTo, origin);
+  const state = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const nonce = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const pkceVerifier = nodeCryptoModule2.randomBytes(48).toString("base64url");
+  const pkceChallenge = nodeCryptoModule2.createHash("sha256").update(pkceVerifier).digest("base64url");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
+  let started;
+  try {
+    started = await adapter.begin({
+      provider,
+      state,
+      nonce,
+      redirectUri,
+      pkceChallenge,
+      pkceChallengeMethod: "S256"
+    });
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth sign-in could not be started.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  if (!started?.url) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth provider did not return an authorization URL.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  await database.adapter.insertOAuthState({
+    state,
+    provider,
+    sessionToken: session.token,
+    returnTo,
+    redirectUri,
+    createdAt: now,
+    expiresAt,
+    nonce,
+    pkceVerifier
+  });
+  return { ok: true, url: started.url };
+}
+function resolvePasswordResetConfig(config) {
+  const passwordReset = config.auth?.email?.passwordReset ?? {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
+  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs) ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS) : PASSWORD_RESET_DEFAULT_TTL_MS;
+  return {
+    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
+    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    ttlMs
+  };
 }
 
 // src/jobs-runtime.ts
@@ -8715,28 +9369,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   normalizeJourneyState,
   validateJourneyJson,
   journeyError,
-  readJsonRequest,
-  readLimitedRequestBody,
-  resolveHttpMaxBodyBytes,
-  createPayloadTooLargeError,
-  isPayloadTooLargeError,
-  writeUnhandledHttpError,
-  emitHttpFailureLog,
-  prepareHttpSecurity,
-  resolveRuntimeSecurityPolicy,
-  defaultRuntimeCspDirectives,
-  serializeCspDirectives,
-  injectPageConnectionToken,
-  requestOriginAllowed,
-  websocketOriginAllowed,
-  isSameOriginRequest,
-  isLocalDevOrigin,
-  normalizeOrigin,
-  resolveOAuthRequestOrigin,
-  singleHttpHeader,
-  validatedRequestHost,
-  appendVaryHeader,
-  sanitizeResponseHeaders,
   createDatabaseDialect,
   quoteSqlIdentifiers,
   sqliteDatabaseDialect,
@@ -8914,13 +9546,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // for the reason recorded beside `isSensitiveLogKey` above.
   readEndpointBody,
   createEndpointLogger,
-  routeRuntimeHealth,
-  createRuntimeHealthResult,
-  checkRuntimeSqlite,
-  handleFileHttpRoute,
-  writeJsonHttpResponse,
-  writeNotFound,
-  sendFileHttpResponse,
   isDuplicateColumnError,
   runSchemaExecIgnoringDuplicateColumn,
   chainSchemaOperation,
@@ -8929,15 +9554,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   ensureOAuthStateColumns,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
-  routeSporadesAuth,
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
-  resolvePasswordResetConfig,
   sendEmailPasswordResetLink,
-  beginOAuthSignIn,
-  readOAuthCallbackParameters,
-  oauthFormContentTypeValid,
   createWebSocketAccept,
   createWebSocketHub,
   drainWebSocketFrames,
@@ -8947,9 +9567,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   sendJsonWithCompletion,
   routeEndpoint,
   runEndpoint,
-  writeEndpointResult,
-  writeEndpointError,
-  endpointResponseError,
   runQuery,
   runCustomQuery,
   runMutation,
@@ -8973,288 +9590,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   toSqlNumber,
   quoteIdentifier
 ];
-async function readJsonRequest(request, limitSource = null) {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
-}
-async function readLimitedRequestBody(request, limitSource = null) {
-  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > maxBytes) {
-      throw createPayloadTooLargeError(maxBytes);
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-function resolveHttpMaxBodyBytes(source = null) {
-  const configured = typeof source === "number" ? source : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
-}
-function createPayloadTooLargeError(maxBytes) {
-  const error = new Error("Request body is too large.");
-  error.code = "PAYLOAD_TOO_LARGE";
-  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
-  return error;
-}
-function isPayloadTooLargeError(error) {
-  return error?.code === "PAYLOAD_TOO_LARGE";
-}
-function writeUnhandledHttpError(database, request, response, error) {
-  emitHttpFailureLog(database, request, error);
-  if (isPayloadTooLargeError(error)) {
-    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
-    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}
-`);
-    return;
-  }
-  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify({
-    ok: false,
-    data: null,
-    error: {
-      message: "Internal server error.",
-      hint: "Check server logs and retry the request."
-    }
-  })}
-`);
-}
-function emitHttpFailureLog(database, request, error, context = {}) {
-  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-  database.log?.emit?.({
-    category: "platform",
-    event: "http.request.failed",
-    level: "error",
-    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-    request: {
-      method: request.method ?? context.method ?? null,
-      path: requestUrl.pathname
-    },
-    data: {
-      code: error?.code ?? null,
-      message: error?.message ?? String(error),
-      hint: error?.hint ?? null,
-      stack: error?.stack ?? null
-    }
-  });
-}
-function prepareHttpSecurity(database, request, response) {
-  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
-  const originalWriteHead = response.writeHead.bind(response);
-  response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
-    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
-    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
-    const headers = {
-      ...sanitizeResponseHeaders(inputHeaders ?? {}),
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "x-frame-options": "DENY",
-      "permissions-policy": "camera=(), microphone=(), geolocation=()",
-      "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
-    };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
-      }
-    }
-    if (statusMessage) {
-      return originalWriteHead(statusCode, statusMessage, headers);
-    }
-    return originalWriteHead(statusCode, headers);
-  });
-  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
-    const headers = {
-      "content-length": "0"
-    };
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
-      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-      headers["access-control-allow-headers"] = String(
-        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token"
-      );
-      headers["access-control-max-age"] = "600";
-      if (!policy.cors.publicDev) {
-        headers.vary = "Origin";
-      }
-    }
-    response.writeHead(204, headers);
-    response.end();
-    return true;
-  }
-  return false;
-}
-function resolveRuntimeSecurityPolicy(config = {}) {
-  const security = config.security ?? {};
-  const cors = security.cors ?? {};
-  const csp = security.csp ?? {};
-  const session = config.__sporadesSession ?? "container";
-  const publicDev = session === "public-dev";
-  const dev = session === "dev" || publicDev;
-  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
-  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
-  const directives = {
-    ...defaultRuntimeCspDirectives(),
-    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
-  };
-  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
-  return {
-    cors: {
-      sameOrigin: !publicDev,
-      publicDev,
-      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
-      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
-      publicOrigin
-    },
-    csp: {
-      mode,
-      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives
-    }
-  };
-}
-function defaultRuntimeCspDirectives() {
-  return {
-    "default-src": ["'self'"],
-    "script-src": ["'self'", "'unsafe-inline'"],
-    "style-src": ["'self'", "'unsafe-inline'"],
-    "img-src": ["'self'", "data:", "blob:"],
-    "connect-src": ["'self'", "ws:", "wss:"],
-    "font-src": ["'self'", "data:"],
-    "object-src": ["'none'"],
-    "base-uri": ["'self'"],
-    "frame-ancestors": ["'none'"]
-  };
-}
-function serializeCspDirectives(directives) {
-  return Object.entries(directives).map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
-}
-function injectPageConnectionToken(html, token) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
-${script}`);
-  }
-  return `${script}
-${html}`;
-}
-function requestOriginAllowed(policy, request) {
-  const origin = request.headers.origin;
-  if (!origin) {
-    return false;
-  }
-  if (policy.cors.publicDev) {
-    return true;
-  }
-  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
-    return true;
-  }
-  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
-    return true;
-  }
-  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
-    return true;
-  }
-  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
-}
-function websocketOriginAllowed(policy, request) {
-  if (!request.headers.origin) {
-    return !policy.cors.publicOrigin;
-  }
-  return requestOriginAllowed(policy, request);
-}
-function isSameOriginRequest(request, origin) {
-  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  if (!host) {
-    return false;
-  }
-  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
-  return origin === `${protocol}://${host}`;
-}
-function normalizeOrigin(value) {
-  if (typeof value !== "string" || value.trim() === "") {
-    return null;
-  }
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-function resolveOAuthRequestOrigin(policy, request) {
-  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
-  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
-  const hostHeader = singleHttpHeader(request.headers.host);
-  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
-  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
-  if (request.headers.host !== void 0 && !hostHeader || request.headers.origin !== void 0 && !singleHttpHeader(request.headers.origin) || request.headers["x-forwarded-host"] !== void 0 && !forwardedHost || request.headers["x-forwarded-proto"] !== void 0 && !forwardedProto) return null;
-  if (configuredOrigin) {
-    const configured = new URL(configuredOrigin);
-    if (originHeader && originHeader !== configuredOrigin) return null;
-    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
-    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
-    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
-    return configuredOrigin;
-  }
-  if (forwardedHost || forwardedProto) return null;
-  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
-  const host = validatedRequestHost(hostHeader, protocol);
-  if (!host) return null;
-  const actualOrigin = `${protocol}//${host}`;
-  if (originHeader && originHeader !== actualOrigin) return null;
-  return actualOrigin;
-}
-function singleHttpHeader(value) {
-  if (Array.isArray(value)) {
-    if (value.length !== 1) return null;
-    value = value[0];
-  }
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.includes(",")) return null;
-  return trimmed;
-}
-function validatedRequestHost(value, protocol) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
-  try {
-    const url = new URL(`${protocol}//${value}`);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    return url.host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-function isLocalDevOrigin(origin) {
-  try {
-    const parsed = new URL(origin);
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-  } catch {
-    return false;
-  }
-}
-function appendVaryHeader(existing, value) {
-  if (!existing) {
-    return value;
-  }
-  const parts = String(existing).split(",").map((part) => part.trim().toLowerCase());
-  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
-}
-function sanitizeResponseHeaders(headers) {
-  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
-  return Object.fromEntries(
-    [...entries].filter(([name]) => {
-      const normalized = String(name).toLowerCase();
-      return normalized !== "x-powered-by" && normalized !== "server";
-    })
-  );
-}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path13 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
@@ -12174,94 +12509,6 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
-async function handleFileHttpRoute(database, request, response, websocketHub = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
-  if (uploadMatch && request.method === "PUT") {
-    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
-    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
-    return true;
-  }
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
-  if (privateMatch && request.method === "GET") {
-    const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, row);
-    return true;
-  }
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
-  if (publicMatch && request.method === "GET") {
-    const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
-    if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, publicRow);
-    return true;
-  }
-  return false;
-}
-async function routeRuntimeHealth(database, request, response) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
-    return false;
-  }
-  const probe = request.headers["x-sporades-host-probe"];
-  if (typeof probe !== "string" || probe.length === 0) {
-    writeNotFound(response);
-    return true;
-  }
-  const result = await createRuntimeHealthResult(database);
-  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
-  return true;
-}
-async function createRuntimeHealthResult(database) {
-  const checks = {
-    sqlite: await checkRuntimeSqlite(database),
-    fileStorage: await checkRuntimeFileStorage(database)
-  };
-  const ready = checks.sqlite.ok && checks.fileStorage.ok;
-  return {
-    ok: ready,
-    data: {
-      runtime: { ready },
-      checks
-    },
-    error: ready ? null : {
-      message: "Sporades runtime is not ready.",
-      hint: "Check Hosted Capsule logs and data volume permissions."
-    }
-  };
-}
-async function checkRuntimeSqlite(database) {
-  return await (database.adapter ?? database.adapter).checkHealth();
-}
-function writeJsonHttpResponse(response, status, result) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(result)}
-`);
-}
-function writeNotFound(response) {
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("Not found");
-}
-async function sendFileHttpResponse(database, response, row) {
-  try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
-    response.writeHead(200, {
-      "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable"
-    });
-    response.end(bytes);
-  } catch {
-    writeNotFound(response);
-  }
-}
 function isDuplicateColumnError(error) {
   const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /duplicate column|already exists/i.test(text);
@@ -12667,57 +12914,6 @@ function createEndpointLogger(database, context = {}) {
     event: "ctx.log",
     ...context
   });
-}
-function writeEndpointResult(response, result) {
-  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
-    const status = result.status ?? 200;
-    if (!Number.isInteger(status) || status < 100 || status > 599) {
-      throw endpointResponseError();
-    }
-    if (result.headers !== void 0 && (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))) {
-      throw endpointResponseError();
-    }
-    const headers = { ...result.headers ?? {} };
-    const body = result.body ?? null;
-    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
-      headers["content-type"] ??= "application/json; charset=utf-8";
-      let payload;
-      try {
-        payload = JSON.stringify(body);
-      } catch {
-        throw endpointResponseError();
-      }
-      response.writeHead(status, headers);
-      response.end(payload);
-      return;
-    }
-    headers["content-type"] ??= "text/plain; charset=utf-8";
-    response.writeHead(status, headers);
-    response.end(String(body ?? ""));
-    return;
-  }
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  response.end(String(result ?? ""));
-}
-function writeEndpointError(response, error) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
-  response.end(
-    `${JSON.stringify({
-      ok: false,
-      data: null,
-      error: {
-        ...error?.code ? { code: error.code } : {},
-        message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
-        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
-      }
-    })}
-`
-  );
-}
-function endpointResponseError() {
-  const error = new Error("Invalid endpoint response.");
-  error.sporadesEndpointResponse = true;
-  return error;
 }
 function parseFieldDefault(kind, rawDefault) {
   if (rawDefault === void 0) {
@@ -13594,214 +13790,6 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       });
     }
   }
-}
-async function routeSporadesAuth(database, request, response) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
-  if (!match) {
-    return false;
-  }
-  const provider = match[1];
-  let callbackParameters;
-  try {
-    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
-  } catch (error) {
-    writeEndpointError(response, error);
-    return true;
-  }
-  const parameters = callbackParameters.parameters;
-  const states = parameters.getAll("state");
-  const state = states.length === 1 ? states[0] : null;
-  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
-    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
-    return true;
-  }
-  const stateRow = await database.adapter.consumeOAuthState(state);
-  if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
-    return true;
-  }
-  try {
-    if (callbackParameters.error) {
-      throw callbackParameters.error;
-    }
-    validateConsumedOAuthCallbackParameters(parameters);
-    if (stateRow.provider !== provider) {
-      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
-    }
-    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
-      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
-    }
-    const adapter = oauthProviderAdapter(database, provider);
-    if (!adapter?.enabled) {
-      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
-    }
-    if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
-      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
-    }
-    const providerError = parameters.get("error");
-    if (providerError) {
-      const mappedError = adapter.callbackError?.(parameters);
-      if (mappedError) {
-        throw mappedError;
-      }
-      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
-      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
-      throw commandError(
-        actionRequired ? "OAuth provider requires additional user action." : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
-        actionRequired ? "Retry sign-in and complete the provider's consent or account prompt." : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
-        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED"
-      );
-    }
-    const code = parameters.get("code");
-    if (!code) {
-      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-    const profile = await adapter.complete({
-      provider,
-      code,
-      redirectUri: stateRow.redirectUri,
-      nonce: stateRow.nonce,
-      pkceVerifier: stateRow.pkceVerifier,
-      parameters
-    });
-    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    let result;
-    try {
-      result = await linkProviderIdentity(database, session, provider, profile);
-    } catch {
-      throw commandError(
-        "OAuth account linking failed.",
-        "Retry sign-in. If the problem persists, check the database connection.",
-        "AUTH_TRANSACTION_FAILED"
-      );
-    }
-    if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
-    }
-    writeRedirect(response, stateRow.returnTo);
-  } catch (error) {
-    writeEndpointError(response, error);
-  }
-  return true;
-}
-async function readOAuthCallbackParameters(request, requestUrl) {
-  if (request.method === "GET") {
-    return {
-      parameters: requestUrl.searchParams,
-      error: null,
-      stateTrustworthy: true
-    };
-  }
-  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
-    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  const body = await readLimitedRequestBody(request, 16 * 1024);
-  return parseOAuthFormBody(body);
-}
-function oauthFormContentTypeValid(value) {
-  const raw = singleHttpHeader(value);
-  if (!raw) return false;
-  const parts = raw.split(";").map((part) => part.trim());
-  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
-  if (parts.length === 0) return true;
-  if (parts.length !== 1) return false;
-  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
-  return Boolean(match);
-}
-async function beginOAuthSignIn(database, session, provider, options) {
-  const adapter = oauthProviderAdapter(database, provider);
-  if (!adapter?.enabled) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
-        message: `${provider || "OAuth"} provider is not configured.`,
-        hint: provider === "google" ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`." : "Configure this OAuth provider before retrying sign-in."
-      }
-    };
-  }
-  const origin = options.origin;
-  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_ORIGIN_INVALID",
-        message: "OAuth sign-in requires a trusted request origin.",
-        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy."
-      }
-    };
-  }
-  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
-        message: "Apple sign-in requires an HTTPS domain origin.",
-        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL."
-      }
-    };
-  }
-  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
-  const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = randomBytes2(32).toString("base64url");
-  const nonce = randomBytes2(32).toString("base64url");
-  const pkceVerifier = randomBytes2(48).toString("base64url");
-  const pkceChallenge = createHash2("sha256").update(pkceVerifier).digest("base64url");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
-  let started;
-  try {
-    started = await adapter.begin({
-      provider,
-      state,
-      nonce,
-      redirectUri,
-      pkceChallenge,
-      pkceChallengeMethod: "S256"
-    });
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth sign-in could not be started.",
-        hint: "Check the provider configuration and retry sign-in."
-      }
-    };
-  }
-  if (!started?.url) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth provider did not return an authorization URL.",
-        hint: "Check the provider configuration and retry sign-in."
-      }
-    };
-  }
-  await database.adapter.insertOAuthState({
-    state,
-    provider,
-    sessionToken: session.token,
-    returnTo,
-    redirectUri,
-    createdAt: now,
-    expiresAt,
-    nonce,
-    pkceVerifier
-  });
-  return { ok: true, url: started.url };
-}
-function resolvePasswordResetConfig(config) {
-  const passwordReset = config.auth?.email?.passwordReset ?? {};
-  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
-  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs) ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS) : PASSWORD_RESET_DEFAULT_TTL_MS;
-  return {
-    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
-    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
-    ttlMs
-  };
 }
 async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey) {
   const queueDatabase = database.__rootDatabase ?? database;
@@ -14942,7 +14930,15 @@ var MIGRATED_RUNTIME_MODULES = [
   // `jobs-runtime` for the privileged Schedule API, `maybe-promise` for the ACL rules' sync/async
   // lanes, `runtime-errors` for `commandError`, and the two above for what its graph left outside
   // it. esbuild resolves the graph either way; the order is documentation.
-  { file: "acl-runtime.js", loaded: acl_runtime_exports }
+  { file: "acl-runtime.js", loaded: acl_runtime_exports },
+  // Batch 8: the HTTP and security policy domain. Listed last because it imports
+  // `file-storage-runtime.js` for the File route and `auth-runtime.js` for that route's
+  // authentication — and `auth-runtime.js` imports four HTTP primitives back, so this is the first
+  // *cycle* in the migrated set. esbuild resolves it when it bundles the set into one IIFE, as it
+  // resolves every other edge here; the order remains documentation and nothing more. The cycle is
+  // safe because every binding across it is a hoisted `function` declaration referenced only inside
+  // a body that runs on a request. See `http-runtime.ts`'s header.
+  { file: "http-runtime.js", loaded: http_runtime_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [
@@ -15421,6 +15417,59 @@ return ${MIGRATED_MODULES_NAMESPACE};`)();
     );
   }
 }
+var MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE = [
+  ["container-cross-origin", {}, { method: "GET", headers: { origin: "https://attacker.example.test", host: "capsule.example.test" } }],
+  ["container-same-origin", {}, { method: "GET", headers: { origin: "https://capsule.example.test", host: "capsule.example.test" } }],
+  ["container-no-origin", {}, { method: "GET", headers: { host: "capsule.example.test" } }],
+  ["public-dev", { __sporadesSession: "public-dev" }, { method: "GET", headers: { origin: "https://anything.example.test", host: "capsule.example.test" } }],
+  ["dev-localhost", { __sporadesSession: "dev" }, { method: "GET", headers: { origin: "http://localhost:5173", host: "localhost:4000" } }],
+  ["dev-non-localhost", { __sporadesSession: "dev" }, { method: "GET", headers: { origin: "https://elsewhere.example.test", host: "localhost:4000" } }],
+  ["allowed-origin", { security: { cors: { allowedOrigins: ["https://app.example.test"] } } }, { method: "GET", headers: { origin: "https://app.example.test", host: "capsule.example.test" } }],
+  ["allowed-origin-pattern", { security: { cors: { allowedOriginPatterns: ["https://*.example.test"] } } }, { method: "GET", headers: { origin: "https://tenant.example.test", host: "capsule.example.test" } }],
+  ["csp-report-only", { security: { csp: { mode: "report-only" } } }, { method: "GET", headers: { origin: "https://capsule.example.test", host: "capsule.example.test" } }],
+  ["public-origin-proxied", { security: { cors: { publicOrigin: "https://capsule.example.test" } } }, { method: "GET", headers: { host: "capsule.example.test", "x-forwarded-host": "capsule.example.test", "x-forwarded-proto": "https" } }],
+  ["preflight", {}, { method: "OPTIONS", headers: { origin: "https://capsule.example.test", host: "capsule.example.test", "access-control-request-method": "POST", "access-control-request-headers": "content-type" } }],
+  ["preflight-cross-origin", {}, { method: "OPTIONS", headers: { origin: "https://attacker.example.test", host: "capsule.example.test", "access-control-request-method": "POST" } }]
+];
+var MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE = [
+  ["default", null],
+  ["number", 2048],
+  ["config-http-max", { httpMaxBodyBytes: 4096 }],
+  ["config-nested", { http: { maxBodyBytes: 8192 } }],
+  ["config-deep", { config: { http: { maxBodyBytes: 16384 } } }],
+  ["zero-is-refused", 0],
+  ["fractional-is-refused", 1.5]
+];
+function migratedModuleHttpSecurityAnswer(module, config, request) {
+  const written = [];
+  const response = {
+    writeHead(status, second, third) {
+      const statusMessage = typeof second === "string" ? second : null;
+      const headers = (typeof second === "string" ? third : second) ?? null;
+      written.push(["writeHead", status, statusMessage, headers]);
+      return response;
+    },
+    end(body) {
+      written.push(["end", body === void 0 ? null : String(body)]);
+      return response;
+    }
+  };
+  const policy = probedAnswer(() => module.resolveRuntimeSecurityPolicy(config));
+  if (!("returned" in policy)) return { policy, written };
+  const prepared = probedAnswer(() => module.prepareHttpSecurity({ securityPolicy: policy.returned }, request, response));
+  const wrote = prepared.returned === true ? null : probedAnswer(() => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-powered-by": "should-be-stripped", server: "should-be-stripped" });
+    return null;
+  });
+  return {
+    policy: policy.returned,
+    prepared,
+    wrote,
+    written,
+    oauthOrigin: probedAnswer(() => module.resolveOAuthRequestOrigin(policy.returned, request)),
+    websocketAllowed: probedAnswer(() => module.websocketOriginAllowed(policy.returned, request))
+  };
+}
 var MIGRATED_MODULE_PROBE_NAMES = [
   "validateReadOnlyInspectionSql",
   "sqlWithoutTrailingTerminator",
@@ -15453,7 +15502,14 @@ var MIGRATED_MODULE_PROBE_NAMES = [
   "runTableWriteWithAcl",
   "applyReadAcl",
   "grantPrivilegedDbAccess",
-  "revokePrivilegedDbAccess"
+  "revokePrivilegedDbAccess",
+  // Batch 8.
+  "resolveRuntimeSecurityPolicy",
+  "prepareHttpSecurity",
+  "resolveOAuthRequestOrigin",
+  "websocketOriginAllowed",
+  "resolveHttpMaxBodyBytes",
+  "injectPageConnectionToken"
 ];
 function probedAnswer(call) {
   try {
@@ -15724,6 +15780,32 @@ function describeMigratedModuleAnswers(module) {
           return { allowByDefault: normalized.allowByDefault, resolved: typeof rule === "function" ? rule() : String(rule) };
         })
       ])
+    ),
+    // The HTTP and security policy domain, batch 8. Two limbs: the CORS/CSP posture, driven through
+    // a fake response because everything `prepareHttpSecurity` does is a side effect on one (see the
+    // probe's own comment), and the pure plumbing.
+    //
+    // The first limb is where this domain's fifteen private declarations are reached. Nothing else
+    // can call `serializeCspDirectives`, `requestOriginAllowed`, `isSameOriginRequest`,
+    // `isLocalDevOrigin`, `validatedRequestHost`, `appendVaryHeader` or `sanitizeResponseHeaders` by
+    // name any more — that is what privacy bought — so the recorded headers are the only place a
+    // carried copy of any of them can be compared at all.
+    ...MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE.map(
+      ([label, config, request]) => JSON.stringify([label, migratedModuleHttpSecurityAnswer(module, config, request)])
+    ),
+    ...MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE.map(
+      ([label, source]) => JSON.stringify([label, probedAnswer(() => module.resolveHttpMaxBodyBytes(source))])
+    ),
+    // Compared as the whole rewritten document rather than as "did it change", because the injection
+    // point is the security-relevant half: a copy that appended the token script after `</html>`, or
+    // that stopped escaping the token through `JSON.stringify`, would still have "changed" the page.
+    ...[
+      ["head", "<html><head><title>t</title></head><body>b</body></html>", "tok-1"],
+      ["head-with-attributes", '<html><head data-x="1"><title>t</title></head></html>', "tok-2"],
+      ["no-head", "<div>fragment</div>", "tok-3"],
+      ["token-needs-escaping", "<html><head></head></html>", '</script><script>alert("x")']
+    ].map(
+      ([label, html, token]) => JSON.stringify([label, probedAnswer(() => module.injectPageConnectionToken(html, token))])
     )
   ];
 }
@@ -21574,8 +21656,8 @@ async function readProjectConfig(projectDir) {
   validateCapsuleServicesConfig(config.services);
   return config;
 }
-var PASSWORD_RESET_MIN_TTL_MS2 = 5 * 60 * 1e3;
-var PASSWORD_RESET_MAX_TTL_MS2 = 24 * 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS3 = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS3 = 24 * 60 * 60 * 1e3;
 function validatePasswordResetConfig(auth) {
   const passwordReset = auth?.email?.passwordReset;
   if (passwordReset === void 0) return;
@@ -21601,7 +21683,7 @@ function validatePasswordResetConfig(auth) {
       "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
     );
   }
-  if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS2 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS2)) {
+  if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS3 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS3)) {
     fail(
       "Invalid password reset code lifetime.",
       "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."

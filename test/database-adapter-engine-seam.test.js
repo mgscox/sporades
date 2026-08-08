@@ -252,6 +252,17 @@ const MIGRATED_RUNTIME_MODULES = [
   // The floor is 45 against 55 — room for an honest edit to fold a helper away, and not enough for a
   // parse that returned a fraction of the module.
   { file: "acl-runtime.js", atLeast: 45, sentinel: "markAsyncAclHelperRead" },
+  // Batch 8: the HTTP and security policy domain, 32 functions, 15 of them private. The sentinel is
+  // private for the eighth time running. `serializeCspDirectives` turns the policy's directive map
+  // into the header value `prepareHttpSecurity` sets on every single response, so no honest edit
+  // removes it while this runtime serves a CSP at all — and it is exported from nothing and
+  // registered in nothing, which is the evidence that fifteen newly-private HTTP helpers, including
+  // the whole origin allow-list decision and the response-header sanitizer, did not leave the
+  // census by becoming private.
+  //
+  // The floor is 24 against 32, the same proportion as the entries above: room for an honest edit
+  // to fold a helper away, and not enough for a parse that returned a fraction of the module.
+  { file: "http-runtime.js", atLeast: 24, sentinel: "serializeCspDirectives" },
 ];
 
 function migratedModuleDeclaredFunctions() {

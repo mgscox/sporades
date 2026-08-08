@@ -6,6 +6,7 @@ import { buildSync } from "esbuild";
 import * as aclRuntime from "../acl-runtime.js";
 import * as authRuntime from "../auth-runtime.js";
 import * as fileStorageRuntime from "../file-storage-runtime.js";
+import * as httpRuntime from "../http-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
 import * as jobsRuntime from "../jobs-runtime.js";
 import * as logIndexGuard from "../log-index-guard.js";
@@ -77,6 +78,14 @@ const MIGRATED_RUNTIME_MODULES = [
   // lanes, `runtime-errors` for `commandError`, and the two above for what its graph left outside
   // it. esbuild resolves the graph either way; the order is documentation.
   { file: "acl-runtime.js", loaded: aclRuntime as Record<string, unknown> },
+  // Batch 8: the HTTP and security policy domain. Listed last because it imports
+  // `file-storage-runtime.js` for the File route and `auth-runtime.js` for that route's
+  // authentication — and `auth-runtime.js` imports four HTTP primitives back, so this is the first
+  // *cycle* in the migrated set. esbuild resolves it when it bundles the set into one IIFE, as it
+  // resolves every other edge here; the order remains documentation and nothing more. The cycle is
+  // safe because every binding across it is a hoisted `function` declaration referenced only inside
+  // a body that runs on a request. See `http-runtime.ts`'s header.
+  { file: "http-runtime.js", loaded: httpRuntime as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -853,6 +862,95 @@ function evaluateMigratedModulesBlock(code: string) {
   }
 }
 
+// Batch 8's limb: the HTTP and security policy domain's CORS and CSP posture.
+//
+// **What this probe would discard if it compared the obvious thing, which is the whole reason it is
+// shaped this way.** `prepareHttpSecurity` returns `false` for every request that is not a CORS
+// preflight — which is nearly all of them — and everything it actually does is a *side effect*: it
+// replaces `response.writeHead` with a wrapper that adds the CSP header, the five fixed security
+// headers, the `Access-Control-Allow-Origin` decision and the `Vary`. A limb that compared only the
+// return value would compare `false` against `false` while a carried copy served a different CSP,
+// echoed an attacker's origin, or stopped stripping `X-Powered-By`. That is the same shape as batch
+// 3's `authProbedAnswer` and batch 7's ACL denial record — the thing a skew would change travelling
+// on something the obvious capture drops — and it is closed the same way: the fake response records
+// every `writeHead` argument, and the limb drives the wrapper itself rather than stopping at the
+// boolean.
+//
+// Each case is `[label, capsule config, request]`. The config is what the policy is resolved from,
+// so the cases cover the container posture, both dev sessions, an explicit allow-list, a pattern
+// allow-list and report-only CSP; the requests cover same-origin, cross-origin, a localhost dev
+// origin and a preflight. Every function involved is pure apart from the recorded writes: no clock,
+// no I/O, nothing that outlives the call, and nothing serialized that a sabotage can make
+// unserializable — the recorded headers are strings and the policy is a plain object.
+export const MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE: [string, Record<string, unknown>, Record<string, unknown>][] = [
+  ["container-cross-origin", {}, { method: "GET", headers: { origin: "https://attacker.example.test", host: "capsule.example.test" } }],
+  ["container-same-origin", {}, { method: "GET", headers: { origin: "https://capsule.example.test", host: "capsule.example.test" } }],
+  ["container-no-origin", {}, { method: "GET", headers: { host: "capsule.example.test" } }],
+  ["public-dev", { __sporadesSession: "public-dev" }, { method: "GET", headers: { origin: "https://anything.example.test", host: "capsule.example.test" } }],
+  ["dev-localhost", { __sporadesSession: "dev" }, { method: "GET", headers: { origin: "http://localhost:5173", host: "localhost:4000" } }],
+  ["dev-non-localhost", { __sporadesSession: "dev" }, { method: "GET", headers: { origin: "https://elsewhere.example.test", host: "localhost:4000" } }],
+  ["allowed-origin", { security: { cors: { allowedOrigins: ["https://app.example.test"] } } }, { method: "GET", headers: { origin: "https://app.example.test", host: "capsule.example.test" } }],
+  ["allowed-origin-pattern", { security: { cors: { allowedOriginPatterns: ["https://*.example.test"] } } }, { method: "GET", headers: { origin: "https://tenant.example.test", host: "capsule.example.test" } }],
+  ["csp-report-only", { security: { csp: { mode: "report-only" } } }, { method: "GET", headers: { origin: "https://capsule.example.test", host: "capsule.example.test" } }],
+  ["public-origin-proxied", { security: { cors: { publicOrigin: "https://capsule.example.test" } } }, { method: "GET", headers: { host: "capsule.example.test", "x-forwarded-host": "capsule.example.test", "x-forwarded-proto": "https" } }],
+  ["preflight", {}, { method: "OPTIONS", headers: { origin: "https://capsule.example.test", host: "capsule.example.test", "access-control-request-method": "POST", "access-control-request-headers": "content-type" } }],
+  ["preflight-cross-origin", {}, { method: "OPTIONS", headers: { origin: "https://attacker.example.test", host: "capsule.example.test", "access-control-request-method": "POST" } }],
+];
+
+// The size limits and the page-token injection, which are pure and need no fake response.
+export const MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE: [string, unknown][] = [
+  ["default", null],
+  ["number", 2048],
+  ["config-http-max", { httpMaxBodyBytes: 4096 }],
+  ["config-nested", { http: { maxBodyBytes: 8192 } }],
+  ["config-deep", { config: { http: { maxBodyBytes: 16384 } } }],
+  ["zero-is-refused", 0],
+  ["fractional-is-refused", 1.5],
+];
+
+// Drives one case of the CORS/CSP limb. The fake response records every argument `writeHead` is
+// given, in both of the overloads Node accepts, and `end` alongside it so the preflight's empty body
+// is compared too. `prepareHttpSecurity` wraps `writeHead`, so the limb calls the wrapper after
+// preparing — that call is where the CSP header, the CORS decision, the `Vary` and the header
+// sanitizer all run, and it is what the boolean alone would have hidden.
+//
+// `x-powered-by` is in the input headers on purpose: `sanitizeResponseHeaders` strips it and
+// `server`, and a copy that stopped would differ here and nowhere else.
+function migratedModuleHttpSecurityAnswer(module: any, config: Record<string, unknown>, request: Record<string, unknown>) {
+  const written: unknown[] = [];
+  const response: any = {
+    writeHead(status: number, second?: unknown, third?: unknown) {
+      const statusMessage = typeof second === "string" ? second : null;
+      const headers = (typeof second === "string" ? third : second) ?? null;
+      written.push(["writeHead", status, statusMessage, headers]);
+      return response;
+    },
+    end(body?: unknown) {
+      written.push(["end", body === undefined ? null : String(body)]);
+      return response;
+    },
+  };
+  const policy = probedAnswer(() => module.resolveRuntimeSecurityPolicy(config));
+  if (!("returned" in policy)) return { policy, written };
+  const prepared = probedAnswer(() => module.prepareHttpSecurity({ securityPolicy: policy.returned }, request, response));
+  // A preflight has already answered through the wrapper; anything else has not written yet, so the
+  // wrapper has to be driven or the header construction is never compared.
+  const wrote = prepared.returned === true
+    ? null
+    : probedAnswer(() => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-powered-by": "should-be-stripped", server: "should-be-stripped" });
+      return null;
+    });
+  return {
+    policy: policy.returned,
+    prepared,
+    wrote,
+    written,
+    oauthOrigin: probedAnswer(() => module.resolveOAuthRequestOrigin(policy.returned, request)),
+    websocketAllowed: probedAnswer(() => module.websocketOriginAllowed(policy.returned, request)),
+  };
+}
+
 // The names the comparison below calls, so it can say what is missing instead of dying on it. A
 // probe that names a function no listed module exports is otherwise a bare `TypeError` out of the
 // middle of a bundle build — which is how it first failed, when the two lists were deliberately put
@@ -891,6 +989,13 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "applyReadAcl",
   "grantPrivilegedDbAccess",
   "revokePrivilegedDbAccess",
+  // Batch 8.
+  "resolveRuntimeSecurityPolicy",
+  "prepareHttpSecurity",
+  "resolveOAuthRequestOrigin",
+  "websocketOriginAllowed",
+  "resolveHttpMaxBodyBytes",
+  "injectPageConnectionToken",
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -1207,6 +1312,32 @@ function describeMigratedModuleAnswers(module: any) {
           return { allowByDefault: normalized.allowByDefault, resolved: typeof rule === "function" ? rule() : String(rule) };
         }),
       ]),
+    ),
+    // The HTTP and security policy domain, batch 8. Two limbs: the CORS/CSP posture, driven through
+    // a fake response because everything `prepareHttpSecurity` does is a side effect on one (see the
+    // probe's own comment), and the pure plumbing.
+    //
+    // The first limb is where this domain's fifteen private declarations are reached. Nothing else
+    // can call `serializeCspDirectives`, `requestOriginAllowed`, `isSameOriginRequest`,
+    // `isLocalDevOrigin`, `validatedRequestHost`, `appendVaryHeader` or `sanitizeResponseHeaders` by
+    // name any more — that is what privacy bought — so the recorded headers are the only place a
+    // carried copy of any of them can be compared at all.
+    ...MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE.map(([label, config, request]) =>
+      JSON.stringify([label, migratedModuleHttpSecurityAnswer(module, config, request)]),
+    ),
+    ...MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE.map(([label, source]) =>
+      JSON.stringify([label, probedAnswer(() => module.resolveHttpMaxBodyBytes(source))]),
+    ),
+    // Compared as the whole rewritten document rather than as "did it change", because the injection
+    // point is the security-relevant half: a copy that appended the token script after `</html>`, or
+    // that stopped escaping the token through `JSON.stringify`, would still have "changed" the page.
+    ...([
+      ["head", "<html><head><title>t</title></head><body>b</body></html>", "tok-1"],
+      ["head-with-attributes", '<html><head data-x="1"><title>t</title></head></html>', "tok-2"],
+      ["no-head", "<div>fragment</div>", "tok-3"],
+      ["token-needs-escaping", "<html><head></head></html>", '</script><script>alert("x")'],
+    ] as [string, string, string][]).map(([label, html, token]) =>
+      JSON.stringify([label, probedAnswer(() => module.injectPageConnectionToken(html, token))]),
     ),
   ];
 }

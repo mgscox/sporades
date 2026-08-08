@@ -16,6 +16,8 @@ export declare const MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE: [string, Recor
 export declare const MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE: [string, unknown, Record<string, unknown>][];
 export declare const MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE: [string, string, string, string][];
 export declare const MIGRATED_MODULE_ACL_READ_SKEW_PROBE: [string, string, string][];
+export declare const MIGRATED_MODULE_HTTP_SECURITY_SKEW_PROBE: [string, Record<string, unknown>, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_HTTP_PLUMBING_SKEW_PROBE: [string, unknown][];
 export declare function migratedRuntimeModulesBlockFrom(distDir: string): string;
 export declare function createServerBundleSource({ config, serverEnv, sealedServerEnv, serverSource, serverModuleSource }: {
     config: any;
