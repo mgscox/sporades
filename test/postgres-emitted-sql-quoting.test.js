@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { ensureJobStorage, ensureScheduleStorage } from "../dist/server-runtime-source.js";
 import { loadDatabaseAdapterConformanceSurfaces } from "./support/database-adapter-conformance.js";
 import { withSqliteAdapter } from "./support/database-adapter-engines.js";
 
@@ -29,18 +29,18 @@ import { withSqliteAdapter } from "./support/database-adapter-engines.js";
 // `postgres-runtime-column-names.test.js` and the conformance runs against a real Postgres are what
 // cover those, and this is a third net rather than the only one.
 
-function runtimeFunction(name) {
-  const fn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((candidate) => candidate.name === name);
-  assert.ok(fn, `${name} is not a server runtime source function`);
-  return fn;
-}
-
+// The two Job and Schedule bootstraps are imported by name rather than looked up in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS`. That lookup returned them until batch 4 moved the jobs and
+// schedules domain into `jobs-runtime.js`, at which point it returns `undefined` — a domain that
+// leaves the emitted list stops being findable there, which is the silent shape the re-export
+// bridge exists to prevent and the same edit batch 3 made to thirteen call sites when auth moved.
+// They resolve through `server-runtime-source.js` because it re-exports the module whole.
 async function bootstrapRuntimeStorage(adapter) {
   await adapter.ensureSystemTable();
   await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
   await adapter.ensureUserPreferencesStorage();
-  await runtimeFunction("ensureJobStorage")(adapter);
-  await runtimeFunction("ensureScheduleStorage")(adapter);
+  await ensureJobStorage(adapter);
+  await ensureScheduleStorage(adapter);
   await adapter.ensureFileStorage();
   await adapter.ensureLogStorage();
 }
