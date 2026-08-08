@@ -157,6 +157,21 @@ working; use the full suite as the gate before the batch is done.
   the general rule: *a blocker naming a later batch is not a promise that batch clears it.*
   Batch 5 established the converse: a named blocker **can** clear, and can clear more than
   promised. The test is whether the holder is a domain or the composition core.
+- **Layout is not membership — run the reverse-graph pass.** After seeding your domain by
+  name, ask which seeds have **no in-domain caller**. Batch 6 found three functions sitting
+  inside its file region that belong to other domains — `runSchemaExecIgnoringDuplicateColumn`
+  and `isDuplicateColumnError` are the adapters', `chainSchemaOperation` is the log index's.
+  A name sweep takes all three; only "who calls this" separates them, and it costs one
+  reverse pass. It also means an estimate can look accurate while being wrong in both
+  directions at once, the errors cancelling.
+- **A blocker owned by no domain is nobody's later batch — extract it.** Batch 4 established
+  that a blocker naming a later batch is not a promise that batch clears it, and batch 5 the
+  converse. Batch 6 found the third case: `thenIfPromise`/`chainMaybePromise`/`isPromiseLike`
+  were used by six domains and owned by none, and left behind they held the entire upload
+  lifecycle and both URL paths. Extracting them to `src/maybe-promise.ts` was cheaper than
+  cutting the domain in half. Put such a helper in a module whose **name describes its
+  contents** rather than appending it to an existing shared one — batch 6 declined to add
+  promise chaining to `runtime-errors.ts` for that reason.
 - **Measure your own base for the duplicate-declaration parse.** The absolute count is not
   portable between batches — different probes count different things, and batches 4 and 5
   reported 533 and 510 for the same tree. Diff the name *sets*, not the totals.
