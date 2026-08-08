@@ -176,7 +176,21 @@ test("every identifier the generated server bundle references is defined within 
 //
 // So the collision is refused at its source rather than the rename detected at its destination. A
 // migrated module may not declare a top-level name that `server-runtime-source.ts` also binds —
-// except the names it imports *from* that module, which are one binding and rename together.
+// except where the two names are *the same binding*, which is two cases rather than one:
+//
+//   - the monolith imports the name *from* the module being checked (`createMailRuntime`), and
+//   - both of them import the name from the same third module.
+//
+// The second arrived with batch 3 and is the reason this reads origins rather than only names.
+// `commandError` lives in `runtime-errors.js`; `auth-runtime.ts` imports it and so does
+// `server-runtime-source.ts`, and esbuild resolves both to the one declaration in `bin/` with
+// nothing to rename. Refusing that would have forced the auth domain to reach its error constructor
+// through some other spelling for a hazard that does not exist — the same shape as ADR-0041's
+// "any external at all" rule turning out to be one kind too broad.
+//
+// The narrowing is safe only because a *declaration* is still refused whatever its name: batch 2's
+// `const randomUUID = () => crypto.randomUUID()` has no origin, so it is not the same binding as the
+// monolith's `import { randomUUID } from "node:crypto"` and still fails here by name.
 function topLevelBindings(source, label) {
   const parsed = ts.createSourceFile(label, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
   const declared = new Set();
@@ -218,11 +232,17 @@ test("no migrated runtime module declares a name that would be renamed inside bi
   const collisions = [];
   for (const file of MIGRATED_RUNTIME_MODULE_FILES) {
     const source = readFileSync(new URL(`../dist/${file}`, import.meta.url), "utf8");
-    const { declared } = topLevelBindings(source, file);
+    const { declared, importedFrom } = topLevelBindings(source, file);
     assert.ok(declared.size > 0, `expected the top-level bindings of dist/${file}, saw none`);
     for (const name of declared) {
       // Imported from this very module: one binding, renamed together, harmless.
       if (runtime.importedFrom.get(name) === `./${file}`) continue;
+      // Imported by both of them from the same third module: also one binding. Every migrated module
+      // sits beside `server-runtime-source.js` in `dist/`, so the two specifiers are comparable as
+      // written; `undefined === undefined` is not a match, because a name neither of them imports is
+      // a declaration on at least one side and that is the case being refused.
+      const origin = importedFrom.get(name);
+      if (origin !== undefined && runtime.importedFrom.get(name) === origin) continue;
       if (runtime.declared.has(name)) collisions.push(`${file} declares ${name}`);
     }
   }

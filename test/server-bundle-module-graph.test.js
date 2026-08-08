@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import * as authRuntimeModule from "../dist/auth-runtime.js";
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import * as inspectionSqlModule from "../dist/inspection-sql.js";
 import * as logIndexGuardModule from "../dist/log-index-guard.js";
@@ -40,6 +41,8 @@ import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.j
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import {
+  MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE,
+  MIGRATED_MODULE_AUTH_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE,
   MIGRATED_MODULE_ROW_SKEW_PROBE,
@@ -1550,7 +1553,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -1639,6 +1642,62 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
     assert.ok(
       assembled.some((mime) => /\r\n[ \t]/.test(mime)),
       "the mail message probe never folds a header, so a copy that lost the folder compares clean",
+    );
+
+    // And the auth domain, which arrived in batch 3. Its private helpers and its credential hashing
+    // are in the block, and `commandError` is in it through `runtime-errors.js` — the module auth
+    // imports, which is why the block resolving imports between migrated modules matters here again.
+    assert.match(honest, /function passwordResetCodeParts\(/);
+    assert.match(honest, /function hashEmailPassword\(/);
+    assert.match(honest, /function commandError\(/);
+    // The accessor ADR-0042 records, asserted on the text: this is the only way the carried copy of
+    // the auth domain reaches `scryptSync`, and a carrier that had started lowering it — or a module
+    // edited back to a static `import … from "node:crypto"` — is caught here rather than at a
+    // Capsule's boot. The `require` assertion above covers the second half of that.
+    assert.match(honest, /process\.getBuiltinModule\("node:crypto"\)/);
+
+    // Guard the auth probe in both directions, on the same terms as the three above. A credential
+    // probe that never accepts cannot see a `verifyEmailPassword` replaced by one returning false,
+    // and one that never rejects cannot see one returning true — which is the whole point of a
+    // password check.
+    const accepted = MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE.filter(
+      ([password, salt, expected]) => authRuntimeModule.verifyEmailPassword(password, salt, expected) === true,
+    );
+    assert.ok(accepted.length >= 1, "the credential probe never accepts a password, so a copy that rejects everything compares clean");
+    assert.ok(
+      MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE.filter(
+        ([password, salt, expected]) => authRuntimeModule.verifyEmailPassword(password, salt, expected) === false,
+      ).length >= 3,
+      "the credential probe never rejects a password, so a copy that accepts everything compares clean",
+    );
+    // And the pure gates, which are the domain's refusals: each named gate must both admit and
+    // refuse somewhere in the probe, or a skewed copy of it compares clean for the wrong reason.
+    const gateAnswer = ([name, args]) => {
+      try {
+        return JSON.stringify(authRuntimeModule[name](...args)) ?? "undefined";
+      } catch (error) {
+        return `threw:${error?.code ?? error?.message}`;
+      }
+    };
+    for (const gate of ["normalizeReturnTo", "isOAuthLoopbackHostname", "appleOAuthOriginEligible", "normalizePasswordResetPath", "isReservedAuthUserId", "requireAuth"]) {
+      const answers = new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.filter(([name]) => name === gate).map(gateAnswer));
+      assert.ok(answers.size >= 2, `the auth probe makes ${gate} answer the same way every time, so a skewed copy of it compares clean`);
+    }
+    // `oauthProviderTestEndpoint` is deliberately not in that list, and the reason is worth stating
+    // rather than leaving for the next reader to rediscover from a failing assertion. Its second
+    // branch is behind `SPORADES_OAUTH_TEST_ENDPOINTS === "1"`, which is unset here, so both probe
+    // inputs take the production branch and it answers the same way twice.
+    //
+    // It stays in the probe because the comparison is still real: the two copies read the same
+    // environment, so a carried copy that had started honouring the override — the defect this gate
+    // exists to prevent — returns the override while the running one returns the production URL, and
+    // that is a disagreement. What the probe cannot see, with the variable unset, is a change to the
+    // override-accepting branch itself. That branch is covered by `test/oauth-provider.test.js`,
+    // against `dist/`, which is where it is reachable.
+    assert.equal(
+      new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.filter(([name]) => name === "oauthProviderTestEndpoint").map(gateAnswer)).size,
+      1,
+      "SPORADES_OAUTH_TEST_ENDPOINTS is set in this environment, so the comment above no longer describes what this probe reaches",
     );
 
     const skews = [
@@ -1772,6 +1831,66 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         "mail-runtime.js",
         `import { randomUUID } from "crypto";\n${originals["mail-runtime.js"].replace("mail_${crypto.randomUUID()}", "mail_${randomUUID()}")}`,
         /would resolve crypto at runtime/,
+      ],
+      // Batch 3's domain. The first is the shape that would be silent everywhere else: a password
+      // check that says yes to anything keeps every export and every other answer.
+      [
+        "a credential check swapped for one that accepts any password",
+        "auth-runtime.js",
+        originals["auth-runtime.js"].replace(
+          /export function verifyEmailPassword\(password, salt, expectedHash\) \{/,
+          "export function verifyEmailPassword(password, salt, expectedHash) {\n  if (true) return true;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The length guard in front of the constant-time comparison. Dropping it is not a value
+      // change for any matching pair — which is why the truncated-hash vector is in the probe: with
+      // the guard gone `timingSafeEqual` throws on mismatched buffer lengths instead of returning
+      // false, and the two copies disagree.
+      [
+        "a credential check that lost the length guard before the constant-time compare",
+        "auth-runtime.js",
+        originals["auth-runtime.js"].replace(
+          "return actual.length === expected.length && nodeCryptoModule.timingSafeEqual(actual, expected);",
+          "return nodeCryptoModule.timingSafeEqual(actual, expected);",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The open-redirect containment, which is a gate rather than a credential: a `normalizeReturnTo`
+      // that stops pinning the origin hands an OAuth callback to whoever asked for it.
+      [
+        "a return-to normalizer that stopped pinning the origin",
+        "auth-runtime.js",
+        originals["auth-runtime.js"].replace("        if (url.origin !== origin) {\n            return origin;\n        }\n", ""),
+        /answer the skew probe differently/,
+      ],
+      // A private helper of `auth-runtime`, which nothing exports and no list registers — the same
+      // case batch 2 made for mail, at this domain's scale. `createAuthDenialLogData` is reached only
+      // through `requireAuth`, so a probe that did not call the exported one could not see it change.
+      [
+        "a private auth helper whose body changed",
+        "auth-runtime.js",
+        originals["auth-runtime.js"].replace("            isGuest: context?.auth?.isGuest ?? null,", "            isGuest: \"skewed\","),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on the module the rest of the domain imports. `runtime-errors` holds one
+      // function and `auth-runtime` cannot resolve without it, so this is the batch-1 case — "a gate
+      // that stopped exporting what its consumer imports" — reappearing one module along.
+      [
+        "an error module that stopped exporting what auth imports",
+        "runtime-errors.js",
+        originals["runtime-errors.js"].replace("export function commandError(", "function commandError("),
+        /did not build|export a different set of names/,
+      ],
+      // And the accessor ADR-0042 turns on, written the way ADR-0041 refuses. This is the pair the
+      // static-import cases above are for, asked of the module that actually needed the narrowing to
+      // go the other way: auth cannot use the dynamic form, so if `process.getBuiltinModule` were
+      // ever replaced by the import it reads like, the build must refuse it.
+      [
+        "the auth domain reaching node:crypto through a static import instead of the accessor",
+        "auth-runtime.js",
+        `import { scryptSync } from "node:crypto";\n${originals["auth-runtime.js"].replace("const actual = nodeCryptoModule.scryptSync(password, salt, 64);", "const actual = scryptSync(password, salt, 64);")}`,
+        /would resolve node:crypto at runtime/,
       ],
     ];
 

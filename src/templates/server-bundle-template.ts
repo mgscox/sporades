@@ -3,28 +3,18 @@ import path from "node:path";
 
 import { buildSync } from "esbuild";
 
+import * as authRuntime from "../auth-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
 import * as logIndexGuard from "../log-index-guard.js";
 import * as mailConfig from "../mail-config.js";
 import * as mailRuntime from "../mail-runtime.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
+import * as runtimeErrors from "../runtime-errors.js";
 import {
   ACL_HELPER_STATE,
-  EMAIL_SIGN_IN_FAILURE_LIMIT,
-  EMAIL_SIGN_IN_THROTTLE_FIELD,
-  EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES,
-  EMAIL_SIGN_IN_THROTTLE_WINDOW_MS,
-  PASSWORD_RESET_DEFAULT_PATH,
-  PASSWORD_RESET_DEFAULT_TTL_MS,
-  PASSWORD_RESET_MAIL_JOB,
-  PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL,
-  PASSWORD_RESET_MAX_TTL_MS,
-  PASSWORD_RESET_MIN_TTL_MS,
-  PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUDIT_ACTOR_KINDS,
   PRIVILEGED_AUDIT_OUTCOMES,
   PRIVILEGED_AUDIT_SCHEMA,
-  PRIVILEGED_AUTH_USER_ID,
   RESERVED_JOB_NAME_PREFIX,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../server-runtime-source.js";
@@ -55,6 +45,10 @@ const MIGRATED_RUNTIME_MODULES = [
   { file: "log-index-guard.js", loaded: logIndexGuard as Record<string, unknown> },
   { file: "mail-config.js", loaded: mailConfig as Record<string, unknown> },
   { file: "mail-runtime.js", loaded: mailRuntime as Record<string, unknown> },
+  // Batch 3. `runtime-errors` is listed before `auth-runtime` because auth imports it; the order
+  // does not matter to esbuild, which resolves the graph, but it matches the dependency direction.
+  { file: "runtime-errors.js", loaded: runtimeErrors as Record<string, unknown> },
+  { file: "auth-runtime.js", loaded: authRuntime as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -163,6 +157,74 @@ export const MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE: any[] = [
   { from: { email: "a@example.com" }, to: [{ email: "b@example.com" }, { email: "c@example.com" }, { email: "d@example.com" }], cc: [], subject: "Folding a long recipient list across the SMTP line limit for good measure", messageId: "<5@sporades.local>", textBody: "z".repeat(300) },
 ];
 
+// What the carried copy of `auth-runtime` and the running one must answer identically. Batch 3's
+// domain is the largest carried here and the only one whose refusals are credentials, so the shapes
+// below are chosen for the limbs whose loss would be silent rather than for coverage.
+//
+// **The credential limb comes first and is the one that matters most.** `verifyEmailPassword` is the
+// only probe in this file that reaches `scryptSync` and `timingSafeEqual`, which is also the only
+// place `process.getBuiltinModule` is exercised across the carrier (ADR-0042): a carried copy in
+// which that accessor had not survived the IIFE throws rather than answering, and a copy that had
+// lost the constant-time comparison — or been replaced by one returning `true` — is caught by the
+// rejecting vectors. Both hashes are pinned scrypt outputs for the same salt, so the accepting and
+// rejecting cases differ only in the password.
+//
+// The rest are the domain's pure gates: the return-to containment that stops an open redirect, the
+// loopback and test-endpoint overrides that must not be honoured in production, Apple's origin
+// eligibility, the password-reset path normalizer, and `requireAuth` itself — which reports a
+// refusal by throwing, so it travels through `probedAnswer` the way `validateMailConfig` does.
+//
+// Every gate is given accepting *and* refusing inputs, for the reason ADR-0038 records the sweep
+// corpus getting wrong three times: a probe a gate refuses in full cannot see a copy that refuses
+// everything, and one it admits in full cannot see a copy that admits everything.
+export const MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE: [string, string, string][] = [
+  ["correct horse battery staple", "cGFzc3dvcmQtc2FsdA", "wpN60e2jr-1ZV-lRCud8jEtOa7QixOUXD-dQYJ5YgmIZmKQ5B1vRp6wfBw83Ts-Q8X1n8WKxuMv0Y-tpHvh3PQ"],
+  ["wrong password", "cGFzc3dvcmQtc2FsdA", "wpN60e2jr-1ZV-lRCud8jEtOa7QixOUXD-dQYJ5YgmIZmKQ5B1vRp6wfBw83Ts-Q8X1n8WKxuMv0Y-tpHvh3PQ"],
+  ["correct horse battery staple", "cGFzc3dvcmQtc2FsdA", "CxB4VcKLvar_bRuhY5uHwD7QG25RLPRkfphgX3-CeZjq44jeqLjI82Wy0rRqzpvcRrcJ4kSSCoHX5jMLipbNzw"],
+  ["correct horse battery staple", "a-different-salt", "wpN60e2jr-1ZV-lRCud8jEtOa7QixOUXD-dQYJ5YgmIZmKQ5B1vRp6wfBw83Ts-Q8X1n8WKxuMv0Y-tpHvh3PQ"],
+  // A truncated expected hash, which is what the length comparison in front of `timingSafeEqual`
+  // exists for: without it this throws rather than returning false, because `timingSafeEqual`
+  // refuses buffers of different lengths.
+  ["correct horse battery staple", "cGFzc3dvcmQtc2FsdA", "wpN60e2jr-1ZV-lRCud8jEtOa7Q"],
+];
+
+// Statements of the domain's pure gates, as `[exported name, arguments]`. Kept as data rather than
+// as calls so the two copies are asked in one loop and a name absent from either is reported by
+// `describeMigratedModuleAnswers` rather than throwing a bare `TypeError` out of a bundle build.
+export const MIGRATED_MODULE_AUTH_SKEW_PROBE: [string, any[]][] = [
+  ["hashPasswordResetVerifier", ["a-reset-verifier"]],
+  ["hashPasswordResetVerifier", ["\0absent"]],
+  ["normalizeReturnTo", ["/dashboard", "https://app.example.com"]],
+  ["normalizeReturnTo", ["https://evil.example.com/steal", "https://app.example.com"]],
+  ["normalizeReturnTo", ["//evil.example.com", "https://app.example.com"]],
+  ["normalizeReturnTo", ["", "https://app.example.com"]],
+  ["isOAuthLoopbackHostname", ["127.0.0.1"]],
+  ["isOAuthLoopbackHostname", ["[::1]"]],
+  ["isOAuthLoopbackHostname", ["169.254.169.254"]],
+  ["isOAuthLoopbackHostname", [null]],
+  ["oauthProviderTestEndpoint", ["http://127.0.0.1:9/token", "https://oauth2.googleapis.com/token"]],
+  ["oauthProviderTestEndpoint", ["https://evil.example.com/token", "https://oauth2.googleapis.com/token"]],
+  ["appleOAuthOriginEligible", ["https://app.example.com"]],
+  ["appleOAuthOriginEligible", ["http://app.example.com"]],
+  ["appleOAuthOriginEligible", ["https://localhost"]],
+  ["appleOAuthOriginEligible", ["https://127.0.0.1"]],
+  ["normalizePasswordResetPath", ["/reset-password"]],
+  ["normalizePasswordResetPath", ["//evil.example.com"]],
+  ["normalizePasswordResetPath", ["/a/../../etc/passwd"]],
+  ["normalizePasswordResetPath", ["/reset?token=1"]],
+  ["isReservedAuthUserId", ["__privileged__"]],
+  ["isReservedAuthUserId", ["an-ordinary-user"]],
+  ["privilegedAuthUserId", []],
+  ["normalizeSimulatedText", ["  padded  "]],
+  ["normalizeSimulatedText", [null]],
+  ["readEndpointSessionToken", [{ "x-sporades-session-token": "tok" }, {}]],
+  ["readEndpointSessionToken", [{}, { sessionToken: "ignored" }]],
+  ["requireAuth", [{ auth: { isAuthenticated: true, isGuest: false } }, {}]],
+  ["requireAuth", [{ auth: { isAuthenticated: true, isGuest: true } }, { linked: true }]],
+  ["requireAuth", [{ auth: { isAuthenticated: false } }, {}]],
+  ["requireAuth", [{ kind: "endpoint" }, {}]],
+];
+
 function bundleTemplateError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
@@ -196,6 +258,8 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   "isInternalLogIndexMetadataRow",
   "validateMailConfig",
   "buildSmtpMessage",
+  "verifyEmailPassword",
+  ...new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.map(([name]) => name)),
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -210,6 +274,29 @@ function probedAnswer(call: () => unknown) {
     return { returned: call() };
   } catch (error: any) {
     return { threw: { code: error?.code ?? null, message: String(error?.message ?? error) } };
+  }
+}
+
+// The same, plus the field `requireAuth` hangs its denial record on. That record is the whole output
+// of `createAuthDenialLogData`, which is private to `auth-runtime` and reachable through nothing
+// else — and it travels on the *error*, not in the return value, so `probedAnswer` drops it and a
+// carried copy whose denial record had been skewed compares clean. Found by planting exactly that
+// skew and watching this check pass; the case is in `test/server-bundle-module-graph.test.js` now.
+//
+// It is what a deployed Capsule writes to the platform log on every refused handler call, so a copy
+// that reported the wrong actor would be a wrong audit trail rather than a wrong verdict — the kind
+// of difference this comparison exists to catch precisely because nothing else would.
+function authProbedAnswer(call: () => unknown) {
+  try {
+    return { returned: call() };
+  } catch (error: any) {
+    return {
+      threw: {
+        code: error?.code ?? null,
+        message: String(error?.message ?? error),
+        denial: error?.sporadesAuthDenialLogData ?? null,
+      },
+    };
   }
 }
 
@@ -263,6 +350,16 @@ function describeMigratedModuleAnswers(module: any) {
             : mime;
         }),
       ]),
+    ),
+    // The auth domain. Every call goes through `probedAnswer` rather than only `requireAuth`'s,
+    // because `verifyEmailPassword` throws on a length mismatch its own guard is what prevents —
+    // so a carried copy that had lost that guard reports as a disagreement here instead of failing
+    // the build with `timingSafeEqual`'s message and no indication that two copies were compared.
+    ...MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE.map(([password, salt, expected]) =>
+      JSON.stringify([password, salt, expected, probedAnswer(() => module.verifyEmailPassword(password, salt, expected))]),
+    ),
+    ...MIGRATED_MODULE_AUTH_SKEW_PROBE.map(([name, args]) =>
+      JSON.stringify([name, args, authProbedAnswer(() => module[name](...args))]),
     ),
   ];
 }
@@ -493,20 +590,23 @@ export function createServerBundleSource({
   // what a deployed Capsule enforces. Several of these are security thresholds, and a restated copy
   // that drifted would be silent — the free-binding guard resolves names, and a wrong value
   // resolves exactly as cleanly as a right one.
+  //
+  // **Twelve entries left this list in batch 3, and they had to leave in the same commit that moved
+  // them.** `PRIVILEGED_AUTH_USER_ID`, the four `EMAIL_SIGN_IN_THROTTLE*` thresholds, the six
+  // `PASSWORD_RESET_*` bounds and `PASSWORD_RESET_MAIL_JOB` are declarations inside
+  // `auth-runtime.js` now, and that module's text is spliced in immediately below this preamble.
+  // Serializing them here as well would declare each name twice at the top level of an ES module,
+  // which is a load-time `SyntaxError` in a deployed Capsule rather than a drift — the same hazard
+  // that keeps a migrated function out of the emitted list. They are still reachable by name at the
+  // bundle's top level through the destructuring the carried block ends with, which is how the
+  // still-monolithic `resolvePasswordResetConfig`, `sendEmailPasswordResetLink` and
+  // `runtimeOwnedJobHandlers` resolve them, and how the constant probe in
+  // `test/server-bundle-module-graph.test.js` reads them.
+  //
+  // The five that remain are the ones whose domains have not migrated: the reserved job-name prefix
+  // is batch 4's, and the privileged-audit trio and `ACL_HELPER_STATE` are batch 6's.
   const runtimeConstants = ([
-    ["PRIVILEGED_AUTH_USER_ID", PRIVILEGED_AUTH_USER_ID],
-    ["EMAIL_SIGN_IN_FAILURE_LIMIT", EMAIL_SIGN_IN_FAILURE_LIMIT],
-    ["EMAIL_SIGN_IN_THROTTLE_WINDOW_MS", EMAIL_SIGN_IN_THROTTLE_WINDOW_MS],
-    ["EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES", EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES],
-    ["EMAIL_SIGN_IN_THROTTLE_FIELD", EMAIL_SIGN_IN_THROTTLE_FIELD],
-    ["PASSWORD_RESET_THROTTLE_FIELD", PASSWORD_RESET_THROTTLE_FIELD],
-    ["PASSWORD_RESET_DEFAULT_PATH", PASSWORD_RESET_DEFAULT_PATH],
-    ["PASSWORD_RESET_DEFAULT_TTL_MS", PASSWORD_RESET_DEFAULT_TTL_MS],
-    ["PASSWORD_RESET_MIN_TTL_MS", PASSWORD_RESET_MIN_TTL_MS],
-    ["PASSWORD_RESET_MAX_TTL_MS", PASSWORD_RESET_MAX_TTL_MS],
-    ["PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL", PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL],
     ["RESERVED_JOB_NAME_PREFIX", RESERVED_JOB_NAME_PREFIX],
-    ["PASSWORD_RESET_MAIL_JOB", PASSWORD_RESET_MAIL_JOB],
     ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
     ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
     ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],

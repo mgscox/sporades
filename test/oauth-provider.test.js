@@ -9,28 +9,37 @@ import { generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
 import { promisify } from "node:util";
 
+// Thirteen of these were `SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === …)` until batch 3
+// moved the auth domain into `auth-runtime.ts`. That lookup does not fail when a domain leaves the
+// emitted list — it returns `undefined`, and every test below would then call `undefined(…)` or,
+// worse, assert against a value derived from one. Named imports through the re-export bridge on
+// `server-runtime-source.js` fail at load instead, which is the point of converting them.
+//
+// `beginOAuthSignIn`, `resolveOAuthRequestOrigin` and `linkProviderIdentity` are still found by name
+// because they are still in the monolith: they reach the HTTP layer and the user-preferences
+// migration, so they follow batches 7 and 4 rather than batch 3.
 import {
+  appleOAuthOriginEligible,
+  completeMicrosoftOAuth,
+  completeOpenIdOAuthCodeExchange,
+  createAppleClientSecret,
+  discoverMicrosoftOpenIdConfiguration,
+  fetchBoundedOAuthJson,
+  fetchMicrosoftOidcJson,
+  isOAuthLoopbackHostname,
+  loadMicrosoftJwks,
+  oauthProviderTestEndpoint,
   openDevDatabase,
   resolveAnonymousSession,
   routeSporadesAuth,
+  verifyAppleIdentityToken,
+  verifyGoogleIdentityToken,
+  verifyMicrosoftIdentityToken,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
-const oauthProviderTestEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "oauthProviderTestEndpoint");
-const isOAuthLoopbackHostname = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "isOAuthLoopbackHostname");
-const fetchBoundedOAuthJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchBoundedOAuthJson");
-const completeOpenIdOAuthCodeExchange = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeOpenIdOAuthCodeExchange");
-const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyGoogleIdentityToken");
-const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyAppleIdentityToken");
-const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
-const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
 const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
-const verifyMicrosoftIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyMicrosoftIdentityToken");
-const discoverMicrosoftOpenIdConfiguration = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "discoverMicrosoftOpenIdConfiguration");
-const fetchMicrosoftOidcJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
-const loadMicrosoftJwks = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "loadMicrosoftJwks");
-const completeMicrosoftOAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeMicrosoftOAuth");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const execFileAsync = promisify(execFile);
 
@@ -253,8 +262,22 @@ test("Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is a
   }
 });
 
-test("provider auth exposes one internal completion and linking seam", () => {
-  const names = new Set(SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.name));
+test("provider auth exposes one internal completion and linking seam", async () => {
+  // The subject set is the emitted list *and* the migrated modules, for the reason this test would
+  // otherwise be worthless after batch 3: `completeOpenIdOAuthCodeExchange` is a declaration in
+  // `auth-runtime.ts` now, so an assertion over the emitted list alone would have gone from proving
+  // there is one shared exchange to proving there is none — and the two negative assertions below
+  // would have kept passing for the wrong reason, which is the shape this whole migration keeps
+  // producing.
+  //
+  // Read off the modules rather than the re-export bridge because the negatives are the point: a
+  // per-provider `completeGoogleOAuth` reappearing anywhere in the runtime has to fail this, and
+  // `Object.keys` of a namespace only sees exports.
+  const authRuntime = await import("../dist/auth-runtime.js");
+  const names = new Set([
+    ...SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.name),
+    ...Object.keys(authRuntime),
+  ]);
   assert.equal(names.has("linkProviderIdentity"), true);
   assert.equal(names.has("completeOpenIdOAuthCodeExchange"), true);
   assert.equal(names.has("linkGoogleAccount"), false);
@@ -1000,8 +1023,7 @@ test("Microsoft discovery fetches are deadline-bound, size-bound, no-redirect, a
 test("Microsoft response-body deadlines close a real stalled loopback response without leaking its partial body", async () => {
   const script = `
     import { createServer } from "node:http";
-    import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "./dist/server-runtime-source.js";
-    const fetchJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
+    import { fetchMicrosoftOidcJson as fetchJson } from "./dist/server-runtime-source.js";
     let closedResolve;
     const closed = new Promise((resolve) => { closedResolve = resolve; });
     const server = createServer((request, response) => {
