@@ -181,14 +181,7 @@ var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 // src/jobs-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 
-// src/server-runtime-source.ts
-function logPayloadMaxBytes(config = {}) {
-  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
-function logRedactedValue() {
-  return "[REDACTED]";
-}
+// src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
 var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
@@ -258,6 +251,16 @@ function normalizePrivilegedAuditCorrelation(value) {
 function auditString(value, fallback) {
   const text = value === null || value === void 0 ? "" : String(value);
   return text.trim() ? text : fallback;
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+
+// src/server-runtime-source.ts
+function logPayloadMaxBytes(config = {}) {
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
+}
+function logRedactedValue() {
+  return "[REDACTED]";
 }
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -364,7 +367,6 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/cli/cli-support.ts
 function errorDetails(error) {

@@ -19,6 +19,11 @@ import {
   buildSmtpMessage,
   connectSmtpSocket,
   createMailTransport,
+  // Batch 7 moved the ACL domain out of the emitted list, so `createTableAclContext` joins the
+  // three above: it was a `.find` here and that lookup returns `undefined` the moment a name stops
+  // being an entry, which would have called `undefined(…)` in the ACL assertion below instead of
+  // failing at load.
+  createTableAclContext,
   openDevDatabase,
   runMutation,
   runQuery,
@@ -29,7 +34,6 @@ import { createServerBundleSource } from "../dist/templates/server-bundle-templa
 
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
-const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
 
 function readMimeHeader(message, name) {
   const lines = message.split("\r\n\r\n")[0].split("\r\n");

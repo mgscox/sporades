@@ -1,6 +1,7 @@
 import { isBuiltin } from "node:module";
 import path from "node:path";
 import { buildSync } from "esbuild";
+import * as aclRuntime from "../acl-runtime.js";
 import * as authRuntime from "../auth-runtime.js";
 import * as fileStorageRuntime from "../file-storage-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
@@ -14,7 +15,7 @@ import * as runtimeErrors from "../runtime-errors.js";
 import * as runtimeLogPolicy from "../runtime-log-policy.js";
 import * as storedRowDecoding from "../stored-row-decoding.js";
 import * as userPreferencesRuntime from "../user-preferences-runtime.js";
-import { ACL_HELPER_STATE, PRIVILEGED_AUDIT_ACTOR_KINDS, PRIVILEGED_AUDIT_OUTCOMES, PRIVILEGED_AUDIT_SCHEMA, SERVER_RUNTIME_SOURCE_FUNCTIONS, } from "../server-runtime-source.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 // How a runtime module constant is written into the bundle preamble. Values travel as their own
 // serialization so the runtime source's declaration stays the only place the value is written.
@@ -67,6 +68,12 @@ const MIGRATED_RUNTIME_MODULES = [
     // imports them; esbuild resolves the graph either way and the order is documentation.
     { file: "runtime-log-policy.js", loaded: runtimeLogPolicy },
     { file: "stored-row-decoding.js", loaded: storedRowDecoding },
+    // Batch 7: the ACL and privileged-audit domain, listed last because it imports from six of the
+    // modules above — `file-storage-runtime` for the privileged File API and the ACL storage helper,
+    // `jobs-runtime` for the privileged Schedule API, `maybe-promise` for the ACL rules' sync/async
+    // lanes, `runtime-errors` for `commandError`, and the two above for what its graph left outside
+    // it. esbuild resolves the graph either way; the order is documentation.
+    { file: "acl-runtime.js", loaded: aclRuntime },
 ];
 // The same list as file names, for guards that have to read the modules off disk rather than call
 // them. Exported so that `test/server-bundle-free-bindings.test.js` cannot go out of step with what
@@ -624,6 +631,179 @@ export const MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE = [
     ["deserializeRow", [{ fields: [] }, { id: "r3", untouched: "value" }]],
     ["deserializeRow", [{ fields: [{ name: "meta", kind: "Json" }] }, { id: "r4", meta: "not json" }]],
 ];
+// Batch 7: the ACL and privileged-audit domain. Three limbs, and what each can and cannot reach is
+// worth stating exactly, because thirty-one of this domain's fifty-nine declarations are private and
+// none of them is reachable by name.
+//
+// **The privileged audit event contract**, as arguments to `createPrivilegedAuditLogInput`. One call
+// reaches six of the domain's private normalizers — the actor kind, the outcome, the level, the safe
+// error code, the correlation shape and `auditString` — and all three of the audit constants that
+// left this preamble in this batch, because two of them are the `Set`s those normalizers test
+// membership in. A carried copy whose `PRIVILEGED_AUDIT_ACTOR_KINDS` had lost an entry would record
+// every privileged run by a captured user as `unknown`, which is a wrong audit trail rather than a
+// wrong verdict, and nothing else compares it.
+//
+// The cases are chosen so each normalizer answers both ways: a known and an unknown actor kind, a
+// known and an unknown outcome, an outcome that changes the level, an error object and a bare string
+// through the code sanitizer, a string and an object correlation, and a details object that is empty
+// so every fallback fires at once. `metadata` is only ever a plain object here — this limb is
+// serialized, so a patch `JSON.stringify` cannot carry would throw out of the middle of a bundle
+// build, which is the shape batch 5 found and recorded.
+export const MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE = [
+    ["empty", {}],
+    ["started", { actorKind: "privileged-server-role", operation: "billing.charge", surface: "server-handler", targetResourceKind: "invoice", outcome: "started", correlation: "corr-1", source: "runtime", metadata: { attempt: 1 } }],
+    ["completed", { actorKind: "captured-user", operation: "billing.charge", outcome: "completed", correlation: { id: "corr-2", parent: "corr-1" } }],
+    ["errored-with-error", { actorKind: "platform", operation: "billing.charge", outcome: "errored", error: { code: "card declined!" } }],
+    ["errored-without-code", { actorKind: "platform", operation: "billing.charge", outcome: "errored" }],
+    ["finished", { actorKind: "unknown", operation: "billing.charge", outcome: "finished" }],
+    ["unknown-actor-kind", { actorKind: "root", operation: "billing.charge", outcome: "started" }],
+    ["unknown-outcome", { actorKind: "platform", operation: "billing.charge", outcome: "half-done" }],
+    ["long-error-code", { operation: "x", outcome: "errored", safeErrorCode: "a".repeat(200) }],
+    ["numeric-correlation", { operation: "x", correlationId: 42 }],
+    ["array-metadata", { operation: "x", metadata: [1, 2] }],
+    ["blank-strings", { operation: "   ", surface: "", targetResourceKind: null, message: "  ", event: "" }],
+];
+// **The privileged run's metadata gate**, as `[label, context, options]` to
+// `createPrivilegedRunAuditDetails`. This is the front door of `ctx.privileged.run` and the only
+// path to `validatedPrivilegedOperation`, `validatedPrivilegedMetadata`, `isPlainPrivilegedMetadata`
+// and `invalidPrivilegedRunMetadata`, all four private. Every refusal is a `commandError` carrying
+// `INVALID_PRIVILEGED_RUN_METADATA`, so `probedAnswer` compares the code and the message and a copy
+// that refused the right things for the wrong reason is a disagreement.
+//
+// Split both ways, and the refusals cover the shapes `isPlainPrivilegedMetadata` exists for rather
+// than merely malformed ones: a thenable, a class instance and a null-prototype object all pass
+// `typeof === "object"`, and a copy reduced to that check admits the first two — which is a
+// privileged run recording a promise it never awaited as its own metadata.
+export const MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE = [
+    ["minimal", { kind: "mutation" }, { operation: "billing.charge" }],
+    ["full", { kind: "endpoint" }, { operation: "billing.charge", surface: "endpoint", targetResourceKind: "invoice", correlation: "c", metadata: { a: 1 } }],
+    ["dotted-operation", null, { operation: "a.b_c:d-e" }],
+    ["null-prototype-metadata", null, { operation: "x", metadata: Object.create(null) }],
+    ["absent-metadata", null, { operation: "x" }],
+    ["no-options", null, undefined],
+    ["array-options", null, []],
+    ["no-operation", null, {}],
+    ["blank-operation", null, { operation: "   " }],
+    ["punctuated-operation", null, { operation: "billing charge!" }],
+    ["thenable-metadata", null, { operation: "x", metadata: { then: () => { } } }],
+    ["class-metadata", null, { operation: "x", metadata: new Date(0) }],
+    ["array-metadata", null, { operation: "x", metadata: [1] }],
+];
+// **The table ACL enforcement path**, and this is the limb that matters most in this file after the
+// credential one. `runTableWriteWithAcl` is the decision a deployed Capsule makes on every insert,
+// update and delete of an ACL-guarded table, and one call reaches nineteen of this domain's private
+// declarations plus two of the modules it imports:
+//
+//   the privileged bypass    hasPrivilegedDbAccess, privilegedDbAccessContextSet
+//   the ACL context          createTableAclContext, createAclHelpers, createAclDbHelpers,
+//                            createAclStorageHelpers, assertAclHelperReadAllowed,
+//                            resolveAclAppTable, resolveAclStorageResource,
+//                            resolveAclStorageFileReference, aclStorageMetadataFromFileRow
+//   the async-read fuse      markAsyncAclHelperRead, aclRuleTouchedAsyncHelperRead, ACL_HELPER_STATE
+//   the denial record        emitAclDeniedLog, createAclDenialLogData, aclRuleDeclaredOperation,
+//                            aclRowLogSnapshot, aclVisibleFieldNames, createAclDeniedError
+//   across the boundary      deserializeRow, isSensitiveLogKey, fileMetadataFromRow, commandError
+//
+// **It is also how `ACL_HELPER_STATE`'s Symbol identity is executed rather than argued.** The
+// `async-helper-read` case drives a *synchronous* rule whose `ctx.acl.db.get()` returns a thenable:
+// `markAsyncAclHelperRead` writes `touchedAsyncRead` through that Symbol and
+// `aclRuleTouchedAsyncHelperRead` reads it back through the same Symbol, and the write is denied.
+// If the two ever resolved different Symbols the read would be `undefined`, the rule's `true` would
+// stand and the write would be **allowed** — so a copy in which the writer and the reader had come
+// apart shows up here as a disagreement rather than as a silent fail-open in a deployed Capsule.
+//
+// Every rule is synchronous and every fake read answers without I/O or a clock. The promise arms are
+// deliberately not taken: `describeMigratedModuleAnswers` is synchronous, and an async rule would
+// leave a pending write on the context for nobody to await. `test/table-acl.test.js` covers those.
+//
+// Each case is `[label, rules, operation, mode]`. `mode` picks the fake adapter's behaviour, and
+// nothing but the label and a verdict is serialized — the rules are functions and the denial record
+// is compared through the fake log sink's own capture.
+export const MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE = [
+    ["allow", "allow", "insert", "sync"],
+    ["deny", "deny", "insert", "sync"],
+    ["deny-update", "deny", "update", "sync"],
+    ["deny-delete", "deny", "delete", "sync"],
+    ["write-covers-insert", "write-only-deny", "insert", "sync"],
+    ["insert-overrides-write", "insert-allow-write-deny", "insert", "sync"],
+    ["no-rule", "none", "insert", "sync"],
+    ["undeclared-acl", "undeclared", "insert", "sync"],
+    ["privileged-bypass", "deny", "insert", "privileged"],
+    ["privileged-revoked", "deny", "insert", "revoked"],
+    ["db-helper-read", "read-db", "update", "sync"],
+    ["db-helper-unknown-table", "read-unknown-db", "insert", "sync"],
+    ["storage-helper-read", "read-storage", "insert", "sync"],
+    ["storage-helper-unknown-resource", "read-unknown-storage", "insert", "sync"],
+    ["helper-read-limit", "read-db-many", "insert", "sync"],
+    // The Symbol identity case. A synchronous rule, an asynchronous adapter read, and a verdict that
+    // must be a refusal.
+    ["async-helper-read", "read-db", "insert", "async"],
+];
+// The read side of the same path, and the reason it is a second limb rather than more cases on the
+// first: `applyReadAcl` reports a refusal by returning `false` and emitting a denial record, where
+// `runTableWriteWithAcl` throws. A copy that had swapped one for the other would still deny.
+export const MIGRATED_MODULE_ACL_READ_SKEW_PROBE = [
+    ["allow", "allow", "sync"],
+    ["deny", "deny", "sync"],
+    ["no-rule", "none", "sync"],
+    ["privileged-bypass", "deny", "privileged"],
+    ["async-helper-read", "read-db", "async"],
+];
+// The fakes the two ACL limbs are driven through: an adapter whose reads are synchronous or
+// thenable, a log sink that captures the denial record, and one app table. No clock, no I/O, and
+// nothing that outlives the call.
+//
+// `selectAppRowById` answers a row whose `flag`, `count` and `meta` columns are stored the way a
+// Database engine stores them, so the value an ACL rule sees has been through `deserializeRow` —
+// which is how `stored-row-decoding.js` is reached from this limb as well as from its own.
+function migratedModuleAclProbeDatabase(mode, recorded) {
+    const asyncRead = mode === "async";
+    const wrap = (value) => (asyncRead ? { then: (resolve) => resolve(value) } : value);
+    return {
+        log: { emit: (event) => { recorded.push(event); return event; } },
+        schema: {
+            tables: [{
+                    name: "posts",
+                    fields: [{ name: "flag", kind: "Boolean" }, { name: "count", kind: "Number" }, { name: "meta", kind: "Json" }, { name: "title", kind: "Text" }],
+                }],
+        },
+        adapter: {
+            selectAppRowById: () => wrap({ id: "row-1", flag: 0, count: "7", meta: '{"a":1}', title: "kept" }),
+            selectFileById: () => wrap({ id: "file-1", bucketName: "images", size: "12", type: "image/png", name: "a.png", path: "/images/a.png", version: "v1", ownerId: "u1", status: "uploaded", createdAt: "c", updatedAt: "u", deletedAt: null }),
+            selectLiveFileByPath: () => wrap([]),
+        },
+    };
+}
+// The ACL rule bodies the two limbs choose between, by name rather than as functions, so the probe
+// data stays serializable and the same rule text is used for both copies.
+function migratedModuleAclProbeRules(kind) {
+    const seen = (ctx) => ctx;
+    switch (kind) {
+        case "undeclared": return undefined;
+        case "none": return {};
+        case "allow": return { read: () => true, write: () => true };
+        case "deny": return { read: () => false, write: () => false };
+        case "write-only-deny": return { write: () => false };
+        case "insert-allow-write-deny": return { insert: () => true, write: () => false };
+        case "read-db": return {
+            read: ({ ctx }) => Boolean(seen(ctx).acl.db.get("posts", "row-1")) || true,
+            write: ({ ctx }) => { seen(ctx).acl.db.get("posts", "row-1"); return seen(ctx).acl.db.exists("posts", "row-1") || true; },
+        };
+        case "read-unknown-db": return { write: ({ ctx }) => Boolean(seen(ctx).acl.db.get("sporades_sessions", "s")) };
+        case "read-storage": return {
+            write: ({ ctx }) => Boolean(seen(ctx).acl.storage.get("files", "file-1")) && seen(ctx).acl.storage.exists("files", "/images/a.png") === false,
+        };
+        case "read-unknown-storage": return { write: ({ ctx }) => Boolean(seen(ctx).acl.storage.get("secrets", "s")) };
+        case "read-db-many": return {
+            write: ({ ctx }) => {
+                for (let index = 0; index < 40; index += 1)
+                    seen(ctx).acl.db.exists("posts", "row-1");
+                return true;
+            },
+        };
+        default: throw new Error(`unknown ACL probe rule kind: ${kind}`);
+    }
+}
 function bundleTemplateError(message, hint) {
     return Object.assign(new Error(message), { hint });
 }
@@ -671,6 +851,13 @@ const MIGRATED_MODULE_PROBE_NAMES = [
     "chainMaybePromise",
     ...new Set(MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name]) => name)),
     ...new Set(MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name]) => name)),
+    "createPrivilegedAuditLogInput",
+    "createPrivilegedRunAuditDetails",
+    "normalizeTableAcl",
+    "runTableWriteWithAcl",
+    "applyReadAcl",
+    "grantPrivilegedDbAccess",
+    "revokePrivilegedDbAccess",
 ];
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
 // limbs need this and the inspection ones do not: `validateReadOnlyInspectionSql` reports a refusal
@@ -706,6 +893,32 @@ function authProbedAnswer(call) {
                 code: error?.code ?? null,
                 message: String(error?.message ?? error),
                 denial: error?.sporadesAuthDenialLogData ?? null,
+            },
+        };
+    }
+}
+// The same as `probedAnswer`, plus the record an ACL refusal travels with. `runTableWriteWithAcl`
+// reports a refusal by throwing, and `createAclDeniedError` hangs the whole denial record on the
+// error rather than returning it — so `probedAnswer` drops it, and with it every private builder
+// underneath: `createAclDenialLogData`, `aclRuleDeclaredOperation`, `aclRowLogSnapshot` and
+// `aclVisibleFieldNames`, which is also the only path from this file into
+// `runtime-log-policy.js`'s `isSensitiveLogKey`. A carried copy whose snapshot had stopped filtering
+// sensitive field names would put `password` into the record of every refused write in a deployed
+// Capsule and compare clean here.
+//
+// This is the same gap batch 3 found for `requireAuth`'s denial record and closed with
+// `authProbedAnswer`, in the same shape and for the same reason. The `previous`/`next` arm of
+// `aclRowLogSnapshot` is reachable through nothing else: a read refusal takes the other arm.
+function aclProbedAnswer(call) {
+    try {
+        return { returned: call() };
+    }
+    catch (error) {
+        return {
+            threw: {
+                code: error?.code ?? null,
+                message: String(error?.message ?? error),
+                denial: error?.sporadesAclDenialLogData ?? null,
             },
         };
     }
@@ -851,6 +1064,72 @@ function describeMigratedModuleAnswers(module) {
         // entirely if the ACL limbs were ever narrowed.
         ...MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE.map(([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])),
         ...MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE.map(([name, args]) => JSON.stringify([name, args, probedAnswer(() => module[name](...args))])),
+        // Batch 7: the ACL and privileged-audit domain. The audit event contract and the privileged run
+        // gate are ordinary `[input, answer]` pairs; the two enforcement limbs are not, and the reason
+        // is the one batch 5 recorded: an ACL rule is a function and a denial record is built out of the
+        // context it was handed, so neither the input nor the raw output can be serialized. What is
+        // compared is a *verdict* — the label, whether the write ran, and the denial record the fake log
+        // sink captured, which is where every one of the record's private builders shows up.
+        ...MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE.map(([label, details]) => JSON.stringify([label, probedAnswer(() => module.createPrivilegedAuditLogInput(details))])),
+        ...MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE.map(([label, context, options]) => JSON.stringify([label, probedAnswer(() => module.createPrivilegedRunAuditDetails(context, options))])),
+        ...MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE.map(([label, rules, operation, mode]) => {
+            // `recorded` is built outside the probed call so it survives the refusals, which throw. The
+            // denial record reaches the comparison twice over on those: once from the log sink, and once
+            // from the error, through `aclProbedAnswer`.
+            const recorded = [];
+            const answer = aclProbedAnswer(() => {
+                const database = migratedModuleAclProbeDatabase(mode, recorded);
+                const table = { name: "posts", acl: module.normalizeTableAcl("posts", migratedModuleAclProbeRules(rules)) };
+                const context = { auth: { userId: "u1", provider: "google", isAuthenticated: true, isGuest: false } };
+                if (mode === "privileged" || mode === "revoked")
+                    module.grantPrivilegedDbAccess(context);
+                if (mode === "revoked")
+                    module.revokePrivilegedDbAccess(context);
+                const previous = operation === "insert" ? null : { id: "row-1", title: "before", password: "secret" };
+                const next = operation === "delete" ? null : { id: "row-1", title: "after", password: "secret" };
+                return module.runTableWriteWithAcl(database, table, operation, previous, next, () => context, () => "written");
+            });
+            return JSON.stringify([label, operation, answer, recorded]);
+        }),
+        ...MIGRATED_MODULE_ACL_READ_SKEW_PROBE.map(([label, rules, mode]) => JSON.stringify([
+            label,
+            probedAnswer(() => {
+                const recorded = [];
+                const database = migratedModuleAclProbeDatabase(mode, recorded);
+                const table = { name: "posts", acl: module.normalizeTableAcl("posts", migratedModuleAclProbeRules(rules)) };
+                const context = { auth: { userId: "u1", provider: "google", isAuthenticated: true, isGuest: false } };
+                if (mode === "privileged")
+                    module.grantPrivilegedDbAccess(context);
+                const allowed = module.applyReadAcl(database, table, { id: "row-1", title: "t", authorization: "Bearer x" }, context);
+                return { allowed, recorded };
+            }),
+        ])),
+        // The ACL declaration gate itself, which is what turns a Capsule's `aclRules` into the object
+        // both limbs above resolve rules out of. Its refusals are the only place a Capsule author is
+        // told an ACL declaration is wrong, and its `resolve` is the insert/update/delete-falls-back-to-
+        // `write` rule ADR-0022 states. Compared as which declared rule a resolution picked, by
+        // identity, because the rules are functions.
+        ...[
+            ["undeclared", undefined, "read"],
+            ["empty", {}, "read"],
+            ["read-only", { read: () => "read" }, "read"],
+            ["write-covers-insert", { write: () => "write" }, "insert"],
+            ["write-covers-update", { write: () => "write" }, "update"],
+            ["write-covers-delete", { write: () => "write" }, "delete"],
+            ["write-does-not-cover-read", { write: () => "write" }, "read"],
+            ["insert-overrides-write", { insert: () => "insert", write: () => "write" }, "insert"],
+            ["unsupported-operation", { upsert: () => "upsert" }, "read"],
+            ["not-an-object", [], "read"],
+            ["not-a-function", { read: "nope" }, "read"],
+        ].map(([label, rules, operation]) => JSON.stringify([
+            label,
+            operation,
+            probedAnswer(() => {
+                const normalized = module.normalizeTableAcl("posts", rules);
+                const rule = normalized.resolve(operation);
+                return { allowByDefault: normalized.allowByDefault, resolved: typeof rule === "function" ? rule() : String(rule) };
+            }),
+        ])),
     ];
 }
 // Every region that has left the monolith, carried into the bundle as those modules' own compiled
@@ -1064,14 +1343,25 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
     // twice. `isReservedJobName` is its only reader and moved with it; it stays exported so the
     // carried block destructures it and so the constant probe keeps comparing it.
     //
-    // The four that remain are the ones whose domain has not migrated: the privileged-audit trio and
-    // `ACL_HELPER_STATE` are batch 6's.
-    const runtimeConstants = [
-        ["PRIVILEGED_AUDIT_SCHEMA", PRIVILEGED_AUDIT_SCHEMA],
-        ["PRIVILEGED_AUDIT_ACTOR_KINDS", PRIVILEGED_AUDIT_ACTOR_KINDS],
-        ["PRIVILEGED_AUDIT_OUTCOMES", PRIVILEGED_AUDIT_OUTCOMES],
-        ["ACL_HELPER_STATE", ACL_HELPER_STATE],
-    ]
+    // **The last four left in batch 7, and this list is now empty.** `PRIVILEGED_AUDIT_SCHEMA`,
+    // `PRIVILEGED_AUDIT_ACTOR_KINDS`, `PRIVILEGED_AUDIT_OUTCOMES` and `ACL_HELPER_STATE` are
+    // declarations inside `acl-runtime.js`, whose text is spliced in immediately below, so they had to
+    // leave here in the same commit for the same reason the twelve auth constants and
+    // `RESERVED_JOB_NAME_PREFIX` did. All four are still reachable by name at the bundle's top level
+    // through the destructuring the carried block ends with.
+    //
+    // `ACL_HELPER_STATE` is the one worth naming. It is a `Symbol`, which has no serialization, so
+    // this preamble reconstructed it from its description and a deployed Capsule held a *different*
+    // Symbol than the runtime module's — safe, for the reasons `serializeRuntimeConstant` above and
+    // `acl-runtime.ts` record, but reasoned about rather than checked. Carried as a declaration there
+    // is exactly one `Symbol("sporades.aclHelperState")` expression in each bundle, which is what the
+    // module-graph bundle already had.
+    //
+    // **The list is kept rather than deleted.** It is empty because every domain that owned a constant
+    // has migrated, not because the mechanism is gone: the emitted list still ships, and a constant
+    // added to the monolith before ticket 05 deletes all of this would need an entry here. The
+    // serialization, the emitted list and the free-binding guard are ticket 05's to remove.
+    const runtimeConstants = []
         .map(([name, value]) => `const ${name} = ${serializeRuntimeConstant(value)};`)
         .join("\n");
     const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;

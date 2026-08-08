@@ -1561,7 +1561,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-row-decoding.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-row-decoding.js", "acl-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -2422,28 +2422,50 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
   assert.equal(bundle.includes("require("), false, "the emitted-list bundle would resolve a specifier at runtime");
 });
 
-test("the module-graph bundle resolves the runtime's own symbol rather than a reconstruction of it", async () => {
-  // A `Symbol` has no serialization, so the emitted-list preamble rebuilds `ACL_HELPER_STATE` from
-  // its description and a bundled Capsule ends up holding a different Symbol than the runtime
-  // module's. That is safe there because the bundle is the only writer and the only reader of that
-  // key. Building from a module graph removes the second Symbol rather than reproducing it, so this
-  // records the one place where the new bundle is deliberately not a copy of the old one.
-  const emitted = createServerBundleSource({
-    config: capsuleConfig(),
-    serverEnv: {},
-    serverSource: "",
-    serverModuleSource: "export default {};",
-  });
-  assert.match(emitted, /const ACL_HELPER_STATE = Symbol\("sporades\.aclHelperState"\);/);
-
+test("both bundles now mint ACL_HELPER_STATE exactly once, from the runtime's own declaration", async () => {
+  // A `Symbol` has no serialization, so while `ACL_HELPER_STATE` was a monolith declaration the
+  // emitted-list bundle's constant preamble rebuilt it from that declaration's description and a
+  // deployed Capsule held a *different* Symbol than the runtime module's. That was safe — this key
+  // has exactly one writer (`createAclHelpers`) and one reader (`aclRuleTouchedAsyncHelperRead`),
+  // both of which travelled into the bundle and resolved the preamble's single declaration, and the
+  // frozen helper objects never cross between a bundled Capsule and this process — but it was
+  // reasoned about rather than checked, and this test recorded it as the one place where the
+  // module-graph bundle was deliberately not a copy of the emitted-list one.
+  //
+  // **Batch 7 removed the difference rather than preserving it.** `ACL_HELPER_STATE` is a
+  // declaration inside `acl-runtime.js` now, carried into the emitted-list bundle as that module's
+  // own text, so the preamble does not write it and there is one `Symbol(…)` expression in each
+  // bundle instead of a declaration and a reconstruction. That is what this asserts, in both
+  // directions: exactly one mint, and no preamble copy of it.
+  //
+  // Counting rather than matching, because "at least one" is what a reconstruction alongside the
+  // declaration would also satisfy — which is precisely the duplicate-declaration hazard the four
+  // constants had to leave the preamble in the same commit to avoid.
+  const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
+  const emitted = createServerBundleSource(inputs);
   const graph = await createServerBundleModuleSource({
-    config: capsuleConfig(),
-    serverEnv: {},
-    serverSource: "",
-    serverModuleSource: "export default {};",
+    ...inputs,
     epilogue: `import { ACL_HELPER_STATE as __probeAclHelperState } from "../server-runtime-source.js";\nglobalThis.__probeAclHelperState = __probeAclHelperState;`,
   });
-  assert.equal(graph.includes('Symbol("sporades.aclHelperState")'), true);
+
+  for (const [label, bundle] of [["emitted", emitted], ["graph", graph]]) {
+    assert.equal(
+      bundle.split('Symbol("sporades.aclHelperState")').length - 1,
+      1,
+      `the ${label} bundle does not mint ACL_HELPER_STATE exactly once`,
+    );
+    assert.equal(
+      /const ACL_HELPER_STATE = Symbol\("sporades\.aclHelperState"\);/.test(bundle),
+      false,
+      `the ${label} bundle still reconstructs ACL_HELPER_STATE in a preamble beside the carried declaration`,
+    );
+  }
+
+  // And the name still resolves at each bundle's top level, which is what the writer and the reader
+  // inside the carried module reach it by. The emitted-list bundle gets it from the destructuring
+  // the migrated block ends with; the module-graph bundle from an import esbuild resolved.
+  assert.match(emitted, /const \{[^}]*\bACL_HELPER_STATE\b/);
+  assert.match(graph, /\bACL_HELPER_STATE\b/);
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {

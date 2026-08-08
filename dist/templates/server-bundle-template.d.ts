@@ -12,6 +12,10 @@ export declare const MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE: [string, Record<
 export declare const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][];
 export declare const MIGRATED_MODULE_LOG_POLICY_SKEW_PROBE: [string, unknown[]][];
 export declare const MIGRATED_MODULE_ROW_DECODING_SKEW_PROBE: [string, unknown[]][];
+export declare const MIGRATED_MODULE_PRIVILEGED_AUDIT_SKEW_PROBE: [string, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_PRIVILEGED_RUN_SKEW_PROBE: [string, unknown, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_ACL_WRITE_SKEW_PROBE: [string, string, string, string][];
+export declare const MIGRATED_MODULE_ACL_READ_SKEW_PROBE: [string, string, string][];
 export declare function migratedRuntimeModulesBlockFrom(distDir: string): string;
 export declare function createServerBundleSource({ config, serverEnv, sealedServerEnv, serverSource, serverModuleSource }: {
     config: any;

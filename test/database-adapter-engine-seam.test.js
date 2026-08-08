@@ -239,6 +239,19 @@ const MIGRATED_RUNTIME_MODULES = [
   // evidence that it did not leave the census by moving.
   { file: "runtime-log-policy.js", atLeast: 1, sentinel: "isSensitiveLogKey" },
   { file: "stored-row-decoding.js", atLeast: 1, sentinel: "deserializeRow" },
+  // Batch 7: ACL and privileged audit, 55 functions of which 31 are private. The sentinel is private
+  // for the seventh time in eight entries, and this one is the most pointed of them.
+  // `markAsyncAclHelperRead` is the fuse every ACL helper read passes through — it is what makes a
+  // rule that reached an asynchronous adapter read fail closed instead of answering on a value it
+  // never awaited — and it is one of the four production `ReferenceError`s that
+  // `test/server-bundle-free-bindings.test.js` exists because of. It was an emitted-list entry until
+  // this batch, so it was visible to these guards by being registered; finding it here is the
+  // evidence that 31 newly-private ACL and audit helpers, the whole denial record among them, did
+  // not leave the census by becoming private.
+  //
+  // The floor is 45 against 55 — room for an honest edit to fold a helper away, and not enough for a
+  // parse that returned a fraction of the module.
+  { file: "acl-runtime.js", atLeast: 45, sentinel: "markAsyncAclHelperRead" },
 ];
 
 function migratedModuleDeclaredFunctions() {

@@ -13,6 +13,7 @@ export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
 export * from "./runtime-log-policy.js";
 export * from "./stored-row-decoding.js";
+export * from "./acl-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -86,29 +87,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
         columns(): Promise<any>;
     };
 }>;
-export declare const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-export declare const PRIVILEGED_AUDIT_ACTOR_KINDS: Set<string>;
-export declare const PRIVILEGED_AUDIT_OUTCOMES: Set<string>;
-export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
-    category: string;
-    event: string;
-    level: any;
-    message: string;
-    data: {
-        schema: string;
-        actorKind: string;
-        operation: string;
-        surface: string;
-        targetResourceKind: string;
-        outcome: string;
-        safeErrorCode: string | null;
-        source: string;
-        metadata: any;
-    };
-    request: any;
-    release: any;
-    correlation: any;
-};
 export declare function createLogEnvelope(input: {
     config: LooseRecord;
     timestamp: any;
@@ -130,7 +108,9 @@ export declare function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit?
 export declare function schemaFromCapsuleDefinition(definition: any): {
     tables: {
         name: string;
-        acl: LooseRecord;
+        acl: {
+            [x: string]: any;
+        };
         fields: {
             name: string;
             kind: any;
@@ -156,7 +136,6 @@ export declare function routeRuntimeHealth(database: any, request: {
     };
 }, response: any): Promise<boolean>;
 export declare function checkRuntimeSqlite(database: LooseRecord): Promise<any>;
-export declare const ACL_HELPER_STATE: unique symbol;
 export declare function listDatabaseTables(database: {
     adapter: any;
     sqlite: any;
