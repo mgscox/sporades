@@ -74,6 +74,43 @@ Use these rather than rediscovering them. All are recorded in ADR-0041.
   boundary. Ticket 03 found the log-index guard lexing SQL with the inspection gate's
   tokenizer, which was invisible while both lived in one file.
 
+## No new behavioural tests — and why that is not the same as no verification
+
+This is a refactor. Behaviour must not change, so the existing suite is the oracle and
+**no batch should write new behavioural tests.** Fresh tests written against a moved
+domain would test its new shape rather than its preserved behaviour, which is worse than
+writing none.
+
+Two existing mechanisms still have to be exercised and maintained, because the suite
+alone cannot see the defect this work can cause. Neither is a new test.
+
+**The suite does not test the artifact that ships.** Tests import from `dist/`, where the
+real declarations live. A name that fails to reach the emitted bundle is a
+`ReferenceError` in a deployed Capsule while every test stays green — four production
+`ReferenceError`s were caught this way, and issue 16 existed because constant values were
+restated in the bundle and no test could see the copy drift. So each batch runs
+`test/server-bundle-free-bindings.test.js` and ticket 02's two-bundle equivalence harness,
+and demonstrates them failing under sabotage rather than reporting that they passed.
+
+**Guards that read `SERVER_RUNTIME_SOURCE_FUNCTIONS` decay silently as functions leave
+it.** Their subject set shrinks with every batch; they keep passing while covering less.
+Extending that subject set is maintenance of an existing guard, not a new test — but
+skipping it is the single most likely way this sequence ships a regression, because
+nothing goes red. That is why batch 1 generalises `walkerGuardSubjects()` and every later
+batch adds its module to the list.
+
+## Running the suite
+
+**Run the full suite at the end of every batch, not once at the end of the sequence.** It
+takes about seven minutes, so the whole sequence costs under an hour of test time. Running
+it once at the end means a red at batch 8 has to be bisected across eight refactors of a
+13,738-line file.
+
+The database-focused files are 12 of 53. They are the right *focused* check for batch 8,
+and the wrong check for batches 2 through 7 — mail, auth, jobs and schedules, storage, ACL
+and HTTP are barely touched by them. Use the focused files for the fast inner loop while
+working; use the full suite as the gate before the batch is done.
+
 ## Per-batch acceptance criteria
 
 Every batch must satisfy all of these on its own:
@@ -85,7 +122,8 @@ Every batch must satisfy all of these on its own:
 - [ ] Every guard that reads the emitted list has had its subject set extended to cover the new module, demonstrated by planting a violation in the moved module and watching the guard fail.
 - [ ] Both bundles build and answer identically across the domain's surface, demonstrated by sabotage rather than asserted from a green run.
 - [ ] The emitted-list bundle is still the default and still ships; `SPORADES_SERVER_BUNDLE_MODULE_GRAPH` semantics are unchanged.
-- [ ] The full suite is green, with no regression against the batch's own base.
+- [ ] No new behavioural test was written; the existing suite is the oracle.
+- [ ] The full suite is green at the end of the batch, with no regression against the batch's own base.
 
 ## Sequencing
 
