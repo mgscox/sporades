@@ -7,6 +7,7 @@ export * from "./mail-config.js";
 export * from "./mail-runtime.js";
 export * from "./auth-runtime.js";
 export * from "./runtime-errors.js";
+export * from "./jobs-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -25,7 +26,6 @@ type RuntimeSecurityPolicy = {
         directives: Record<string, string[] | string>;
     };
 };
-export declare const RESERVED_JOB_NAME_PREFIX = "_sporades";
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any): void;
@@ -37,15 +37,6 @@ export declare function prepareHttpSecurity(database: {
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
-/** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
-export declare function createControllableRuntimeClock(initialInstant: string | number | Date): {
-    now: () => Date;
-    setInstant(instant: string | number | Date): void;
-    advanceBy(delayMs: number): void;
-    setTimer(callback: () => any, delayMs: number): number;
-    clearTimer(id: number): void;
-    runDueTimers(): Promise<void>;
-};
 export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
 export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: RuntimeConfig;
@@ -377,8 +368,4 @@ export declare function updateCurrentUserPreferences(database: LooseRecord, auth
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
-/** Read the bounded operator view of every Job in one adapter snapshot. */
-export declare function inspectRuntimeJobs(adapter: LooseRecord): Promise<any>;
-/** Read the bounded operator view of every Schedule in one adapter snapshot. */
-export declare function inspectRuntimeSchedules(adapter: LooseRecord): Promise<any>;
 //# sourceMappingURL=server-runtime-source.d.ts.map

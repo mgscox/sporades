@@ -166,11 +166,29 @@ const MIGRATED_RUNTIME_MODULES = [
   // than by being read. Finding it here is the evidence that fifty-one newly-private auth helpers,
   // including the credential hashing, did not leave the census by becoming private.
   //
-  // `runtime-errors` holds one function, so its floor is 0, for the same reason `mail-config`'s is:
-  // a floor only asserts that the parse returned something. It is a subject because it is carried,
-  // and `commandError` stopped being an entry in the emitted list in this same batch.
+  // `runtime-errors` held one function when batch 3 wrote this, so its floor was 0, for the same
+  // reason `mail-config`'s is: a floor only asserts that the parse returned something. It is a
+  // subject because it is carried, and `commandError` stopped being an entry in the emitted list in
+  // that same batch.
+  //
+  // Batch 4 added `assertJsonCompatible` and `invalidJsonFieldValueError` to it, so the floor is 2
+  // now. The sentinel moved to the private one deliberately: `invalidJsonFieldValueError` is the
+  // first name in that module that is not exported, and it was an emitted-list entry before this
+  // batch — so finding it here is the evidence that a helper which stopped being registered did not
+  // thereby stop being a census subject.
   { file: "auth-runtime.js", atLeast: 90, sentinel: "passwordResetCodeParts" },
-  { file: "runtime-errors.js", atLeast: 0, sentinel: "commandError" },
+  { file: "runtime-errors.js", atLeast: 2, sentinel: "invalidJsonFieldValueError" },
+  // Batch 4: jobs and schedules, 34 declarations of which 5 are private. The sentinel is private for
+  // the fourth time running. `scheduleWallClockParts` is the one every occurrence calculation passes
+  // through — `nextScheduleOccurrence` converts each candidate instant to wall-clock fields with it
+  // before matching the cron expression — so no honest edit to this module removes it, and it is
+  // exported from nothing and registered in nothing. Under the emitted list it was an entry, so it
+  // was visible to these guards by being registered; finding it here is the evidence that the five
+  // newly-private schedule helpers did not leave the census by becoming private.
+  //
+  // The floor is 25 against 34 declarations, leaving room for an honest edit to fold a helper away
+  // without failing the guard, while still catching a parse that returned a fraction of the module.
+  { file: "jobs-runtime.js", atLeast: 25, sentinel: "scheduleWallClockParts" },
 ];
 
 function migratedModuleDeclaredFunctions() {
