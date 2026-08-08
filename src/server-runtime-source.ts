@@ -135,9 +135,10 @@ export * from "./runtime-errors.js";
 export * from "./jobs-runtime.js";
 
 // The user-preferences domain left this file as batch 5 — the preference table's schema, the read
-// and update path, and the anonymous-to-account merge. Six declarations, five of them imported
-// above or by `auth-runtime.js`; see `user-preferences-runtime.ts` for why the domain is exactly
-// six and not the fifteen a name sweep suggests.
+// and update path, and the anonymous-to-account merge. Six declarations: three imported above, one
+// by `auth-runtime.js`, one exported for the two-bundle skew probe and one private. See
+// `user-preferences-runtime.ts` for why the domain is exactly six and not the fifteen identifiers a
+// name sweep for `preference` turns up.
 //
 // **This is the batch that let auth finish.** `migrateAnonymousPreferences` was the only thing
 // keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them

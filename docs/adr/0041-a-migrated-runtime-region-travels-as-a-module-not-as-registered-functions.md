@@ -284,6 +284,16 @@ the bundle's top level, which is a duplicate declaration and a load-time
 `SyntaxError`. No guard tests for it directly; it is caught by parsing the built
 bundle for duplicate top-level declarations, which is the check ticket 04 records as
 missing and which batch 4 ran by hand at 534 top-level names and zero duplicates.
+Batch 5 ran it again and reports 505 names and zero duplicates, against 510 for its
+own base measured the same way — the two absolute figures are not comparable across
+batches because the count depends on the Capsule source the bundle is built for, so
+**a batch should measure its own base rather than compare against a number in this
+paragraph.** The delta is the useful half: batch 5's five missing names are exactly
+the five declarations it made private (`createPreferencesError`,
+`rotateSessionOnAdapter`, `moveSessionToUserOnAdapter`, `rotateSession`,
+`moveSessionToUser`), the last two of which esbuild drops entirely because nothing
+in the repository references them. Diffing the two name *sets* is what makes that
+reviewable; a count alone would have said "five fewer" and not which five.
 
 **The walker census had to stop reading a list.** The census in
 `test/database-adapter-engine-seam.test.js` flagged emitted runtime functions
@@ -348,11 +358,11 @@ this gate's tokenizer; `transformSync` over its compiled text emits
 **The case that section named as untested — a migrated module importing something
 outside the migrated set — was executed in batch 2 and is where the "any external"
 rule was narrowed.** See the self-containment section above. The mechanism is now
-proven for seven modules: two that import nothing (`inspection-sql`, `mail-config`),
-three that import another migrated module (`log-index-guard`, `auth-runtime`,
-`jobs-runtime`), one that reaches Node builtins through dynamic `import(…)`
-(`mail-runtime`), and one that exists only so others can import it
-(`runtime-errors`). `jobs-runtime` is the first to import *two* other migrated
+proven for eight modules: two that import nothing (`inspection-sql`, `mail-config`),
+four that import another migrated module (`log-index-guard`, `auth-runtime`,
+`jobs-runtime`, `user-preferences-runtime`), one that reaches Node builtins through
+dynamic `import(…)` (`mail-runtime`), and one that exists only so others can import
+it (`runtime-errors`). `jobs-runtime` is the first to import *two* other migrated
 modules — `runtime-errors` for `commandError` and `assertJsonCompatible`, and
 `auth-runtime` for `PASSWORD_RESET_MAIL_JOB` and `privilegedAuthUserId` — which the
 carrier resolves without comment, because bundling the whole migrated set together
@@ -379,6 +389,39 @@ through it `runCurrentUserJobWorker`, which builds a context. A blocker naming a
 later batch is therefore not a promise that the later batch clears it — the chain
 has to be closed at the end that holds it, and here that end is the composition
 core rather than any domain on the list.
+
+**Batch 5 is the other half of that finding, and it is the reassuring half.** User
+preferences is six declarations and all six moved, and the seven auth functions
+they were holding moved with them. Batch 4's rule stands — a blocker naming a
+later batch is not a *promise* — but the converse is not true either: this blocker
+did name a batch, that batch did clear it, and it cleared more than the ticket
+predicted. The ticket said six auth stragglers and the reference graph says seven
+(`rotateSessionOnAdapter`, `moveSessionToUserOnAdapter`, `signInWithEmail`,
+`signUpWithEmail`, `linkProviderIdentity`, `rotateSession`, `moveSessionToUser`),
+which is also the number batch 3's own arithmetic implies. **The way to tell the
+two cases apart is cheap and should be run before any batch is scoped**: close the
+blocked functions' reference graph and see whether what holds them is a domain on
+the list or the composition core. `enqueueRuntimeJob` reached `createMutationContext`
+and could not move; `rotateSessionOnAdapter` reached nothing but
+`migrateAnonymousPreferences` and `auth-runtime` itself, and moved.
+
+The auth domain is finished apart from the seven functions in the HTTP layer and
+`sendEmailPasswordResetLink`, and that last one is worth restating for batches 6–9:
+**it is not waiting on a batch at all.** It reaches `enqueueRuntimeJob`, which needs
+the composition core, so it is ticket 05's or a composition change's — not batch 8's.
+
+**A differential limb must not serialize anything its own sabotage can make
+unserializable.** Batch 5's probe first compared `[patch, probedAnswer(…)]` for the
+preferences validator. Two of its patches are refused precisely *because* JSON
+cannot carry them — a BigInt and a cycle — so with the JSON check sabotaged the
+validator returned them, `JSON.stringify` threw, and the one skew the limb existed
+to catch surfaced as `Do not know how to serialize a BigInt` out of the middle of a
+bundle build rather than as a reported disagreement. The fix is to compare a
+*verdict*: the label, and either the thrown code and message or a token saying
+whether the returned value was the same reference. Identity rather than a bare
+"admitted", so a copy that rebuilt or filtered the object is still a disagreement.
+This was found by planting the missing check, which is the only reason it was found
+at all — the limb was green, and would have stayed green, on every honest build.
 
 **Batch 3 found the third way to reach a builtin, and it needed its own decision.**
 The two routes above are asynchronous or global-only, and the auth domain's
