@@ -415,7 +415,7 @@ const MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE = {
 // Split across the shapes that actually break AWS request signing rather than across arbitrary
 // inputs: no key, a nested key, a key needing percent-encoding, and a payload hash that is not the
 // empty-body one. Four calls, sixteen HMACs, no I/O.
-const MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE: [string, Record<string, unknown>][] = [
+export const MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE: [string, Record<string, unknown>][] = [
   ["bucket-head", {
     method: "HEAD", pathname: "/sporades", query: "",
     headers: { "host": "minio.example.com:9000", "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "x-amz-date": "20310101T000000Z" },
@@ -451,7 +451,7 @@ const MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE: [string, Record<string, unkn
 // `encodeURIComponent` leaves alone, and a carried copy that had lost that would sign a canonical
 // path the endpoint does not agree with — a signature mismatch on exactly the file names that
 // contain a quote or a parenthesis and on no others.
-const MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE: [string, unknown[]][] = [
+export const MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE: [string, unknown[]][] = [
   ["s3CanonicalPath", ["", "sporades", null]],
   ["s3CanonicalPath", ["/", "sporades", "capsules/probe/files/f/1"]],
   ["s3CanonicalPath", ["/prefix/base", "sporades", "a b!'()*~"]],
@@ -501,7 +501,7 @@ const MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE: [string, unknown[]][] = [
 // refusal is a misconfiguration a deployed Capsule would otherwise carry to its first upload, and
 // `s3StorageNamespace` is a private regex gate whose loss would let one Capsule's namespace escape
 // into another's prefix inside a shared bucket. Constructing costs an object literal and no I/O.
-const MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE: [string, Record<string, unknown>][] = [
+export const MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE: [string, Record<string, unknown>][] = [
   ["ok", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule" }],
   ["ok-hyphenated", { endpoint: "https://s3.example.com/base", bucket: "b", region: "eu-west-2", accessKey: "a", secretKey: "b", namespace: "a-capsule-9" }],
   ["no-endpoint", { endpoint: "", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule" }],
@@ -561,7 +561,7 @@ function migratedModuleStorageTableProbe() {
 // The promise arms are compared by what they *are* rather than by awaiting them, because
 // `describeMigratedModuleAnswers` is synchronous: a returned thenable is reported as `promise` and a
 // plain value as itself, so a copy that resolved eagerly is a disagreement.
-const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][] = [
+export const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][] = [
   ["null", null],
   ["undefined", undefined],
   ["number", 7],

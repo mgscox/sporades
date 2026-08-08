@@ -204,6 +204,29 @@ const MIGRATED_RUNTIME_MODULES = [
   // module" and "an honest edit folded a helper away", and 4 is the value that still fails if either
   // of the two functions holding the SQL and the validation stopped being collected.
   { file: "user-preferences-runtime.js", atLeast: 4, sentinel: "createPreferencesError" },
+  // Batch 6: file and object storage, 51 declarations of which 27 are private. The sentinel is
+  // private for the sixth time running. `resolveLiveFileReference` is the one every ownership-scoped
+  // File lookup passes through — `createPendingFileUpload`, `getPrivateFileUrl`, `createPublicFileUrl`,
+  // `deletePrivateFile` and `fileRowForOwner` all resolve an id or an absolute File path through it —
+  // so no honest edit to that module removes it, and it is exported from nothing and registered in
+  // nothing. Under the emitted list it was an entry, so it was visible to these guards by being
+  // registered; finding it here is the evidence that 27 newly-private storage helpers, most of the
+  // S3 request path among them, did not leave the census by becoming private.
+  //
+  // This module matters to these guards more than its size suggests: `filePathBackfillSql` and
+  // `activeFilePathDedupeSql` answer statement text carrying identifier markers, so they are exactly
+  // the shape the emitted-SQL quoting guards below exist to read, and both became private in this
+  // batch. The floor is 40 against 51 — room for an honest edit to fold a helper away, and not
+  // enough for a parse that returned a fraction of the module.
+  //
+  // `maybe-promise` holds three functions and its floor is 2, for the same reason `mail-config`'s and
+  // `runtime-errors`'s were: a floor only asserts that the parse returned something. Its sentinel is
+  // `isPromiseLike`, and it is the one entry here whose sentinel is *exported* — this module has no
+  // private function, because all three of its names are resolved from the monolith. It is still the
+  // right sentinel for the reason the private ones are: both other functions in that file are
+  // defined in terms of it, so no honest edit removes it.
+  { file: "maybe-promise.js", atLeast: 2, sentinel: "isPromiseLike" },
+  { file: "file-storage-runtime.js", atLeast: 40, sentinel: "resolveLiveFileReference" },
 ];
 
 function migratedModuleDeclaredFunctions() {
