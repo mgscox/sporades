@@ -1,7 +1,7 @@
 // The Capsule runtime's file and object storage domain: the two storage engines and the S3
 // signature that reaches one of them, the upload lifecycle behind `files.upload()`, the private and
 // public File URLs, and the File metadata table the whole of it is bookkept in. Batch 6 of the
-// migration ADR-0041 records. Apart from the three `nodeCryptoModule.` prefixes explained below,
+// migration ADR-0041 records. Apart from the eight `nodeCryptoModule.` prefixes explained below,
 // every body here is byte-identical to the one that stood in `server-runtime-source.ts`.
 //
 // **The domain is 51 declarations and one type alias, and that was established by closing the
@@ -92,9 +92,9 @@
 // change their signatures and every caller's, and neither `createHmac` nor a synchronous
 // `createHash` has a Web Crypto equivalent. `randomUUID` does — mail reaches the global for exactly
 // that reason — but this module already binds the namespace for the other two, and one mechanism is
-// better than two in one file, so the four `randomUUID` call sites take the accessor as
-// `auth-runtime.ts`'s do. Those six lines are the only ones here that are not byte-identical to the
-// region they moved out of.
+// better than two in one file, so the six `randomUUID` call sites take the accessor as
+// `auth-runtime.ts`'s four do. Those eight lines are the only ones here that are not byte-identical
+// to the region they moved out of.
 //
 // The accessor is a namespace binding and not a destructuring, for the `bin/` renaming reason
 // ADR-0041 and ADR-0042 both record: `bin/sporades.js` is the whole of `src/` in one esbuild scope,

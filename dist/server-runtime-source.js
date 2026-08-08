@@ -1,3 +1,7 @@
+// `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
+// consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
+// now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
+// tsc elides an unused import, so the generated `dist/` has carried only what is actually called.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";

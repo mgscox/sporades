@@ -1,7 +1,11 @@
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
-import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
+// `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
+// consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
+// now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
+// tsc elides an unused import, so the generated `dist/` has carried only what is actually called.
+import { createHash, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
