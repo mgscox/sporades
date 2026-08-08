@@ -330,7 +330,7 @@ const MIGRATED_MODULE_JOB_SKEW_PROBE = [
 // **Each case is `[label, patch]` and only the label is serialized.** Two of the patches cannot
 // survive `JSON.stringify` at all — that is precisely why they are refused — so a corpus that put
 // the patch itself into the comparison would throw out of the middle of every bundle build.
-const MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE = [
+export const MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE = [
     // Admitted. A patch that reaches the end of both gates and comes back unchanged.
     ["plain", { theme: "dark" }],
     ["nested", { density: "compact", locale: "en-GB", nested: { a: [1, 2, null], b: "" } }],
@@ -504,9 +504,25 @@ function describeMigratedModuleAnswers(module) {
                 .map((definition) => ({ ...definition, fields: definition.fields.map((set) => [...set]) }))),
         ])),
         ...MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name, args]) => JSON.stringify([name, probedAnswer(() => module[name](...args))])),
-        // The user-preferences domain. Only the label is serialized alongside the answer; see the
-        // probe's own comment for why the patches themselves cannot be.
-        ...MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(([label, patch]) => JSON.stringify([label, probedAnswer(() => module.normalizePreferencesPatch(patch))])),
+        // The user-preferences domain. **Neither the patch nor the returned value is serialized** —
+        // only the label and a verdict — and both halves of that are load-bearing rather than tidy.
+        //
+        // Two of the probe's patches cannot survive `JSON.stringify` at all, which is exactly why they
+        // are refused. Serializing the *input* would throw on every build; serializing the *output*
+        // would throw on precisely the builds where the JSON check had gone missing, turning the one
+        // sabotage this limb exists to catch into a bare `TypeError` out of the middle of a bundle
+        // build instead of a reported disagreement. That is not hypothetical: it is what this limb did
+        // when it was first written, found by planting the missing check.
+        //
+        // The verdict keeps its teeth by comparing *identity* rather than a bare "admitted".
+        // `normalizePreferencesPatch` returns its argument unchanged by contract, so a carried copy
+        // that returned a rebuilt or filtered object would still be admitting the patch while quietly
+        // changing what gets written to a user's preferences — and `admitted:rewrote` is a
+        // disagreement where `admitted` would not have been.
+        ...MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(([label, patch]) => JSON.stringify([
+            label,
+            probedAnswer(() => (module.normalizePreferencesPatch(patch) === patch ? "admitted:same-reference" : "admitted:rewrote")),
+        ])),
         JSON.stringify([
             "createUserPreferencesTables",
             probedAnswer(() => module.createUserPreferencesTables(MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE)),

@@ -37,6 +37,7 @@ import * as inspectionSqlModule from "../dist/inspection-sql.js";
 import * as logIndexGuardModule from "../dist/log-index-guard.js";
 import * as mailConfigModule from "../dist/mail-config.js";
 import * as mailRuntimeModule from "../dist/mail-runtime.js";
+import * as userPreferencesRuntimeModule from "../dist/user-preferences-runtime.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
@@ -45,6 +46,7 @@ import {
   MIGRATED_MODULE_AUTH_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE,
+  MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE,
   MIGRATED_MODULE_ROW_SKEW_PROBE,
   MIGRATED_MODULE_SKEW_PROBE,
   createServerBundleSource,
@@ -1700,6 +1702,32 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
       "SPORADES_OAUTH_TEST_ENDPOINTS is set in this environment, so the comment above no longer describes what this probe reaches",
     );
 
+    // And batch 5's domain, on the same terms as the four above. The patch probe has to admit and
+    // refuse, or it cannot tell a `normalizePreferencesPatch` that returns its input from one that
+    // rejects everything — and its refusals have to arrive by *both* routes, or a copy that had lost
+    // the JSON check compares clean because the shape gate refused the rest.
+    const patchAnswer = ([, patch]) => {
+      try {
+        userPreferencesRuntimeModule.normalizePreferencesPatch(patch);
+        return "admitted";
+      } catch (error) {
+        return `threw:${error?.code ?? "no-code"}`;
+      }
+    };
+    const patchAnswers = MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(patchAnswer);
+    assert.ok(
+      patchAnswers.filter((answer) => answer === "admitted").length >= 3,
+      "the preferences patch probe never admits a patch, so a copy that refuses everything compares clean",
+    );
+    assert.ok(
+      patchAnswers.filter((answer) => answer === "threw:INVALID_PREFERENCES_PATCH").length >= 4,
+      "the preferences patch probe never reaches the shape gate's refusal, so a copy that admits everything compares clean",
+    );
+    assert.ok(
+      patchAnswers.some((answer) => answer === "threw:no-code"),
+      "the preferences patch probe never reaches assertJsonCompatible, so a copy that lost the JSON check compares clean",
+    );
+
     const skews = [
       // The one that was silent before this check existed: same exports, same names, a validator
       // replaced by one that admits anything.
@@ -1964,6 +1992,65 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         "jobs-runtime.js",
         `import { createHash } from "node:crypto";\n${originals["jobs-runtime.js"].replace('return nodeCryptoModule.createHash("sha256")', 'return createHash("sha256")')}`,
         /would resolve node:crypto at runtime/,
+      ],
+      // Batch 5's domain, user preferences. The shape gate's two extra clauses are the interesting
+      // half: `null` and `[]` both pass `typeof === "object"`, so a copy reduced to the `typeof`
+      // check admits an array as a preferences patch and merges its indices into a user's settings.
+      // Every export survives and every honest patch still works, which is why this needs a probe
+      // that refuses rather than an export-surface check.
+      [
+        "a preferences shape gate reduced to its typeof check",
+        "user-preferences-runtime.js",
+        originals["user-preferences-runtime.js"].replace(
+          'if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {',
+          'if (typeof patch !== "object") {',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The JSON check, which is this module's only call out of itself. Dropping it is the shape that
+      // reaches production as a row the runtime cannot read back rather than as an error, and the
+      // shape gate goes on refusing everything it refused before — so only the two probe cases that
+      // are plain objects JSON cannot carry can see it.
+      [
+        "a preferences validator that stopped checking JSON compatibility",
+        "user-preferences-runtime.js",
+        originals["user-preferences-runtime.js"].replace(
+          "    assertJsonCompatible(patch);\n    return patch;",
+          "    return patch;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The private error factory, reached through nothing but the two functions above — the same
+      // case as the auth, mail and jobs private helpers, at this domain's scale. A dropped `code`
+      // turns every refused patch into `updateCurrentUserPreferences`'s generic failure branch
+      // instead of the specific one, which is a wrong error to a Capsule author rather than a wrong
+      // verdict, and `probedAnswer` compares the code for exactly this reason.
+      [
+        "a private preferences error factory that stopped carrying its code",
+        "user-preferences-runtime.js",
+        originals["user-preferences-runtime.js"].replace(
+          "    return { code, message, hint };",
+          "    return { message, hint };",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The table this domain creates, which no verdict-shaped probe could reach. A deployed Capsule
+      // that created `[value]` nullable would accept a preferences row the read path then cannot
+      // parse — silent at create time and a `JSON.parse` failure much later.
+      [
+        "a preferences table created with a different schema",
+        "user-preferences-runtime.js",
+        originals["user-preferences-runtime.js"].replace("[value] TEXT NOT NULL, ", "[value] TEXT, "),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on the module whose probe needs a name that nothing else resolves.
+      // `normalizePreferencesPatch` is exported for the probe rather than for a consumer, so this is
+      // the case that proves the export-surface check still covers a name with no other caller.
+      [
+        "a preferences module that stopped exporting what the probe asks it",
+        "user-preferences-runtime.js",
+        originals["user-preferences-runtime.js"].replace("export function normalizePreferencesPatch", "function normalizePreferencesPatch"),
+        /did not build|export a different set of names|do not supply/,
       ],
     ];
 
