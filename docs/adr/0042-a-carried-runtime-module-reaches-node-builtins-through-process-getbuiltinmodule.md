@@ -120,10 +120,30 @@ no Web Crypto equivalent that does not change its signature and every caller's. 
 `jobs-runtime.ts` reaches the builtin the same way, at one call site, and the rule is
 used twice rather than once.
 
+**Batch 6 is the third, and it is the first module to need the accessor and have a
+global available for part of what it reaches for.** `s3Hmac` and `s3Sha256Hex`
+compute the AWS SigV4 signature `s3Request` builds before it opens a socket:
+synchronous, inside a call chain that has no `await` to spare, and with no Web
+Crypto equivalent for either `createHmac` or a synchronous `createHash`. That is
+rule 2, as auth and jobs are. But the same module mints six UUIDs — a file id, an
+upload id, a version, a bucket id and a health-probe file name — and `randomUUID`
+is exactly the case rule 1 exists for, which is how the mail domain gets it.
+
+**The four-step order above ranks the routes a module should reach for; it does not
+require a module to use two.** `file-storage-runtime.ts` binds the namespace
+regardless, so its six `randomUUID` call sites take the accessor, and the file has
+one mechanism rather than two. That is what `auth-runtime.ts` already does at four
+call sites, and this ADR now says so rather than leaving the two readings open.
+
+The check that the ranking still matters: a module that needs *only* `randomUUID`
+must take the global, because binding the namespace for one call would be reaching
+for a heavier route than the work requires. Nothing in the runtime has that shape
+except mail, which does take the global.
+
 Two things that were properties of a single use are now properties of a pattern, and
-both were checked rather than assumed. The accessor is a *namespace* binding in both
-modules for the `bin/` reason above — and because both modules spell it
-`nodeCryptoModule`, esbuild renames one to `nodeCryptoModule2` inside `bin/sporades.js`
+both were checked rather than assumed. The accessor is a *namespace* binding in all three
+modules for the `bin/` reason above — and because all three spell it
+`nodeCryptoModule`, esbuild renames the second and third inside `bin/sporades.js`
 and inside the carried IIFE. That is harmless where the monolith case is not, because a
 private module-scope name never leaves its module and so its declaration and its uses
 are renamed together; the generated bundle was confirmed to declare both names with

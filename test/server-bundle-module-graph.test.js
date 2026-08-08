@@ -38,6 +38,8 @@ import * as logIndexGuardModule from "../dist/log-index-guard.js";
 import * as mailConfigModule from "../dist/mail-config.js";
 import * as mailRuntimeModule from "../dist/mail-runtime.js";
 import * as userPreferencesRuntimeModule from "../dist/user-preferences-runtime.js";
+import * as fileStorageRuntimeModule from "../dist/file-storage-runtime.js";
+import * as maybePromiseModule from "../dist/maybe-promise.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
@@ -46,9 +48,13 @@ import {
   MIGRATED_MODULE_AUTH_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE,
   MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE,
+  MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE,
   MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE,
   MIGRATED_MODULE_ROW_SKEW_PROBE,
   MIGRATED_MODULE_SKEW_PROBE,
+  MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE,
+  MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE,
+  MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE,
   createServerBundleSource,
   migratedRuntimeModulesBlockFrom,
 } from "../dist/templates/server-bundle-template.js";
@@ -1555,7 +1561,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -1726,6 +1732,85 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
     assert.ok(
       patchAnswers.some((answer) => answer === "threw:no-code"),
       "the preferences patch probe never reaches assertJsonCompatible, so a copy that lost the JSON check compares clean",
+    );
+
+    // And batch 6's domain, file and object storage. Four things to settle before any storage
+    // rejection below is trusted, and each is a way this probe could report clean for the wrong
+    // reason rather than because the copies agree.
+    //
+    // The private helpers are in the block for the same reason every earlier batch's are: the module
+    // is carried whole, so a helper exported from nothing travels because it is in the file.
+    // `s3Hmac` is the S3 signing path's, `resolveLiveFileReference` is this module's census sentinel,
+    // and `chainMaybePromise` comes from `maybe-promise.js` — the module storage imports, which is
+    // why the block resolving imports between migrated modules matters here again.
+    assert.match(honest, /function s3Hmac\(/);
+    assert.match(honest, /function resolveLiveFileReference\(/);
+    assert.match(honest, /function chainMaybePromise\(/);
+
+    // First: the signature probe must produce four *different* signatures. A corpus that signed the
+    // same canonical request four ways over would compare a copy that had lost the method, the path
+    // or the region from its canonical request as clean.
+    const signatures = MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE.map(([, request]) => fileStorageRuntimeModule.s3Signature(request));
+    assert.equal(new Set(signatures).size, signatures.length, "the S3 signature probe signs two requests identically — one of them proves nothing");
+    assert.ok(
+      signatures.every((signature) => /^AWS4-HMAC-SHA256 Credential=\S+ SignedHeaders=\S+ Signature=[0-9a-f]{64}$/.test(signature)),
+      "the S3 signature probe is not producing a well-formed SigV4 header, so it is not exercising the signing path",
+    );
+
+    // Second: the pure gates must both admit and refuse, on the same terms as every corpus above.
+    // `normalizeAbsoluteFilePath` is the one that decides which row a `files.get("/x/y")` reads, and
+    // `contentTypeForFile` is a containment — it must answer `application/octet-stream` for something
+    // and echo the type back for something else, or a copy that had lost the allow-list compares
+    // clean while turning a stored `text/html` into stored XSS.
+    const storageAnswer = ([name, args]) => {
+      try {
+        return `returned:${JSON.stringify(fileStorageRuntimeModule[name](...args)) ?? "undefined"}`;
+      } catch (error) {
+        return `threw:${error?.message}`;
+      }
+    };
+    for (const gate of ["normalizeAbsoluteFilePath", "validatePublicUrlExpiry", "contentTypeForFile", "isAbsoluteFilePath"]) {
+      const answers = new Set(MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === gate).map(storageAnswer));
+      assert.ok(answers.size >= 2, `the storage probe makes ${gate} answer the same way every time, so a skewed copy of it compares clean`);
+    }
+    assert.ok(
+      MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.some(([name]) => name === "normalizeAbsoluteFilePath")
+        && MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === "normalizeAbsoluteFilePath").map(storageAnswer).some((answer) => answer.startsWith("threw:")),
+      "the storage probe never refuses a File path, so a copy that admitted everything compares clean",
+    );
+    assert.ok(
+      MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === "contentTypeForFile")
+        .map(storageAnswer).includes('returned:"application/octet-stream"'),
+      "the storage probe never reaches the inline content-type refusal, so a copy that echoed the stored type compares clean",
+    );
+
+    // Third: the engine constructor probe must both build and refuse, or it cannot tell a
+    // constructor that validates nothing from one that refuses everything.
+    const engineAnswer = ([, config]) => {
+      try {
+        return `built:${fileStorageRuntimeModule.createS3CompatibleFileStorageAdapter(config).objectKeyPrefix}`;
+      } catch (error) {
+        return `threw:${error?.message}`;
+      }
+    };
+    const engineAnswers = MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE.map(engineAnswer);
+    assert.ok(engineAnswers.filter((answer) => answer.startsWith("built:")).length >= 2, "the storage engine probe never builds an adapter, so a copy that refuses everything compares clean");
+    assert.ok(engineAnswers.filter((answer) => answer.startsWith("threw:")).length >= 5, "the storage engine probe never refuses a configuration, so a copy that validates nothing compares clean");
+    assert.ok(
+      new Set(engineAnswers.filter((answer) => answer.startsWith("threw:"))).size >= 2,
+      "every storage engine refusal carries the same message, so a copy that collapsed them compares clean",
+    );
+
+    // Fourth: `maybe-promise.js`. Its probe has to take both arms of each function — a corpus of
+    // plain values cannot see a copy that stopped recognising a thenable, which is the shape that
+    // would make every adapter method on the asynchronous engines return before its statement ran.
+    assert.ok(
+      MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE.some(([, value]) => maybePromiseModule.isPromiseLike(value)),
+      "the maybe-promise probe holds no thenable, so a copy that stopped recognising one compares clean",
+    );
+    assert.ok(
+      MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE.some(([, value]) => !maybePromiseModule.isPromiseLike(value)),
+      "the maybe-promise probe holds only thenables, so a copy that called everything a promise compares clean",
     );
 
     const skews = [
@@ -2052,6 +2137,164 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         originals["user-preferences-runtime.js"].replace("export function normalizePreferencesPatch", "function normalizePreferencesPatch"),
         /did not build|export a different set of names|do not supply/,
       ],
+      // Batch 6's domain, file and object storage. The signing path first, because it is the limb
+      // whose loss is loudest in production and quietest here: a carried copy that derived its
+      // signing key from a different scope exports every name, builds every adapter, and then
+      // authenticates against no S3-compatible endpoint at all. The region is the part of the scope
+      // an operator would blame last.
+      [
+        "an S3 signing key derived from a different credential scope",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          'const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");',
+          'const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3-compatible");',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // And a quieter one in the same path: the canonical request loses the payload hash. The header
+      // stays well-formed and the signature stays 64 hex characters, so only a value comparison sees
+      // it — and it would let a modified body be presented under a signature that never covered it.
+      [
+        "a canonical request that stopped covering the payload hash",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          "const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join(\"\\n\");",
+          "const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders].join(\"\\n\");",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The percent-encoding of a canonical path segment. `encodeURIComponent` leaves six characters
+      // alone that S3 request signing does not, so a copy reduced to it signs a path the endpoint
+      // disagrees with — for exactly the File names containing a quote or a parenthesis, and no
+      // others. That is a failure that looks like a corrupt file rather than a signing bug.
+      [
+        "a canonical path segment that stopped re-encoding what encodeURIComponent leaves alone",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          "return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);",
+          "return encodeURIComponent(segment);",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The Capsule storage namespace, which is a containment rather than a calculation: it is the
+      // prefix that keeps one Capsule's objects out of another's inside a shared bucket. A copy
+      // reduced to a truthiness check accepts `../other` and writes outside its own prefix, and
+      // every honest namespace still works.
+      [
+        "a storage namespace gate reduced to a truthiness check",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          'if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {',
+          "if (!namespace) {",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The inline content-type allow-list. A copy that echoed the stored type back turns a stored
+      // `text/html` into stored XSS served from the Capsule's own origin, and every image upload in
+      // the suite still round-trips — which is why this needs a probe that refuses rather than an
+      // export-surface check.
+      [
+        "an inline content-type allow-list that echoes the stored type back",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          "return safeInlineTypes.has(normalized) ? normalized : \"application/octet-stream\";",
+          "return normalized;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The absolute File path rule, which decides which row `files.get("/x/y")` reads. Reduced to a
+      // `startsWith` check it stops collapsing repeated separators, so `/a//b` and `/a/b` become two
+      // different paths against a unique index that thinks they are one file.
+      [
+        "a File path normalizer that stopped collapsing empty segments",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          'return `/${segments.join("/")}`;',
+          "return raw;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The public-URL expiry gate, which is the one place a Capsule author's `noExpiry` and their
+      // `ttlSeconds` are kept from being passed together. A copy that accepted any number of choices
+      // would take the first branch that matched and silently ignore the rest.
+      [
+        "a public URL expiry gate that stopped requiring exactly one choice",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace("if (choices.length !== 1) {", "if (choices.length > 99) {"),
+        /answer the skew probe differently/,
+      ],
+      // The File metadata DDL, which no verdict-shaped probe reaches. The unique index is the whole
+      // reason two live rows cannot share a path, so a deployed Capsule that created it without the
+      // `WHERE` clause would refuse to store a second *version* of any file — and one created
+      // without the index at all would let two live rows share a path, which is the state
+      // `activeFilePathDedupeSql` exists to clean up.
+      [
+        "a File metadata table created without the live-path unique index",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          '"CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +',
+          '"CREATE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +',
+        ),
+        /answer the skew probe differently/,
+      ],
+      // And the private data migration that runs beside it. `activeFilePathDedupeSql` soft-deletes
+      // the duplicates `filePathBackfillSql` can produce, and both are private — reachable through
+      // nothing but `createFileStorageTables`, which is why that limb exists.
+      [
+        "a File path backfill that stopped disambiguating duplicate names",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace(
+          "\"ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END \" +",
+          "\"ELSE '/' || [bucketName] || '/' || [name] END \" +",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on the module the monolith imports sixteen names from.
+      [
+        "a storage module that stopped exporting what the monolith imports",
+        "file-storage-runtime.js",
+        originals["file-storage-runtime.js"].replace("export function createFileStorageTables", "function createFileStorageTables"),
+        /did not build|export a different set of names|do not supply/,
+      ],
+      // And the ADR-0042 accessor written the way ADR-0041 refuses, asked of the third domain to need
+      // it. `s3Hmac` and `s3Sha256Hex` are synchronous and inside the signature `s3Request` builds
+      // before it opens a socket, so neither the dynamic form nor the Web Crypto global is open to
+      // them; if the accessor were ever replaced by the import it reads like, the build must refuse.
+      [
+        "the storage domain reaching node:crypto through a static import instead of the accessor",
+        "file-storage-runtime.js",
+        `import { createHmac } from "node:crypto";\n${originals["file-storage-runtime.js"].replace('return nodeCryptoModule.createHmac("sha256"', 'return createHmac("sha256"')}`,
+        /would resolve node:crypto at runtime/,
+      ],
+      // `maybe-promise.js`, the non-domain module batch 6 extracted for the reason batch 3 extracted
+      // `runtime-errors.js`. A copy that stopped recognising a thenable makes every adapter method on
+      // the Postgres and libSQL engines return before its statement has run — the loudest possible
+      // production failure, and completely silent to an export-surface check.
+      [
+        "a maybe-promise bridge that stopped recognising a thenable",
+        "maybe-promise.js",
+        originals["maybe-promise.js"].replace(
+          'return value && typeof value === "object" && typeof value.then === "function";',
+          "return false;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // And the chaining arm, which the storage DDL limb reaches only in its synchronous lane. A copy
+      // that ran every step eagerly instead of chaining would fire a table's statements out of order
+      // against an asynchronous engine.
+      [
+        "a maybe-promise chain that stopped sequencing its steps",
+        "maybe-promise.js",
+        originals["maybe-promise.js"].replace("pending = pending.then(step);", "step();"),
+        /answer the skew probe differently/,
+      ],
+      // The export surface, on a module whose three names the monolith all imports back.
+      [
+        "a maybe-promise module that stopped exporting what the monolith imports",
+        "maybe-promise.js",
+        originals["maybe-promise.js"].replace("export function thenIfPromise", "function thenIfPromise"),
+        /did not build|export a different set of names|do not supply/,
+      ],
     ];
 
     for (const [description, file, skewed, expected] of skews) {
@@ -2087,7 +2330,10 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     serverModuleSource: "export default {};",
   });
 
-  const migratedModules = { ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule };
+  const migratedModules = {
+    ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule,
+    ...fileStorageRuntimeModule, ...maybePromiseModule,
+  };
   // `readSqlIdentifier` is the log-index guard's, and it became private in the same change that made
   // the guard a module: it was an entry in the emitted list until then, because a helper the list
   // did not carry was a `ReferenceError` rather than a compile error.
@@ -2103,6 +2349,13 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     "foldMimeHeader",
     "normalizePostmarkProvider",
     "mailError",
+    // The storage domain's, batch 6, and the same story again at twenty-seven. `s3Hmac` is the
+    // whole S3 signing path's HMAC and `resolveLiveFileReference` is what every ownership-scoped
+    // File lookup resolves through — both were emitted-list entries until this batch, purely
+    // because a helper the list did not carry could not be called from one it did, and both are
+    // now exported from nothing and named in no list.
+    "s3Hmac",
+    "resolveLiveFileReference",
   ]) {
     assert.equal(
       Object.keys(migratedModules).includes(helper),
@@ -2135,6 +2388,14 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     // leaf function. It is carried module text now, so the entry had to go or the bundle would
     // declare it twice.
     "validateMailConfig",
+    // Batch 6's entry points, one per shape the storage domain reaches the bundle in: an engine
+    // constructor, an upload-lifecycle entry point the WebSocket hub dispatches, the DDL the shared
+    // adapter method set calls, and one of `maybe-promise`'s three, which nine still-registered
+    // runtime functions call from their own source text.
+    "createS3CompatibleFileStorageAdapter",
+    "createPendingFileUpload",
+    "createFileStorageTables",
+    "isPromiseLike",
   ]) {
     assert.equal(
       SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),

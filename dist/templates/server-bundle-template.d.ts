@@ -6,6 +6,10 @@ export declare const MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE: any[];
 export declare const MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE: [string, string, string][];
 export declare const MIGRATED_MODULE_AUTH_SKEW_PROBE: [string, any[]][];
 export declare const MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE: [string, unknown][];
+export declare const MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE: [string, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE: [string, unknown[]][];
+export declare const MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE: [string, Record<string, unknown>][];
+export declare const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][];
 export declare function migratedRuntimeModulesBlockFrom(distDir: string): string;
 export declare function createServerBundleSource({ config, serverEnv, sealedServerEnv, serverSource, serverModuleSource }: {
     config: any;

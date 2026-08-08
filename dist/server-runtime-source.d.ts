@@ -9,6 +9,8 @@ export * from "./auth-runtime.js";
 export * from "./runtime-errors.js";
 export * from "./jobs-runtime.js";
 export * from "./user-preferences-runtime.js";
+export * from "./file-storage-runtime.js";
+export * from "./maybe-promise.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -39,112 +41,6 @@ export declare function injectPageConnectionToken(html: string, token: string): 
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
 export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
-export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
-    config?: RuntimeConfig;
-    databasePath: string;
-    serviceEnv?: RuntimeEnv;
-}): Promise<{
-    engine: string;
-    endpoint: string;
-    bucket: string;
-    region: string;
-    namespace: string;
-    objectKeyPrefix: string;
-    writeFileVersion({ fileId, version, bytes }: {
-        fileId: string;
-        version: string | number;
-        bytes: Uint8Array | Buffer | string;
-    }): Promise<void>;
-    readFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<Buffer<ArrayBufferLike>>;
-    deleteFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<void>;
-    checkHealth(): Promise<{
-        ok: boolean;
-        adapter: string;
-    }>;
-    close(): void;
-} | {
-    engine: string;
-    storagePath: string;
-    writeFileVersion({ fileId, version, bytes }: {
-        fileId: string;
-        version: string | number;
-        bytes: Uint8Array | Buffer | string;
-    }): Promise<void>;
-    readFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<NonSharedBuffer>;
-    deleteFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<void>;
-    checkHealth(): Promise<{
-        ok: boolean;
-    }>;
-    close(): void;
-}>;
-export declare function createLocalFileStorageAdapter({ storagePath }: {
-    storagePath: string;
-}): {
-    engine: string;
-    storagePath: string;
-    writeFileVersion({ fileId, version, bytes }: {
-        fileId: string;
-        version: string | number;
-        bytes: Uint8Array | Buffer | string;
-    }): Promise<void>;
-    readFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<NonSharedBuffer>;
-    deleteFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<void>;
-    checkHealth(): Promise<{
-        ok: boolean;
-    }>;
-    close(): void;
-};
-export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace, }: {
-    endpoint: string;
-    bucket: string;
-    region: string;
-    accessKey: string;
-    secretKey: string;
-    namespace: string;
-}): {
-    engine: string;
-    endpoint: string;
-    bucket: string;
-    region: string;
-    namespace: string;
-    objectKeyPrefix: string;
-    writeFileVersion({ fileId, version, bytes }: {
-        fileId: string;
-        version: string | number;
-        bytes: Uint8Array | Buffer | string;
-    }): Promise<void>;
-    readFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<Buffer<ArrayBufferLike>>;
-    deleteFileVersion({ fileId, version }: {
-        fileId: string;
-        version: string | number;
-    }): Promise<void>;
-    checkHealth(): Promise<{
-        ok: boolean;
-        adapter: string;
-    }>;
-    close(): void;
-};
 export declare function createDatabaseDialect(spec: LooseRecord): LooseRecord;
 export declare function quoteSqlIdentifiers(quoteIdentifier: (identifier: string) => string, statement: string): string;
 export declare function createDatabaseNormalization(spec: LooseRecord): LooseRecord;
@@ -258,33 +154,6 @@ export declare function routeRuntimeHealth(database: any, request: {
     };
 }, response: any): Promise<boolean>;
 export declare function checkRuntimeSqlite(database: LooseRecord): Promise<any>;
-export declare function checkRuntimeFileStorage(database: LooseRecord): Promise<any>;
-export declare function createPendingFileUpload(database: LooseRecord, auth: LooseRecord, message: LooseRecord): Promise<any>;
-export declare function completePendingFileUpload(database: LooseRecord, uploadId: string, request: any, websocketHub?: any): Promise<{
-    ok: boolean;
-    data: {
-        file: {
-            id: any;
-            bucket: any;
-            size: number;
-            type: any;
-            name: any;
-            path: any;
-            version: any;
-        };
-    };
-    error: any;
-} | {
-    ok: boolean;
-    data: null;
-    error: {
-        message: any;
-        hint: any;
-    };
-}>;
-export declare function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any): Promise<any>;
-export declare function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options?: LooseRecord): Promise<any>;
-export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
 export declare const ACL_HELPER_STATE: unique symbol;
 export declare function listDatabaseTables(database: {
     adapter: any;
