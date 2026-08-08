@@ -125,6 +125,26 @@ working; use the full suite as the gate before the batch is done.
 - **`test/dev.test.js` "React Vite redacts symlink aliases and canonical project roots"**
   fails when the checkout path resolves through a symlink. Passes from the main worktree.
 
+## Open items raised by the batches, not yet actioned
+
+- **`engines` understates the Node floor.** Batch 3 used `process.getBuiltinModule("node:crypto")`
+  (ADR-0042) because the credential path is synchronous and `scryptSync`/`timingSafeEqual`
+  have no synchronous Web Crypto equivalent. That API landed in **Node 22.3.0**, while
+  `package.json` declares `"node": ">=22"`. The shipped `node:22-alpine` is far past it, so
+  this is a gap in the declared range rather than an observed failure — but a user on
+  22.0–22.2 gets no warning and a runtime crash. Narrowing `engines` is a packaging call
+  and was deliberately left to the maintainer.
+- **User preferences are on no batch's list.** `migrateAnonymousPreferences` blocks six auth
+  functions from leaving (`rotateSessionOnAdapter`, `moveSessionToUserOnAdapter`, and
+  through them `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`,
+  `rotateSession`, `moveSessionToUser`). Someone must own that domain or auth never fully
+  detaches.
+- **Nothing parses the built bundle for duplicate top-level declarations.** Batch 3 found
+  `commandError` declared twice — an emitted-list entry *and* a carried declaration, which
+  is a load-time `SyntaxError` in a deployed Capsule — and no test caught it, because the
+  free-binding guard resolves names rather than counting declarations. Worth a permanent
+  check.
+
 ## Per-batch acceptance criteria
 
 Every batch must satisfy all of these on its own:
