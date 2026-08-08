@@ -32,6 +32,14 @@ import {
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
+import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
+import {
+  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
+  createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
+  createStructuredFileError, deletePrivateFile, fileMetadataFromRow, fileRowForOwner,
+  getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
+  revokePublicFileUrl,
+} from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
@@ -154,6 +162,39 @@ export * from "./jobs-runtime.js";
 // bodies, so no preamble entry left with this batch.
 export * from "./user-preferences-runtime.js";
 
+// The file and object storage domain left this file as batch 6 — the local and S3-compatible
+// engines, the AWS SigV4 signature that reaches the second of them, the upload lifecycle, the
+// private and public File URLs, and the File metadata table's bootstrap and migrations. Fifty-one
+// declarations and one type alias; sixteen of the names are imported above, which is what the two
+// storage functions still in this file plus the WebSocket hub, the privileged File API, the ACL
+// storage helper, the runtime health route and the shared adapter method set need from it.
+//
+// **Two of the domain's fifty-three declarations are still here**, and the reference graph says
+// why: `handleFileHttpRoute` and `sendFileHttpResponse` reach `writeNotFound` and
+// `writeJsonHttpResponse`, whose other consumer is `routeRuntimeHealth`. Those are generic HTTP
+// response writers owned by the HTTP layer, which is batch 8 — a domain that has not run yet
+// rather than the composition core, so batch 8 lifts those two along with the writers. See
+// `file-storage-runtime.ts` for the per-function account, including the three functions a name
+// sweep collects that turned out to belong to the dialect and the log index instead.
+//
+// **`maybe-promise.js` is not a domain**, and it is here for the reason `runtime-errors.js` is. It
+// holds `isPromiseLike`, `thenIfPromise` and `chainMaybePromise` — the sync/async bridge the
+// adapters, the ACL paths, the log index, schema migration, the auth tables and storage all use and
+// none owns. Batch 6 is the batch that could not move without them: they were the only thing
+// keeping `singleLiveFileRowByPath` and `createFileStorageTables` in this file, and through the
+// first, the whole upload lifecycle and both URL paths.
+//
+// Both are re-exported whole for the reason the eight above are. Neither declares a SCREAMING_CASE
+// constant, so unlike auth and jobs this batch adds nothing to the constant probe and removed
+// nothing from the bundle preamble — the four that remain there are the privileged-audit trio and
+// `ACL_HELPER_STATE`, which are the ACL batch's. What makes the re-export load-bearing here is
+// `test/database-adapter.test.js`, which imports ten of this domain's names through this module,
+// and `test/dev.test.js`, which asserts the generated bundle still declares `localFileStoragePath`
+// and `localFileVersionPath` — both of which are private to `file-storage-runtime.js` now and reach
+// the bundle as carried module text rather than as emitted-list entries.
+export * from "./file-storage-runtime.js";
+export * from "./maybe-promise.js";
+
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
@@ -175,11 +216,6 @@ type RuntimeSecurityPolicy = {
 type RuntimeRequestLike = {
   headers: IncomingHttpHeaders | LooseRecord;
   socket?: any;
-};
-type S3RequestResult = {
-  statusCode: number;
-  headers: IncomingHttpHeaders | LooseRecord;
-  body: Buffer;
 };
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
@@ -395,9 +431,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createEndpointDatabaseApi,
   createEndpointTableApi,
   runTableWriteWithAcl,
-  isPromiseLike,
-  thenIfPromise,
-  chainMaybePromise,
   applyReadAcl,
   filterRowsByReadAcl,
   createAclHelpers,
@@ -429,67 +462,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   deserializeRow,
   readEndpointBody,
   createEndpointLogger,
-  createFileStorageTables,
-  createRuntimeFileStorageAdapter,
-  createLocalFileStorageAdapter,
-  localFileStoragePath,
-  localFileVersionPath,
-  createS3CompatibleFileStorageAdapter,
-  s3ObjectKey,
-  s3Request,
-  s3RequestBodyBuffer,
-  s3SignedHeaders,
-  s3Signature,
-  s3SigningKey,
-  s3CanonicalPath,
-  s3EncodedPathSegment,
-  s3StorageNamespace,
-  s3AmzDate,
-  s3Hmac,
-  s3Sha256Hex,
-  s3ObjectNotFoundError,
   routeRuntimeHealth,
   createRuntimeHealthResult,
   checkRuntimeSqlite,
-  checkRuntimeFileStorage,
   handleFileHttpRoute,
-  readRequestBytes,
   writeJsonHttpResponse,
   writeNotFound,
   sendFileHttpResponse,
-  createPendingFileUpload,
-  completePendingFileUpload,
-  getPrivateFileUrl,
-  createPublicFileUrl,
-  revokePublicFileUrl,
-  deletePrivateFile,
-  fileMetadataFromRow,
-  fileMetadataFromUpload,
-  runFileMetadataTransaction,
-  resolveFileWriteTarget,
-  normalizeAbsoluteFilePath,
-  normalizeFileName,
-  isAbsoluteFilePath,
-  resolveLiveFileReference,
-  resolvePrivilegedLiveFileReference,
-  singleActiveFileRowByPath,
-  singleLiveFileRowByPath,
-  ambiguousFileReferenceError,
-  structuredFileException,
-  ensureFileBucket,
   isDuplicateColumnError,
-  isUniqueConstraintError,
-  filePathBackfillSql,
-  activeFilePathDedupeSql,
-  ensureFileUploadTargetColumns,
   runSchemaExecIgnoringDuplicateColumn,
   chainSchemaOperation,
-  withFileUploadPathLock,
-  createStructuredFileError,
-  validatePublicUrlExpiry,
-  fileRowForOwner,
-  removeFileVersionBestEffort,
-  contentTypeForFile,
   createAnonymousAuthTables,
   createProviderIdentityTables,
   ensureOAuthStateColumns,
@@ -1229,338 +1211,23 @@ export async function createRuntimeInspectionAdapter(databasePath: any, serverEn
   return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
 }
 
-export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }: { config?: RuntimeConfig; databasePath: string; serviceEnv?: RuntimeEnv }) {
-  const path = await import("node:path");
-  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
-    return createS3CompatibleFileStorageAdapter({
-      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
-      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
-      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
-      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
-      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule",
-    });
-  }
-  return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path.join(path.dirname(databasePath), "files"),
-  });
-}
 
-export function createLocalFileStorageAdapter({ storagePath }: { storagePath: string }) {
-  if (typeof storagePath !== "string" || storagePath.length === 0) {
-    throw new Error("Local file storage requires a storagePath.");
-  }
 
-  return {
-    engine: "local",
-    storagePath,
-    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
-      const { mkdir, writeFile } = await import("node:fs/promises");
-      await mkdir(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile(localFileVersionPath(storagePath, fileId, version), bytes);
-    },
-    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const { readFile } = await import("node:fs/promises");
-      return await readFile(localFileVersionPath(storagePath, fileId, version));
-    },
-    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const { rm } = await import("node:fs/promises");
-      await rm(localFileVersionPath(storagePath, fileId, version), { force: true });
-    },
-    async checkHealth() {
-      const { mkdir, rm, writeFile } = await import("node:fs/promises");
-      const path = await import("node:path");
-      const probeDirectory = path.join(storagePath, ".sporades-health");
-      const probeFile = path.join(probeDirectory, `${randomUUID()}.tmp`);
-      try {
-        await mkdir(probeDirectory, { recursive: true });
-        await writeFile(probeFile, "");
-        await rm(probeFile, { force: true });
-        return { ok: true };
-      } catch {
-        await rm(probeFile, { force: true }).catch(() => { });
-        return { ok: false };
-      }
-    },
-    close() { },
-  };
-}
 
-function localFileStoragePath(storagePath: string, fileId: string) {
-  return `${storagePath}/${fileId}`;
-}
 
-function localFileVersionPath(storagePath: string, fileId: string, version: string | number) {
-  return `${localFileStoragePath(storagePath, fileId)}/${version}`;
-}
 
-export function createS3CompatibleFileStorageAdapter({
-  endpoint,
-  bucket,
-  region,
-  accessKey,
-  secretKey,
-  namespace,
-}: {
-  endpoint: string;
-  bucket: string;
-  region: string;
-  accessKey: string;
-  secretKey: string;
-  namespace: string;
-}) {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    throw new Error("S3-compatible file storage requires an endpoint.");
-  }
-  if (typeof bucket !== "string" || bucket.length === 0) {
-    throw new Error("S3-compatible file storage requires a bucket.");
-  }
-  if (typeof region !== "string" || region.length === 0) {
-    throw new Error("S3-compatible file storage requires a region.");
-  }
-  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
-    throw new Error("S3-compatible file storage requires access credentials.");
-  }
-  const isolatedNamespace = s3StorageNamespace(namespace);
 
-  const config = { endpoint, bucket, region, accessKey, secretKey };
-  let bucketReady = false;
-  const ensureBucket = async () => {
-    if (bucketReady) {
-      return;
-    }
-    const head = await s3Request(config, { method: "HEAD", key: null });
-    if (head.statusCode === 404) {
-      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
-      if (created.statusCode < 200 || created.statusCode >= 300) {
-        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
-      }
-    } else if (head.statusCode < 200 || head.statusCode >= 300) {
-      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
-    }
-    bucketReady = true;
-  };
 
-  return {
-    engine: "s3-compatible",
-    endpoint,
-    bucket,
-    region,
-    namespace: isolatedNamespace,
-    objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
-      await ensureBucket();
-      const result = await s3Request(config, {
-        method: "PUT",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-        body: bytes,
-      });
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const result = await s3Request(config, {
-        method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-      });
-      if (result.statusCode === 404) {
-        throw s3ObjectNotFoundError();
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
-      }
-      return result.body;
-    },
-    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const result = await s3Request(config, {
-        method: "DELETE",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-      });
-      if (result.statusCode === 404) {
-        return;
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async checkHealth() {
-      try {
-        await ensureBucket();
-        return { ok: true, adapter: "s3-compatible" };
-      } catch {
-        return { ok: false, adapter: "s3-compatible" };
-      }
-    },
-    close() { },
-  };
-}
 
-function s3ObjectKey(namespace: string, fileId: string, version: string | number) {
-  return `${namespace}/files/${fileId}/${version}`;
-}
 
-async function s3Request(
-  config: { endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string },
-  { method, key = null, body = null }: { method: string; key: string | null; body?: any },
-): Promise<S3RequestResult> {
-  const endpoint = new URL(config.endpoint);
-  const isHttps = endpoint.protocol === "https:";
-  const transport = await import(isHttps ? "node:https" : "node:http");
-  const payload = s3RequestBodyBuffer(body);
-  const amzDate = s3AmzDate(new Date());
-  const date = amzDate.slice(0, 8);
-  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
-  const payloadHash = s3Sha256Hex(payload);
-  const headers = s3SignedHeaders({
-    "host": endpoint.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-  });
-  headers.authorization = s3Signature({
-    method,
-    pathname,
-    query: "",
-    headers,
-    payloadHash,
-    accessKey: config.accessKey,
-    secretKey: config.secretKey,
-    region: config.region,
-    date,
-    amzDate,
-  });
 
-  return await new Promise<S3RequestResult>((resolve, reject) => {
-    const request = transport.request(
-      {
-        protocol: endpoint.protocol,
-        hostname: endpoint.hostname,
-        port: endpoint.port || undefined,
-        method,
-        path: `${pathname}${endpoint.search}`,
-        headers: {
-          ...headers,
-          "content-length": payload.length,
-        },
-      },
-      (response: IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: any) => chunks.push(Buffer.from(chunk)));
-        response.on("end", () => {
-          resolve({
-            statusCode: response.statusCode ?? 0,
-            headers: response.headers,
-            body: Buffer.concat(chunks),
-          });
-        });
-      },
-    );
-    request.on("error", reject);
-    if (payload.length > 0) {
-      request.write(payload);
-    }
-    request.end();
-  });
-}
 
-function s3RequestBodyBuffer(body: WithImplicitCoercion<ArrayLike<number>> | null | undefined) {
-  if (body === null || body === undefined) {
-    return Buffer.alloc(0);
-  }
-  if (Buffer.isBuffer(body)) {
-    return body;
-  }
-  if (body instanceof Uint8Array) {
-    return Buffer.from(body);
-  }
-  return Buffer.from(String(body));
-}
 
-function s3SignedHeaders(headers: Record<string, unknown>) {
-  return Object.fromEntries(
-    Object.entries(headers)
-      .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
-      .sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
 
-function s3Signature({
-  method,
-  pathname,
-  query,
-  headers,
-  payloadHash,
-  accessKey,
-  secretKey,
-  region,
-  date,
-  amzDate,
-}: {
-  method: string;
-  pathname: string;
-  query: string;
-  headers: Record<string, string>;
-  payloadHash: string;
-  accessKey: string;
-  secretKey: string;
-  region: string;
-  date: string;
-  amzDate: string;
-}) {
-  const signedHeaders = Object.keys(headers).join(";");
-  const canonicalHeaders = Object.entries(headers)
-    .map(([name, value]) => `${name}:${value}\n`)
-    .join("");
-  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
-  const credentialScope = `${date}/${region}/s3/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
-  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
-  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
 
-function s3SigningKey(secretKey: any, date: any, region: any) {
-  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
-  const dateRegionKey = s3Hmac(dateKey, region);
-  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
-  return s3Hmac(dateRegionServiceKey, "aws4_request");
-}
 
-function s3CanonicalPath(basePath: string, bucket: string, key: string | null) {
-  const base = String(basePath ?? "")
-    .split("/")
-    .filter(Boolean);
-  const parts = [...base, bucket, ...(key ? String(key).split("/") : [])].map(s3EncodedPathSegment);
-  return `/${parts.join("/")}`;
-}
 
-function s3EncodedPathSegment(segment: string | number | boolean) {
-  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
 
-function s3StorageNamespace(namespace: string) {
-  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
-    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
-  }
-  return `capsules/${namespace}`;
-}
-
-function s3AmzDate(date: Date) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-
-function s3Hmac(key: BinaryLike | NonSharedBuffer | KeyObject, data: BinaryLike) {
-  return createHmac("sha256", key).update(data).digest();
-}
-
-function s3Sha256Hex(data: BinaryLike | Buffer<ArrayBufferLike>) {
-  return createHash("sha256").update(data).digest("hex");
-}
-
-function s3ObjectNotFoundError() {
-  const error: HelperError = new Error("S3-compatible file object not found.");
-  error.code = "ENOENT";
-  return error;
-}
 
 // The Database adapter engine seam.
 //
@@ -5181,112 +4848,8 @@ export async function checkRuntimeSqlite(database: LooseRecord) {
   return await (database.adapter ?? database.adapter).checkHealth();
 }
 
-export async function checkRuntimeFileStorage(database: LooseRecord) {
-  return await database.fileStorage.checkHealth();
-}
 
-// The one definition of the File metadata storage bootstrap, for every engine. Chained rather than
-// fired, and outside any transaction, for the reasons `createAnonymousAuthTables` records.
-function createFileStorageTables(sqlite: LooseRecord) {
-  const sql = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[ownerId] TEXT NOT NULL, " +
-          "[name] TEXT NOT NULL, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "UNIQUE([ownerId], [name])" +
-          ")",
-        ),
-      ),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_files] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[ownerId] TEXT NOT NULL, " +
-          "[bucketId] TEXT NOT NULL, " +
-          "[bucketName] TEXT NOT NULL, " +
-          "[path] TEXT NOT NULL, " +
-          "[name] TEXT NOT NULL, " +
-          "[type] TEXT NOT NULL, " +
-          "[size] INTEGER NOT NULL, " +
-          "[version] TEXT NOT NULL, " +
-          "[status] TEXT NOT NULL, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[updatedAt] TEXT NOT NULL, " +
-          "[deletedAt] TEXT" +
-          ")",
-        ),
-      ),
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
-    () => sqlite.exec(sql(filePathBackfillSql())),
-    () => sqlite.exec(sql(activeFilePathDedupeSql())),
-    () =>
-      sqlite.exec(
-        sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])"),
-      ),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +
-          "ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')",
-        ),
-      ),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[fileId] TEXT NOT NULL, " +
-          "[ownerId] TEXT NOT NULL, " +
-          "[bucketId] TEXT NOT NULL, " +
-          "[bucketName] TEXT NOT NULL, " +
-          "[path] TEXT NOT NULL, " +
-          "[name] TEXT NOT NULL, " +
-          "[type] TEXT NOT NULL, " +
-          "[version] TEXT NOT NULL, " +
-          "[expectedSize] INTEGER NOT NULL, " +
-          "[createdAt] TEXT NOT NULL" +
-          ")",
-        ),
-      ),
-    () => ensureFileUploadTargetColumns(sqlite),
-    () =>
-      sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] (" +
-          "[id] TEXT PRIMARY KEY, " +
-          "[fileId] TEXT NOT NULL, " +
-          "[ownerId] TEXT NOT NULL, " +
-          "[version] TEXT NOT NULL, " +
-          "[expiresAt] TEXT, " +
-          "[createdAt] TEXT NOT NULL, " +
-          "[revokedAt] TEXT" +
-          ")",
-        ),
-      ),
-  ]);
-}
 
-async function readRequestBytes(request: any, maxBytes: number) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
-      );
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
 
 function writeJsonHttpResponse(response: any, status: number, result: any) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -5311,618 +4874,38 @@ async function sendFileHttpResponse(database: LooseRecord, response: any, row: L
   }
 }
 
-function contentTypeForFile(type: any) {
-  if (typeof type !== "string") {
-    return "application/octet-stream";
-  }
-  const normalized = type.split(";")[0].trim().toLowerCase();
-  const safeInlineTypes = new Set([
-    "text/plain",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/bmp",
-  ]);
-  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
-}
 
-export async function createPendingFileUpload(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
-  const input = message.file ?? {};
-  const size = Number(input.size ?? 0);
-  if (!Number.isFinite(size) || size < 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size."),
-    };
-  }
-  if (size > database.fileMaxSizeBytes) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
-      ),
-    };
-  }
 
-  return await withFileUploadPathLock("capsule", async () => {
-    const now = new Date().toISOString();
-    const replacing = message.replace === true;
-    const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement: any = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-    if (!resolvedReplacement.ok) {
-      return resolvedReplacement;
-    }
-    const existingByReference = resolvedReplacement.row;
-    if (replacing && !existingByReference) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    return await database.adapter.withTransaction(async (sqlite: { selectPendingFileUploadByPath: (arg0: any) => any; deleteFileUploadsForPath: (arg0: any) => any; insertFileUpload: (arg0: { id: `${string}-${string}-${string}-${string}-${string}`; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: string; version: `${string}-${string}-${string}-${string}-${string}`; expectedSize: number; createdAt: string; }) => any; }) => {
-      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-      let target;
-      try {
-        target =
-          replacing && existingByReference && (input.path === undefined || input.path === null)
-            ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
-            : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
-      } catch (error: any) {
-        return {
-          ok: false,
-          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
-        };
-      }
-      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
-      if (existingByPath?.ambiguous) {
-        return ambiguousFileReferenceError(target.path);
-      }
-      if (existingByPath && existingByPath.ownerId !== auth.userId) {
-        return {
-          ok: false,
-          error: createStructuredFileError(
-            "File path already exists.",
-            "Choose another absolute File path or ask the owning user to delete the existing file first.",
-          ),
-        };
-      }
-      const pendingByPath =
-        !existingByReference && !existingByPath && target.path
-          ? await sqlite.selectPendingFileUploadByPath(target.path)
-          : null;
-      const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? randomUUID();
 
-      const uploadId = randomUUID();
-      const version = randomUUID();
-      const name = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
-      await sqlite.deleteFileUploadsForPath(target.path);
-      try {
-        await sqlite.insertFileUpload({
-          id: uploadId,
-          fileId,
-          ownerId: auth.userId,
-          bucketId: target.bucket.id,
-          bucketName: target.bucket.name,
-          path: target.path,
-          name,
-          type,
-          version,
-          expectedSize: size,
-          createdAt: now,
-        });
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        const current = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current) throw error;
-        return {
-          ok: true,
-          data: {
-            uploadUrl: `/__sporades/uploads/${current.id}`,
-            method: "PUT",
-            headers: {},
-            file: fileMetadataFromUpload(current),
-          },
-          error: null as any,
-        };
-      }
 
-      return {
-        ok: true,
-        data: {
-          uploadUrl: `/__sporades/uploads/${uploadId}`,
-          method: "PUT",
-          headers: {},
-          file: fileMetadataFromUpload({
-            fileId,
-            bucketName: target.bucket.name,
-            path: target.path,
-            name,
-            type,
-            expectedSize: size,
-            version,
-          }),
-        },
-        error: null,
-      };
-    });
-  });
-}
 
-export async function completePendingFileUpload(database: LooseRecord, uploadId: string, request: any, websocketHub: any = null) {
-  const upload = await database.adapter.selectFileUpload(uploadId);
-  if (!upload) {
-    return {
-      ok: false,
-      data: null,
-      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK."),
-    };
-  }
 
-  let wroteFileVersion = false;
-  const previousFile = await database.adapter.selectFileById(upload.fileId);
-  try {
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.progress",
-      fileId: upload.fileId,
-      loaded: 0,
-      total: upload.expectedSize,
-    });
-    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-    wroteFileVersion = true;
-    const now = new Date().toISOString();
-    const completion = await database.adapter.withTransaction(async (sqlite: LooseRecord) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
-      if (completed?.changes === 0) {
-        return { ok: false, superseded: true };
-      }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
-      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
-    });
-    if (!completion.ok && completion.superseded) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-      return {
-        ok: false,
-        data: null,
-        error: createStructuredFileError(
-          "Upload URL was superseded.",
-          "Request a fresh upload URL before retrying this file upload.",
-        ),
-      };
-    }
-    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
-      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
-    }
-    const file = fileMetadataFromRow(completion.row);
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.complete",
-      file,
-    });
-    return { ok: true, data: { file }, error: null as any };
-  } catch (error: any) {
-    if (wroteFileVersion) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-    }
-    const structuredError = isUniqueConstraintError(error)
-      ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.")
-      : {
-        message: error.message,
-        hint: error.hint ?? "Request a fresh upload URL and retry.",
-      };
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.failed",
-      fileId: upload.fileId,
-      error: structuredError,
-    });
-    return {
-      ok: false,
-      data: null,
-      error: structuredError,
-    };
-  }
-}
 
-export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any) {
-  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-    };
-  }
-  return {
-    ok: true,
-    data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-      file: fileMetadataFromRow(row),
-    },
-    error: null as any,
-  };
-}
 
-export async function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
-  const expiry = validatePublicUrlExpiry(options);
-  if (!expiry.ok) {
-    return expiry;
-  }
-  return await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    await sqlite.insertPublicFileUrl({
-      id,
-      fileId: row.id,
-      ownerId: auth.userId,
-      version: row.version,
-      expiresAt: expiry.expiresAt,
-      createdAt: now,
-    });
-    return {
-      ok: true,
-      data: {
-        publicUrl: {
-          id,
-          fileId: row.id,
-          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-          expiresAt: expiry.expiresAt,
-          revokedAt: null,
-        },
-      },
-      error: null as any,
-    };
-  });
-}
 
-async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
-  const now = new Date().toISOString();
-  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
-  if (result.changes === 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user."),
-    };
-  }
-  return {
-    ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
-    error: null as any,
-  };
-}
 
-export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any) {
-  const now = new Date().toISOString();
-  const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-    await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now);
-    return {
-      ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
-      error: null,
-      deletedFile: row,
-    };
-  });
-  if (!result.ok) {
-    return result;
-  }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
-  return {
-    ok: true,
-    data: result.data,
-    error: null as any,
-  };
-}
 
-async function runFileMetadataTransaction(database: LooseRecord, fn: (sqlite: LooseRecord) => any) {
-  if (database.__transactionActive) {
-    return await fn(database.adapter);
-  }
-  return await database.adapter.withTransaction(fn);
-}
 
-function validatePublicUrlExpiry(options: LooseRecord) {
-  const choices = [options.ttlSeconds !== undefined, options.expires !== undefined, options.noExpiry === true].filter(Boolean);
-  if (choices.length !== 1) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "Public file URLs require exactly one expiry choice.",
-        "Pass exactly one of ttlSeconds, expires, or noExpiry: true.",
-      ),
-    };
-  }
-  if (options.noExpiry === true) {
-    return { ok: true, expiresAt: null };
-  }
-  if (options.ttlSeconds !== undefined) {
-    const ttlSeconds = Number(options.ttlSeconds);
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-      return {
-        ok: false,
-        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number."),
-      };
-    }
-    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString() };
-  }
-  const expiresAt = new Date(options.expires);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string."),
-    };
-  }
-  return { ok: true, expiresAt: expiresAt.toISOString() };
-}
 
-async function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any) {
-  const reference = String(fileId ?? "");
-  if (isAbsoluteFilePath(reference)) {
-    const resolved: any = await resolveLiveFileReference(database, ownerId, reference);
-    return resolved.ok ? resolved.row : null;
-  }
-  return await database.adapter.fileRowForOwner(reference, ownerId);
-}
 
-function fileMetadataFromRow(row: LooseRecord) {
-  return {
-    id: row.id,
-    bucket: row.bucketName,
-    size: Number(row.size),
-    type: row.type,
-    name: row.name,
-    path: row.path,
-    version: row.version,
-  };
-}
 
-function fileMetadataFromUpload(upload: LooseRecord) {
-  return {
-    id: upload.fileId,
-    bucket: upload.bucketName,
-    size: Number(upload.expectedSize),
-    type: upload.type,
-    name: upload.name,
-    path: upload.path,
-    version: upload.version,
-  };
-}
 
-async function withFileUploadPathLock(path: string, fn: () => any) {
-  const fileUploadPathLocks = ((globalThis as any).__sporadesFileUploadPathLocks ??= new Map());
-  const key = String(path);
-  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release: (() => void) | undefined;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.then(() => current, () => current);
-  fileUploadPathLocks.set(key, next);
-  try {
-    await previous.catch(() => { });
-    return await fn();
-  } finally {
-    release?.();
-    if (fileUploadPathLocks.get(key) === next) {
-      fileUploadPathLocks.delete(key);
-    }
-  }
-}
 
-async function resolveFileWriteTarget(database: LooseRecord, ownerId: any, input: LooseRecord, now: string) {
-  const explicitPath = input.path === undefined || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? (await ensureFileBucket(database, ownerId, "default", now));
-  return { bucket, path };
-}
 
-async function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any) {
-  const existing = await database.adapter.findFileBucket(ownerId, name);
-  if (existing) return existing;
-  const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
-  try {
-    await database.adapter.createFileBucket(bucket);
-    return bucket;
-  } catch (error: any) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.adapter.findFileBucket(ownerId, name);
-    if (raced) return raced;
-    throw error;
-  }
-}
 
-function normalizeAbsoluteFilePath(value: string) {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/")) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
-  }
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
-  }
-  return `/${segments.join("/")}`;
-}
 
-function normalizeFileName(name: any, filePath: string | null) {
-  const candidate = String(name ?? "").trim();
-  if (candidate) return candidate;
-  const pathName = filePath?.split("/").filter(Boolean).at(-1);
-  return pathName || "upload";
-}
 
-function isAbsoluteFilePath(value: string) {
-  return typeof value === "string" && value.startsWith("/");
-}
 
-async function resolveLiveFileReference(database: LooseRecord, ownerId: any, reference: string) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
-  }
-  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
-}
 
-async function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved };
-  }
-  const row = await database.adapter.selectFileById(value);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  return { ok: true, row };
-}
-
-function singleLiveFileRowByPath(database: LooseRecord, path: string) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path), (rows: any[]) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-
-function singleActiveFileRowByPath(database: LooseRecord, path: any) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path), (rows: any[]) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-
-function ambiguousFileReferenceError(reference: string) {
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "File reference is ambiguous.",
-      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`,
-    ),
-  };
-}
-
-function structuredFileException(message: string | undefined, hint: string) {
-  const error: HelperError = new Error(message);
-  error.hint = hint;
-  return error;
-}
 
 function isDuplicateColumnError(error: any) {
   const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /duplicate column|already exists/i.test(text);
 }
 
-function isUniqueConstraintError(error: any) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
-}
 
-// Both of these answer statement text carrying identifier markers, which their caller quotes
-// through the dialect before emitting.
-function filePathBackfillSql() {
-  return (
-    "UPDATE [sporades_files] SET [path] = CASE " +
-    "WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] " +
-    "WHERE [matching].[ownerId] = [sporades_files].[ownerId] " +
-    "AND [matching].[bucketName] = [sporades_files].[bucketName] " +
-    "AND [matching].[name] = [sporades_files].[name] " +
-    "AND [matching].[deletedAt] IS NULL " +
-    "AND [matching].[status] IN ('pending', 'uploaded')) = 1 " +
-    "THEN '/' || [bucketName] || '/' || [name] " +
-    "ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END " +
-    "WHERE [path] IS NULL OR [path] = ''"
-  );
-}
 
-function activeFilePathDedupeSql() {
-  return (
-    "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] " +
-    "WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (" +
-    "SELECT MAX([id]) FROM [sporades_files] " +
-    "WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') " +
-    "GROUP BY [path]" +
-    ")"
-  );
-}
 
-function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
-  const addedColumns = [
-    ["bucketId", "TEXT"],
-    ["bucketName", "TEXT"],
-    ["path", "TEXT"],
-    ["name", "TEXT"],
-    ["type", "TEXT"],
-  ];
-  const statements = [
-    "UPDATE [sporades_file_uploads] SET " +
-    "[bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
-    "[bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
-    "[path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
-    "[name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), " +
-    "[type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) " +
-    "WHERE [path] IS NULL OR [path] = ''",
-    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (" +
-    "SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path]" +
-    ")",
-    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
-    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])",
-  ];
-  return chainMaybePromise([
-    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
-    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement))),
-  ]);
-}
 
 function runSchemaExecIgnoringDuplicateColumn(sqlite: LooseRecord, sql: string) {
   try {
@@ -5946,13 +4929,7 @@ function chainSchemaOperation(previous: any, operation: () => any) {
   return operation();
 }
 
-function createStructuredFileError(message: string, hint: string) {
-  return { message, hint };
-}
 
-async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, version: any) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
-}
 
 async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
   const handler =
@@ -6359,28 +5336,8 @@ function runTableWriteWithAcl(database: any, table: LooseRecord, operation: stri
   return pending;
 }
 
-function isPromiseLike(value: any) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
 
-function thenIfPromise(value: any, onResolved: (value: any) => any) {
-  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
-}
 
-function chainMaybePromise(steps: any[]) {
-  let pending = null;
-  for (const step of steps) {
-    if (pending) {
-      pending = pending.then(step);
-      continue;
-    }
-    const result = step();
-    if (isPromiseLike(result)) {
-      pending = result;
-    }
-  }
-  return pending ?? undefined;
-}
 
 function applyReadAcl(database: any, table: LooseRecord, row: any, context: any) {
   if (hasPrivilegedDbAccess(context)) {

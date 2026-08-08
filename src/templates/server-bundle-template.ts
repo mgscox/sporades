@@ -4,11 +4,13 @@ import path from "node:path";
 import { buildSync } from "esbuild";
 
 import * as authRuntime from "../auth-runtime.js";
+import * as fileStorageRuntime from "../file-storage-runtime.js";
 import * as inspectionSql from "../inspection-sql.js";
 import * as jobsRuntime from "../jobs-runtime.js";
 import * as logIndexGuard from "../log-index-guard.js";
 import * as mailConfig from "../mail-config.js";
 import * as mailRuntime from "../mail-runtime.js";
+import * as maybePromise from "../maybe-promise.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import * as runtimeErrors from "../runtime-errors.js";
 import * as userPreferencesRuntime from "../user-preferences-runtime.js";
@@ -59,6 +61,12 @@ const MIGRATED_RUNTIME_MODULES = [
   // `migrateAnonymousPreferences`, which is what let batch 5 carry seven auth functions with it.
   // esbuild resolves the graph either way; the order is documentation.
   { file: "user-preferences-runtime.js", loaded: userPreferencesRuntime as Record<string, unknown> },
+  // Batch 6. `maybe-promise` is not a domain — it is the sync/async bridge six domains use and none
+  // owns, extracted for the reason `runtime-errors` was — and it is listed before the storage module
+  // because that module imports it. Storage imports `runtime-errors.js` for its `HelperError` type
+  // only, which is erased, so `maybe-promise.js` is its one real dependency.
+  { file: "maybe-promise.js", loaded: maybePromise as Record<string, unknown> },
+  { file: "file-storage-runtime.js", loaded: fileStorageRuntime as Record<string, unknown> },
 ];
 
 // The same list as file names, for guards that have to read the modules off disk rather than call
@@ -384,6 +392,185 @@ const MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE = {
   exec: (text: string) => text,
 };
 
+// Batch 6: file and object storage. Four corpora and a stand-in engine, and what they can and
+// cannot reach is worth stating exactly, because this domain is the hardest yet to question from
+// inside a bundle build.
+//
+// `describeMigratedModuleAnswers` is synchronous. Every entry point of this domain —
+// `createPendingFileUpload`, `completePendingFileUpload`, both URL paths, `deletePrivateFile` — is
+// `async` and takes a database adapter and a storage engine, so none of them can be called here.
+// What is reachable is the pure spine underneath them, and six of these names are exported for this
+// probe rather than because something resolves them. Without that widening the only limbs this
+// domain could offer would be the two engine constructors, and the AWS SigV4 signature, the File
+// path rules, the public-URL expiry gate and the metadata projections would be carried into every
+// deployed Capsule uncompared.
+//
+// **The AWS SigV4 signature.** `s3Signature` is a pure function of its arguments — the date and the
+// `x-amz-date` are parameters rather than a clock read — so it pins the whole signing path:
+// `s3SigningKey`, `s3Hmac` and `s3Sha256Hex`, which are private, and with them the two
+// `nodeCryptoModule.` call sites this domain needs ADR-0042 for. A carried copy whose signature
+// differed would authenticate against no S3-compatible endpoint at all, and one whose *canonical
+// request* differed would sign the wrong request while still producing a well-formed header.
+//
+// Split across the shapes that actually break AWS request signing rather than across arbitrary
+// inputs: no key, a nested key, a key needing percent-encoding, and a payload hash that is not the
+// empty-body one. Four calls, sixteen HMACs, no I/O.
+const MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE: [string, Record<string, unknown>][] = [
+  ["bucket-head", {
+    method: "HEAD", pathname: "/sporades", query: "",
+    headers: { "host": "minio.example.com:9000", "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "x-amz-date": "20310101T000000Z" },
+    payloadHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    accessKey: "AKIAPROBE", secretKey: "s3cr3t-probe", region: "us-east-1",
+    date: "20310101", amzDate: "20310101T000000Z",
+  }],
+  ["object-put", {
+    method: "PUT", pathname: "/sporades/capsules/probe/files/file-1/version-1", query: "",
+    headers: { "host": "minio.example.com:9000", "x-amz-content-sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "x-amz-date": "20310102T030405Z" },
+    payloadHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    accessKey: "AKIAPROBE", secretKey: "s3cr3t-probe", region: "eu-west-2",
+    date: "20310102", amzDate: "20310102T030405Z",
+  }],
+  ["encoded-path", {
+    method: "GET", pathname: "/sporades/capsules/probe/files/a%20b%21/1", query: "",
+    headers: { "host": "s3.example.com", "x-amz-date": "20310103T101112Z" },
+    payloadHash: "UNSIGNED-PAYLOAD",
+    accessKey: "AKIAPROBE", secretKey: "another-secret", region: "ap-south-1",
+    date: "20310103", amzDate: "20310103T101112Z",
+  }],
+  ["single-header", {
+    method: "DELETE", pathname: "/sporades", query: "",
+    headers: { "host": "s3.example.com" },
+    payloadHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    accessKey: "AKIAPROBE", secretKey: "s3cr3t-probe", region: "us-east-1",
+    date: "20310104", amzDate: "20310104T000000Z",
+  }],
+];
+
+// The two pure functions that decide *what* gets signed and *where* an object lands. Percent
+// encoding is the limb worth naming: `s3EncodedPathSegment` re-encodes the six characters
+// `encodeURIComponent` leaves alone, and a carried copy that had lost that would sign a canonical
+// path the endpoint does not agree with — a signature mismatch on exactly the file names that
+// contain a quote or a parenthesis and on no others.
+const MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE: [string, unknown[]][] = [
+  ["s3CanonicalPath", ["", "sporades", null]],
+  ["s3CanonicalPath", ["/", "sporades", "capsules/probe/files/f/1"]],
+  ["s3CanonicalPath", ["/prefix/base", "sporades", "a b!'()*~"]],
+  ["s3ObjectKey", ["capsules/probe", "file-1", "version-1"]],
+  ["s3ObjectKey", ["capsules/probe", "file-1", 7]],
+  // The Capsule-scoped absolute File path rules, which decide which row a `files.get("/x/y")` reads.
+  // Admitted and refused both ways: a copy reduced to a `startsWith("/")` check admits the second
+  // and third, and one that refused everything would be caught by the first two.
+  ["normalizeAbsoluteFilePath", ["/images/avatars/profile.png"]],
+  ["normalizeAbsoluteFilePath", ["  /a//b///c  "]],
+  ["normalizeAbsoluteFilePath", ["images/profile.png"]],
+  ["normalizeAbsoluteFilePath", ["/"]],
+  ["normalizeAbsoluteFilePath", [""]],
+  ["isAbsoluteFilePath", ["/a/b"]],
+  ["isAbsoluteFilePath", ["a/b"]],
+  ["isAbsoluteFilePath", [null]],
+  ["normalizeFileName", ["", "/bucket/dir/name.png"]],
+  ["normalizeFileName", ["  ", null]],
+  ["normalizeFileName", ["given.png", "/other/path.png"]],
+  // The inline content-type allow-list, which is a containment rather than a calculation: it decides
+  // which uploaded bytes a browser is allowed to render inline off the Capsule's own origin. A
+  // carried copy that echoed the stored type back would turn a stored `text/html` into stored XSS,
+  // and every honest upload would still work.
+  ["contentTypeForFile", ["image/png"]],
+  ["contentTypeForFile", ["IMAGE/PNG; charset=binary"]],
+  ["contentTypeForFile", ["text/html"]],
+  ["contentTypeForFile", ["image/svg+xml"]],
+  ["contentTypeForFile", [null]],
+  // The public-URL expiry gate. **No admitted `ttlSeconds` case**, deliberately: that branch is
+  // `Date.now() + ttl`, so the two copies are called microseconds apart and would disagree on an
+  // honest build. `expires` and `noExpiry` are pinned, and the `ttlSeconds` limbs here are the ones
+  // refused before the clock is read.
+  ["validatePublicUrlExpiry", [{ noExpiry: true }]],
+  ["validatePublicUrlExpiry", [{ expires: "2031-01-01T00:00:00.000Z" }]],
+  ["validatePublicUrlExpiry", [{ expires: "not-a-date" }]],
+  ["validatePublicUrlExpiry", [{}]],
+  ["validatePublicUrlExpiry", [{ ttlSeconds: 60, noExpiry: true }]],
+  ["validatePublicUrlExpiry", [{ ttlSeconds: 0 }]],
+  ["validatePublicUrlExpiry", [{ ttlSeconds: "soon" }]],
+  // The two projections every File the SDK hands a Capsule author passes through. A copy that
+  // dropped `path` or stopped coercing `size` is a wrong File object rather than a wrong verdict.
+  ["fileMetadataFromRow", [{ id: "f1", bucketName: "images", size: "1234", type: "image/png", name: "a.png", path: "/images/a.png", version: "v1", ownerId: "u1", status: "uploaded" }]],
+  ["fileMetadataFromUpload", [{ fileId: "f1", bucketName: "images", expectedSize: "99", type: "text/plain", name: "a.txt", path: "/images/a.txt", version: "v1" }]],
+];
+
+// The S3-compatible engine's constructor, which is five refusals and one namespace rule. Every
+// refusal is a misconfiguration a deployed Capsule would otherwise carry to its first upload, and
+// `s3StorageNamespace` is a private regex gate whose loss would let one Capsule's namespace escape
+// into another's prefix inside a shared bucket. Constructing costs an object literal and no I/O.
+const MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE: [string, Record<string, unknown>][] = [
+  ["ok", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule" }],
+  ["ok-hyphenated", { endpoint: "https://s3.example.com/base", bucket: "b", region: "eu-west-2", accessKey: "a", secretKey: "b", namespace: "a-capsule-9" }],
+  ["no-endpoint", { endpoint: "", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule" }],
+  ["no-bucket", { endpoint: "http://minio:9000", bucket: "", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule" }],
+  ["no-region", { endpoint: "http://minio:9000", bucket: "sporades", region: "", accessKey: "a", secretKey: "b", namespace: "capsule" }],
+  ["no-secret", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "", namespace: "capsule" }],
+  ["namespace-uppercase", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "Capsule" }],
+  ["namespace-traversal", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "../other" }],
+  ["namespace-trailing-hyphen", { endpoint: "http://minio:9000", bucket: "sporades", region: "us-east-1", accessKey: "a", secretKey: "b", namespace: "capsule-" }],
+];
+
+// The scalar surface of a constructed engine. The returned object's methods are closures over the
+// constructor's arguments and do not serialize, so they are dropped by name rather than by
+// `JSON.stringify` quietly omitting them — `objectKeyPrefix` is the one that matters, because it is
+// where every object this Capsule writes lands inside a shared bucket.
+function migratedModuleStorageEngineShape(engine: any) {
+  return [engine.engine, engine.endpoint ?? null, engine.bucket ?? null, engine.region ?? null, engine.namespace ?? null, engine.objectKeyPrefix ?? null, engine.storagePath ?? null];
+}
+
+// The File metadata DDL, driven through a stand-in for the engine, for the same reason the
+// preferences table is: no verdict-shaped probe can reach a `CREATE TABLE`. This domain's schema is
+// larger and carries two data migrations — `filePathBackfillSql` derives the `path` column for rows
+// created before it existed, and `activeFilePathDedupeSql` soft-deletes the duplicates that backfill
+// can produce — and both are private. A carried copy that had drifted on either would leave a
+// deployed Capsule's file table with two live rows on one path, which is precisely the state the
+// unique index created two statements later then refuses to build.
+//
+// The fake records rather than returns, because `createFileStorageTables` chains its steps through
+// `chainMaybePromise` and answers `undefined`. That also puts `maybe-promise.js` under this limb:
+// a carried copy of it that stopped chaining would record a different set of statements.
+//
+// Sixteen recorded statements, string concatenation only, no clock and no I/O. Every probe in this
+// file runs twice on every `sporades dev` start, which is why that is worth stating.
+function migratedModuleStorageTableProbe() {
+  const statements: string[] = [];
+  const sqlite = {
+    dialect: {
+      sql: (text: string) => text,
+      addMissingColumn: (_target: unknown, table: string, name: string, type: string) => {
+        statements.push(`ADD COLUMN ${table}.${name} ${type}`);
+      },
+    },
+    exec: (text: string) => {
+      statements.push(text);
+    },
+  };
+  return { sqlite, statements };
+}
+
+// The sync/async bridge `maybe-promise.js` holds, asked directly. It is reached through the DDL limb
+// above as well, but only in its synchronous lane: every step of `createFileStorageTables` answers
+// without a promise under the stand-in engine, so `chainMaybePromise`'s `pending.then(step)` arm and
+// `thenIfPromise`'s promise arm are never taken there. These cases take both arms, which is what
+// lets this limb see a copy that had stopped distinguishing them — the shape that would make every
+// adapter method on the Postgres and libSQL engines return before its statement had run.
+//
+// The promise arms are compared by what they *are* rather than by awaiting them, because
+// `describeMigratedModuleAnswers` is synchronous: a returned thenable is reported as `promise` and a
+// plain value as itself, so a copy that resolved eagerly is a disagreement.
+const MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE: [string, unknown][] = [
+  ["null", null],
+  ["undefined", undefined],
+  ["number", 7],
+  ["plain-object", { a: 1 }],
+  ["thenable", { then: (resolve: (value: unknown) => void) => resolve("resolved") }],
+  ["then-not-a-function", { then: 1 }],
+  ["function", () => "called"],
+];
+
 function bundleTemplateError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
 }
@@ -425,6 +612,14 @@ const MIGRATED_MODULE_PROBE_NAMES = [
   ...new Set(MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name]) => name)),
   "normalizePreferencesPatch",
   "createUserPreferencesTables",
+  "s3Signature",
+  ...new Set(MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.map(([name]) => name)),
+  "createS3CompatibleFileStorageAdapter",
+  "createLocalFileStorageAdapter",
+  "createFileStorageTables",
+  "isPromiseLike",
+  "thenIfPromise",
+  "chainMaybePromise",
 ];
 
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
@@ -579,6 +774,61 @@ function describeMigratedModuleAnswers(module: any) {
       "createUserPreferencesTables",
       probedAnswer(() => module.createUserPreferencesTables(MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE)),
     ]),
+    // The file and object storage domain, batch 6. Five limbs, because this domain answers in five
+    // different shapes: a signature string, a canonical path or a verdict from a pure gate, a
+    // constructed engine, a schema, and — through `maybe-promise.js`, which the DDL limb reaches —
+    // a chained sequence.
+    ...MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE.map(([label, request]) =>
+      JSON.stringify([label, probedAnswer(() => module.s3Signature(request))]),
+    ),
+    ...MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.map(([name, args]) =>
+      JSON.stringify([name, args, probedAnswer(() => module[name](...args))]),
+    ),
+    // The engine constructors. Only the scalar surface is compared, because the methods are closures
+    // — see `migratedModuleStorageEngineShape`. The local engine's one refusal is here too: it is a
+    // one-line guard, and a copy that had lost it would build an adapter writing every File version
+    // to a relative path off whatever the Capsule's working directory happened to be.
+    ...MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE.map(([label, config]) =>
+      JSON.stringify([
+        label,
+        probedAnswer(() => migratedModuleStorageEngineShape(module.createS3CompatibleFileStorageAdapter(config))),
+      ]),
+    ),
+    ...[{ storagePath: "/data/files" }, { storagePath: "" }, {}].map((config) =>
+      JSON.stringify([
+        "createLocalFileStorageAdapter",
+        config,
+        probedAnswer(() => migratedModuleStorageEngineShape(module.createLocalFileStorageAdapter(config))),
+      ]),
+    ),
+    JSON.stringify([
+      "createFileStorageTables",
+      probedAnswer(() => {
+        const probe = migratedModuleStorageTableProbe();
+        module.createFileStorageTables(probe.sqlite);
+        return probe.statements;
+      }),
+    ]),
+    // `maybe-promise.js`, asked directly rather than only through the limb above. A thenable is
+    // reported as the token `promise` rather than awaited, because this function is synchronous.
+    ...MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE.map(([label, value]) =>
+      JSON.stringify([
+        label,
+        probedAnswer(() => module.isPromiseLike(value) === true),
+        probedAnswer(() => {
+          const answered = module.thenIfPromise(value, (resolved: unknown) => `then:${String(resolved)}`);
+          return module.isPromiseLike(answered) ? "promise" : String(answered);
+        }),
+        probedAnswer(() => {
+          const seen: string[] = [];
+          const chained = module.chainMaybePromise([
+            () => { seen.push("one"); return value; },
+            () => { seen.push("two"); return null; },
+          ]);
+          return [seen.join(","), module.isPromiseLike(chained) ? "promise" : String(chained)];
+        }),
+      ]),
+    ),
   ];
 }
 
