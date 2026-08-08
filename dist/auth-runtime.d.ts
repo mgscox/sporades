@@ -225,5 +225,8 @@ export declare function authStatus(config: LooseRecord, serverEnv: LooseRecord):
     };
 };
 export declare function authProvidersForClient(authConfig: LooseRecord, origin?: any): LooseRecord;
+export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
+export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
+export declare function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord): Promise<any>;
 export {};
 //# sourceMappingURL=auth-runtime.d.ts.map

@@ -2187,6 +2187,7 @@ __export(auth_runtime_exports, {
   isOAuthLoopbackHostname: () => isOAuthLoopbackHostname,
   isReservedAuthUserId: () => isReservedAuthUserId,
   issuePasswordResetCode: () => issuePasswordResetCode,
+  linkProviderIdentity: () => linkProviderIdentity,
   loadMicrosoftJwks: () => loadMicrosoftJwks,
   mailNotConfiguredError: () => mailNotConfiguredError,
   normalizeEmailCredentials: () => normalizeEmailCredentials,
@@ -2208,6 +2209,8 @@ __export(auth_runtime_exports, {
   sessionExpiresAt: () => sessionExpiresAt,
   setEmailPassword: () => setEmailPassword,
   setOwnEmailPassword: () => setOwnEmailPassword,
+  signInWithEmail: () => signInWithEmail,
+  signUpWithEmail: () => signUpWithEmail,
   simulateLocalIdentitySession: () => simulateLocalIdentitySession,
   validateConsumedOAuthCallbackParameters: () => validateConsumedOAuthCallbackParameters,
   verifyAppleIdentityToken: () => verifyAppleIdentityToken,
@@ -2252,6 +2255,109 @@ function invalidJsonFieldValueError() {
     "Invalid JSON field value.",
     "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
   );
+}
+
+// src/user-preferences-runtime.ts
+var user_preferences_runtime_exports = {};
+__export(user_preferences_runtime_exports, {
+  createUserPreferencesTables: () => createUserPreferencesTables,
+  migrateAnonymousPreferences: () => migrateAnonymousPreferences,
+  normalizePreferencesPatch: () => normalizePreferencesPatch,
+  readCurrentUserPreferences: () => readCurrentUserPreferences,
+  updateCurrentUserPreferences: () => updateCurrentUserPreferences
+});
+function createUserPreferencesTables(sqlite) {
+  return sqlite.exec(
+    sqlite.dialect.sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_user_preferences] ([userId] TEXT PRIMARY KEY, [value] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )
+  );
+}
+async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite = null) {
+  if (!auth?.isGuest || auth.userId === targetUserId) {
+    return;
+  }
+  const migrate = async (tx) => {
+    const sourceRow = await tx.readUserPreferences(auth.userId);
+    if (!sourceRow) {
+      return;
+    }
+    const targetRow = await tx.readUserPreferences(targetUserId);
+    const source = JSON.parse(sourceRow.value);
+    const target = targetRow ? JSON.parse(targetRow.value) : {};
+    const next = { ...target, ...source };
+    assertJsonCompatible(next);
+    await tx.saveUserPreferences({
+      userId: targetUserId,
+      value: JSON.stringify(next),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  };
+  if (sqlite) {
+    await migrate(sqlite);
+    return;
+  }
+  await database.adapter.withTransaction(migrate);
+}
+async function readCurrentUserPreferences(database, auth) {
+  const row = await database.adapter.readUserPreferences(auth.userId);
+  return {
+    ok: true,
+    data: {
+      preferences: row ? JSON.parse(row.value) : {}
+    },
+    error: null
+  };
+}
+async function updateCurrentUserPreferences(database, auth, patch) {
+  try {
+    const normalizedPatch = normalizePreferencesPatch(patch);
+    const preferences = await database.adapter.withTransaction(async (tx) => {
+      const row = await tx.readUserPreferences(auth.userId);
+      const current = row ? JSON.parse(row.value) : {};
+      const next = { ...current, ...normalizedPatch };
+      assertJsonCompatible(next);
+      await tx.saveUserPreferences({
+        userId: auth.userId,
+        value: JSON.stringify(next),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      return next;
+    });
+    return {
+      ok: true,
+      data: { preferences },
+      changes: normalizedPatch,
+      error: null
+    };
+  } catch (error) {
+    if (error?.code === "INVALID_PREFERENCES_PATCH") {
+      return { ok: false, data: null, error };
+    }
+    return {
+      ok: false,
+      data: null,
+      error: createPreferencesError(
+        "Preferences update failed.",
+        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
+        "PREFERENCES_UPDATE_FAILED"
+      )
+    };
+  }
+}
+function normalizePreferencesPatch(patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+    throw createPreferencesError(
+      "Preferences updates must be JSON objects.",
+      "Pass a plain JSON object to preferences.update().",
+      "INVALID_PREFERENCES_PATCH"
+    );
+  }
+  assertJsonCompatible(patch);
+  return patch;
+}
+function createPreferencesError(message, hint, code) {
+  return { code, message, hint };
 }
 
 // src/auth-runtime.ts
@@ -4379,6 +4485,215 @@ function authProvidersForClient(authConfig, origin = null) {
     };
   }
   return providers;
+}
+async function signUpWithEmail(database, session, provider, credentials) {
+  if (provider !== "email") {
+    return {
+      ok: false,
+      error: {
+        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
+        hint: "Use auth.signUp with the email provider."
+      }
+    };
+  }
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+  if (await database.adapter.emailCredentialExists(normalized.email)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email is already registered.",
+        hint: 'Use auth.signIn("email", ...) with this email address.'
+      }
+    };
+  }
+  const password = hashEmailPassword(normalized.password);
+  const displayName = normalized.name || normalized.email;
+  const auth = {
+    userId: session.auth.userId,
+    displayName,
+    email: normalized.email,
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email"
+  };
+  return await database.adapter.withTransaction(async (tx) => {
+    await tx.insertEmailCredential({
+      email: normalized.email,
+      userId: auth.userId,
+      passwordHash: password.hash,
+      passwordSalt: password.salt,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email"
+    });
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
+  });
+}
+async function signInWithEmail(database, session, credentials) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  if (throttle.throttled) {
+    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+  }
+  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
+  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
+    recordFailedEmailSignInAttempt(database, normalized.email, session);
+    return { ok: false, error: invalidEmailCredentialsError() };
+  }
+  resetEmailSignInAttempts(database, normalized.email, session);
+  const auth = {
+    userId: row.userId,
+    displayName: row.displayName,
+    email: row.email,
+    picture: row.picture,
+    isAuthenticated: Boolean(row.isAuthenticated),
+    isGuest: Boolean(row.isGuest),
+    provider: "email"
+  };
+  return await database.adapter.withTransaction(async (tx) => ({
+    ok: true,
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
+    auth
+  }));
+}
+async function linkProviderIdentity(database, session, provider, profile) {
+  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
+  if (!subject) {
+    return {
+      ok: false,
+      error: {
+        message: `${providerName} profile is missing a stable subject.`,
+        hint: "Retry sign-in. Sporades requires a verified stable subject claim."
+      }
+    };
+  }
+  return await database.adapter.withTransaction(async (tx) => {
+    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    if (!identity && email && provider === "google") {
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
+          }
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity."
+          }
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
+    }
+    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
+      return {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: `${providerName} identity is already linked to another account.`,
+          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
+        }
+      };
+    }
+    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
+    const auth = {
+      userId: identity?.userId ?? session.auth.userId,
+      displayName,
+      email,
+      picture: profile.picture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider
+    };
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (identity) {
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        updatedAt: now
+      });
+    } else {
+      await tx.insertAuthIdentity({
+        id: nodeCryptoModule.randomUUID(),
+        userId: auth.userId,
+        provider,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider
+    });
+    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
+    } else {
+      await tx.setAuthSessionProvider(session.token, provider);
+      await refreshSessionOnAdapter(tx, session.token);
+    }
+    return { ok: true, auth };
+  });
+}
+async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const token = createSessionToken();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  return token;
+}
+async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, {
+    token: session.token,
+    userId,
+    provider,
+    createdAt: now,
+    expiresAt: sessionExpiresAt(now)
+  });
 }
 
 // src/inspection-sql.ts
@@ -6963,21 +7278,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createAnonymousAuthTables,
   createProviderIdentityTables,
   ensureOAuthStateColumns,
-  createUserPreferencesTables,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
-  rotateSession,
-  rotateSessionOnAdapter,
-  moveSessionToUser,
-  moveSessionToUserOnAdapter,
-  migrateAnonymousPreferences,
-  readCurrentUserPreferences,
-  updateCurrentUserPreferences,
-  normalizePreferencesPatch,
-  createPreferencesError,
   routeSporadesAuth,
-  signUpWithEmail,
-  signInWithEmail,
   // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
   // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
   // the missing definition failed the change only after the caller had already authorised it.
@@ -6986,7 +7289,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   beginOAuthSignIn,
   readOAuthCallbackParameters,
   oauthFormContentTypeValid,
-  linkProviderIdentity,
   createWebSocketAccept,
   createWebSocketHub,
   drainWebSocketFrames,
@@ -13472,107 +13774,6 @@ async function beginOAuthSignIn(database, session, provider, options) {
   });
   return { ok: true, url: started.url };
 }
-async function linkProviderIdentity(database, session, provider, profile) {
-  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
-  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
-  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
-  if (!subject) {
-    return {
-      ok: false,
-      error: {
-        message: `${providerName} profile is missing a stable subject.`,
-        hint: "Retry sign-in. Sporades requires a verified stable subject claim."
-      }
-    };
-  }
-  return await database.adapter.withTransaction(async (tx) => {
-    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
-    if (!identity && email && provider === "google") {
-      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
-      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
-            message: "Google did not verify the email needed to restore this legacy account.",
-            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
-          }
-        };
-      }
-      if (legacyIdentities.length > 1) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
-            message: "Google email matches more than one legacy account.",
-            hint: "Sign in with an existing authentication method before linking this Google identity."
-          }
-        };
-      }
-      identity = legacyIdentities[0] ?? null;
-    }
-    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
-      return {
-        ok: false,
-        error: {
-          code: "AUTH_IDENTITY_CONFLICT",
-          message: `${providerName} identity is already linked to another account.`,
-          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
-        }
-      };
-    }
-    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
-    const auth = {
-      userId: identity?.userId ?? session.auth.userId,
-      displayName,
-      email,
-      picture: profile.picture ?? null,
-      isAuthenticated: true,
-      isGuest: false,
-      provider
-    };
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    if (identity) {
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        updatedAt: now
-      });
-    } else {
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId: auth.userId,
-        provider,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider
-    });
-    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
-    } else {
-      await tx.setAuthSessionProvider(session.token, provider);
-      await refreshSessionOnAdapter(tx, session.token);
-    }
-    return { ok: true, auth };
-  });
-}
 function resolvePasswordResetConfig(config) {
   const passwordReset = config.auth?.email?.passwordReset ?? {};
   const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
@@ -13637,96 +13838,6 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   }, `password-reset:${issued.selector}`);
   return { ok: true };
 }
-async function signUpWithEmail(database, session, provider, credentials) {
-  if (provider !== "email") {
-    return {
-      ok: false,
-      error: {
-        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-        hint: "Use auth.signUp with the email provider."
-      }
-    };
-  }
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-  const normalized = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-  if (await database.adapter.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: 'Use auth.signIn("email", ...) with this email address.'
-      }
-    };
-  }
-  const password = hashEmailPassword(normalized.password);
-  const displayName = normalized.name || normalized.email;
-  const auth = {
-    userId: session.auth.userId,
-    displayName,
-    email: normalized.email,
-    picture: null,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "email"
-  };
-  return await database.adapter.withTransaction(async (tx) => {
-    await tx.insertEmailCredential({
-      email: normalized.email,
-      userId: auth.userId,
-      passwordHash: password.hash,
-      passwordSalt: password.salt,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider: "email"
-    });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
-  });
-}
-async function signInWithEmail(database, session, credentials) {
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-  const normalized = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-  if (throttle.throttled) {
-    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
-  }
-  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
-  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, normalized.email, session);
-    return { ok: false, error: invalidEmailCredentialsError() };
-  }
-  resetEmailSignInAttempts(database, normalized.email, session);
-  const auth = {
-    userId: row.userId,
-    displayName: row.displayName,
-    email: row.email,
-    picture: row.picture,
-    isAuthenticated: Boolean(row.isAuthenticated),
-    isGuest: Boolean(row.isGuest),
-    provider: "email"
-  };
-  return await database.adapter.withTransaction(async (tx) => ({
-    ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-    auth
-  }));
-}
 function createAnonymousAuthTables(sqlite, authConfig = null) {
   const sql = sqlite.dialect.sql;
   return chainMaybePromise([
@@ -13790,13 +13901,6 @@ function createProviderIdentityTables(sqlite) {
       )
     )
   ]);
-}
-function createUserPreferencesTables(sqlite) {
-  return sqlite.exec(
-    sqlite.dialect.sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_user_preferences] ([userId] TEXT PRIMARY KEY, [value] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )
-  );
 }
 function ensureSessionLifecycleColumns(sqlite) {
   return chainMaybePromise([
@@ -13883,116 +13987,6 @@ function splitSqlStatements(sql) {
     statements.push(last);
   }
   return statements;
-}
-async function rotateSession(database, session, userId, provider = session.auth.provider) {
-  return await database.adapter.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
-}
-async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const token = createSessionToken();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-  return token;
-}
-async function moveSessionToUser(database, session, userId, provider = session.auth.provider) {
-  return await database.adapter.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
-}
-async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, {
-    token: session.token,
-    userId,
-    provider,
-    createdAt: now,
-    expiresAt: sessionExpiresAt(now)
-  });
-}
-async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite = null) {
-  if (!auth?.isGuest || auth.userId === targetUserId) {
-    return;
-  }
-  const migrate = async (tx) => {
-    const sourceRow = await tx.readUserPreferences(auth.userId);
-    if (!sourceRow) {
-      return;
-    }
-    const targetRow = await tx.readUserPreferences(targetUserId);
-    const source = JSON.parse(sourceRow.value);
-    const target = targetRow ? JSON.parse(targetRow.value) : {};
-    const next = { ...target, ...source };
-    assertJsonCompatible(next);
-    await tx.saveUserPreferences({
-      userId: targetUserId,
-      value: JSON.stringify(next),
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-  };
-  if (sqlite) {
-    await migrate(sqlite);
-    return;
-  }
-  await database.adapter.withTransaction(migrate);
-}
-async function readCurrentUserPreferences(database, auth) {
-  const row = await database.adapter.readUserPreferences(auth.userId);
-  return {
-    ok: true,
-    data: {
-      preferences: row ? JSON.parse(row.value) : {}
-    },
-    error: null
-  };
-}
-async function updateCurrentUserPreferences(database, auth, patch) {
-  try {
-    const normalizedPatch = normalizePreferencesPatch(patch);
-    const preferences = await database.adapter.withTransaction(async (tx) => {
-      const row = await tx.readUserPreferences(auth.userId);
-      const current = row ? JSON.parse(row.value) : {};
-      const next = { ...current, ...normalizedPatch };
-      assertJsonCompatible(next);
-      await tx.saveUserPreferences({
-        userId: auth.userId,
-        value: JSON.stringify(next),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      return next;
-    });
-    return {
-      ok: true,
-      data: { preferences },
-      changes: normalizedPatch,
-      error: null
-    };
-  } catch (error) {
-    if (error?.code === "INVALID_PREFERENCES_PATCH") {
-      return { ok: false, data: null, error };
-    }
-    return {
-      ok: false,
-      data: null,
-      error: createPreferencesError(
-        "Preferences update failed.",
-        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
-        "PREFERENCES_UPDATE_FAILED"
-      )
-    };
-  }
-}
-function normalizePreferencesPatch(patch) {
-  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-    throw createPreferencesError(
-      "Preferences updates must be JSON objects.",
-      "Pass a plain JSON object to preferences.update().",
-      "INVALID_PREFERENCES_PATCH"
-    );
-  }
-  assertJsonCompatible(patch);
-  return patch;
-}
-function createPreferencesError(message, hint, code) {
-  return { code, message, hint };
 }
 function createWebSocketAccept(key) {
   return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
@@ -14924,7 +14918,12 @@ var MIGRATED_RUNTIME_MODULES = [
   // Batch 4. Imports `runtime-errors.js` for `commandError` and `assertJsonCompatible`, and
   // `auth-runtime.js` for `PASSWORD_RESET_MAIL_JOB` and `privilegedAuthUserId` — so it is listed
   // after both, matching the dependency direction. esbuild resolves the graph either way.
-  { file: "jobs-runtime.js", loaded: jobs_runtime_exports }
+  { file: "jobs-runtime.js", loaded: jobs_runtime_exports },
+  // Batch 5. Imports `runtime-errors.js` for `assertJsonCompatible` and nothing else, so it is
+  // listed before `auth-runtime.js` in the dependency direction — auth imports *it*, for
+  // `migrateAnonymousPreferences`, which is what let batch 5 carry seven auth functions with it.
+  // esbuild resolves the graph either way; the order is documentation.
+  { file: "user-preferences-runtime.js", loaded: user_preferences_runtime_exports }
 ];
 var MIGRATED_RUNTIME_MODULE_FILES = MIGRATED_RUNTIME_MODULES.map(({ file }) => file);
 var MIGRATED_MODULE_SKEW_PROBE = [
@@ -15059,6 +15058,33 @@ var MIGRATED_MODULE_JOB_SKEW_PROBE = [
   // byte-identical to the region it moved out of, and the one a bad builtin binding would break.
   ["scheduledOccurrenceIdentity", [{ capsuleIdentity: "capsule-a" }, "nightly", "2031-01-01T00:00:00.000Z"]]
 ];
+var MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE = [
+  // Admitted. A patch that reaches the end of both gates and comes back unchanged.
+  ["plain", { theme: "dark" }],
+  ["nested", { density: "compact", locale: "en-GB", nested: { a: [1, 2, null], b: "" } }],
+  ["empty", {}],
+  // Refused by the shape gate, which is the limb that owns `INVALID_PREFERENCES_PATCH`. `null` and
+  // an array both pass `typeof === "object"`, so they are the two the gate's extra clauses exist
+  // for and the two a copy that had kept only the `typeof` check would wrongly admit.
+  ["null", null],
+  ["array", []],
+  ["undefined", void 0],
+  ["string", "not an object"],
+  ["number", 42],
+  // Refused by `assertJsonCompatible` rather than by the shape gate: plain objects the shape gate
+  // admits and JSON cannot carry. A copy that had lost the JSON check admits both and disagrees
+  // here, and it is the only limb of this probe that leaves the module at all.
+  ["bigint", { big: 1n }],
+  ["cyclic", (() => {
+    const a = {};
+    a.self = a;
+    return { cyclic: a };
+  })()]
+];
+var MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE = {
+  dialect: { sql: (text) => text },
+  exec: (text) => text
+};
 function bundleTemplateError(message, hint) {
   return Object.assign(new Error(message), { hint });
 }
@@ -15086,7 +15112,9 @@ var MIGRATED_MODULE_PROBE_NAMES = [
   "parseScheduleExpression",
   "nextScheduleOccurrence",
   "scheduleDefinitionsFromCapsule",
-  ...new Set(MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name]) => name))
+  ...new Set(MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name]) => name)),
+  "normalizePreferencesPatch",
+  "createUserPreferencesTables"
 ];
 function probedAnswer(call) {
   try {
@@ -15179,7 +15207,16 @@ function describeMigratedModuleAnswers(module) {
     ),
     ...MIGRATED_MODULE_JOB_SKEW_PROBE.map(
       ([name, args]) => JSON.stringify([name, probedAnswer(() => module[name](...args))])
-    )
+    ),
+    // The user-preferences domain. Only the label is serialized alongside the answer; see the
+    // probe's own comment for why the patches themselves cannot be.
+    ...MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(
+      ([label, patch]) => JSON.stringify([label, probedAnswer(() => module.normalizePreferencesPatch(patch))])
+    ),
+    JSON.stringify([
+      "createUserPreferencesTables",
+      probedAnswer(() => module.createUserPreferencesTables(MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE))
+    ])
   ];
 }
 function migratedRuntimeModulesSource() {

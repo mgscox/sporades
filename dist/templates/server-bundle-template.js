@@ -9,6 +9,7 @@ import * as mailConfig from "../mail-config.js";
 import * as mailRuntime from "../mail-runtime.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import * as runtimeErrors from "../runtime-errors.js";
+import * as userPreferencesRuntime from "../user-preferences-runtime.js";
 import { ACL_HELPER_STATE, PRIVILEGED_AUDIT_ACTOR_KINDS, PRIVILEGED_AUDIT_OUTCOMES, PRIVILEGED_AUDIT_SCHEMA, SERVER_RUNTIME_SOURCE_FUNCTIONS, } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 // How a runtime module constant is written into the bundle preamble. Values travel as their own
@@ -44,6 +45,11 @@ const MIGRATED_RUNTIME_MODULES = [
     // `auth-runtime.js` for `PASSWORD_RESET_MAIL_JOB` and `privilegedAuthUserId` — so it is listed
     // after both, matching the dependency direction. esbuild resolves the graph either way.
     { file: "jobs-runtime.js", loaded: jobsRuntime },
+    // Batch 5. Imports `runtime-errors.js` for `assertJsonCompatible` and nothing else, so it is
+    // listed before `auth-runtime.js` in the dependency direction — auth imports *it*, for
+    // `migrateAnonymousPreferences`, which is what let batch 5 carry seven auth functions with it.
+    // esbuild resolves the graph either way; the order is documentation.
+    { file: "user-preferences-runtime.js", loaded: userPreferencesRuntime },
 ];
 // The same list as file names, for guards that have to read the modules off disk rather than call
 // them. Exported so that `test/server-bundle-free-bindings.test.js` cannot go out of step with what
@@ -301,6 +307,61 @@ const MIGRATED_MODULE_JOB_SKEW_PROBE = [
     // byte-identical to the region it moved out of, and the one a bad builtin binding would break.
     ["scheduledOccurrenceIdentity", [{ capsuleIdentity: "capsule-a" }, "nightly", "2031-01-01T00:00:00.000Z"]],
 ];
+// Patches the carried copy of `user-preferences-runtime` and the running one must judge the same
+// way, as arguments to `normalizePreferencesPatch`. Batch 5's domain is the smallest carried here
+// and the hardest to reach, so what this probe *can* see is worth stating exactly.
+//
+// `describeMigratedModuleAnswers` is synchronous, and three of that module's four other exports are
+// `async` — they take a database adapter and answer with a promise, so none of them can be compared
+// from inside a bundle build. `normalizePreferencesPatch` is the synchronous validation path they
+// all funnel through, and it is exported for this probe rather than because something resolves it.
+// One call reaches all three of the things about this domain that would otherwise be carried
+// uncompared: the object/array/null gate itself, `createPreferencesError` — the module's only
+// private function, reachable through nothing else — and `assertJsonCompatible`, its only
+// cross-module import, which is where the JSON-compatibility refusal actually lives.
+//
+// Split both ways for the reason this file repeats: a corpus the gate refuses in full cannot tell
+// a validator that refuses everything from the real one, and one it admits in full cannot see a
+// validator that returns its input unchanged. The refusals cover both codes the domain can answer
+// with — `INVALID_PREFERENCES_PATCH` from the shape gate, and the hint-bearing refusal
+// `assertJsonCompatible` throws — because a copy that reached the right verdict by the wrong route
+// would hand a Capsule author the wrong error, which `probedAnswer` compares and nothing else would.
+//
+// **Each case is `[label, patch]` and only the label is serialized.** Two of the patches cannot
+// survive `JSON.stringify` at all — that is precisely why they are refused — so a corpus that put
+// the patch itself into the comparison would throw out of the middle of every bundle build.
+const MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE = [
+    // Admitted. A patch that reaches the end of both gates and comes back unchanged.
+    ["plain", { theme: "dark" }],
+    ["nested", { density: "compact", locale: "en-GB", nested: { a: [1, 2, null], b: "" } }],
+    ["empty", {}],
+    // Refused by the shape gate, which is the limb that owns `INVALID_PREFERENCES_PATCH`. `null` and
+    // an array both pass `typeof === "object"`, so they are the two the gate's extra clauses exist
+    // for and the two a copy that had kept only the `typeof` check would wrongly admit.
+    ["null", null],
+    ["array", []],
+    ["undefined", undefined],
+    ["string", "not an object"],
+    ["number", 42],
+    // Refused by `assertJsonCompatible` rather than by the shape gate: plain objects the shape gate
+    // admits and JSON cannot carry. A copy that had lost the JSON check admits both and disagrees
+    // here, and it is the only limb of this probe that leaves the module at all.
+    ["bigint", { big: 1n }],
+    ["cyclic", (() => { const a = {}; a.self = a; return { cyclic: a }; })()],
+];
+// The DDL the carried copy and the running one must emit for the preference table, driven through a
+// stand-in for the engine. `createUserPreferencesTables` is the domain's other synchronously
+// reachable export: it takes an adapter and calls `exec(dialect.sql(…))`, so a fake that returns the
+// text it is handed captures the statement exactly. A carried copy that had drifted on the table
+// name, a column, the primary key or a NOT NULL would be a deployed Capsule reading and writing
+// preferences against a different schema than the one it created — silent until it is not.
+//
+// One call, four string concatenations, no clock and no I/O. Every probe in this file runs twice on
+// every `sporades dev` start, which is why that is worth stating.
+const MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE = {
+    dialect: { sql: (text) => text },
+    exec: (text) => text,
+};
 function bundleTemplateError(message, hint) {
     return Object.assign(new Error(message), { hint });
 }
@@ -336,6 +397,8 @@ const MIGRATED_MODULE_PROBE_NAMES = [
     "nextScheduleOccurrence",
     "scheduleDefinitionsFromCapsule",
     ...new Set(MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name]) => name)),
+    "normalizePreferencesPatch",
+    "createUserPreferencesTables",
 ];
 // What a probed call answered, as one comparable string, whether it returned or threw. The mail
 // limbs need this and the inspection ones do not: `validateReadOnlyInspectionSql` reports a refusal
@@ -441,6 +504,13 @@ function describeMigratedModuleAnswers(module) {
                 .map((definition) => ({ ...definition, fields: definition.fields.map((set) => [...set]) }))),
         ])),
         ...MIGRATED_MODULE_JOB_SKEW_PROBE.map(([name, args]) => JSON.stringify([name, probedAnswer(() => module[name](...args))])),
+        // The user-preferences domain. Only the label is serialized alongside the answer; see the
+        // probe's own comment for why the patches themselves cannot be.
+        ...MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(([label, patch]) => JSON.stringify([label, probedAnswer(() => module.normalizePreferencesPatch(patch))])),
+        JSON.stringify([
+            "createUserPreferencesTables",
+            probedAnswer(() => module.createUserPreferencesTables(MIGRATED_MODULE_PREFERENCES_STORAGE_PROBE)),
+        ]),
     ];
 }
 // Every region that has left the monolith, carried into the bundle as those modules' own compiled

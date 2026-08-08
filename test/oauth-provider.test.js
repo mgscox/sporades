@@ -15,11 +15,17 @@ import { promisify } from "node:util";
 // worse, assert against a value derived from one. Named imports through the re-export bridge on
 // `server-runtime-source.js` fail at load instead, which is the point of converting them.
 //
-// `beginOAuthSignIn`, `resolveOAuthRequestOrigin` and `linkProviderIdentity` are still found by name
-// because they are still in the monolith: they reach the HTTP layer and the user-preferences
-// migration, so they follow batches 7 and 4 rather than batch 3.
+// `beginOAuthSignIn` and `resolveOAuthRequestOrigin` are still found by name because they are still
+// in the monolith: they reach the HTTP layer, so they follow batch 8 rather than batch 3.
+//
+// `linkProviderIdentity` joined the named imports in batch 5, which moved the user-preferences
+// domain and with it the seven auth functions `migrateAnonymousPreferences` had been holding. It is
+// the exact failure this comment describes: it left the emitted list in that batch, so the `.find`
+// spelling below would have bound `undefined` and every assertion using it would have called
+// `undefined(…)` rather than going red at load.
 import {
   appleOAuthOriginEligible,
+  linkProviderIdentity,
   completeMicrosoftOAuth,
   completeOpenIdOAuthCodeExchange,
   createAppleClientSecret,
@@ -40,7 +46,6 @@ import {
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
-const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const execFileAsync = promisify(execFile);
 
 test("provider endpoint overrides require the explicit loopback-only test seam", () => {

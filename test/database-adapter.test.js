@@ -18,6 +18,7 @@ import {
   createSqliteDatabaseAdapter,
   dumpDatabase,
   getPrivateFileUrl,
+  linkProviderIdentity,
   listDatabaseTables,
   openDevDatabase,
   resolveAnonymousSession,
@@ -52,8 +53,10 @@ async function withTempDir(fn) {
 
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
+// `linkProviderIdentity` is a named import above rather than a `.find` here since batch 5 moved it
+// into `auth-runtime.ts`: that lookup returns `undefined` once a name leaves the emitted list, and
+// the twelve assertions below would have called `undefined(…)` instead of failing at load.
 const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
-const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
