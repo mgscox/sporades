@@ -68,8 +68,8 @@
 // neither module reads a name of the other's before both are initialized. esbuild resolves the
 // cycle when it bundles the migrated set into the carried IIFE and again when it builds `bin/`.
 //
-// **What is exported and what is not.** 17 of the 32 are exported and 15 are private, against 8
-// exported and 32 registered before the move. Under the emitted list every one of the 32 had to be
+// **What is exported and what is not.** 17 of the 32 are exported and 15 are private, against 7
+// exported and all 32 registered before the move. Under the emitted list every one of the 32 had to be
 // an entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS` or become a `ReferenceError` in a deployed Capsule,
 // so "private" was not available to this domain. It is now: the whole CSP construction
 // (`defaultRuntimeCspDirectives`, `serializeCspDirectives`), the origin and header predicates
