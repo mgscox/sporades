@@ -33,10 +33,16 @@ import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import * as inspectionSqlModule from "../dist/inspection-sql.js";
+import * as logIndexGuardModule from "../dist/log-index-guard.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
-import { INSPECTION_SQL_SKEW_PROBE, createServerBundleSource, inspectionSqlBlockFrom } from "../dist/templates/server-bundle-template.js";
+import {
+  MIGRATED_MODULE_ROW_SKEW_PROBE,
+  MIGRATED_MODULE_SKEW_PROBE,
+  createServerBundleSource,
+  migratedRuntimeModulesBlockFrom,
+} from "../dist/templates/server-bundle-template.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -1387,6 +1393,19 @@ __probeWriteFileSync(${JSON.stringify(outputPath)}, JSON.stringify(__probeCorpus
   pragma: __probeCall(isSafeInspectionPragma, sql, 6),
   skipEveryEngine: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectEveryEngineQuotes(true)),
   skipWithheld: __probeCall(skipSqlQuotedOrCommented, sql, 0, sqlDialectWithoutPostgresStringForms(true)),
+  // The internal log-index guard, which is the second region to leave the monolith and the first to
+  // reach these two bundles by *three* different routes: an import in the graph bundle, a name
+  // destructured out of the carried block in the emitted one, and — before it moved — a stringified
+  // entry in the emitted list. Its row limb is asked here too, because it reads rows rather than
+  // SQL and nothing else in this report would notice it going missing.
+  targetsLogIndex: __probeCall(targetsInternalLogIndexTable, sql),
+  logIndexReference: __probeCall(readSqlTableReference, sql, 0),
+  // Both row limbs are driven by the corpus entry rather than by a fixed row, so each answers both
+  // ways across the corpus. A row that is flagged whatever the statement says — \`{ name:
+  // "sporades_log_events" }\` was the first attempt — compares equal in both bundles for a reason
+  // that has nothing to do with the code under test.
+  createTableRow: __probeCall(isInternalLogIndexMetadataRow, { sql: "CREATE TABLE " + sql }, sql),
+  schemaQueryRow: __probeCall(isInternalLogIndexMetadataRow, { note: sql }, "SELECT note FROM sqlite_schema"),
 })), null, 2));
 process.exit(0);
 `;
@@ -1440,6 +1459,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
           // how the names resolve is the thing this test exists to find nothing wrong with.
           epilogue: [
             `import { readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens, containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma, skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes, sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "../inspection-sql.js";`,
+            `import { isInternalLogIndexMetadataRow, readSqlTableReference, targetsInternalLogIndexTable } from "../log-index-guard.js";`,
             inspectionSurfaceReport(reportPath("graph")),
           ].join("\n"),
         }),
@@ -1469,6 +1489,19 @@ test("both bundles answer the whole read-only inspection surface identically", a
       "the corpus does not reach every refusal limb, so a limb that changed would be invisible here",
     );
 
+    // And the same for the log-index guard's two limbs, which are the newest thing in this report.
+    // A limb the corpus reaches in one direction only compares clean for the wrong reason, which is
+    // the failure ADR-0038 records the sweep corpus making three separate times.
+    for (const [limb, reads] of [
+      ["targetsLogIndex", (entry) => entry.targetsLogIndex.value],
+      ["createTableRow", (entry) => entry.createTableRow.value],
+      ["schemaQueryRow", (entry) => entry.schemaQueryRow.value],
+    ]) {
+      const hits = emittedReport.filter((entry) => reads(entry) === true).length;
+      assert.ok(hits > 0, `the corpus never makes ${limb} answer true, so the log-index guard is compared vacuously`);
+      assert.ok(hits < emittedReport.length, `the corpus never makes ${limb} answer false, so the log-index guard is compared vacuously`);
+    }
+
     for (const [index, entry] of emittedReport.entries()) {
       assert.deepEqual(
         graphReport[index],
@@ -1481,78 +1514,157 @@ test("both bundles answer the whole read-only inspection surface identically", a
   }
 });
 
-// While the CLI ships as a bundle there are two copies of `inspection-sql`: the one esbuild inlined
-// into `bin/sporades.js`, which is what `createServerBundleSource` imports, and `dist/inspection-sql.js`
-// on disk, which is what it reads the carried text from. A tree whose `dist/` and `bin/` came from
-// different builds would put the `dist/` gate inside a Capsule while every other runtime function in
-// that same Capsule came from `bin/`, and nothing in `scripts/` compares the two for freshness.
+// While the CLI ships as a bundle there are two copies of every migrated module: the one esbuild
+// inlined into `bin/sporades.js`, which is what `createServerBundleSource` imports, and the file
+// under `dist/` on disk, which is what it builds the carried text from. A tree whose `dist/` and
+// `bin/` came from different builds would put the `dist/` gate inside a Capsule while every other
+// runtime function in that same Capsule came from `bin/`, and nothing in `scripts/` compares the two
+// for freshness.
 //
-// So the builder compares them itself, and this is that check exercised against copies skewed on
-// purpose. Driven through `inspectionSqlBlockFrom` rather than by editing the tree the suite is
-// running out of.
-test("a carried copy of the inspection gate that disagrees with the running one fails the build", async () => {
-  const modulePath = fileURLToPath(new URL("../dist/inspection-sql.js", import.meta.url));
-  const compiled = await readFile(modulePath, "utf8");
+// So the builder compares them itself, and this is that check exercised against trees skewed on
+// purpose. Driven through `migratedRuntimeModulesBlockFrom` against a copy of `dist/` in a temporary
+// directory, rather than by editing the tree the suite is running out of.
+//
+// A directory rather than a string of module text, which is what this drove before the carrier
+// bundled: `buildSync` accepts no plugins, so an in-memory graph cannot be handed to esbuild. It is
+// also the more faithful seam — a skewed module is resolved here by the same import the shipping
+// build resolves, which is what lets the last case below exist at all.
+test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
+  const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
+  const files = ["inspection-sql.js", "log-index-guard.js"];
+  const originals = Object.fromEntries(
+    await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
+  );
 
-  // The honest copy builds, or every rejection below would be meaningless.
-  assert.match(inspectionSqlBlockFrom(compiled, modulePath), /function nestingBlockCommentEnd\(/);
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-skew-"));
+  // Writes `dist/` into a scratch directory with one file replaced, and builds the block from it.
+  const blockWith = async (file, contents) => {
+    const dir = path.join(root, `skew-${Math.random().toString(36).slice(2)}`);
+    await mkdir(dir, { recursive: true });
+    await Promise.all(files.map((name) => writeFile(path.join(dir, name), name === file ? contents : originals[name])));
+    return migratedRuntimeModulesBlockFrom(dir);
+  };
 
-  // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
-  // allow-everything validator from the real one, which is the case this check exists for.
-  const refused = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === false);
-  const admitted = INSPECTION_SQL_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === true);
-  assert.ok(refused.length >= 5, `the skew probe only refuses ${refused.length} statements — it cannot see a validator that admits everything`);
-  assert.ok(admitted.length >= 5, `the skew probe only admits ${admitted.length} statements — it cannot see a validator that refuses everything`);
+  try {
+    // The honest copies build, or every rejection below would be meaningless. Both modules are
+    // asserted present in the one block, since carrying them together is the point of the change
+    // that introduced this: a private helper of the gate, and the guard's private identifier reader.
+    const honest = await blockWith("inspection-sql.js", originals["inspection-sql.js"]);
+    assert.match(honest, /function nestingBlockCommentEnd\(/);
+    assert.match(honest, /function readSqlIdentifier\(/);
 
-  const skews = [
-    // The one that was silent before this check existed: same exports, same names, a validator
-    // replaced by one that admits anything.
-    [
-      "a validator swapped for one that admits everything",
-      compiled.replace(
-        /export function validateReadOnlyInspectionSql\(sql\) \{/,
-        "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
-      ),
-      /answers the read-only inspection gate differently/,
-    ],
-    // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
-    // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
-    [
-      "a tokenizer whose line comment stops ending at a carriage return",
-      compiled.replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
-      /answers the read-only inspection gate differently/,
-    ],
-    // Structural skew: an export the running copy has and the carried one does not.
-    [
-      "a copy missing an export the running one has",
-      compiled.replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
-      /exports a different set of names.*missing skipSqlTrivia/s,
-    ],
-    // Truncation part-way through a function, which is what an interrupted write leaves behind.
-    [
-      "a copy truncated mid-function",
-      compiled.slice(0, compiled.indexOf("export function skipSqlQuotedOrCommented(") + 200),
-      /did not parse|did not evaluate|exports a different set of names/,
-    ],
-  ];
+    // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
+    // allow-everything validator from the real one, which is the case this check exists for.
+    const refused = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === false);
+    const admitted = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === true);
+    assert.ok(refused.length >= 5, `the skew probe only refuses ${refused.length} statements — it cannot see a validator that admits everything`);
+    assert.ok(admitted.length >= 5, `the skew probe only admits ${admitted.length} statements — it cannot see a validator that refuses everything`);
 
-  for (const [description, skewed, expected] of skews) {
-    assert.notEqual(skewed, compiled, `the ${description} case did not actually change the module`);
-    assert.throws(
-      () => inspectionSqlBlockFrom(skewed, modulePath),
-      (error) => {
-        assert.match(error.message, expected, `wrong rejection for ${description}: ${error.message}`);
-        assert.match(error.hint, /npm run build|reinstall the Sporades CLI/i, `no actionable hint for ${description}`);
-        return true;
-      },
-      `${description} was carried into the bundle instead of failing the build`,
+    // And the same, for the second module carried here: the probe must reach both of the log-index
+    // guard's answers in both directions, or a skewed copy of it compares clean for the wrong reason.
+    const targeted = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => logIndexGuardModule.targetsInternalLogIndexTable(sql));
+    assert.ok(targeted.length >= 2, `the skew probe reaches the log-index guard for ${targeted.length} statements — too few to see it go missing`);
+    assert.ok(
+      MIGRATED_MODULE_SKEW_PROBE.some((sql) => !logIndexGuardModule.targetsInternalLogIndexTable(sql)),
+      "the skew probe cannot see a log-index guard that answers true for everything",
     );
+    const flagged = MIGRATED_MODULE_ROW_SKEW_PROBE.filter(([row, sql]) => logIndexGuardModule.isInternalLogIndexMetadataRow(row, sql));
+    assert.ok(flagged.length >= 3, `the row probe flags ${flagged.length} rows — too few to see the row filter go missing`);
+    assert.ok(
+      MIGRATED_MODULE_ROW_SKEW_PROBE.some(([row, sql]) => !logIndexGuardModule.isInternalLogIndexMetadataRow(row, sql)),
+      "the row probe cannot see a row filter that flags everything",
+    );
+
+    const skews = [
+      // The one that was silent before this check existed: same exports, same names, a validator
+      // replaced by one that admits anything.
+      [
+        "a validator swapped for one that admits everything",
+        "inspection-sql.js",
+        originals["inspection-sql.js"].replace(
+          /export function validateReadOnlyInspectionSql\(sql\) \{/,
+          "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
+        ),
+        /answer the read-only inspection surface differently/,
+      ],
+      // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
+      // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
+      [
+        "a tokenizer whose line comment stops ending at a carriage return",
+        "inspection-sql.js",
+        originals["inspection-sql.js"].replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
+        /answer the read-only inspection surface differently/,
+      ],
+      // Structural skew: an export the running copy has and the carried one does not.
+      [
+        "a copy missing an export the running one has",
+        "inspection-sql.js",
+        originals["inspection-sql.js"].replace("export function sqlContentFingerprint(", "function sqlContentFingerprint("),
+        /export a different set of names.*missing sqlContentFingerprint/s,
+      ],
+      // Truncation part-way through a function, which is what an interrupted write leaves behind.
+      [
+        "a copy truncated mid-function",
+        "inspection-sql.js",
+        originals["inspection-sql.js"].slice(0, originals["inspection-sql.js"].indexOf("export function skipSqlQuotedOrCommented(") + 200),
+        /did not build|did not evaluate|export a different set of names/,
+      ],
+      // The second module, skewed on the limb the statement probe reaches: the log-index guard stops
+      // recognising the table it exists to conceal. Same exports, same names, and before this module
+      // was carried here at all there was nothing to compare it against.
+      [
+        "a log-index guard that no longer recognises the table it conceals",
+        "log-index-guard.js",
+        originals["log-index-guard.js"].replace(
+          'part.toLowerCase() === "sporades_log_events"',
+          'part.toLowerCase() === "sporades_log_events_renamed"',
+        ),
+        /answer the read-only inspection surface differently/,
+      ],
+      // And on the limb only the row probe reaches. This one is the reason that probe exists: the
+      // guard's row filter answers no SQL question at all, so a copy that had lost it agrees with the
+      // running one about every statement above.
+      [
+        "a log-index guard whose row filter stopped flagging metadata rows",
+        "log-index-guard.js",
+        originals["log-index-guard.js"].replace(
+          "export function isInternalLogIndexMetadataRow(row, sql = \"\") {",
+          "export function isInternalLogIndexMetadataRow(row, sql = \"\") {\n  if (true) return false;",
+        ),
+        /answer the read-only inspection surface differently/,
+      ],
+      // The skew that only a resolved graph can see: the guard imports the gate's tokenizer, so a
+      // `dist/` where the gate stopped exporting it is a build failure rather than a wrong answer.
+      // Under the previous carrier the two modules were converted independently and this was
+      // unreachable — which is the whole hazard `require(…)` in an ES module would have been.
+      [
+        "a gate that stopped exporting the tokenizer the guard imports",
+        "inspection-sql.js",
+        originals["inspection-sql.js"].replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
+        /did not build.*skipSqlTrivia|export a different set of names.*missing skipSqlTrivia/s,
+      ],
+    ];
+
+    for (const [description, file, skewed, expected] of skews) {
+      assert.notEqual(skewed, originals[file], `the ${description} case did not actually change ${file}`);
+      await assert.rejects(
+        async () => blockWith(file, skewed),
+        (error) => {
+          assert.match(error.message, expected, `wrong rejection for ${description}: ${error.message}`);
+          assert.match(error.hint, /npm run build|reinstall the Sporades CLI|migrated runtime module/i, `no actionable hint for ${description}`);
+          return true;
+        },
+        `${description} was carried into the bundle instead of failing the build`,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
-test("the emitted-list bundle carries the inspection module's private helpers, which no list registers", () => {
+test("the emitted-list bundle carries the migrated modules' private helpers, which no list registers", () => {
   // Criterion 2 of the ticket this landed under, asserted rather than described. A private helper of
-  // `inspection-sql` is exported from nothing and appears in no emitted list, and it still reaches
+  // a migrated module is exported from nothing and appears in no emitted list, and it still reaches
   // the bundle that ships — because that bundle carries the module whole rather than one registered
   // function at a time.
   //
@@ -1566,9 +1678,13 @@ test("the emitted-list bundle carries the inspection module's private helpers, w
     serverModuleSource: "export default {};",
   });
 
-  for (const helper of ["nestingBlockCommentEnd", "opensQuotedRun"]) {
+  const migratedModules = { ...inspectionSqlModule, ...logIndexGuardModule };
+  // `readSqlIdentifier` is the log-index guard's, and it became private in the same change that made
+  // the guard a module: it was an entry in the emitted list until then, because a helper the list
+  // did not carry was a `ReferenceError` rather than a compile error.
+  for (const helper of ["nestingBlockCommentEnd", "opensQuotedRun", "readSqlIdentifier"]) {
     assert.equal(
-      Object.keys(inspectionSqlModule).includes(helper),
+      Object.keys(migratedModules).includes(helper),
       false,
       `${helper} is exported, so it is not the private helper this asserts`,
     );
@@ -1580,9 +1696,16 @@ test("the emitted-list bundle carries the inspection module's private helpers, w
     assert.match(bundle, new RegExp(`function ${helper}\\(`), `${helper} did not reach the emitted-list bundle`);
   }
 
-  // And the gate's own entry points are no longer in the emitted list either — the whole region
-  // travels as the module rather than as the twenty-three registrations it used to need.
-  for (const moved of ["validateReadOnlyInspectionSql", "skipSqlQuotedOrCommented", "sqlWithoutTrailingTerminator"]) {
+  // And the migrated regions' own entry points are no longer in the emitted list either — each
+  // travels as its module rather than as the registrations it used to need.
+  for (const moved of [
+    "validateReadOnlyInspectionSql",
+    "skipSqlQuotedOrCommented",
+    "sqlWithoutTrailingTerminator",
+    "targetsInternalLogIndexTable",
+    "readSqlTableReference",
+    "isInternalLogIndexMetadataRow",
+  ]) {
     assert.equal(
       SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),
       false,
@@ -1590,6 +1713,22 @@ test("the emitted-list bundle carries the inspection module's private helpers, w
     );
     assert.match(bundle, new RegExp(`function ${moved}\\(`), `${moved} did not reach the emitted-list bundle`);
   }
+
+  // One copy of each, not one per module that imports it. The migrated modules are bundled into a
+  // single block precisely so that carrying a module which imports the inspection gate does not put
+  // a second copy of the one tokenizer into the artifact — see `migratedRuntimeModulesBlockFrom`.
+  for (const shared of ["skipSqlQuotedOrCommented", "skipSqlTrivia", "readSqlQuotedIdentifier"]) {
+    assert.equal(
+      bundle.split(`function ${shared}(`).length - 1,
+      1,
+      `${shared} appears in the emitted-list bundle more than once — the migrated modules are being carried separately`,
+    );
+  }
+
+  // ADR-0040: the block is spliced into an ES module, so a `require(…)` in it is not a slow path, it
+  // is a Capsule that does not boot. That is exactly what `transformSync` produced for a module with
+  // an import of its own, which is why the carrier bundles instead.
+  assert.equal(bundle.includes("require("), false, "the emitted-list bundle would resolve a specifier at runtime");
 });
 
 test("the module-graph bundle resolves the runtime's own symbol rather than a reconstruction of it", async () => {

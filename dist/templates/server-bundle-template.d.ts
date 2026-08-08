@@ -1,5 +1,6 @@
-export declare const INSPECTION_SQL_SKEW_PROBE: string[];
-export declare function inspectionSqlBlockFrom(compiled: string, modulePath: string): string;
+export declare const MIGRATED_MODULE_SKEW_PROBE: string[];
+export declare const MIGRATED_MODULE_ROW_SKEW_PROBE: [Record<string, any>, string][];
+export declare function migratedRuntimeModulesBlockFrom(distDir: string): string;
 export declare function createServerBundleSource({ config, serverEnv, sealedServerEnv, serverSource, serverModuleSource }: {
     config: any;
     serverEnv: any;

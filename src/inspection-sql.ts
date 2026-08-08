@@ -31,13 +31,18 @@
 // The two new helpers are private because nothing needs them as values — the census reads them out
 // of this file's source text, which is what makes a private helper visible to it at all.
 //
-// Four names are reached from outside this module by the rest of the runtime, and they are the real
-// boundary: `validateReadOnlyInspectionSql` and `sqlWithoutTrailingTerminator`, which the Database
-// adapters' `runReadOnlyInspectionQuery` and the Postgres `columns()` primitive call, and
-// `skipSqlTrivia` and `readSqlQuotedIdentifier`, which the internal log-index table guard still
-// calls from `server-runtime-source.ts`. That last pair is a coupling the single file was hiding:
-// the log-index guard is not part of this gate and did not move, but it lexes SQL with this gate's
-// tokenizer.
+// Four names are reached from outside this module, and they are the real boundary. Two are the
+// gate: `validateReadOnlyInspectionSql` and `sqlWithoutTrailingTerminator`, which the Database
+// adapters' `runReadOnlyInspectionQuery` and the Postgres `columns()` primitive call from
+// `server-runtime-source.ts`. Two are the tokenizer: `skipSqlTrivia` and `readSqlQuotedIdentifier`,
+// which the internal log-index table guard lexes a table reference with.
+//
+// That second pair is a coupling the single file was hiding, and it has one consumer:
+// `log-index-guard.ts`. The guard is not part of this gate — ADR-0038 is a document about what this
+// gate is a boundary by, and concealing an internal table is not one of those things — so it is a
+// module beside this one rather than inside it, and its header states that reasoning. What changed
+// when it moved is that the tokenizer stopped being reachable from 13,700 lines of unrelated
+// domains and became a named dependency of one file that lexes SQL on this same path.
 
 // The read-only inspection gate for `sporades db query`. What it is a boundary *by* is worth being
 // explicit about, because a reader who takes the keyword scan below for the boundary will keep

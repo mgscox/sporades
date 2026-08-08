@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 import * as inspectionSql from "../inspection-sql.js";
+import * as logIndexGuard from "../log-index-guard.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { ACL_HELPER_STATE, EMAIL_SIGN_IN_FAILURE_LIMIT, EMAIL_SIGN_IN_THROTTLE_FIELD, EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES, EMAIL_SIGN_IN_THROTTLE_WINDOW_MS, PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL, PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUDIT_ACTOR_KINDS, PRIVILEGED_AUDIT_OUTCOMES, PRIVILEGED_AUDIT_SCHEMA, PRIVILEGED_AUTH_USER_ID, RESERVED_JOB_NAME_PREFIX, SERVER_RUNTIME_SOURCE_FUNCTIONS, } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
@@ -18,17 +18,33 @@ function serializeRuntimeConstant(value) {
         return `new Set(${JSON.stringify([...value])})`;
     return JSON.stringify(value);
 }
-const INSPECTION_SQL_NAMESPACE = "__sporadesInspectionSql";
-// Statements the carried copy of the inspection gate and the loaded one must agree about, checked at
-// every bundle build. Half are refused by the gate and half admitted, and the refused half is what
-// gives the check its teeth: a carried copy whose validator had been replaced by one that admits
-// everything answers `ok` for all of them.
+const MIGRATED_MODULES_NAMESPACE = "__sporadesMigratedRuntimeModules";
+// Every region that has left `server-runtime-source.ts` and now travels into the emitted-list bundle
+// as its own compiled text rather than as `fn.toString()` over a list of its functions (ADR-0041).
+// A batch that migrates a domain adds its module here and nowhere else in this file.
+//
+// `file` is read from `dist/`; `loaded` is the copy this process is running, which is a *different*
+// copy while the CLI ships as `bin/sporades.js`. The two are compared below.
+const MIGRATED_RUNTIME_MODULES = [
+    { file: "inspection-sql.js", loaded: inspectionSql },
+    { file: "log-index-guard.js", loaded: logIndexGuard },
+];
+// Statements the carried copies of the migrated modules and the loaded ones must agree about,
+// checked at every bundle build. Half are refused by the inspection gate and half admitted, and the
+// refused half is what gives the check its teeth: a carried copy whose validator had been replaced
+// by one that admits everything answers `ok` for all of them.
 //
 // The shapes are the ones ADR-0038 records as having defeated this gate — a bare destructive verb, a
 // second statement, a nested block comment, the composed line comment, a verb inside a dollar quote,
 // a PRAGMA assignment, whitespace no engine has, and text the wire cannot carry — so a carried copy
 // that differs in any limb this project has actually got wrong is caught rather than shipped.
-export const INSPECTION_SQL_SKEW_PROBE = [
+//
+// The last three exist for the log-index guard, the second module carried here, which answers a
+// different question over the same text. A probe that could not reach a `sporades_log_events`
+// reference, a dotted and quoted spelling of one, or a `sqlite_schema` query would compare a skewed
+// copy of that module as clean — the same "reports clean for the wrong reason" failure ADR-0038
+// records the sweep corpus making three times.
+export const MIGRATED_MODULE_SKEW_PROBE = [
     "DROP TABLE t",
     "TRUNCATE TABLE t",
     "SELECT 1 AS s; DROP TABLE t",
@@ -43,105 +59,196 @@ export const INSPECTION_SQL_SKEW_PROBE = [
     "PRAGMA table_info(posts)",
     "WITH recent AS (SELECT 1 AS s) SELECT * FROM recent",
     "SELECT id FROM posts WHERE title = 'it''s fine' -- why\r\n;",
+    "SELECT * FROM sporades_log_events",
+    "SELECT * FROM main . \"sporades_log_events\"",
+    "SELECT name FROM sqlite_schema",
+];
+// Rows the carried copy of the log-index guard and the loaded one must classify the same way. The
+// guard's second limb reads result rows rather than SQL, so the statement probe above cannot reach
+// it at all: a carried copy that had lost the row filter would answer every statement above
+// identically and still hand an operator the log-index table's name out of a deployed Capsule.
+export const MIGRATED_MODULE_ROW_SKEW_PROBE = [
+    [{ name: "sporades_log_events" }, "SELECT name FROM sqlite_schema"],
+    [{ tbl_name: "sporades_log_events" }, "SELECT tbl_name FROM sqlite_master"],
+    [{ sql: "CREATE TABLE sporades_log_events (id TEXT)" }, "SELECT sql FROM sqlite_schema"],
+    [{ note: "mentions sporades_log_events in passing" }, "SELECT note FROM sqlite_schema"],
+    [{ note: "mentions sporades_log_events in passing" }, "SELECT note FROM posts"],
+    [{ name: "posts" }, "SELECT name FROM sqlite_schema"],
+    [{}, ""],
 ];
 function bundleTemplateError(message, hint) {
     return Object.assign(new Error(message), { hint });
 }
 // The carried block, evaluated so it can be questioned rather than only pattern-matched.
 //
-// The input is this build's own output, produced two lines earlier from a file inside the Sporades
+// The input is this build's own output, produced two lines earlier from files inside the Sporades
 // package — not Capsule code and not anything a Capsule author supplies. Evaluating it costs one
-// `new Function` and runs the module's top level, which builds three `Set`s and declares functions.
-function evaluateInspectionSqlBlock(code) {
+// `new Function` and runs the modules' top level, which builds three `Set`s and declares functions.
+function evaluateMigratedModulesBlock(code) {
     try {
-        return new Function(`${code}\nreturn ${INSPECTION_SQL_NAMESPACE};`)();
+        return new Function(`${code}\nreturn ${MIGRATED_MODULES_NAMESPACE};`)();
     }
     catch (error) {
-        throw bundleTemplateError(`Server bundle failed: the read-only inspection module did not evaluate: ${error?.message ?? error}`, "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules did not evaluate: ${error?.message ?? error}`, "A file under dist/ is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
     }
 }
-// What the two copies of the inspection gate answer, as comparable text.
-function describeInspectionSqlAnswers(module) {
-    return INSPECTION_SQL_SKEW_PROBE.map((sql) => JSON.stringify([sql, module.validateReadOnlyInspectionSql(sql), module.sqlWithoutTrailingTerminator(sql)]));
+// The names the comparison below calls, so it can say what is missing instead of dying on it. A
+// probe that names a function no listed module exports is otherwise a bare `TypeError` out of the
+// middle of a bundle build — which is how it first failed, when the two lists were deliberately put
+// out of step while testing something else. The probe and `MIGRATED_RUNTIME_MODULES` have to move
+// together, and this is where that is said.
+const MIGRATED_MODULE_PROBE_NAMES = [
+    "validateReadOnlyInspectionSql",
+    "sqlWithoutTrailingTerminator",
+    "targetsInternalLogIndexTable",
+    "readSqlTableReference",
+    "isInternalLogIndexMetadataRow",
+];
+// What the two copies of the migrated modules answer, as comparable text. The inspection gate over
+// the statement probe, then the log-index guard over the same statements and over the row probe —
+// the guard reads rows as well as SQL, and a check that only asked about SQL could not see half of
+// it go missing.
+function describeMigratedModuleAnswers(module) {
+    const absent = MIGRATED_MODULE_PROBE_NAMES.filter((name) => typeof module[name] !== "function");
+    if (absent.length > 0) {
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules do not supply ${absent.join(", ")}, which the skew probe compares.`, "MIGRATED_RUNTIME_MODULES and MIGRATED_MODULE_PROBE_NAMES in server-bundle-template.ts are out of step. A module listed for carrying must still export what the probe asks it.");
+    }
+    return [
+        ...MIGRATED_MODULE_SKEW_PROBE.map((sql) => JSON.stringify([
+            sql,
+            module.validateReadOnlyInspectionSql(sql),
+            module.sqlWithoutTrailingTerminator(sql),
+            module.targetsInternalLogIndexTable(sql),
+            module.readSqlTableReference(sql, 0),
+        ])),
+        ...MIGRATED_MODULE_ROW_SKEW_PROBE.map(([row, sql]) => JSON.stringify([row, sql, module.isInternalLogIndexMetadataRow(row, sql)])),
+    ];
 }
-// The read-only inspection validator and its tokenizer, carried into the bundle as `inspection-sql`'s
-// own compiled text rather than as `fn.toString()` over a list of its functions.
+// Every region that has left the monolith, carried into the bundle as those modules' own compiled
+// text rather than as `fn.toString()` over a list of their functions.
 //
-// **Why this one region is carried differently.** A stringified function reaches the bundle without
+// **Why a migrated region is carried differently.** A stringified function reaches the bundle without
 // anything it closes over, so under the emitted-list mechanism a helper had to be registered in
 // `SERVER_RUNTIME_SOURCE_FUNCTIONS` to survive — and the inspection gate paid for that in five
 // duplicated copies of one set of comment and quoting rules, four independent reviews and five
-// rounds of fixes (ADR-0038). Carrying the module whole removes the registration step for that
+// rounds of fixes (ADR-0038). Carrying a module whole removes the registration step for that
 // region: a private helper travels because it is in the file, not because someone remembered it.
-// ADR-0041 records the decision. Nothing else has moved; every other runtime function still travels
-// through the list.
+// ADR-0041 records the decision. Everything that has not migrated still travels through the list.
 //
-// The module is compiled to an IIFE by esbuild rather than concatenated with its `export` keywords
-// stripped, and the reason is privacy rather than safety. Concatenation would be *loud* if it
-// collided: the generated bundle is an ES module — it imports `node:crypto` and uses top-level
+// The modules are compiled to an IIFE by esbuild rather than concatenated with their `export`
+// keywords stripped, and the reason is privacy rather than safety. Concatenation would be *loud* if
+// it collided: the generated bundle is an ES module — it imports `node:crypto` and uses top-level
 // `await` — and a duplicate top-level `function` or `const` there is a load-time `SyntaxError`, which
 // is exactly what a duplicate entry in the emitted list produces and why none is left there. What
-// concatenation would cost is the thing this whole change is for: every one of this module's private
+// concatenation would cost is the thing this whole change is for: every one of these modules' private
 // helpers would land at the bundle's top level, reachable from 500-odd runtime functions, so
 // "private" would stop meaning anything at the point it started to matter. Inside the IIFE it does.
 // Not stripping `export` keywords out of generated JavaScript by hand is the second reason.
 //
-// `transformSync`, not `build`: this is a format conversion of one already-compiled file, so nothing
-// is resolved and nothing is read except the file named below. `createServerBundleSource` is
-// synchronous and every caller expects it to stay that way.
-function inspectionSqlModuleSource() {
-    const modulePath = path.join(resolveSporadesPackageRoot(), "dist", "inspection-sql.js");
-    let compiled;
-    try {
-        compiled = readFileSync(modulePath, "utf8");
-    }
-    catch (error) {
-        throw bundleTemplateError(`Server bundle failed: could not read ${modulePath}: ${error?.message ?? error}`, "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete.");
-    }
-    return inspectionSqlBlockFrom(compiled, modulePath);
+// **`build`, not `transformSync`, and this is the batch that forced the change.** ADR-0041 proved
+// the carrier for one module that imports nothing, and named the boundary: `transformSync` is a
+// format conversion of one file and resolves nothing, so given a module with an import of its own it
+// emits a `require(…)` into the IIFE and the Capsule dies at boot with "Cannot determine intended
+// module format". `log-index-guard` imports the inspection gate's tokenizer, so it is the first
+// region to cross that line. Every later batch will cross it too — the domains left in the monolith
+// call each other.
+//
+// **One block for all of them, rather than one block each**, and the reason is that bundling each
+// module separately would inline `inspection-sql` into every block that imports it. Two copies of
+// the one tokenizer inside the shipped artifact cannot drift — they come from the same file in the
+// same build — but ADR-0038's whole subject is that the duplication *itself* is the defect
+// generator, and an artifact that contradicts it teaches the next reader the wrong thing. Bundled
+// together there is one copy of each module, whatever imports what.
+//
+// `buildSync` rather than `build`, so `createServerBundleSource` stays synchronous; every caller and
+// three test files expect that. The cost ADR-0041 measured for `transformSync` applies here too: the
+// esbuild binary runs out of process and the first call in a process pays for the spawn.
+function migratedRuntimeModulesSource() {
+    return migratedRuntimeModulesBlockFrom(path.join(resolveSporadesPackageRoot(), "dist"));
 }
-// The block, and the checks that decide whether the copy it was built from is the copy this process
-// is running. Separated from the file read so that a test can drive it with a deliberately skewed
-// copy without touching the tree the suite is running out of.
-export function inspectionSqlBlockFrom(compiled, modulePath) {
-    let code;
+// The block, and the checks that decide whether the copies it was built from are the copies this
+// process is running. Takes the directory rather than reading a fixed one, so that a test can drive
+// it against a deliberately skewed tree without touching the tree the suite is running out of.
+//
+// A directory and not the file contents, which is what this took before it bundled: `buildSync`
+// accepts no plugins, so there is no way to hand esbuild an in-memory module graph. Handing it a
+// directory is also the more faithful seam — a skewed copy is now resolved by the same import the
+// real build resolves, so a skew that breaks the import between two migrated modules fails here for
+// the same reason it would fail in a release.
+export function migratedRuntimeModulesBlockFrom(distDir) {
+    // One synthetic entry re-exporting each migrated module, so the block's export surface is their
+    // union and esbuild resolves the imports between them exactly once.
+    const entry = MIGRATED_RUNTIME_MODULES.map(({ file }) => `export * from ${JSON.stringify(`./${file}`)};`).join("\n");
+    let result;
     try {
-        ({ code } = transformSync(compiled, {
-            loader: "js",
+        result = buildSync({
+            bundle: true,
             format: "iife",
-            globalName: INSPECTION_SQL_NAMESPACE,
+            globalName: MIGRATED_MODULES_NAMESPACE,
             platform: "node",
             target: "node22",
-        }));
+            write: false,
+            metafile: true,
+            logLevel: "silent",
+            // esbuild labels every inlined module with its path relative to the working directory, and
+            // those labels are comments in the text that ships. Pinned to the directory being read so a
+            // Capsule bundle carries `inspection-sql.js` rather than whoever's absolute home directory the
+            // CLI was invoked from, and so the same inputs build identically on two machines.
+            absWorkingDir: distDir,
+            stdin: {
+                contents: entry,
+                sourcefile: path.join(distDir, "__sporades-migrated-runtime-modules__.js"),
+                resolveDir: distDir,
+                loader: "js",
+            },
+        });
     }
     catch (error) {
-        // A file that will not parse — a truncated write is the ordinary way to get one. esbuild's own
-        // error names the position, and it is worth nothing to a person without the file it came from.
-        throw bundleTemplateError(`Server bundle failed: ${modulePath} did not parse: ${error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error)}`, "dist/inspection-sql.js is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
+        // A file that will not parse or an import that will not resolve — a truncated write and a
+        // half-updated `dist/` are the ordinary ways to get each. esbuild's own error names the position,
+        // and it is worth nothing to a person without the hint beside it.
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules in ${distDir} did not build: ${error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error)}`, "A file under dist/ is truncated or corrupt. Run `npm run build`, or reinstall the Sporades CLI.");
     }
-    // **Two copies of this module exist while the CLI is a bundle, and they are checked against each
-    // other here.** `bin/sporades.js` is built by esbuild from `src/`, so the `inspectionSql` imported
-    // above is a copy inlined into `bin/`, while the text just read comes from `dist/` on disk. Running
-    // from `dist/` there is one copy and the question does not arise; running from `bin/` a tree whose
-    // `dist/` and `bin/` came from different builds would ship the `dist/` gate inside a Capsule while
-    // every other runtime function in that same Capsule came from `bin/`.
+    // ADR-0040: a deployed Capsule runs `node /app/server.mjs` in an image with no `node_modules`, so
+    // this block must resolve nothing at runtime. Asked of esbuild's metafile rather than of the text,
+    // because this is exactly where the property stops holding by construction: the moment a migrated
+    // module imports something outside this list, `format: "iife"` emits a `require(…)` for it and the
+    // Capsule dies at boot rather than at build. A builtin is no better than a package here — the
+    // block is spliced into an ES module, where `require` is not defined at all.
+    const unresolved = Object.values(result.metafile.outputs)
+        .flatMap((entry) => entry.imports)
+        .filter((entry) => entry.external)
+        .map((entry) => entry.path);
+    if (unresolved.length > 0) {
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules would resolve ${[...new Set(unresolved)].sort().join(", ")} at runtime.`, "A migrated runtime module may only import another migrated module. Add the dependency to MIGRATED_RUNTIME_MODULES, or inline what it needs.");
+    }
+    const code = result.outputFiles?.[0]?.text;
+    if (!code) {
+        throw bundleTemplateError("Server bundle failed: esbuild produced no text for the migrated runtime modules.", "Report this: the Sporades migrated runtime modules produced no output.");
+    }
+    // **Two copies of these modules exist while the CLI is a bundle, and they are checked against each
+    // other here.** `bin/sporades.js` is built by esbuild from `src/`, so the namespaces imported at
+    // the top of this file are copies inlined into `bin/`, while the text just built comes from
+    // `dist/` on disk. Running from `dist/` there is one copy and the question does not arise; running
+    // from `bin/` a tree whose `dist/` and `bin/` came from different builds would ship the `dist/`
+    // gate inside a Capsule while every other runtime function in that same Capsule came from `bin/`.
     //
     // Nothing in `scripts/` compares those for freshness — `check-generated-bin.mjs` checks the
     // shebang, the generated header and the absence of `../src/` imports, and an earlier version of
     // this comment claimed a freshness check it does not perform. So the comparison is made here,
-    // against the copy that will actually be carried rather than against the file it came from.
-    const carried = evaluateInspectionSqlBlock(code);
+    // against the copy that will actually be carried rather than against the files it came from.
+    const carried = evaluateMigratedModulesBlock(code);
     // The names the rest of the bundle resolves against, taken from the carried namespace itself. A
     // name that the block does not export cannot be destructured from it, so "declared here, absent
     // there" is not a state this can reach. Written out by hand instead, a misspelling would declare a
     // binding that is simply `undefined` at runtime, which the free-binding guard resolves exactly as
     // cleanly as a correct one.
     const exported = Object.keys(carried).sort();
-    const loaded = Object.keys(inspectionSql).sort();
+    const loaded = [...new Set(MIGRATED_RUNTIME_MODULES.flatMap(({ loaded: module }) => Object.keys(module)))].sort();
     if (exported.join(",") !== loaded.join(",")) {
         const missing = loaded.filter((name) => !exported.includes(name));
         const extra = exported.filter((name) => !loaded.includes(name));
-        throw bundleTemplateError(`Server bundle failed: ${modulePath} exports a different set of names than the running CLI's copy of it`
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules in ${distDir} export a different set of names than the running CLI's copies of them`
             + `${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; unexpected ${extra.join(", ")}` : ""}.`, "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.");
     }
     // And the same names are not enough, because the shape that matters most keeps them: a carried copy
@@ -149,16 +256,17 @@ export function inspectionSqlBlockFrom(compiled, modulePath) {
     // the two copies are asked the same questions and must answer identically.
     //
     // This is a probe, not a proof, and the difference is worth stating rather than leaving to be
-    // discovered: two copies that agree on the export surface and on every statement below still ship,
+    // discovered: two copies that agree on the export surface and on every question below still ship,
     // however else they differ. What it does close is the case that is otherwise silent.
-    const carriedAnswers = describeInspectionSqlAnswers(carried);
-    const loadedAnswers = describeInspectionSqlAnswers(inspectionSql);
+    const loadedModule = Object.assign({}, ...MIGRATED_RUNTIME_MODULES.map(({ loaded: module }) => ({ ...module })));
+    const carriedAnswers = describeMigratedModuleAnswers(carried);
+    const loadedAnswers = describeMigratedModuleAnswers(loadedModule);
     const disagreement = carriedAnswers.findIndex((answer, index) => answer !== loadedAnswers[index]);
     if (disagreement >= 0) {
-        throw bundleTemplateError(`Server bundle failed: ${modulePath} answers the read-only inspection gate differently than the running CLI's copy of it, `
-            + `starting at ${JSON.stringify(INSPECTION_SQL_SKEW_PROBE[disagreement])}.`, "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.");
+        throw bundleTemplateError(`Server bundle failed: the migrated runtime modules in ${distDir} answer the read-only inspection surface differently `
+            + `than the running CLI's copies of them, starting at ${carriedAnswers[disagreement]}.`, "dist/ and bin/ are from different builds. Run `npm run build`, or reinstall the Sporades CLI.");
     }
-    return `${code}\nconst { ${exported.join(", ")} } = ${INSPECTION_SQL_NAMESPACE};`;
+    return `${code}\nconst { ${exported.join(", ")} } = ${MIGRATED_MODULES_NAMESPACE};`;
 }
 export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
     const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
@@ -171,12 +279,14 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
     ].join("\n\n");
     // The read-only inspection gate's three keyword tables used to be serialized into a preamble here,
     // because a runtime function reaches the bundle as its own source text and a module-level binding
-    // it closes over does not follow. They are declarations inside `inspectionSqlModule` now, and the
+    // it closes over does not follow. They are declarations inside `migratedModules` now, and the
     // gate's own functions close over them there exactly as they do in `dist/`, so serializing them
     // again would declare each name twice. They are still reachable by name at the bundle's top level
-    // through the destructuring that module block ends with, which is what the constant probe in
-    // `test/server-bundle-module-graph.test.js` reads them through.
-    const inspectionSqlModule = inspectionSqlModuleSource();
+    // through the destructuring that block ends with, which is what the constant probe in
+    // `test/server-bundle-module-graph.test.js` reads them through. A migrated domain's own constants
+    // travel the same way, which is why nothing was added to the preamble below when the log-index
+    // guard moved.
+    const migratedModules = migratedRuntimeModulesSource();
     // The runtime's module-level constants, for the same reason as the keyword tables above: a
     // runtime function reaches the bundle as its own source text and a module-level binding it closes
     // over does not follow. Each is serialized from the runtime source's own declaration rather than
@@ -222,7 +332,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeConstants}
-${inspectionSqlModule}
+${migratedModules}
 ${runtimeFunctions}
 ${publicTreeContract}
 

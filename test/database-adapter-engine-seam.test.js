@@ -40,10 +40,11 @@ import { databaseAdapterMethodNames, overriddenDatabaseAdapterMethodNames } from
 // guard that kept reading only the list would have gone quiet about the one tokenizer while
 // reporting success.
 //
-// So the subject set is the union: the emitted list, plus every function `inspection-sql` declares.
-// Those are read out of the module's compiled *source text* rather than out of its exports, and that
-// is the load-bearing half. A module's whole point here is that a helper needs no registration to
-// survive, so the census has to be able to see a helper that is exported from nothing —
+// So the subject set is the union: the emitted list, plus every function each *migrated* module
+// declares — `MIGRATED_RUNTIME_MODULES` below, which every batch of that migration extends.
+// Those are read out of each module's compiled *source text* rather than out of its exports, and
+// that is the load-bearing half. A module's whole point here is that a helper needs no registration
+// to survive, so the census has to be able to see a helper that is exported from nothing —
 // `nestingBlockCommentEnd` is exactly that, and it is in the census below. Reading exports would
 // have made privacy a way to leave the census, which is the opposite of what this guard is for.
 //
@@ -125,29 +126,51 @@ test("the walker guards' collector sees both forms a top-level function can take
   }
 });
 
-function inspectionSqlDeclaredFunctions() {
-  const path = new URL("../dist/inspection-sql.js", import.meta.url);
-  const source = readFileSync(path, "utf8");
-  const declared = declaredFunctions(source, "inspection-sql.js");
-  // Guard the measurement before trusting it. A parse that had silently produced nothing — a moved
-  // file, a changed compiler target, a module that stopped being top-level functions — would make
-  // every guard below pass by having no subjects, which is indistinguishable from a clean census.
-  assert.ok(
-    declared.length > 15,
-    `expected the inspection module's functions, saw ${declared.length} — the walker guards would be reading nothing`,
-  );
-  assert.ok(
-    declared.some(({ name }) => name === "skipSqlQuotedOrCommented"),
-    "the one tokenizer is not among the functions read out of dist/inspection-sql.js",
-  );
-  return declared;
+// Every region that has left `server-runtime-source.ts`. **A batch that migrates a domain adds its
+// module here, and that is not optional bookkeeping.**
+//
+// The subject set below is the union of the emitted list and these modules, and the emitted list
+// shrinks every time a batch removes functions from it. A migrated module that is not listed here
+// is a set of functions no walker guard can see any more — and the guards keep passing, because
+// their subjects went away rather than started failing. That is the one failure mode of this
+// eight-batch sequence that nothing goes red for.
+//
+// `atLeast` and `sentinel` guard each module's *own* measurement rather than the union's. A floor on
+// the total would be satisfied by `inspection-sql` alone however badly a later module parsed, so a
+// module whose functions had silently stopped being collected would still leave this file green with
+// its own contents invisible. Each sentinel is a function that must survive any honest edit to that
+// module, and `log-index-guard`'s is deliberately its *private* one: it is exported from nothing and
+// registered in nothing, so its presence here is the evidence that privacy is not a way out of these
+// guards.
+const MIGRATED_RUNTIME_MODULES = [
+  { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
+  { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
+];
+
+function migratedModuleDeclaredFunctions() {
+  return MIGRATED_RUNTIME_MODULES.flatMap(({ file, atLeast, sentinel }) => {
+    const source = readFileSync(new URL(`../dist/${file}`, import.meta.url), "utf8");
+    const declared = declaredFunctions(source, file);
+    // Guard the measurement before trusting it. A parse that had silently produced nothing — a moved
+    // file, a changed compiler target, a module that stopped being top-level functions — would make
+    // every guard below pass by having no subjects, which is indistinguishable from a clean census.
+    assert.ok(
+      declared.length > atLeast,
+      `expected the functions of dist/${file}, saw ${declared.length} — the walker guards would be reading nothing of it`,
+    );
+    assert.ok(
+      declared.some(({ name }) => name === sentinel),
+      `${sentinel} is not among the functions read out of dist/${file}`,
+    );
+    return declared;
+  });
 }
 
 // Every function the walker guards below consider, as `{ name, source }`.
 function walkerGuardSubjects() {
   return [
     ...SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => ({ name: fn.name, source: fn.toString() })),
-    ...inspectionSqlDeclaredFunctions(),
+    ...migratedModuleDeclaredFunctions(),
   ];
 }
 
