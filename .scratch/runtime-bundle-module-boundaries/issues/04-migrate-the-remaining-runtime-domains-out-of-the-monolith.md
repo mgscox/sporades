@@ -111,6 +111,20 @@ and the wrong check for batches 2 through 7 — mail, auth, jobs and schedules, 
 and HTTP are barely touched by them. Use the focused files for the fast inner loop while
 working; use the full suite as the gate before the batch is done.
 
+## Known flaky tests — do not misattribute these to your batch
+
+- **`test/dev.test.js` "a scaffolded photo library stores uploads, public gallery rows,
+  and Google-owned private library rows"** races a once-a-minute scheduled job. The
+  scaffolded capsule schedules `timestampPhotoNames` on `* * * * *`
+  (`src/templates/scaffold-template.ts`), and that job rewrites every photo's `title` and
+  `fileName` with an `HH:MM ` prefix. The test asserts the raw title, so if the test window
+  crosses a minute boundary the assertion fails with e.g. `'08:11 Shoreline'` against
+  `'Shoreline'`. Diagnosed during batch 2, which cannot be causal — its diff touches
+  neither the scaffold nor the scheduler. Re-run the test standalone before reporting it,
+  and file it separately rather than fixing it inside a migration batch.
+- **`test/dev.test.js` "React Vite redacts symlink aliases and canonical project roots"**
+  fails when the checkout path resolves through a symlink. Passes from the main worktree.
+
 ## Per-batch acceptance criteria
 
 Every batch must satisfy all of these on its own:
