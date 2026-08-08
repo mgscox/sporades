@@ -47,7 +47,7 @@
 //
 // **Two blockers were owned by no batch at all**, which is the third case batch 6 added, and both
 // became modules of their own rather than riders here: `runtime-log-policy.js` holds
-// `isSensitiveLogKey` and `logIndexLimit`, and `stored-row-decoding.js` holds `deserializeRow`.
+// `isSensitiveLogKey` and `logIndexLimit`, and `stored-value-coding.js` holds `deserializeRow`.
 // Their headers record what each was holding. Naming them here rather than only there, because
 // which module a helper landed in is exactly the decision a reader of *this* file will want to
 // check.
@@ -87,7 +87,7 @@ import { jobError, scheduleSummary } from "./jobs-runtime.js";
 import { isPromiseLike } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
-import { deserializeRow } from "./stored-row-decoding.js";
+import { deserializeRow } from "./stored-value-coding.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in

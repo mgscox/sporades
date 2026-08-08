@@ -12,7 +12,7 @@ export * from "./user-preferences-runtime.js";
 export * from "./file-storage-runtime.js";
 export * from "./maybe-promise.js";
 export * from "./runtime-log-policy.js";
-export * from "./stored-row-decoding.js";
+export * from "./stored-value-coding.js";
 export * from "./acl-runtime.js";
 export * from "./http-runtime.js";
 type LooseRecord = Record<string, any>;

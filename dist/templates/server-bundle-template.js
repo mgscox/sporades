@@ -14,7 +14,7 @@ import * as maybePromise from "../maybe-promise.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import * as runtimeErrors from "../runtime-errors.js";
 import * as runtimeLogPolicy from "../runtime-log-policy.js";
-import * as storedRowDecoding from "../stored-row-decoding.js";
+import * as storedValueCoding from "../stored-value-coding.js";
 import * as userPreferencesRuntime from "../user-preferences-runtime.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
@@ -68,7 +68,7 @@ const MIGRATED_RUNTIME_MODULES = [
     // helpers and both mutation paths share. Both are listed before `acl-runtime.js` because it
     // imports them; esbuild resolves the graph either way and the order is documentation.
     { file: "runtime-log-policy.js", loaded: runtimeLogPolicy },
-    { file: "stored-row-decoding.js", loaded: storedRowDecoding },
+    { file: "stored-value-coding.js", loaded: storedValueCoding },
     // Batch 7: the ACL and privileged-audit domain, listed last because it imports from six of the
     // modules above — `file-storage-runtime` for the privileged File API and the ACL storage helper,
     // `jobs-runtime` for the privileged Schedule API, `maybe-promise` for the ACL rules' sync/async
@@ -764,7 +764,7 @@ export const MIGRATED_MODULE_ACL_READ_SKEW_PROBE = [
 //
 // `selectAppRowById` answers a row whose `flag`, `count` and `meta` columns are stored the way a
 // Database engine stores them, so the value an ACL rule sees has been through `deserializeRow` —
-// which is how `stored-row-decoding.js` is reached from this limb as well as from its own.
+// which is how `stored-value-coding.js` is reached from this limb as well as from its own.
 function migratedModuleAclProbeDatabase(mode, recorded) {
     const asyncRead = mode === "async";
     const wrap = (value) => (asyncRead ? { then: (resolve) => resolve(value) } : value);

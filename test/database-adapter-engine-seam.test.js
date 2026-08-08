@@ -238,7 +238,14 @@ const MIGRATED_RUNTIME_MODULES = [
   // this batch, so it was visible to these guards by being registered; finding it here is the
   // evidence that it did not leave the census by moving.
   { file: "runtime-log-policy.js", atLeast: 1, sentinel: "isSensitiveLogKey" },
-  { file: "stored-row-decoding.js", atLeast: 1, sentinel: "deserializeRow" },
+  // Batch 9 renamed this file from `stored-row-decoding.js` and gave it the writing half —
+  // `serializeFieldValue` and `normalizeDateValue`, plus the private `toSqlNumber` and
+  // `dateValueError` — so it holds six functions rather than two and the floor rises with it. The
+  // sentinel stays `deserializeRow` rather than moving to one of the two new private names: it is
+  // the function the module exists for and the one the ACL helpers reach, so no honest edit removes
+  // it. The floor is 4 against 6, which still fails if either half of the pair stopped being
+  // collected.
+  { file: "stored-value-coding.js", atLeast: 4, sentinel: "deserializeRow" },
   // Batch 7: ACL and privileged audit, 55 functions of which 31 are private. The sentinel is private
   // for the seventh time in eight entries, and this one is the most pointed of them.
   // `markAsyncAclHelperRead` is the fuse every ACL helper read passes through — it is what makes a

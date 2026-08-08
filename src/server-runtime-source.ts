@@ -13,7 +13,7 @@ import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
-import { HelperError, assertJsonCompatible, commandError } from "./runtime-errors.js";
+import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import {
   PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_MAIL_JOB,
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
@@ -51,7 +51,7 @@ import {
 } from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
-import { deserializeFieldValue, deserializeRow } from "./stored-row-decoding.js";
+import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFieldValue } from "./stored-value-coding.js";
 // Twenty-one names, which is what the three functions of that domain still in this file plus
 // `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
 // runners resolve. `ACL_HELPER_STATE` and `createTableAclContext` are deliberately not among them:
@@ -243,15 +243,23 @@ export * from "./maybe-promise.js";
 // entire ACL denial record and through it all three enforcement entry points, the second held the
 // privileged-audit reindex after a rollback.
 //
-// `stored-row-decoding.js` holds `deserializeRow` and `deserializeFieldValue`, the Boolean, Json
-// and Number columns turned back into the values a Capsule author sees. `ctx.acl.db.get()` answers
-// with the first, which is why it is here; the endpoint table API and both mutation paths still in
-// this file call both.
+// `stored-value-coding.js` — `stored-row-decoding.js` until batch 9 — holds the Boolean, Json,
+// Number and Date columns converted in both directions. It arrived in batch 7 holding only the
+// reading half, `deserializeRow` and `deserializeFieldValue`, because `ctx.acl.db.get()` answers
+// with the first. Batch 9 brought the writing half to sit beside it: `toSqlLiteral` in
+// `database-runtime.ts` renders a Date default through `normalizeDateValue`, so that function had to
+// leave this file or the whole adapter domain stayed in it — and taking it without
+// `serializeFieldValue`, whose Date branch it *is*, would have split one rule across a module
+// boundary. The file was renamed rather than left describing half of what it holds.
+//
+// Four of its six names are resolved here: the endpoint table API and both mutation paths call the
+// two decoders, `createEndpointTableApi` and `fieldValueForWrite` call `serializeFieldValue`, and
+// the schema extractor's two date defaults call `normalizeDateValue`.
 //
 // Both are re-exported whole for the reason the ten above are. Neither declares a SCREAMING_CASE
 // constant, so neither adds anything to the constant probe.
 export * from "./runtime-log-policy.js";
-export * from "./stored-row-decoding.js";
+export * from "./stored-value-coding.js";
 
 // The ACL and privileged-audit domain left this file as batch 7 — table ACL declaration and
 // resolution, the read and write enforcement paths, the frozen `ctx.acl` helpers and their bounded
@@ -496,14 +504,15 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   // private declarations inside that module now, registered in nothing, which is the thing this
   // list could not express.
   fieldValueForWrite,
-  invalidReferenceError,
   referenceExists,
-  serializeFieldValue,
-  normalizeDateValue,
-  dateValueError,
-  // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
-  // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
-  // for the reason recorded beside `isSensitiveLogKey` above.
+  // Six entries stood in this run until batch 9. `deserializeFieldValue` and `deserializeRow` left
+  // first, in batch 7, for `stored-row-decoding.ts`; batch 9 took the writing half after them —
+  // `serializeFieldValue`, `normalizeDateValue` and, private now, `toSqlNumber` and `dateValueError`
+  // — and renamed that module `stored-value-coding.ts` for holding both directions.
+  // `invalidReferenceError` went to `runtime-errors.ts` in the same batch, because its two callers
+  // sit on opposite sides of the adapter boundary. All are declarations inside carried modules now,
+  // so listing any of them again would declare the same top-level function twice in the emitted ES
+  // module — a load-time `SyntaxError` rather than a drift.
   readEndpointBody,
   createEndpointLogger,
   isDuplicateColumnError,
@@ -547,7 +556,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   resolveTableForUpdateMutation,
   tableNameForSingular,
   rowToApiValue,
-  toSqlNumber,
   quoteIdentifier,
 ];
 
@@ -4421,63 +4429,14 @@ function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   return serializeFieldValue(field, value);
 }
 
-function invalidReferenceError(field: LooseRecord) {
-  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
-}
-
 function referenceExists(database: LooseRecord, field: any, value: any) {
   return database.adapter.referenceExists(field, value);
 }
 
-function serializeFieldValue(field: LooseRecord, value: any) {
-  if (value === undefined) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-
-function normalizeDateValue(value: string | number | Date, fieldName: string) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-
-function dateValueError(fieldName: any) {
-  return commandError(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value.",
-  );
-}
+// `serializeFieldValue`, `normalizeDateValue`, `toSqlNumber` and `dateValueError` stood here until
+// batch 9 moved them to `stored-value-coding.ts`, beside the reading half they mirror.
+// `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
+// first two are imported back at the top of this file; the other three have no consumer here.
 
 async function readEndpointBody(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -6557,13 +6516,6 @@ function rowToApiValue(row: any, table: { fields: any; }) {
     if (field.kind === "Number") {
       value[field.name] = value[field.name] === null ? null : Number(value[field.name]);
     }
-  }
-  return value;
-}
-
-function toSqlNumber(value: unknown, fieldName: any) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
   }
   return value;
 }

@@ -3170,7 +3170,8 @@ __export(jobs_runtime_exports, {
 var runtime_errors_exports = {};
 __export(runtime_errors_exports, {
   assertJsonCompatible: () => assertJsonCompatible,
-  commandError: () => commandError
+  commandError: () => commandError,
+  invalidReferenceError: () => invalidReferenceError
 });
 function commandError(message, hint, code = null) {
   const error = new Error(message);
@@ -3194,6 +3195,9 @@ function assertJsonCompatible(value) {
     }
     throw invalidJsonFieldValueError();
   }
+}
+function invalidReferenceError(field) {
+  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
 }
 function invalidJsonFieldValueError() {
   return commandError(
@@ -6881,11 +6885,13 @@ function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
-// src/stored-row-decoding.ts
-var stored_row_decoding_exports = {};
-__export(stored_row_decoding_exports, {
+// src/stored-value-coding.ts
+var stored_value_coding_exports = {};
+__export(stored_value_coding_exports, {
   deserializeFieldValue: () => deserializeFieldValue,
-  deserializeRow: () => deserializeRow
+  deserializeRow: () => deserializeRow,
+  normalizeDateValue: () => normalizeDateValue,
+  serializeFieldValue: () => serializeFieldValue
 });
 function deserializeFieldValue(field, value) {
   if (field.kind === "Boolean") {
@@ -6912,6 +6918,59 @@ function deserializeRow(table, row) {
     }
   }
   return output;
+}
+function serializeFieldValue(field, value) {
+  if (value === void 0) {
+    return null;
+  }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
+  if (value === null) {
+    return null;
+  }
+  if (field?.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  if (field?.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
+  if (field?.kind === "Date") {
+    return normalizeDateValue(value, field.name);
+  }
+  if (field?.kind === "Reference") {
+    return String(value);
+  }
+  return String(value ?? "");
+}
+function normalizeDateValue(value, fieldName) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw dateValueError(fieldName);
+    }
+    return value.toISOString();
+  }
+  if (typeof value !== "string") {
+    throw dateValueError(fieldName);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw dateValueError(fieldName);
+  }
+  return parsed.toISOString();
+}
+function toSqlNumber(value, fieldName) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
+  }
+  return value;
+}
+function dateValueError(fieldName) {
+  return commandError(
+    `Invalid date value for field: ${fieldName}`,
+    "Pass an ISO 8601 date string or JavaScript Date value."
+  );
 }
 
 // src/acl-runtime.ts
@@ -9536,14 +9595,15 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   // private declarations inside that module now, registered in nothing, which is the thing this
   // list could not express.
   fieldValueForWrite,
-  invalidReferenceError,
   referenceExists,
-  serializeFieldValue,
-  normalizeDateValue,
-  dateValueError,
-  // `deserializeFieldValue` and `deserializeRow` stood on either side of these two until batch 7
-  // moved the pair to `stored-row-decoding.ts`. Both are declarations inside a carried module now,
-  // for the reason recorded beside `isSensitiveLogKey` above.
+  // Six entries stood in this run until batch 9. `deserializeFieldValue` and `deserializeRow` left
+  // first, in batch 7, for `stored-row-decoding.ts`; batch 9 took the writing half after them —
+  // `serializeFieldValue`, `normalizeDateValue` and, private now, `toSqlNumber` and `dateValueError`
+  // — and renamed that module `stored-value-coding.ts` for holding both directions.
+  // `invalidReferenceError` went to `runtime-errors.ts` in the same batch, because its two callers
+  // sit on opposite sides of the adapter boundary. All are declarations inside carried modules now,
+  // so listing any of them again would declare the same top-level function twice in the emitted ES
+  // module — a load-time `SyntaxError` rather than a drift.
   readEndpointBody,
   createEndpointLogger,
   isDuplicateColumnError,
@@ -9587,7 +9647,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   resolveTableForUpdateMutation,
   tableNameForSingular,
   rowToApiValue,
-  toSqlNumber,
   quoteIdentifier
 ];
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
@@ -12845,58 +12904,8 @@ function fieldValueForWrite(database, field, value) {
   }
   return serializeFieldValue(field, value);
 }
-function invalidReferenceError(field) {
-  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
-}
 function referenceExists(database, field, value) {
   return database.adapter.referenceExists(field, value);
-}
-function serializeFieldValue(field, value) {
-  if (value === void 0) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-function normalizeDateValue(value, fieldName) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-function dateValueError(fieldName) {
-  return commandError(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value."
-  );
 }
 async function readEndpointBody(request, headers, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -14818,12 +14827,6 @@ function rowToApiValue(row, table) {
   }
   return value;
 }
-function toSqlNumber(value, fieldName) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
-  }
-  return value;
-}
 function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
@@ -14924,7 +14927,7 @@ var MIGRATED_RUNTIME_MODULES = [
   // helpers and both mutation paths share. Both are listed before `acl-runtime.js` because it
   // imports them; esbuild resolves the graph either way and the order is documentation.
   { file: "runtime-log-policy.js", loaded: runtime_log_policy_exports },
-  { file: "stored-row-decoding.js", loaded: stored_row_decoding_exports },
+  { file: "stored-value-coding.js", loaded: stored_value_coding_exports },
   // Batch 7: the ACL and privileged-audit domain, listed last because it imports from six of the
   // modules above — `file-storage-runtime` for the privileged File API and the ACL storage helper,
   // `jobs-runtime` for the privileged Schedule API, `maybe-promise` for the ACL rules' sync/async

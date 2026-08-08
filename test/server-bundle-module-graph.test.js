@@ -1561,7 +1561,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-row-decoding.js", "acl-runtime.js", "http-runtime.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-value-coding.js", "acl-runtime.js", "http-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -2374,8 +2374,8 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
       // then denies every row, with nothing in any log to say why.
       [
         "a stored-row decoder that stopped parsing Json",
-        "stored-row-decoding.js",
-        originals["stored-row-decoding.js"].replace(
+        "stored-value-coding.js",
+        originals["stored-value-coding.js"].replace(
           "output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);",
           "output[field.name] = output[field.name];",
         ),
