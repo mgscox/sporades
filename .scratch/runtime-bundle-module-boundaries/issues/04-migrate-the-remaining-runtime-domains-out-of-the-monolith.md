@@ -43,14 +43,19 @@ and the HTTP layer and almost nothing calls out of them.
    thresholds; they move with it.
 4. **Jobs and schedules** (~26 + ~26). One batch, not two: they share the queue and
    occurrence machinery, and splitting them would put that shared surface on a boundary.
-5. **User preferences** (6 functions), **and the six auth stragglers it unblocks.** Small,
+5. **User preferences** (6 functions), **and the seven auth stragglers it unblocks.** Small,
    and deliberately early rather than last. `migrateAnonymousPreferences` is the only thing
    keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them
    `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`, `rotateSession` and
    `moveSessionToUser` — inside the monolith after batch 3 moved the rest of auth. Running
    it here lets auth finish instead of staying half-migrated through four more batches,
    each of which would otherwise work around the same blocked functions. It carries those
-   six into `auth-runtime.ts` as a rider, so no tenth pass is needed.
+   seven into `auth-runtime.ts` as a rider, so no tenth pass is needed.
+
+   *(This entry originally said "six" while naming seven. Batch 5 closed the graph rather
+   than trusting either number and found seven is right, confirmed by batch 3's own
+   arithmetic. All seven moved and nothing was stranded — six functions estimated, six
+   found, the first time this sequence's estimate matched inspection.)*
 6. **File and object storage** (~54). Includes the S3 path and the upload lifecycle.
 7. **ACL and privileged audit** (~61). Carries `ACL_HELPER_STATE`, whose Symbol identity
    was analysed at length in issue 16 — read that before moving it.
@@ -146,6 +151,15 @@ working; use the full suite as the gate before the batch is done.
   crash.
 - **~~User preferences are on no batch's list.~~ Resolved** — they are batch 5, carrying the
   six auth stragglers they unblock.
+- **`sendEmailPasswordResetLink` belongs to ticket 05, not to any batch.** It needs
+  `enqueueRuntimeJob`, which needs `createMutationContext` — the composition core that
+  deliberately stays in the monolith until the emitted list is deleted. Batch 4 established
+  the general rule: *a blocker naming a later batch is not a promise that batch clears it.*
+  Batch 5 established the converse: a named blocker **can** clear, and can clear more than
+  promised. The test is whether the holder is a domain or the composition core.
+- **Measure your own base for the duplicate-declaration parse.** The absolute count is not
+  portable between batches — different probes count different things, and batches 4 and 5
+  reported 533 and 510 for the same tree. Diff the name *sets*, not the totals.
 - **Nothing parses the built bundle for duplicate top-level declarations.** Batch 3 found
   `commandError` declared twice — an emitted-list entry *and* a carried declaration, which
   is a load-time `SyntaxError` in a deployed Capsule — and no test caught it, because the
