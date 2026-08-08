@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { MIGRATED_RUNTIME_MODULE_FILES, createServerBundleSource } from "../dist/templates/server-bundle-template.js";
 
 // The generated server bundle is not compiled from a module graph. It is assembled by writing out
 // `fn.toString()` for every entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS` next to a constant preamble,
@@ -155,6 +156,82 @@ test("every identifier the generated server bundle references is defined within 
   assert.match(bundle, /\bfunction openDevDatabase\b/, "the generated server bundle does not contain the runtime functions");
 
   assert.deepEqual(unresolvedIdentifiers(bundle), [], describeUnresolvedIdentifiers(unresolvedIdentifiers(bundle)));
+});
+
+// ---------------------------------------------------------------------------------------------
+// The half of this class the check above structurally cannot see, and the batch that found out.
+//
+// Everything above builds the bundle from `dist/`, because that is what the suite imports. The CLI
+// that people actually run is `bin/sporades.js`, which is the whole of `src/` bundled by esbuild
+// into one scope — and esbuild renames a binding when two modules in that scope declare the same
+// top-level name. Rename one that `server-runtime-source.ts` imports, and every still-registered
+// runtime function travels into the emitted bundle as source text calling the *renamed* name, while
+// the bundle's hand-written preamble still imports the original.
+//
+// That is a free binding in the shipped artifact that no build and no `dist/`-based check can see.
+// It shipped: batch 2's mail module opened with `const randomUUID = () => crypto.randomUUID()`,
+// which collided with `server-runtime-source.ts`'s `import { randomUUID } from "node:crypto"`,
+// esbuild renamed the import to `randomUUID2` inside `bin/`, and fourteen container tests failed
+// with `randomUUID2 is not defined` out of a deployed Capsule while every check in this file passed.
+//
+// So the collision is refused at its source rather than the rename detected at its destination. A
+// migrated module may not declare a top-level name that `server-runtime-source.ts` also binds —
+// except the names it imports *from* that module, which are one binding and rename together.
+function topLevelBindings(source, label) {
+  const parsed = ts.createSourceFile(label, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const declared = new Set();
+  const importedFrom = new Map();
+  for (const node of parsed.statements) {
+    if (ts.isImportDeclaration(node)) {
+      const from = node.moduleSpecifier.text;
+      const names = [];
+      const clause = node.importClause;
+      if (clause?.name) names.push(clause.name.text);
+      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) names.push(element.name.text);
+      }
+      if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) names.push(clause.namedBindings.name.text);
+      for (const name of names) {
+        declared.add(name);
+        importedFrom.set(name, from);
+      }
+      continue;
+    }
+    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) declared.add(node.name.text);
+    if (ts.isVariableStatement(node)) {
+      for (const d of node.declarationList.declarations) if (ts.isIdentifier(d.name)) declared.add(d.name.text);
+    }
+  }
+  return { declared, importedFrom };
+}
+
+test("no migrated runtime module declares a name that would be renamed inside bin/", () => {
+  const runtimeSource = readFileSync(new URL("../dist/server-runtime-source.js", import.meta.url), "utf8");
+  const runtime = topLevelBindings(runtimeSource, "server-runtime-source.js");
+
+  // Guard the measurement before trusting it. A parse that collected nothing would make the
+  // assertion below pass by having no subjects, which is indistinguishable from a clean tree.
+  assert.ok(runtime.declared.size > 200, `expected server-runtime-source's top-level bindings, saw ${runtime.declared.size}`);
+  assert.ok(runtime.declared.has("randomUUID"), "server-runtime-source no longer imports randomUUID — this guard's worked example is stale");
+  assert.ok(MIGRATED_RUNTIME_MODULE_FILES.length >= 2, "no migrated modules to check");
+
+  const collisions = [];
+  for (const file of MIGRATED_RUNTIME_MODULE_FILES) {
+    const source = readFileSync(new URL(`../dist/${file}`, import.meta.url), "utf8");
+    const { declared } = topLevelBindings(source, file);
+    assert.ok(declared.size > 0, `expected the top-level bindings of dist/${file}, saw none`);
+    for (const name of declared) {
+      // Imported from this very module: one binding, renamed together, harmless.
+      if (runtime.importedFrom.get(name) === `./${file}`) continue;
+      if (runtime.declared.has(name)) collisions.push(`${file} declares ${name}`);
+    }
+  }
+
+  assert.deepEqual(
+    collisions,
+    [],
+    "a migrated runtime module declares a top-level name that server-runtime-source.ts also binds. Inside bin/sporades.js both land in one esbuild scope, so one is renamed — and every emitted runtime function then references the renamed name while the bundle preamble imports the original, which is a ReferenceError in a deployed Capsule that no dist/-based check can see. Rename the one in the migrated module.",
+  );
 });
 
 test("the check reports a runtime function that references something the bundle does not define", () => {

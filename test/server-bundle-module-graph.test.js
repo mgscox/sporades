@@ -34,10 +34,14 @@ import ts from "typescript";
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import * as inspectionSqlModule from "../dist/inspection-sql.js";
 import * as logIndexGuardModule from "../dist/log-index-guard.js";
+import * as mailConfigModule from "../dist/mail-config.js";
+import * as mailRuntimeModule from "../dist/mail-runtime.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import {
+  MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE,
+  MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE,
   MIGRATED_MODULE_ROW_SKEW_PROBE,
   MIGRATED_MODULE_SKEW_PROBE,
   createServerBundleSource,
@@ -797,6 +801,21 @@ test("the server bundle builds from a module graph and imports nothing but Node 
     assert.match(source, /bundle-equivalence/);
     assert.match(source, /data:text\/javascript;base64,/);
   }
+
+  // And both carry a migrated domain, by two entirely different routes: the module graph reaches
+  // `mail-runtime` through `server-runtime-source`'s import of it, while the emitted-list bundle
+  // gets it from the carrier splicing the compiled module in as a block. A batch that moved a domain
+  // out of the emitted list and forgot the carrier leaves the graph bundle complete and the shipping
+  // one missing every name — which is a `ReferenceError` in a deployed Capsule and nothing here
+  // would otherwise notice, because the graph bundle is not the one that ships.
+  for (const [label, source] of [["emitted", emitted], ["module graph", graph]]) {
+    for (const name of ["createMailRuntime", "buildSmtpMessage", "encodeMimeHeaderValue", "validateMailConfig"]) {
+      assert.match(source, new RegExp(`function ${name}\\(`), `${label} bundle is missing ${name}`);
+    }
+    // The domain's sockets are opened through a dynamic import of a builtin, which is the one
+    // external form the carrier allows (ADR-0041). Both bundles must still be reaching for it.
+    assert.match(source, /import\("node:tls"\)/, `${label} bundle lost the SMTP TLS import`);
+  }
 });
 
 test("a Capsule built from a module graph answers identically to the emitted-list bundle across HTTP and the WebSocket transport", async () => {
@@ -1531,7 +1550,7 @@ test("both bundles answer the whole read-only inspection surface identically", a
 // build resolves, which is what lets the last case below exist at all.
 test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
   const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js"];
+  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js"];
   const originals = Object.fromEntries(
     await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
   );
@@ -1552,6 +1571,20 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
     const honest = await blockWith("inspection-sql.js", originals["inspection-sql.js"]);
     assert.match(honest, /function nestingBlockCommentEnd\(/);
     assert.match(honest, /function readSqlIdentifier\(/);
+    // And the mail domain's, which arrived in batch 2. `encodeMimeHeaderValue` is private to
+    // `mail-runtime`; `validateMailConfig` is the whole of `mail-config`, a file that was reaching
+    // the bundle through the emitted list until this batch carried it here instead.
+    assert.match(honest, /function encodeMimeHeaderValue\(/);
+    assert.match(honest, /function validateMailConfig\(/);
+    // The allowance the two static-import cases below are the counterweight to: the SMTP transport
+    // opens its sockets with `await import("node:tls" | "node:net")`, esbuild emits a dynamic import
+    // of an external verbatim rather than lowering it, and a deployed Capsule resolves a builtin
+    // exactly as the bundle's own top-level imports do. Asserted on the text so that a carrier which
+    // started lowering these — to `require(…)`, which this bundle cannot execute — is caught here
+    // rather than at a Capsule's boot.
+    assert.match(honest, /await import\("node:tls"\)/);
+    assert.match(honest, /await import\("node:net"\)/);
+    assert.equal(/\brequire\s*\(/.test(honest), false, "the carried block would resolve a specifier through `require`");
 
     // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
     // allow-everything validator from the real one, which is the case this check exists for.
@@ -1575,6 +1608,39 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
       "the row probe cannot see a row filter that flags everything",
     );
 
+    // And for the mail domain, on the same terms. A config probe the validator accepts in full
+    // cannot tell a `validateMailConfig` that returns its input from the real one, and one it
+    // refuses in full cannot tell it from a validator that refuses everything — so both directions
+    // are settled before any rejection below is trusted.
+    const threw = (config) => {
+      try {
+        mailConfigModule.validateMailConfig(config);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const refusedConfigs = MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE.filter(threw);
+    assert.ok(refusedConfigs.length >= 4, `the mail config probe only refuses ${refusedConfigs.length} configurations — it cannot see a validator that admits everything`);
+    assert.ok(
+      MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE.filter((config) => !threw(config)).length >= 4,
+      "the mail config probe cannot see a validator that refuses everything",
+    );
+
+    // The MIME probe's teeth are that the messages differ from each other in the limbs the private
+    // helpers own. Assembling them all identically would compare a skewed copy as clean, which is
+    // the "reports clean for the wrong reason" shape this whole check exists for.
+    const assembled = MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE.map((message) => mailRuntimeModule.buildSmtpMessage(message));
+    assert.equal(new Set(assembled).size, assembled.length, "the mail message probe assembles two identical messages — one of them proves nothing");
+    assert.ok(
+      assembled.some((mime) => mime.includes("=?UTF-8?B?")),
+      "the mail message probe never reaches the RFC 2047 encoder, so a copy that lost it compares clean",
+    );
+    assert.ok(
+      assembled.some((mime) => /\r\n[ \t]/.test(mime)),
+      "the mail message probe never folds a header, so a copy that lost the folder compares clean",
+    );
+
     const skews = [
       // The one that was silent before this check existed: same exports, same names, a validator
       // replaced by one that admits anything.
@@ -1585,7 +1651,7 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
           /export function validateReadOnlyInspectionSql\(sql\) \{/,
           "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
         ),
-        /answer the read-only inspection surface differently/,
+        /answer the skew probe differently/,
       ],
       // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
       // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
@@ -1593,7 +1659,7 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         "a tokenizer whose line comment stops ending at a carriage return",
         "inspection-sql.js",
         originals["inspection-sql.js"].replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
-        /answer the read-only inspection surface differently/,
+        /answer the skew probe differently/,
       ],
       // Structural skew: an export the running copy has and the carried one does not.
       [
@@ -1619,7 +1685,7 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
           'part.toLowerCase() === "sporades_log_events"',
           'part.toLowerCase() === "sporades_log_events_renamed"',
         ),
-        /answer the read-only inspection surface differently/,
+        /answer the skew probe differently/,
       ],
       // And on the limb only the row probe reaches. This one is the reason that probe exists: the
       // guard's row filter answers no SQL question at all, so a copy that had lost it agrees with the
@@ -1631,7 +1697,7 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
           "export function isInternalLogIndexMetadataRow(row, sql = \"\") {",
           "export function isInternalLogIndexMetadataRow(row, sql = \"\") {\n  if (true) return false;",
         ),
-        /answer the read-only inspection surface differently/,
+        /answer the skew probe differently/,
       ],
       // The skew that only a resolved graph can see: the guard imports the gate's tokenizer, so a
       // `dist/` where the gate stopped exporting it is a build failure rather than a wrong answer.
@@ -1642,6 +1708,70 @@ test("a carried copy of a migrated runtime module that disagrees with the runnin
         "inspection-sql.js",
         originals["inspection-sql.js"].replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
         /did not build.*skipSqlTrivia|export a different set of names.*missing skipSqlTrivia/s,
+      ],
+      // The mail domain, batch 2. This one is the reason `validateMailConfig` is worth probing at
+      // all: a copy that accepts whatever it is given exports the same single name, assembles every
+      // message below identically, and quietly lets a Capsule ship SMTP credentials over a hop with
+      // no TLS on it.
+      [
+        "a mail config validator swapped for one that admits everything",
+        "mail-config.js",
+        originals["mail-config.js"].replace(
+          "export function validateMailConfig(mail) {",
+          "export function validateMailConfig(mail) {\n  if (true) return mail;",
+        ),
+        /answer the skew probe differently/,
+      ],
+      // A quieter body change in the same file, on the one limb that is a security rule rather than
+      // a shape check: credentials over opportunistic or disabled TLS stop being refused.
+      [
+        "a mail config validator that stops refusing credentials over a plaintext hop",
+        "mail-config.js",
+        originals["mail-config.js"].replace('["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none"', "false"),
+        /answer the skew probe differently/,
+      ],
+      // A private helper of `mail-runtime`, which nothing exports and no list registers. Before this
+      // domain was carried whole there was no such thing as a private helper here to skew.
+      [
+        "a MIME encoder whose header folding stops at a different line length",
+        "mail-runtime.js",
+        originals["mail-runtime.js"].replace("Buffer.byteLength(text) <= 70", "Buffer.byteLength(text) <= 7000"),
+        /answer the skew probe differently/,
+      ],
+      // And the structural case for the domain's second file, so that "carried but not compared" is
+      // not reachable for it either.
+      [
+        "a mail runtime missing an export the running one has",
+        "mail-runtime.js",
+        originals["mail-runtime.js"].replace("export function createMailTransport(", "function createMailTransport("),
+        /export a different set of names.*missing createMailTransport/s,
+      ],
+      // Self-containment, and the most likely way a later batch loses it. `mail-runtime` reaches the
+      // UUID generator through the Web Crypto global rather than importing `randomUUID`, and the
+      // obvious "simplification" is to import it — which `format: "iife"` lowers to
+      // `__require("node:crypto")` and a Capsule then dies at boot on, with nothing in the suite
+      // seeing it. Refused at build instead, and the same for an unprefixed builtin, since `crypto`
+      // resolves in the container exactly as `node:crypto` does.
+      //
+      // These two are the counterweight to the allowance beside them: the check had to be narrowed
+      // in this batch so that the mail transport's `await import("node:tls")` could travel, and
+      // narrowing it is only safe while the static form is still refused. The honest build above is
+      // the other half of that pair — it carries both dynamic builtin imports and is not refused.
+      //
+      // The import has to be *used* or esbuild tree-shakes it away and the case proves nothing, so
+      // each of these rewrites one real call site to match — which is exactly the edit being
+      // guarded against, rather than a synthetic stand-in for it.
+      [
+        "a migrated module that imports a builtin statically instead of reaching a global",
+        "mail-runtime.js",
+        `import { randomUUID } from "node:crypto";\n${originals["mail-runtime.js"].replace("mail_${crypto.randomUUID()}", "mail_${randomUUID()}")}`,
+        /would resolve node:crypto at runtime/,
+      ],
+      [
+        "the same written without the `node:` prefix",
+        "mail-runtime.js",
+        `import { randomUUID } from "crypto";\n${originals["mail-runtime.js"].replace("mail_${crypto.randomUUID()}", "mail_${randomUUID()}")}`,
+        /would resolve crypto at runtime/,
       ],
     ];
 
@@ -1678,11 +1808,23 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     serverModuleSource: "export default {};",
   });
 
-  const migratedModules = { ...inspectionSqlModule, ...logIndexGuardModule };
+  const migratedModules = { ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule };
   // `readSqlIdentifier` is the log-index guard's, and it became private in the same change that made
   // the guard a module: it was an entry in the emitted list until then, because a helper the list
   // did not carry was a `ReferenceError` rather than a compile error.
-  for (const helper of ["nestingBlockCommentEnd", "opensQuotedRun", "readSqlIdentifier"]) {
+  //
+  // The four MIME and provider helpers after it are the mail domain's, and they are the same story
+  // at twenty-one times the scale: every one was a registered entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS`
+  // until batch 2, purely because a helper the list did not carry could not be called from one it did.
+  for (const helper of [
+    "nestingBlockCommentEnd",
+    "opensQuotedRun",
+    "readSqlIdentifier",
+    "encodeMimeHeaderValue",
+    "foldMimeHeader",
+    "normalizePostmarkProvider",
+    "mailError",
+  ]) {
     assert.equal(
       Object.keys(migratedModules).includes(helper),
       false,
@@ -1705,6 +1847,15 @@ test("the emitted-list bundle carries the migrated modules' private helpers, whi
     "targetsInternalLogIndexTable",
     "readSqlTableReference",
     "isInternalLogIndexMetadataRow",
+    "createMailRuntime",
+    "createMailTransport",
+    "buildSmtpMessage",
+    // `validateMailConfig` is the one this batch changed rather than moved. It has lived in
+    // `mail-config.ts` all along and reached the bundle by *also* being an entry in the emitted
+    // list — the arrangement ADR-0041 opens by describing as the cheapest thing that works for a
+    // leaf function. It is carried module text now, so the entry had to go or the bundle would
+    // declare it twice.
+    "validateMailConfig",
   ]) {
     assert.equal(
       SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),

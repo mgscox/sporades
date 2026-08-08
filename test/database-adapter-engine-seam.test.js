@@ -145,6 +145,20 @@ test("the walker guards' collector sees both forms a top-level function can take
 const MIGRATED_RUNTIME_MODULES = [
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
+  // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it
+  // is exported from nothing and registered in nothing, so finding it here is the evidence that
+  // twenty-one newly-private mail helpers did not leave the census by becoming private.
+  // `encodeMimeHeaderValue` is the one every MIME header in the domain passes through, so no honest
+  // edit to that module removes it.
+  //
+  // `mail-config` holds exactly one function, so its floor is 0 — a floor is only ever asserting
+  // that the parse returned something, and for this module "something" is one. It is listed
+  // separately rather than folded into `mail-runtime` because it is a separate file with a
+  // build-time consumer, and a module that is carried into the bundle must be a subject here
+  // whatever its size: `validateMailConfig` is a census entry, and it stopped being an entry in the
+  // emitted list in this same batch.
+  { file: "mail-runtime.js", atLeast: 20, sentinel: "encodeMimeHeaderValue" },
+  { file: "mail-config.js", atLeast: 0, sentinel: "validateMailConfig" },
 ];
 
 function migratedModuleDeclaredFunctions() {

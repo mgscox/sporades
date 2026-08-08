@@ -3,6 +3,8 @@ import { PathLike, PathOrFileDescriptor } from "node:fs";
 import { Duplex } from "stream";
 export * from "./inspection-sql.js";
 export * from "./log-index-guard.js";
+export * from "./mail-config.js";
+export * from "./mail-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;

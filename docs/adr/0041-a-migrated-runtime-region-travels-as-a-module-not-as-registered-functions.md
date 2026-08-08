@@ -7,11 +7,17 @@ sequence has to answer once and then reuse: **while both bundlers exist, how doe
 a region that has left the monolith reach the bundle that still ships?**
 
 There is a precedent that looks like the answer and is not. `validateMailConfig`
-lives in `mail-config.ts` and is *also* an entry in
-`SERVER_RUNTIME_SOURCE_FUNCTIONS`, so it is imported by the module-graph bundle
+lived in `mail-config.ts` and was *also* an entry in
+`SERVER_RUNTIME_SOURCE_FUNCTIONS`, so it was imported by the module-graph bundle
 and stringified by the emitted-list one. That works, and for a leaf function with
 no helpers it is the cheapest thing that works. It does not work here, and the
 reason it does not is the reason this region was chosen to move first.
+
+(Past tense because batch 2 ended that arrangement: `mail-config.js` is carried
+module text now, alongside the rest of the mail domain, and the emitted-list entry
+had to go with it or the bundle would declare `validateMailConfig` twice. The
+description above is kept because it is what made the contrast legible, not
+because it still describes the tree.)
 
 ## Why registering the moved functions would have moved nothing
 
@@ -188,9 +194,75 @@ first version of this carrier could not import anything by accident. `buildSync`
 with `bundle: true` resolves within the migrated set and marks everything else
 external — and `format: "iife"` writes an external as `require(…)`, which in this
 ES-module bundle is not a slow path but a Capsule that does not boot. So the
-carrier reads esbuild's metafile and refuses any external import at all, the way
-`createServerBundleModuleSource` does (ADR-0040). A builtin is no better than a
-package here, which is the one place this check is stricter than that one.
+carrier reads esbuild's metafile and refuses external imports, the way
+`createServerBundleModuleSource` does (ADR-0040).
+
+**That refusal was "any external at all" for two batches, and the mail domain is
+where it turned out to be one kind too broad.** The claim it rested on — "a
+builtin is no better than a package here" — is true of a *static* import and not
+of a dynamic one, and the difference is in what esbuild emits rather than in what
+the image can supply:
+
+    import { randomUUID } from "node:crypto"  -> __require("node:crypto"), and the
+                                                 bundle throws `Dynamic require of
+                                                 "node:crypto" is not supported` on
+                                                 its first line
+    await import("node:tls")                  -> emitted verbatim, resolves in the
+                                                 container exactly as the bundle's
+                                                 own top-level imports do
+
+Both were executed rather than reasoned about. The SMTP transport has opened its
+TLS and TCP sockets with `await import("node:tls" | "node:net")` since long before
+any of this work, through the same text the emitted list was already shipping, so
+refusing the dynamic form would have forced one function of the domain to stay
+behind in the monolith for a hazard that does not exist. The check now refuses
+every external except a dynamic import of a builtin — still stricter than
+`createServerBundleModuleSource`, which allows the static form too because
+`format: "esm"` has no lowering to do. A dynamic import of a *package* stays
+refused: it survives verbatim as well, and then finds no `node_modules`.
+
+The narrowing is only safe while the static form is still refused, so the two are
+tested as a pair against a skewed `dist/`: `import { randomUUID } from "node:crypto"`
+and the same without the `node:` prefix are both build failures, and the honest
+build is asserted to carry both `await import(…)` calls and no `require(`. The
+mail module reaches the UUID generator through the Web Crypto global for this
+reason, which is the one line of that domain that is not byte-identical to the
+region it moved out of.
+
+**A migrated module may not declare a top-level name the monolith also binds, and
+the reason is `bin/`.** This is the second cost of the split above, and it was
+found by shipping it rather than by reasoning about it.
+
+`bin/sporades.js` is the whole of `src/` bundled by esbuild into one scope. Two
+modules in that scope declaring the same top-level name is not an error — esbuild
+renames one. So batch 2's mail module opening with
+
+    const randomUUID = () => crypto.randomUUID();
+
+collided with `server-runtime-source.ts`'s `import { randomUUID } from "node:crypto"`,
+and inside `bin/` the *import* became `randomUUID2`. Every still-registered runtime
+function then travelled into the emitted bundle as `fn.toString()` source text
+saying `randomUUID2`, while the bundle's hand-written preamble still imported
+`randomUUID`. The result is a free binding in the artifact that ships, and it is
+invisible to everything that builds the bundle from `dist/` — which is every check
+in `test/server-bundle-free-bindings.test.js`, because the suite imports from
+`dist/` where no renaming has happened. Fourteen container tests failed with
+`randomUUID2 is not defined` out of a running Capsule while that whole file stayed
+green.
+
+Two things follow, and the second matters more than the first. The mail module
+writes `crypto.randomUUID()` at its four call sites rather than aliasing it, so the
+collision does not exist. And the collision is now refused at its source rather
+than its rename detected at its destination: a guard reads the top-level bindings
+of every module in `MIGRATED_RUNTIME_MODULES` and of `server-runtime-source.js`,
+and fails on any overlap other than the names the monolith imports *from* that
+module — which are one binding and rename together. Replanting the original
+`const randomUUID` fails it by name.
+
+The general statement, for the batches that follow: **the emitted list makes the
+monolith's top-level namespace shared with every migrated module**, because a
+stringified function carries the names its own scope resolved rather than the
+bindings. That is one more thing the emitted list costs, and it goes away with it.
 
 **The walker census had to stop reading a list.** The census in
 `test/database-adapter-engine-seam.test.js` flagged emitted runtime functions
@@ -250,11 +322,17 @@ import and it emits a `require(…)` into the IIFE, and the Capsule dies at boot
 with "Cannot determine intended module format". **That prediction was correct and
 has since been executed rather than left standing.** `log-index-guard` imports
 this gate's tokenizer; `transformSync` over its compiled text emits
-`require("./inspection-sql.js")`, which is why the carrier bundles now. The
-mechanism is proven for two modules, one of which imports the other, and the
-untested case that remains is a migrated module importing something *outside* the
-migrated set — which the metafile check above turns into a build error rather than
-a boot failure.
+`require("./inspection-sql.js")`, which is why the carrier bundles now.
+
+**The case that section named as untested — a migrated module importing something
+outside the migrated set — was executed in batch 2 and is where the "any external"
+rule was narrowed.** See the self-containment section above. The mechanism is now
+proven for four modules: two that import nothing (`inspection-sql`, `mail-config`),
+one that imports another migrated module (`log-index-guard`), and one that reaches
+Node builtins through dynamic `import(…)` (`mail-runtime`). The case still untested
+is a migrated module importing a *package*, which the metafile check turns into a
+build error rather than a boot failure and which nothing in this runtime has yet
+wanted to do.
 
 A region whose functions are called from the still-monolithic runtime will keep
 needing exports for those names. `skipSqlTrivia` and `readSqlQuotedIdentifier`
