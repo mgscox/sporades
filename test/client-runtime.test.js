@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { normalizeJourneyPolicy, normalizeJourneyState } from "../dist/server-runtime-source.js";
 
 async function importClientRuntime(options = {}) {
   const source = createClientRuntimeSource(options);
@@ -485,13 +485,13 @@ test("Svelte store publication survives reentrant unsubscribe and preserves owne
 });
 
 test("Journey metadata rejects symbol-keyed objects before publication", () => {
-  const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyState");
+  const normalize = normalizeJourneyState;
   const metadata = { visible: true, [Symbol("private")]: "lost" };
   assert.throws(() => normalize({ status: "editing", metadata }, 30), (error) => error.code === "INVALID_JOURNEY_METADATA");
 });
 
 test("Journey declaration rejects non-plain capture policy shapes", () => {
-  const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyPolicy");
+  const normalize = normalizeJourneyPolicy;
   for (const capture of [null, [], "focus", Object.create({ focus: true })]) {
     assert.throws(() => normalize({ enabled: true, capture }), /Invalid Journey capture policy/);
   }

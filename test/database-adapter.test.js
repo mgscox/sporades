@@ -25,13 +25,16 @@ import {
   getPrivateFileUrl,
   linkProviderIdentity,
   listDatabaseTables,
+  createRuntimeLogSink,
+  extractEndpoints,
   openDevDatabase,
   resolveAnonymousSession,
+  runAppMessage,
+  runEndpoint,
   routeSporadesAuth,
   runMutation,
   runQuery,
   runReadOnlyQuery,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
   setEmailPassword,
   signInWithEmail,
   signUpWithEmail,
@@ -56,14 +59,11 @@ async function withTempDir(fn) {
   }
 }
 
-const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
+
 // `linkProviderIdentity` and `emitPrivilegedAuditEvent` are named imports above rather than `.find`s
 // here, since batch 5 moved the first into `auth-runtime.ts` and batch 7 the second into
 // `acl-runtime.ts`: that lookup returns `undefined` once a name leaves the emitted list, and the
 // assertions below would have called `undefined(…)` instead of failing at load.
-const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
 async function captureErrorCode(fn) {
   try {

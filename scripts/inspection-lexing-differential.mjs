@@ -160,8 +160,13 @@ for (const [kind, sql, was, now] of examples) {
 // of `inspection-sql`, re-exported from the runtime module so this comparison still reaches them.
 // Falling back rather than choosing lets one run compare a build from either side against the other,
 // which is the whole point of naming the *pre-work base* as the baseline.
+//
+// Ticket 05 deleted that list, so the first limb answers `undefined` for any build from this side of
+// it — hence the optional chaining, without which this script would throw rather than fall through.
+// The limb is kept rather than deleted for the same reason it was written: the *baseline* side of a
+// comparison is a checkout of older code, and older code still exports the list.
 const pick = (mod, name) =>
-  mod.SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === name) ??
+  mod.SERVER_RUNTIME_SOURCE_FUNCTIONS?.find((fn) => fn.name === name) ??
   (typeof mod[name] === "function" ? mod[name] : undefined);
 const INTERNAL = [
   ["targetsInternalLogIndexTable", (fn, sql) => String(fn(sql))],

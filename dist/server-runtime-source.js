@@ -53,23 +53,23 @@ import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJ
 // SCREAMING_CASE exports, the walker census and the terminator-spelling guards in
 // `test/database-adapter-engine-seam.test.js` resolve the gate's functions through here, and
 // `scripts/inspection-lexing-differential.mjs` compares a build against the pre-work base through
-// here too — including `targetsInternalLogIndexTable` and `readSqlTableReference`, which stopped
-// being entries in `SERVER_RUNTIME_SOURCE_FUNCTIONS` when the guard moved and would otherwise have
-// gone quietly "not comparable" there. A narrower re-export would move those guards' subjects out
-// of reach and buy nothing: this is a name-resolution convenience, not a second definition.
+// here too — including `targetsInternalLogIndexTable` and `readSqlTableReference`, which would
+// otherwise have gone quietly "not comparable" there when the guard moved. A narrower re-export
+// would move those guards' subjects out of reach and buy nothing: this is a name-resolution
+// convenience, not a second definition.
 export * from "./inspection-sql.js";
 export * from "./log-index-guard.js";
 // The mail domain left this file the same way, as batch 2 (ADR-0041). `createMailRuntime` is the one
 // name the rest of this file reaches into it for — `openDevDatabase` builds the Capsule's mail
 // runtime with it — where before there were twenty-six, because every helper of the domain had to be
-// registered in `SERVER_RUNTIME_SOURCE_FUNCTIONS` to survive into a deployed Capsule. Twenty-one of
-// them are private to that module now.
+// registered in the emitted function list to survive into a deployed Capsule. Twenty-one of them are
+// private to that module now.
 //
 // Re-exported whole for the same reason as the two above: this module is still the address the rest
 // of the repository knows, and `test/mail.test.js` resolves `buildSmtpMessage`, `createMailTransport`
-// and `connectSmtpSocket` through here. Those three used to be found by searching
-// `SERVER_RUNTIME_SOURCE_FUNCTIONS` by name, which returns `undefined` the moment a domain stops
-// being entries in it — the silent shape this re-export exists to prevent.
+// and `connectSmtpSocket` through here. Those three used to be found by searching the emitted
+// function list by name, which answered `undefined` the moment a domain stopped being entries in it
+// — the silent shape this re-export exists to prevent.
 //
 // `mail-config.js` is re-exported here too, and it is the same domain arriving from the other side.
 // `validateMailConfig` has always lived outside this file and was carried into the bundle by being
@@ -309,204 +309,24 @@ export * from "./acl-runtime.js";
 // and `test/oauth-provider.test.js` resolve `prepareHttpSecurity`, `routeRuntimeHealth`,
 // `checkRuntimeSqlite` and `resolveOAuthRequestOrigin` through here.
 export * from "./http-runtime.js";
-export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
-    // The mail domain's twenty-seven entries stood here until batch 2 moved it to `mail-runtime.ts`
-    // and `mail-config.ts`. They are carried into the emitted-list bundle as those modules' own
-    // compiled text now (ADR-0041), so listing any of them again would declare the same top-level
-    // function twice in an ES module — a load-time `SyntaxError` rather than a subtle drift, which is
-    // why none is left behind here.
-    normalizeJourneyPolicy,
-    normalizeJourneyState,
-    validateJourneyJson,
-    journeyError,
-    // The Database adapters and dialect occupied fifty-nine entries in this list until batch 9, in six
-    // runs: the thirteen that stood here, `createRuntimeInspectionAdapter` below, the twenty-six of the
-    // Postgres wire protocol and the libSQL pipeline further down, the thirteen of app-schema DDL and
-    // migration among the schema extractors, the duplicate-column pair, and `quoteIdentifier` at the
-    // very end. All fifty-nine are declarations inside `./database-runtime.js` now and reach the
-    // generated Capsule bundle as that module's own text, so listing any of them again would declare
-    // the same top-level function twice in an ES module — a load-time `SyntaxError` rather than a
-    // drift.
-    //
-    // Thirty-eight of them are private to that module now. Under this list none could be: a helper
-    // reached the bundle as its own source text, so the whole Postgres SCRAM handshake, the libSQL
-    // pipeline and every line of app-table DDL had to be registered here and were therefore reachable
-    // by name from five hundred unrelated runtime functions.
-    resolveJourneySessionInactivityMinutes,
-    claimScheduledOccurrence,
-    recoverPendingScheduleOccurrences,
-    schedulePendingOccurrenceRecovery,
-    reconcileSchedules,
-    startStaticSchedules,
-    recordScheduledOccurrence,
-    enqueueScheduledOccurrence,
-    createCurrentUserJobApi,
-    createPrivilegedJobApi,
-    flushPendingJobEnqueues,
-    scheduleCurrentUserJobWorker,
-    scheduleNextDelayedJob,
-    runCurrentUserJobWorker,
-    openDevDatabase,
-    recoverExpiredJobLeases,
-    enqueueRuntimeJob,
-    createRuntimeLogSink,
-    requirePathModule,
-    createRuntimeLogger,
-    createContextPrivilegedApi,
-    createPrivilegedHandlerContext,
-    createLogEnvelope,
-    sanitizeLogData,
-    redactLogData,
-    logDataContainsServerEnvValue,
-    isSensitiveLogString,
-    // `isSensitiveLogKey` stood here until batch 7 moved it to `runtime-log-policy.ts`, and
-    // `logIndexLimit` eleven entries below it. Both are declarations inside a carried module now, so
-    // listing either again would declare the same top-level function twice in the emitted ES module —
-    // a load-time `SyntaxError` rather than a drift.
-    capLogEnvelope,
-    // The Log index's storage occupied the eight entries between `capLogEnvelope` and
-    // `readJsonlLogEvents` until batch 9 moved it to `log-index-storage.ts` — the table's bootstrap
-    // and its additive migration, ADR-0036's runtime sequence, and the write, prune and read. It is a
-    // domain ticket 04's nine batches never named, and it surfaced as batch 9's blocker rather than as
-    // a batch of its own, because the only thing that calls it is the shared adapter method set. The
-    // ninth declaration, `chainSchemaOperation`, went with it from further down this list. All nine
-    // are declarations inside a carried module now, so listing any of them again would declare the
-    // same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather than a
-    // drift.
-    //
-    // Nothing of the platform log went with them. `createRuntimeLogSink` below is still in this file
-    // and still reaches the index, through `database.insertLogIndexEvent(…)` and its two siblings —
-    // adapter methods on the adapter object rather than module bindings, which is why that seam cost
-    // this batch nothing.
-    readJsonlLogEvents,
-    logPayloadMaxBytes,
-    logRedactedValue,
-    // The read-only inspection validator and its tokenizer used to occupy twenty-three entries here,
-    // between `logRedactedValue` and `extractSchema`, and the internal log-index table guard four more
-    // right after them. Both are modules now — `./inspection-sql.js` and `./log-index-guard.js` — and
-    // reach the generated Capsule bundle as those modules' own text rather than one function at a time
-    // (see `createServerBundleSource` and ADR-0041). Listing any of them here as well would declare
-    // each name twice in the emitted bundle, which is a `SyntaxError` rather than a subtle problem.
-    //
-    // Nothing is left of the log-index guard here. `readSqlIdentifier` is a private helper of that
-    // module now, which is a thing this list could not express: a function reached the bundle as its
-    // own source text, so a helper that was not listed here was a `ReferenceError` in a deployed
-    // Capsule rather than a compile error.
-    extractSchema,
-    schemaFromCapsuleDefinition,
-    schemaTableFromCapsuleTable,
-    schemaFieldFromCapsuleField,
-    sqliteTypeForFieldKind,
-    extractEndpoints,
-    endpointHandlersFromCapsuleDefinition,
-    extractQueryHandlers,
-    extractQueryHandlersFromCapsule,
-    extractMutationHandlers,
-    handlersFromCapsuleDefinition,
-    mutationHandlersFromCapsuleDefinition,
-    shouldUseBundledMutationHandler,
-    isInlineHandlerSource,
-    isGeneratedScaffoldMutationHandler,
-    extractMessageHandlers,
-    extractContextMiddleware,
-    extractMutationHooks,
-    extractHookList,
-    extractFields,
-    extractFieldDefaultSource,
-    parseFieldDefault,
-    parseDateFieldDefault,
-    parseJsonFieldDefault,
-    extractObjectPropertySource,
-    findMatchingDelimiter,
-    splitTopLevelList,
-    assertValidReferenceTargets,
-    // `commandError` stood here until batch 3 moved it to `runtime-errors.ts`. It is a declaration
-    // inside a carried module now, so listing it again would declare the same top-level function
-    // twice in the emitted ES module — a load-time `SyntaxError` rather than a drift.
-    findMatchingParen,
-    createTransactionDatabase,
-    readEndpointRequest,
-    createEndpointContext,
-    createContextHolder,
-    applyContextMiddleware,
-    runContextMiddleware,
-    endpointQueryFromUrl,
-    createEndpointDatabaseApi,
-    createEndpointTableApi,
-    // The ACL and privileged-audit domain occupied fifty-five entries in this list until batch 7 —
-    // twenty-seven of them here, from `runTableWriteWithAcl` through `createAclDeniedError`, and the
-    // rest in four other runs: the privileged audit region above `createLogEnvelope`, the table ACL
-    // normalizer among the schema extractors, the privileged-access WeakSet after
-    // `endpointQueryFromUrl`, and `assertActivePrivilegedJobAccess` and `drainPendingAclWrites` down
-    // among the mutation runners. All fifty-five are declarations inside `./acl-runtime.js` now and
-    // reach the generated Capsule bundle as that module's own text, so listing any of them again
-    // would declare the same top-level function twice in an ES module — a load-time `SyntaxError`
-    // rather than a drift.
-    //
-    // Three entries the sweep for that domain would collect are still here — `createContextHolder`
-    // and `createEndpointDatabaseApi` above, and `createEndpointContext` — because they are the
-    // composition core rather than the domain; see the note above `export * from "./acl-runtime.js"`.
-    //
-    // A comment stood here naming `markAsyncAclHelperRead` and `resolveAclStorageFileReference` as
-    // entries that had to be in this list or every ACL rule consulting `ctx.acl` threw. Both are
-    // private declarations inside that module now, registered in nothing, which is the thing this
-    // list could not express.
-    fieldValueForWrite,
-    referenceExists,
-    // Six entries stood in this run until batch 9. `deserializeFieldValue` and `deserializeRow` left
-    // first, in batch 7, for `stored-row-decoding.ts`; batch 9 took the writing half after them —
-    // `serializeFieldValue`, `normalizeDateValue` and, private now, `toSqlNumber` and `dateValueError`
-    // — and renamed that module `stored-value-coding.ts` for holding both directions.
-    // `invalidReferenceError` went to `runtime-errors.ts` in the same batch, because its two callers
-    // sit on opposite sides of the adapter boundary. All are declarations inside carried modules now,
-    // so listing any of them again would declare the same top-level function twice in the emitted ES
-    // module — a load-time `SyntaxError` rather than a drift.
-    readEndpointBody,
-    createEndpointLogger,
-    // `chainSchemaOperation` stood here and is in `log-index-storage.ts` now, private, with the two
-    // functions that are its only callers. The auth storage bootstrap's five entries followed it —
-    // `createAnonymousAuthTables` and the four migrations below it — and are in `auth-runtime.js`,
-    // where the rest of that domain has been since batch 3. They were held here by the one thing that
-    // calls them, the shared Database adapter method set, exactly as `createFileStorageTables` and
-    // `createUserPreferencesTables` were held by it before batches 6 and 5 moved them.
-    //
-    // All six are declarations inside carried modules now, so listing any of them again would declare
-    // the same top-level function twice in the emitted ES module — a load-time `SyntaxError` rather
-    // than a drift.
-    // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
-    // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
-    // the missing definition failed the change only after the caller had already authorised it.
-    sendEmailPasswordResetLink,
-    createWebSocketAccept,
-    createWebSocketHub,
-    drainWebSocketFrames,
-    closeWebSocketClient,
-    encodeWebSocketJson,
-    sendJson,
-    sendJsonWithCompletion,
-    routeEndpoint,
-    runEndpoint,
-    runQuery,
-    runCustomQuery,
-    runMutation,
-    runCustomMutation,
-    runAppMessage,
-    validateAppMessageType,
-    isAllAppMessageScope,
-    runMutationHook,
-    runMutationHookAndDrainPendingAclWrites,
-    createMutationContext,
-    createMessageContext,
-    createHookErrorResult,
-    runInsertMutation,
-    runUpdateMutation,
-    formatMutationResult,
-    resolveTableForQuery,
-    resolveTableForAddMutation,
-    resolveTableForUpdateMutation,
-    tableNameForSingular,
-    rowToApiValue,
-];
+// The emitted function list stood here: 537 entries at its largest, 107 at the end, each one a
+// runtime function the generated Capsule bundle carried as `fn.toString()`. Ticket 05 deleted it
+// along with the builder that read it.
+//
+// It is worth being precise about what it cost, because the cost was structural rather than untidy.
+// A function reached the bundle as detached source text, so it could not call a helper that was not
+// itself registered, could not close over a module constant, and a name that failed to travel was a
+// `ReferenceError` in a deployed Capsule rather than a build error — invisible to a green suite,
+// because tests import from `dist/` where every name resolves. Four bindings shipped that way. The
+// list was also a global registry every one of those functions was implicitly coupled to, so adding
+// or removing a function was a cross-cutting edit, and the runtime could not be split into files.
+//
+// ADR-0038 is the bill: the read-only inspection gate's lexing rules existed in five copies, because
+// factoring them into a shared helper was the one thing this mechanism forbade, and each fix landed
+// in one copy and left the siblings.
+//
+// Everything in this file now reaches a deployed Capsule the ordinary way — `server-bundle-entry.ts`
+// imports what it calls, and esbuild follows the graph.
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
     const mailConfig = validateMailConfig(config.mail);
@@ -881,7 +701,7 @@ function logPayloadMaxBytes(config = {}) {
 function logRedactedValue() {
     return "[REDACTED]";
 }
-function createRuntimeLogSink(options) {
+export function createRuntimeLogSink(options) {
     const path = requirePathModule();
     const logPath = options.config.logs?.jsonlPath ??
         options.config.logging?.jsonlPath ??
@@ -1173,10 +993,16 @@ function capLogEnvelope(envelope, maxBytes) {
 // appears in the log envelope or the JSONL log stream.
 //
 // The column name is written out at each use rather than lifted into a shared constant, and the
-// generator's state hangs off the generator instead of living at module scope. That is not style:
-// the generated server bundle is assembled from the source text of the functions in
-// `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so a module-level binding one of them closes over does not
-// travel with it and becomes a `ReferenceError` the first time a deployed Capsule boots.
+// generator's state hangs off the generator instead of living at module scope. That was not style
+// but necessity: the generated server bundle was assembled from the source text of individually
+// registered functions, so a module-level binding one of them closed over did not travel with it and
+// became a `ReferenceError` the first time a deployed Capsule booted.
+//
+// **Ticket 05 lifted that constraint** — this file reaches a deployed Capsule as a module now, and a
+// module-scope constant travels with it like any other binding. The shape here is left as it stands
+// because ticket 05 is a deletion and changing it would be a behavioural risk taken for tidiness;
+// but nothing prevents the obvious edit any more, and a reader who wants the shared constant should
+// take this comment as permission rather than as the prohibition it used to be.
 export function readJsonlLogEvents(logPath, limit = 200) {
     let raw = "";
     try {
@@ -1314,7 +1140,7 @@ function findMatchingParen(source, openIndex) {
     }
     return -1;
 }
-function extractEndpoints(serverSource) {
+export function extractEndpoints(serverSource) {
     const endpoints = [];
     const endpointPattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*endpoint\s*\(/g;
     let match;
@@ -1731,7 +1557,7 @@ export async function routeEndpoint(database, request, response) {
     }
     return true;
 }
-async function runEndpoint(database, endpoint, requestUrl, request) {
+export async function runEndpoint(database, endpoint, requestUrl, request) {
     const handler = typeof endpoint.handler === "function"
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
@@ -1887,7 +1713,7 @@ function endpointQueryFromUrl(requestUrl) {
     }
     return query;
 }
-function createEndpointDatabaseApi(database, contextGetter = null) {
+export function createEndpointDatabaseApi(database, contextGetter = null) {
     return Object.fromEntries(database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]));
 }
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
@@ -2110,7 +1936,7 @@ function parseDateFieldDefault(rawDefault) {
 // `./log-index-guard.js` now, and `runReadOnlyInspectionQuery` above calls it through the import at
 // the top of this file. ADR-0038 is why it is a module beside the inspection gate rather than part
 // of it, and that module's header states the reasoning.
-function normalizeJourneyPolicy(value) {
+export function normalizeJourneyPolicy(value) {
     if (value == null)
         return null;
     if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true)
@@ -2129,7 +1955,7 @@ function normalizeJourneyPolicy(value) {
     }
     return { ttlSeconds, capture };
 }
-function normalizeJourneyState(value, defaultTtlSeconds) {
+export function normalizeJourneyState(value, defaultTtlSeconds) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         throw { code: "INVALID_JOURNEY_STATE", message: "Journey state must be an object.", hint: "Pass status, optional metadata, and optional ttlSeconds to journey.set()." };
     const status = typeof value.status === "string" ? value.status.trim() : "";
@@ -3253,7 +3079,7 @@ async function runCustomMutation(database, context, mutationName, args) {
     }
     return { ok: true, data: result ?? null, error: null };
 }
-async function runAppMessage(database, auth, messageName, data, options = {}) {
+export async function runAppMessage(database, auth, messageName, data, options = {}) {
     if (!messageName) {
         return {
             data: null,
@@ -3592,7 +3418,7 @@ async function scheduleNextDelayedJob(database) {
         database.clock.clearTimer(database.__jobWakeTimer);
     database.__jobWakeTimer = database.clock.setTimer(() => { database.__jobWakeTimer = null; scheduleCurrentUserJobWorker(database); }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
 }
-async function runCurrentUserJobWorker(database) {
+export async function runCurrentUserJobWorker(database) {
     if (database.__jobWorkerRunning)
         return;
     database.__jobWorkerRunning = true;

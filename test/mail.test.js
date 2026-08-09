@@ -26,14 +26,13 @@ import {
   createTableAclContext,
   openDevDatabase,
   runMutation,
+  runAppMessage,
+  runEndpoint,
   runQuery,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 import { job, mutation, query } from "../dist/server.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
 function readMimeHeader(message, name) {
   const lines = message.split("\r\n\r\n")[0].split("\r\n");

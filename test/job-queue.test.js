@@ -4,16 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 }
 
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
-const runCurrentUserJobWorker = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runCurrentUserJobWorker");
 
 test("Jobs capture enqueue-time Session provider provenance across later provider switches", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-"));

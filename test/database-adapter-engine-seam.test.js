@@ -5,7 +5,6 @@ import test from "node:test";
 import ts from "typescript";
 
 import {
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
   createDatabaseDialect,
   createDatabaseNormalization,
   createSharedDatabaseAdapterMethods,
@@ -148,7 +147,20 @@ test("the walker guards' collector sees both forms a top-level function can take
 // module, and `log-index-guard`'s is deliberately its *private* one: it is exported from nothing and
 // registered in nothing, so its presence here is the evidence that privacy is not a way out of these
 // guards.
+//
+// **The entry for `server-runtime-source.js` is what ticket 05 left in place of the emitted list.**
+// The subject set used to be that list plus the modules below; the list is deleted, so the monolith
+// is read off disk like every other module here, with a floor and a sentinel of its own. That is a
+// strict improvement rather than a substitution: `Function.prototype.toString()` could only ever
+// show the census a function somebody had registered, and reading declarations shows it every
+// function in the file.
 const MIGRATED_RUNTIME_MODULES = [
+  // The monolith. `sendJsonWithCompletion` is the sentinel: the WebSocket transport's one write path
+  // that reports when the frame actually reached the socket, which every subscription rebroadcast
+  // and every query reply goes through. It is exported from nothing, and it was an emitted-list
+  // entry until this ticket — so finding it here is the evidence that deleting that list did not
+  // quietly narrow this census to the file's exports. The floor is 80 against 107 declarations.
+  { file: "server-runtime-source.js", atLeast: 80, sentinel: "sendJsonWithCompletion" },
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
   // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it
@@ -336,11 +348,68 @@ function migratedModuleDeclaredFunctions() {
 
 // Every function the walker guards below consider, as `{ name, source }`.
 function walkerGuardSubjects() {
-  return [
-    ...SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => ({ name: fn.name, source: fn.toString() })),
-    ...migratedModuleDeclaredFunctions(),
-  ];
+  return migratedModuleDeclaredFunctions();
 }
+
+// Every module the deployed Capsule bundle actually carries, walked from the bundle's own entry.
+//
+// Read from `dist/` by following static imports and re-exports out of `server-bundle-entry.js`,
+// which is the same root esbuild bundles from — so this answers what ships rather than what anyone
+// remembers ships.
+function runtimeGraphModules() {
+  const seen = new Set();
+  const queue = ["templates/server-bundle-entry.js"];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const source = readFileSync(new URL(`../dist/${current}`, import.meta.url), "utf8");
+    const parsed = ts.createSourceFile(current, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+    for (const node of parsed.statements) {
+      if (!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node)) continue;
+      const specifier = node.moduleSpecifier;
+      if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith(".")) continue;
+      queue.push(new URL(specifier.text, `file:///${current}`).pathname.replace(/^\//, ""));
+    }
+  }
+  return seen;
+}
+
+// The census covers every module the bundle carries.
+//
+// This is the hole batch 9 found and could not close from inside a migration batch. The floors and
+// sentinels above are only consulted for modules that are *listed*: remove an entry and the module
+// stops being a census subject silently, with every guard below still green because it is now
+// reading a smaller set. Batches 1 through 8 each ran that counterfactual — plant a defect, delete
+// the module's entry — and watched both walker guards pass. Batch 9's failed only by luck, because
+// its domain happened to own pre-existing census entries that vanished along with it.
+//
+// The list cannot be checked against itself, so it is checked against the graph. A module that
+// reaches a deployed Capsule and is not listed here fails, and so does a listed module that has
+// stopped being carried — which is the other direction, and the one that catches a census still
+// reading a file nothing ships.
+test("the census covers every module the deployed Capsule bundle carries", () => {
+  // The two the census deliberately does not read. Named rather than filtered by pattern, so that
+  // adding a runtime module is a decision recorded here rather than a silence.
+  const NOT_A_CENSUS_SUBJECT = new Set([
+    // The bundle's boot program: it wires the runtime up over HTTP and holds no SQL walker, no
+    // dialect and no emitted statement of its own.
+    "templates/server-bundle-entry.js",
+    // The normalized public-tree contract, shared with the client build. Path normalization for
+    // static assets, and nothing these guards read.
+    "public-tree-contract.js",
+  ]);
+
+  const carried = runtimeGraphModules();
+  for (const excluded of NOT_A_CENSUS_SUBJECT) {
+    assert.ok(carried.has(excluded), `${excluded} is excluded from the census but is not carried at all`);
+  }
+  assert.deepEqual(
+    MIGRATED_RUNTIME_MODULES.map(({ file }) => file).sort(),
+    [...carried].filter((file) => !NOT_A_CENSUS_SUBJECT.has(file)).sort(),
+    "the census and the bundle's module graph disagree — a module was added to one and not the other",
+  );
+});
 
 function walkerGuardSubject(name) {
   return walkerGuardSubjects().find((entry) => entry.name === name);

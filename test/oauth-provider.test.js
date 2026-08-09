@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -48,7 +49,6 @@ import {
   verifyAppleIdentityToken,
   verifyGoogleIdentityToken,
   verifyMicrosoftIdentityToken,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 
 const execFileAsync = promisify(execFile);
@@ -273,20 +273,21 @@ test("Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is a
 });
 
 test("provider auth exposes one internal completion and linking seam", async () => {
-  // The subject set is the emitted list *and* the migrated modules, for the reason this test would
-  // otherwise be worthless after batch 3: `completeOpenIdOAuthCodeExchange` is a declaration in
-  // `auth-runtime.ts` now, so an assertion over the emitted list alone would have gone from proving
-  // there is one shared exchange to proving there is none — and the two negative assertions below
-  // would have kept passing for the wrong reason, which is the shape this whole migration keeps
-  // producing.
+  // The negatives are the point of this test: a per-provider `completeGoogleOAuth` reappearing
+  // anywhere in the runtime has to fail it. So the subject set has to include names nothing exports.
   //
-  // Read off the modules rather than the re-export bridge because the negatives are the point: a
-  // per-provider `completeGoogleOAuth` reappearing anywhere in the runtime has to fail this, and
-  // `Object.keys` of a namespace only sees exports.
-  const authRuntime = await import("../dist/auth-runtime.js");
+  // This read the emitted list plus `Object.keys` of the auth module until ticket 05. The list is
+  // deleted, and `Object.keys` of a namespace sees only exports — so on its own it would have turned
+  // both negatives vacuous, passing for exactly the reason a per-provider function would be added:
+  // privately. Declarations are read out of the compiled text instead, which sees the private ones.
+  const declaredRuntimeNames = (file) => {
+    const source = readFileSync(new URL(`../dist/${file}`, import.meta.url), "utf8");
+    return [...source.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map(([, name]) => name);
+  };
   const names = new Set([
-    ...SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.name),
-    ...Object.keys(authRuntime),
+    ...declaredRuntimeNames("auth-runtime.js"),
+    ...declaredRuntimeNames("http-runtime.js"),
+    ...declaredRuntimeNames("server-runtime-source.js"),
   ]);
   assert.equal(names.has("linkProviderIdentity"), true);
   assert.equal(names.has("completeOpenIdOAuthCodeExchange"), true);

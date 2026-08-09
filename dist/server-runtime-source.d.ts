@@ -20,9 +20,19 @@ export * from "./http-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
-export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
+export declare function createRuntimeLogSink(options: {
+    database: any;
+    config: any;
+    serverEnv: any;
+    dataDir: any;
+}): {
+    path: any;
+    emit(input: any): any;
+    recent(limit?: number): any;
+    tail(limit?: number): any[];
+};
 export declare function createLogEnvelope(input: {
     config: LooseRecord;
     timestamp: any;
@@ -56,11 +66,33 @@ export declare function schemaFromCapsuleDefinition(definition: any): {
         }[];
     }[];
 };
+export declare function extractEndpoints(serverSource: string): {
+    name: string;
+    method: string;
+    path: string;
+    handlerSource: string;
+}[];
 export declare function routeEndpoint(database: {
     endpoints: any[];
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
+export declare function runEndpoint(database: any, endpoint: {
+    handler?: Function;
+    handlerSource?: string;
+}, requestUrl: URL, request: any): Promise<any>;
+export declare function createEndpointDatabaseApi(database: LooseRecord, contextGetter?: any): {
+    [k: string]: any;
+};
+export declare function normalizeJourneyPolicy(value: any): {
+    ttlSeconds: any;
+    capture: any;
+} | null;
+export declare function normalizeJourneyState(value: any, defaultTtlSeconds: number): {
+    status: any;
+    metadata: any;
+    ttlSeconds: any;
+};
 type TrustedRefreshTransport = {
     subscribeType: "dev.refresh.subscribe";
     receivedType: "dev.refresh.received";
@@ -114,4 +146,6 @@ export declare function sendEmailPasswordResetLink(database: LooseRecord, sessio
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
+export declare function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options?: LooseRecord): Promise<any>;
+export declare function runCurrentUserJobWorker(database: LooseRecord): Promise<void>;
 //# sourceMappingURL=server-runtime-source.d.ts.map
