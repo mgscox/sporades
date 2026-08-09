@@ -1562,6 +1562,10 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
         },
         body: JSON.stringify(payload),
     });
+    // Annotated rather than inferred. `tsconfig.json` compiles with the DOM lib, where `json()` is
+    // `Promise<any>` and every read below checks out; `tsconfig.runtime.json` compiles without it, and
+    // @types/node's `json()` is `Promise<unknown>`. The annotation is the type this binding already
+    // had under the main config, so it states what was inferred rather than widening anything.
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
         throw new Error(body?.error?.message ?? `libSQL request failed with HTTP ${response.status}.`);

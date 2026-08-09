@@ -1,0 +1,41 @@
+// The runtime graph, type-checked without the DOM.
+//
+// `tsconfig.json` compiles all of `src/` with `lib: ["ES2022", "DOM"]`, and it has to: `client.ts`
+// and `templates/client-runtime-template.ts` are browser code, and the DOM globals they reach for
+// are real where they run. But that lib is in scope for every other file too, so a *runtime* module
+// — one whose text reaches a deployed Capsule — can reference `document`, `window` or `navigator`,
+// compile without a diagnostic, and be a `ReferenceError` the first time a Hosted Capsule executes
+// that path. `node:22-alpine` has no DOM.
+//
+// That gap was covered until ticket 05 by the free-binding guard, which resolved every identifier in
+// the generated bundle against `lib.esnext.d.ts` and Node's globals and nothing else. The guard is
+// gone because a module graph makes an *undeclared* name a compile error and left it nothing else to
+// catch — but "undeclared" and "declared by a library the container does not have" are different
+// findings, and only the first one `tsc` already reported. This project restores the second as a
+// compile error, which is where the guard's own reasoning said the check belonged.
+//
+// Rooted at the bundle's entry rather than at a list of files. `files` plus an empty `include` makes
+// the program exactly the entry's transitive imports, which is exactly what esbuild carries into
+// `server.mjs` — so a runtime module added later is covered the day it is imported, and a module
+// that stops being reachable stops being checked, with no list to keep in step. A hand-kept second
+// list of what to cover is the failure this migration kept finding.
+//
+// `types: ["node"]` stays, and doing the discrimination properly is the whole point: `fetch`, `URL`,
+// `TextEncoder`, `AbortController`, `WebSocket` and the Web Crypto `crypto` are declared by
+// @types/node, so they keep resolving here and they exist in the container. `document` does not, and
+// no longer does either.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "files": [
+    "src/templates/server-bundle-entry.ts",
+    "src/templates/server-bundle-inputs.d.ts"
+  ],
+  "include": []
+}
