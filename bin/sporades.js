@@ -6,13 +6,13 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
-import path9 from "node:path";
-import { fileURLToPath } from "node:url";
+import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
+import path11 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat4, mkdir as mkdir3, readFile as readFile4, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
-import path4 from "node:path";
+import { lstat as lstat4, mkdir as mkdir3, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import path6 from "node:path";
 
 // src/client-toolchain.ts
 import path from "node:path";
@@ -84,6 +84,15 @@ export const auth = {
   },
   setPassword(email, newPassword) {
     return connect().setPassword(email, newPassword);
+  },
+  sendPasswordResetLink(email) {
+    return connect().sendPasswordResetLink(email);
+  },
+  verifyPasswordResetCode(code) {
+    return connect().verifyPasswordResetCode(code);
+  },
+  confirmPasswordReset(code, newPassword) {
+    return connect().confirmPasswordReset(code, newPassword);
   },
 };
 
@@ -1003,6 +1012,15 @@ function createConnection() {
     },
     setPassword(email, newPassword) {
       return request("auth.setPassword", { email, newPassword });
+    },
+    sendPasswordResetLink(email) {
+      return request("auth.sendPasswordResetLink", { email });
+    },
+    verifyPasswordResetCode(code) {
+      return request("auth.verifyPasswordResetCode", { code });
+    },
+    confirmPasswordReset(code, newPassword) {
+      return request("auth.confirmPasswordReset", { code, newPassword });
     },
     subscribeQuery(name, listener) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
@@ -2120,9 +2138,1854 @@ function field(kind) {
 `;
 }
 
+// src/templates/server-bundle-module-graph.ts
+import { readFile as readFile3 } from "node:fs/promises";
+import { isBuiltin } from "node:module";
+import path4 from "node:path";
+
+// src/package-root.ts
+import { existsSync } from "node:fs";
+import path3 from "node:path";
+import { fileURLToPath } from "node:url";
+function resolveSporadesPackageRoot() {
+  let directory = path3.dirname(fileURLToPath(import.meta.url));
+  for (; ; ) {
+    if (existsSync(path3.join(directory, "package.json"))) {
+      return directory;
+    }
+    const parent = path3.dirname(directory);
+    if (parent === directory) {
+      throw Object.assign(new Error("Server bundle failed: could not locate the Sporades package root."), {
+        hint: "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
+      });
+    }
+    directory = parent;
+  }
+}
+
+// src/templates/server-bundle-module-graph.ts
+function createBundleInputsModule(options) {
+  const capsuleModuleDataUrl = `data:text/javascript;base64,${Buffer.from(options.serverModuleSource, "utf8").toString("base64")}`;
+  return [
+    `export const sporadesConfig = ${JSON.stringify(options.config, null, 2)};`,
+    `export const sporadesServerEnv = ${JSON.stringify(options.serverEnv, null, 2)};`,
+    `export const sporadesSealedServerEnv = ${JSON.stringify(options.sealedServerEnv ?? { enabled: false }, null, 2)};`,
+    `export const sporadesServerSource = ${JSON.stringify(options.serverSource)};`,
+    `export const sporadesCapsuleModuleUrl = ${JSON.stringify(capsuleModuleDataUrl)};`
+  ].join("\n");
+}
+function bundleModuleGraphError(message, hint) {
+  return Object.assign(new Error(message), { hint });
+}
+function resolveServerBundleEntry() {
+  const packageRoot = resolveSporadesPackageRoot();
+  return {
+    packageRoot,
+    entryPath: path4.join(packageRoot, "dist", "templates", "server-bundle-entry.js")
+  };
+}
+async function createServerBundleModuleSource(options) {
+  const { build } = await import("esbuild");
+  const { packageRoot, entryPath } = resolveServerBundleEntry();
+  const entrySource = await readFile3(entryPath, "utf8");
+  const inputsModule = createBundleInputsModule(options);
+  let result;
+  try {
+    result = await build({
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node22",
+      write: false,
+      metafile: true,
+      logLevel: "silent",
+      // esbuild labels every inlined module with its path relative to the working directory. Pinned
+      // to the package root so those labels read `dist/templates/…` instead of wherever the CLI
+      // happens to have been invoked from: otherwise the person's absolute filesystem path is
+      // written into the Capsule bundle that ships, and the same inputs build differently on two
+      // machines. The emitted-list bundle has neither problem, and neither should this one.
+      absWorkingDir: packageRoot,
+      stdin: {
+        contents: options.epilogue ? `${entrySource}
+${options.epilogue}
+` : entrySource,
+        sourcefile: entryPath,
+        resolveDir: path4.dirname(entryPath),
+        loader: "js"
+      },
+      plugins: [
+        {
+          name: "sporades-server-bundle-inputs",
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /^sporades:server-bundle-inputs$/ }, () => ({
+              path: "sporades:server-bundle-inputs",
+              namespace: "sporades-bundle-inputs"
+            }));
+            pluginBuild.onLoad({ filter: /.*/, namespace: "sporades-bundle-inputs" }, () => ({
+              loader: "js",
+              contents: inputsModule
+            }));
+          }
+        }
+      ]
+    });
+  } catch (error) {
+    const message = error?.errors?.map((entry) => entry.text).join("; ") || error?.message || String(error);
+    throw bundleModuleGraphError(`Server bundle failed: ${message}`, "Report this: the Sporades runtime module graph did not build.");
+  }
+  const output = result.outputFiles?.[0];
+  if (!output) {
+    throw bundleModuleGraphError("Server bundle failed: esbuild returned no output.", "Report this: the Sporades runtime module graph produced no bundle.");
+  }
+  const unresolved = Object.values(result.metafile.outputs).flatMap((entry) => entry.imports).filter((entry) => entry.external && !isBuiltin(entry.path) && !entry.path.startsWith("data:")).map((entry) => entry.path);
+  if (unresolved.length > 0) {
+    throw bundleModuleGraphError(
+      `Server bundle failed: the bundle would import ${[...new Set(unresolved)].sort().join(", ")} at runtime.`,
+      "A deployed Capsule has no node_modules. Every dependency must be inlined into the bundle."
+    );
+  }
+  return output.text;
+}
+
+// src/public-tree.ts
+import { lstat as lstat3, mkdir as mkdir2, readdir, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import path5 from "node:path";
+
+// src/public-tree-contract.ts
+var PUBLIC_TREE_LIMITS = {
+  files: 512,
+  fileBytes: 16 * 1024 * 1024,
+  totalBytes: 64 * 1024 * 1024,
+  pathBytes: 240
+};
+function normalizePublicTreePath(value) {
+  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) return null;
+  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) return null;
+  const segments = value.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+function publicTreePathFromRequest(rawPathname) {
+  if (/%2f|%5c/i.test(rawPathname)) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(rawPathname);
+  } catch {
+    return null;
+  }
+  if (decoded === "/") return "index.html";
+  if (!decoded.startsWith("/") || /%[0-9a-f]{2}/i.test(decoded)) return null;
+  return normalizePublicTreePath(decoded.slice(1));
+}
+function validatePublicTreeFileSet(files) {
+  if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
+  const canonicalPrefixes = /* @__PURE__ */ new Map();
+  const canonicalFiles = /* @__PURE__ */ new Set();
+  let totalBytes = 0;
+  let hasIndex = false;
+  for (const file of files) {
+    const normalized = normalizePublicTreePath(file.path);
+    if (normalized === null || !Number.isSafeInteger(file.size) || file.size < 0) return { ok: false, reason: "path" };
+    const segments = normalized.split("/");
+    let canonical = "";
+    let raw = "";
+    for (let index = 0; index < segments.length; index += 1) {
+      raw = raw ? `${raw}/${segments[index]}` : segments[index];
+      const canonicalSegment = segments[index].normalize("NFC");
+      canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
+      const existingRaw = canonicalPrefixes.get(canonical);
+      if (existingRaw !== void 0 && existingRaw !== raw) return { ok: false, reason: "collision" };
+      if (index < segments.length - 1 && canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
+      canonicalPrefixes.set(canonical, raw);
+    }
+    if (canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
+    if ([...canonicalFiles].some((existing) => existing.startsWith(`${canonical}/`))) return { ok: false, reason: "collision" };
+    canonicalFiles.add(canonical);
+    if (file.size > PUBLIC_TREE_LIMITS.fileBytes) return { ok: false, reason: "file-bytes", path: normalized };
+    totalBytes += file.size;
+    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) return { ok: false, reason: "total-bytes" };
+    if (normalized === "index.html") hasIndex = true;
+  }
+  if (!hasIndex) return { ok: false, reason: "index" };
+  return { ok: true, fileCount: files.length, totalBytes };
+}
+
+// src/public-tree.ts
+var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
+var OWNER_HEARTBEATS = /* @__PURE__ */ new Map();
+var execFileAsync = promisify(execFile);
+var UNVERIFIED_OWNER_TTL_MS = 3e4;
+var OWNER_HEARTBEAT_INTERVAL_MS = 1e4;
+var OWNER_CLOCK_SKEW_MS = 5e3;
+async function createPublicTree(buildDir, files, options = {}) {
+  const nonce = `${process.pid}-${Date.now()}-${randomBytes2(8).toString("hex")}`;
+  const treesDir = path5.join(buildDir, ".public-trees");
+  const stagingDir = path5.join(treesDir, `.staging-${nonce}`);
+  const publicDir = path5.join(treesDir, nonce);
+  const normalizedFiles = normalizePublicFiles(files);
+  await mkdir2(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  let published = false;
+  let lease = null;
+  try {
+    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1, fault: options.cleanupFault });
+    await mkdir2(stagingDir, { recursive: false });
+    for (const file of normalizedFiles) {
+      const destination = path5.join(stagingDir, ...file.path.split("/"));
+      await mkdir2(path5.dirname(destination), { recursive: true });
+      await writeFile2(destination, file.contents);
+    }
+    await validatePublicTree(stagingDir);
+    lease = await createPublicTreeLease(treesDir, nonce);
+    await rename2(stagingDir, publicDir);
+    published = true;
+    await cleanupPublicTreesUnlocked(buildDir, { keepRoots: [publicDir], maxCompleted: 1, fault: options.cleanupFault });
+    return {
+      root: publicDir,
+      assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)])),
+      lease
+    };
+  } catch (error) {
+    if (published) await rm2(publicDir, { recursive: true, force: true });
+    if (lease) await removePublicTreeLease(lease).catch(() => {
+    });
+    throw error;
+  } finally {
+    await rm2(stagingDir, { recursive: true, force: true });
+    await releaseLock();
+  }
+}
+async function discardPublicTree(tree) {
+  const treesDir = path5.dirname(tree.root);
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const activeReference = await readActivePublicTreeReference(treesDir);
+    if (activeReference === path5.basename(tree.root)) {
+      throw publicTreeError(
+        "Active public tree cannot be discarded.",
+        "Preserve the referenced candidate until the active public tree reference is repaired.",
+        { candidateDiscard: "forbidden", activeTree: activeReference }
+      );
+    }
+    await removePublicTreeLease(tree.lease);
+    await rm2(tree.root, { recursive: true, force: true });
+  } finally {
+    await releaseLock();
+  }
+}
+async function releasePublicTreeLease(tree) {
+  const treesDir = path5.dirname(tree.root);
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    await removePublicTreeLease(tree.lease);
+    await cleanupPublicTreesUnlocked(path5.dirname(treesDir), { maxCompleted: 1 });
+  } finally {
+    await releaseLock();
+  }
+}
+async function readPublicTreeConsumer(buildDir, consumer) {
+  validateConsumerName(consumer);
+  const recordPath = path5.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
+  const record = await readFile4(recordPath, "utf8").then(JSON.parse).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  return validConsumerRecord(record, consumer) ? record : null;
+}
+async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
+  validateConsumerName(consumer);
+  const treesDir = path5.join(buildDir, ".public-trees");
+  if (path5.dirname(treeRoot) !== treesDir || !isPublicTreeName(path5.basename(treeRoot))) {
+    throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
+  }
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const consumersDir = path5.join(treesDir, ".consumers");
+    await mkdir2(consumersDir, { recursive: true });
+    const recordPath = path5.join(consumersDir, `${consumer}.json`);
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
+    await validatePublicTree(treeRoot);
+    const record = {
+      consumer,
+      tree: path5.basename(treeRoot),
+      identity,
+      token: randomBytes2(16).toString("hex"),
+      createdAt: Date.now()
+    };
+    await replaceStateFile(recordPath, `${JSON.stringify(record)}
+`);
+    return record;
+  } finally {
+    await releaseLock();
+  }
+}
+async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCurrent) {
+  validateConsumerName(consumer);
+  const treesDir = path5.join(buildDir, ".public-trees");
+  await mkdir2(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path5.join(treesDir, ".consumers", `${consumer}.json`);
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
+    if (record === null) {
+      await rm2(recordPath, { recursive: true, force: true });
+      return;
+    }
+    if (!validConsumerRecord(record, consumer)) {
+      throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
+    }
+    const root = path5.join(treesDir, record.tree);
+    await validatePublicTree(root);
+    await mkdir2(path5.dirname(recordPath), { recursive: true });
+    await replaceStateFile(recordPath, `${JSON.stringify(record)}
+`);
+  } finally {
+    await releaseLock();
+  }
+}
+async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
+  validateConsumerName(consumer);
+  const treesDir = path5.join(buildDir, ".public-trees");
+  await mkdir2(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path5.join(treesDir, ".consumers", `${consumer}.json`);
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
+    await rm2(recordPath, { recursive: true, force: true });
+    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
+  } finally {
+    await releaseLock();
+  }
+}
+async function verifyConsumerExpectation(recordPath, consumer, expected) {
+  const raw = await readFile4(recordPath, "utf8").catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  const current = raw === null ? null : (() => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return void 0;
+    }
+  })();
+  const matches = expected === null ? current === null : validConsumerRecord(current, consumer) && current.token === expected.token && current.identity === expected.identity;
+  if (!matches) {
+    throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
+  }
+}
+async function validatePublicTree(root) {
+  const rootStats = await lstat3(root);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw publicTreeError("Invalid public tree.", "The public output root must be a real directory.");
+  }
+  const canonicalPaths = /* @__PURE__ */ new Map();
+  const filePaths = [];
+  let fileCount = 0;
+  let totalBytes = 0;
+  async function visit(directory, prefix = "") {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      validateRelativePublicPath(relativePath);
+      const canonicalPath = relativePath.normalize("NFC");
+      const collision = canonicalPaths.get(canonicalPath);
+      if (collision && collision !== relativePath) {
+        throw publicTreeError(
+          "Invalid public tree.",
+          `Remove the normalization collision between ${collision} and ${relativePath}.`
+        );
+      }
+      canonicalPaths.set(canonicalPath, relativePath);
+      const absolutePath = path5.join(directory, entry.name);
+      const stats = await lstat3(absolutePath);
+      if (stats.isSymbolicLink()) {
+        throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
+      }
+      if (stats.isDirectory()) {
+        await visit(absolutePath, relativePath);
+        continue;
+      }
+      if (!stats.isFile()) {
+        throw publicTreeError("Invalid public tree.", `Remove the unsupported entry at ${relativePath}.`);
+      }
+      fileCount += 1;
+      totalBytes += stats.size;
+      filePaths.push(relativePath);
+      if (fileCount > PUBLIC_TREE_LIMITS.files) {
+        throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
+      }
+      if (stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
+        throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
+      }
+      if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+        throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
+      }
+    }
+  }
+  await visit(root);
+  const indexStats = await lstat3(path5.join(root, "index.html")).catch(() => null);
+  if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
+    throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
+  }
+  return { fileCount, totalBytes, paths: filePaths.sort() };
+}
+async function summarizePublicTree(root) {
+  const validated = await validatePublicTree(root);
+  const paths = validated.paths.slice(0, 20);
+  return {
+    htmlEntry: "index.html",
+    fileCount: validated.fileCount,
+    totalBytes: validated.totalBytes,
+    paths,
+    truncated: validated.paths.length > paths.length
+  };
+}
+async function validateActivePublicTreeReference(treesDir, raw) {
+  let tree;
+  try {
+    tree = JSON.parse(raw)?.tree;
+  } catch {
+    tree = null;
+  }
+  if (!(typeof tree === "string" && isPublicTreeName(tree))) {
+    throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
+  }
+  const root = path5.join(treesDir, tree);
+  const stats = await lstat3(root).catch(() => null);
+  if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+    throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
+  }
+  await validatePublicTree(root);
+  return tree;
+}
+async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
+  const treesDir = path5.join(buildDir, ".public-trees");
+  const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path5.dirname(root) === treesDir).map((root) => path5.basename(root)));
+  const activeReference = await readActivePublicTreeReference(treesDir);
+  if (typeof activeReference === "string") {
+    keepNames.add(activeReference);
+  }
+  for (const consumerTree of await publicTreeConsumerNames(treesDir)) keepNames.add(consumerTree);
+  const now = options.now ?? Date.now;
+  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
+  for (const name of liveLeaseNames) keepNames.add(name);
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path5.join(treesDir, entry.name))).mtimeMs })));
+  completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  let recoverableCount = 0;
+  for (const item of completed) {
+    if (keepNames.has(item.entry.name)) continue;
+    if (staleLeaseNames.has(item.entry.name)) continue;
+    if (recoverableCount >= (options.maxCompleted ?? 1)) break;
+    keepNames.add(item.entry.name);
+    recoverableCount += 1;
+  }
+  const failures = [];
+  for (const entry of entries) {
+    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
+    if (keepNames.has(entry.name)) continue;
+    const entryPath = path5.join(treesDir, entry.name);
+    try {
+      options.fault?.("before-remove", entryPath);
+      await rm2(entryPath, { recursive: true, force: true });
+    } catch {
+      failures.push(entry.name);
+    }
+  }
+  if (failures.length > 0) {
+    throw publicTreeError(
+      "Public tree cleanup degraded.",
+      `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
+    );
+  }
+  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)), now);
+  await removeOrphanedOwnerHeartbeats(treesDir);
+}
+async function readPublicAsset(tree, rawPathname) {
+  const relativePath = publicTreePathFromRequest(rawPathname);
+  return relativePath ? tree.assets.get(relativePath) ?? null : null;
+}
+function validateRelativePublicPath(value) {
+  const normalized = normalizePublicTreePath(value);
+  if (normalized === null) throw publicTreeError("Invalid public path.", "Public paths must be bounded safe relative POSIX paths.");
+  return normalized;
+}
+function normalizePublicFiles(files) {
+  const normalized = files.map((file) => {
+    const relativePath = validateRelativePublicPath(file.path);
+    const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
+    return { path: relativePath, contents };
+  });
+  const validation = validatePublicTreeFileSet(normalized.map((file) => ({ path: file.path, size: file.contents.byteLength })));
+  if (!validation.ok) {
+    const hints = {
+      path: "Public paths must be bounded safe relative POSIX paths.",
+      collision: "Remove Unicode normalization collisions from public output.",
+      files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
+      "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
+      "total-bytes": "Public output exceeds the aggregate size limit.",
+      index: "Client output must contain a regular index.html file."
+    };
+    throw publicTreeError("Invalid public tree.", hints[validation.reason]);
+  }
+  return normalized;
+}
+function publicAsset(relativePath, contents) {
+  return {
+    body: Buffer.from(contents),
+    contentType: publicContentType(relativePath),
+    relativePath,
+    html: relativePath === "index.html"
+  };
+}
+function publicContentType(relativePath) {
+  switch (path5.extname(relativePath).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+    case ".mjs":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+    case ".map":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".ico":
+      return "image/x-icon";
+    case ".woff":
+      return "font/woff";
+    case ".woff2":
+      return "font/woff2";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+async function createPublicTreeLease(treesDir, treeName) {
+  const leasesDir = path5.join(treesDir, ".leases");
+  await mkdir2(leasesDir, { recursive: true });
+  const token = randomBytes2(16).toString("hex");
+  const leasePath = path5.join(leasesDir, `${treeName}.json`);
+  const processStart = await getProcessStartIdentity(process.pid);
+  const record = {
+    tree: treeName,
+    pid: process.pid,
+    processStart,
+    createdAt: Date.now(),
+    heartbeatAt: Date.now(),
+    token
+  };
+  await writeFile2(leasePath, `${JSON.stringify(record)}
+`, { flag: "wx" });
+  LIVE_PUBLIC_TREE_LEASES.add(token);
+  if (processStart === null) startOwnerHeartbeat(leasePath, record);
+  return { path: leasePath, token };
+}
+async function removePublicTreeLease(lease) {
+  await stopOwnerHeartbeat(lease.token);
+  const record = await readFile4(lease.path, "utf8").then(JSON.parse).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (record && record.token !== lease.token) {
+    LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+    throw publicTreeError("Public tree lease ownership changed.", "Preserve the candidate and retry cleanup from its owning build.");
+  }
+  await rm2(lease.path, { force: true });
+  LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+}
+async function publicTreeLeaseStates(treesDir, now) {
+  const leasesDir = path5.join(treesDir, ".leases");
+  const entries = await readdir(leasesDir).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  const live = /* @__PURE__ */ new Set();
+  const stale = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    try {
+      const lease = JSON.parse(await readFile4(path5.join(leasesDir, entry), "utf8"));
+      if (validLeaseRecord(lease)) {
+        if (await leaseIsLive(lease, path5.join(leasesDir, entry), now)) live.add(lease.tree);
+        else stale.add(lease.tree);
+      } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
+    } catch {
+      if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
+    }
+  }
+  return { live, stale };
+}
+async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
+  const leasesDir = path5.join(treesDir, ".leases");
+  const entries = await readdir(leasesDir).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    const leasePath = path5.join(leasesDir, entry);
+    let lease = null;
+    try {
+      lease = JSON.parse(await readFile4(leasePath, "utf8"));
+    } catch {
+    }
+    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
+      if (validLeaseRecord(lease)) {
+        LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+        await stopOwnerHeartbeat(lease.token);
+      }
+      await rm2(leasePath, { force: true });
+    }
+  }
+}
+function validLeaseRecord(lease) {
+  return Boolean(
+    lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && lease.pid > 0 && (typeof lease.processStart === "string" || lease.processStart === null) && Number.isFinite(lease.createdAt) && Number.isFinite(lease.heartbeatAt) && typeof lease.token === "string" && lease.token.length > 0
+  );
+}
+async function leaseIsLive(lease, recordPath, now) {
+  if (lease.pid === process.pid && !LIVE_PUBLIC_TREE_LEASES.has(lease.token)) return false;
+  return ownerIdentityIsLive(lease, recordPath, now);
+}
+async function readActivePublicTreeReference(treesDir) {
+  try {
+    return await validateActivePublicTreeReference(treesDir, await readFile4(path5.join(treesDir, "active.json"), "utf8"));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw publicTreeError(
+      "Public tree cleanup degraded.",
+      "The active public tree reference is invalid; no referenced candidate may be discarded.",
+      { candidateDiscard: "forbidden" }
+    );
+  }
+}
+function isPublicTreeName(value) {
+  return /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(value);
+}
+async function acquirePublicTreeLock(treesDir) {
+  const lockDir = path5.join(treesDir, ".lifecycle-lock");
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await mkdir2(lockDir);
+      const ownerPath = path5.join(lockDir, "owner.json");
+      const token = randomBytes2(16).toString("hex");
+      const processStart = await getProcessStartIdentity(process.pid);
+      const owner = {
+        pid: process.pid,
+        processStart,
+        createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+        token
+      };
+      await writeFile2(ownerPath, `${JSON.stringify(owner)}
+`);
+      if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
+      return async () => {
+        await stopOwnerHeartbeat(token);
+        const currentOwner = await readFile4(ownerPath, "utf8").then(JSON.parse).catch((error) => {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (currentOwner === null) return;
+        if (currentOwner.token !== token) {
+          throw publicTreeError("Public tree lock ownership changed.", "Preserve the successor lock and retry after its owner completes.");
+        }
+        await rm2(lockDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      const owner = await readFile4(path5.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      if (owner !== null && !await ownerIdentityIsLive(owner, path5.join(lockDir, "owner.json"))) {
+        await rm2(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      if (owner === null) {
+        const ageMs = Date.now() - await lstat3(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        if (ageMs > 1e3) {
+          await rm2(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw publicTreeError("Public tree lifecycle is busy.", "Retry after the other Bundle operation completes.");
+}
+async function ownerIdentityIsLive(owner, recordPath, clock = Date.now) {
+  if (!validOwnerRecord(owner)) return false;
+  const actualStart = await getProcessStartIdentity(owner.pid);
+  if (actualStart !== null && typeof owner.processStart === "string") return actualStart === owner.processStart;
+  const heartbeatAge = clock() - await readOwnerHeartbeat(recordPath, owner);
+  return processIsLive2(owner.pid) && heartbeatAge >= -OWNER_CLOCK_SKEW_MS && heartbeatAge <= UNVERIFIED_OWNER_TTL_MS;
+}
+function validOwnerRecord(owner) {
+  return Boolean(
+    owner && Number.isInteger(owner.pid) && owner.pid > 0 && (typeof owner.processStart === "string" || owner.processStart === null) && Number.isFinite(owner.createdAt) && Number.isFinite(owner.heartbeatAt) && typeof owner.token === "string" && owner.token.length > 0
+  );
+}
+function startOwnerHeartbeat(recordPath, record) {
+  let stopped = false;
+  let inFlight = Promise.resolve();
+  const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
+  const refresh = async () => {
+    const current = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validOwnerRecord(current) || current.token !== record.token) {
+      stopped = true;
+      clearInterval(timer);
+      return;
+    }
+    await publishOwnerHeartbeat(recordPath, record.token, Date.now());
+  };
+  const timer = setInterval(() => {
+    if (!stopped) inFlight = inFlight.then(refresh).catch(() => {
+    });
+  }, OWNER_HEARTBEAT_INTERVAL_MS);
+  timer.unref();
+  OWNER_HEARTBEATS.set(record.token, {
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+      await rm2(heartbeatPath, { force: true });
+    }
+  });
+}
+async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {}) {
+  const heartbeatPath = ownerHeartbeatPath(recordPath, token);
+  await mkdir2(path5.dirname(heartbeatPath), { recursive: true });
+  const temporaryPath = path5.join(path5.dirname(heartbeatPath), `${token}.${randomBytes2(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
+`, { flag: "wx" });
+    await options.afterTempWrite?.();
+    const currentOwner = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
+      throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
+    }
+    await rename2(temporaryPath, heartbeatPath);
+  } finally {
+    await rm2(temporaryPath, { force: true });
+  }
+}
+function ownerHeartbeatPath(recordPath, token) {
+  const ownerDir = path5.dirname(recordPath);
+  const treesDir = [".leases", ".lifecycle-lock"].includes(path5.basename(ownerDir)) ? path5.dirname(ownerDir) : ownerDir;
+  return path5.join(treesDir, ".owner-heartbeats", `${token}.json`);
+}
+async function readOwnerHeartbeat(recordPath, owner) {
+  try {
+    const heartbeat = JSON.parse(await readFile4(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
+    if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
+    return heartbeat.heartbeatAt;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return owner.heartbeatAt;
+    return Number.NaN;
+  }
+}
+async function stopOwnerHeartbeat(token) {
+  const heartbeat = OWNER_HEARTBEATS.get(token);
+  OWNER_HEARTBEATS.delete(token);
+  await heartbeat?.stop();
+}
+async function removeOrphanedOwnerHeartbeats(treesDir) {
+  const retained = /* @__PURE__ */ new Set();
+  const leaseFiles = await readdir(path5.join(treesDir, ".leases")).catch(() => []);
+  for (const entry of leaseFiles) {
+    const lease = await readFile4(path5.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    if (validLeaseRecord(lease)) retained.add(lease.token);
+  }
+  const lock = await readFile4(path5.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  if (validOwnerRecord(lock)) retained.add(lock.token);
+  const heartbeatDir = path5.join(treesDir, ".owner-heartbeats");
+  const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
+  for (const entry of heartbeatFiles) {
+    const entryPath = path5.join(heartbeatDir, entry);
+    if (entry.endsWith(".tmp")) {
+      const age = Date.now() - await lstat3(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
+      if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
+        await rm2(entryPath, { recursive: true, force: true });
+      }
+      continue;
+    }
+    const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
+    if (!retained.has(token)) await rm2(entryPath, { recursive: true, force: true });
+  }
+}
+async function publicTreeConsumerNames(treesDir) {
+  const consumersDir = path5.join(treesDir, ".consumers");
+  const entries = await readdir(consumersDir).catch(() => []);
+  const trees = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    const recordPath = path5.join(consumersDir, entry);
+    const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
+    const record = await readFile4(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validConsumerRecord(record, consumer)) {
+      await rm2(recordPath, { recursive: true, force: true });
+      continue;
+    }
+    const root = path5.join(treesDir, record.tree);
+    try {
+      await validatePublicTree(root);
+      trees.add(record.tree);
+    } catch {
+      await rm2(recordPath, { force: true });
+    }
+  }
+  return trees;
+}
+function validateConsumerName(consumer) {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(consumer)) {
+    throw publicTreeError("Invalid public tree consumer.", "Use a short lowercase consumer name.");
+  }
+}
+function validConsumerRecord(record, consumer) {
+  return Boolean(
+    record && record.consumer === consumer && isPublicTreeName(record.tree) && typeof record.identity === "string" && record.identity.length > 0 && typeof record.token === "string" && /^[a-f0-9]{32}$/.test(record.token) && Number.isFinite(record.createdAt)
+  );
+}
+async function replaceStateFile(target, contents) {
+  const temporary = `${target}.${process.pid}-${randomBytes2(8).toString("hex")}.tmp`;
+  try {
+    await writeFile2(temporary, contents, { flag: "wx" });
+    await rename2(temporary, target);
+  } finally {
+    await rm2(temporary, { force: true });
+  }
+}
+async function getProcessStartIdentity(pid, options = {}) {
+  if (!(Number.isInteger(pid) && pid > 0)) return null;
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") {
+    try {
+      const stat = await readFile4(`/proc/${pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      return fields[19] ? `linux:${fields[19]}` : null;
+    } catch {
+      return null;
+    }
+  }
+  if (platform === "darwin") {
+    try {
+      const run2 = options.execFile ?? execFileAsync;
+      const { stdout } = await run2("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        env: { ...process.env, LC_ALL: "C", LANG: "C" }
+      });
+      const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(stdout.trim().replace(/\s+/g, " "));
+      if (!match) return null;
+      const month = String(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]) + 1).padStart(2, "0");
+      return `darwin:${match[4]}-${month}-${match[2].padStart(2, "0")}T${match[3]}`;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+function processIsLive2(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
+  }
+}
+function publicTreeError(message, hint, diagnostics) {
+  return Object.assign(new Error(message), { hint, ...diagnostics === void 0 ? {} : { diagnostics } });
+}
+
+// src/bundle-pipeline.ts
+var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
+var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
+var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
+async function createBundle(projectDir, config, options = {}) {
+  const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
+  const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
+  const buildDir = path6.join(projectDir, ".sporades", "build");
+  const paths = {
+    config: path6.join(projectDir, "sporades.json"),
+    serverEntry: path6.join(projectDir, "server", "index.ts"),
+    clientEntry: path6.join(projectDir, "client", frameworkBundleConfig.entry),
+    indexHtml: path6.join(projectDir, "index.html"),
+    serverEnv: path6.join(projectDir, ".env.sporades.server"),
+    serverBundle: path6.join(buildDir, "server.mjs"),
+    clientBundle: path6.join(buildDir, "client.js")
+  };
+  const indexHtml = await readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.").catch((error) => {
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+  });
+  try {
+    validateClientToolchainInput({ frameworkConfig: frameworkBundleConfig, toolchain, indexHtml });
+  } catch (error) {
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+  }
+  const sealedPaths = sealedServerEnvPaths(projectDir);
+  const sealedEnvelope = await readSealedServerEnv(sealedPaths);
+  const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
+  const serverEnv = sealedEnvelope ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey) : parseServerEnv(serverEnvFile);
+  validateAuthConfig(config, serverEnv);
+  const [serverSource, clientSource] = await Promise.all([
+    readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.").catch((error) => {
+      throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
+    }),
+    readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.").catch((error) => {
+      throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+    })
+  ]);
+  const serverCapsuleModule = await bundleServerCapsuleModule({
+    serverSource,
+    serverSourcePath: paths.serverEntry
+  }).catch((error) => {
+    throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
+  });
+  const clientOutput = await buildClientToolchain({
+    projectDir,
+    toolchain,
+    indexHtml,
+    indexHtmlPath: paths.indexHtml,
+    clientSource,
+    clientSourcePath: paths.clientEntry,
+    frameworkConfig: frameworkBundleConfig,
+    devRefresh: options.devClientRefresh === true
+  }).catch((error) => {
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+  });
+  const clientBundle = clientOutput.legacyClientBundle;
+  const serverBundleInputs = {
+    config,
+    serverEnv: sealedEnvelope ? {} : serverEnv,
+    sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
+    serverSource,
+    serverModuleSource: serverCapsuleModule
+  };
+  const serverBundle = await createServerBundleModuleSource(serverBundleInputs).catch((error) => {
+    throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
+  });
+  await mkdir3(buildDir, { recursive: true });
+  const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles).catch((error) => {
+    throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain);
+  });
+  const legacyFiles = [
+    { target: paths.serverBundle, contents: serverBundle },
+    { target: paths.clientBundle, contents: clientBundle }
+  ];
+  let legacyPublished = false;
+  const publishLegacy = async () => {
+    if (legacyPublished) {
+      throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework, toolchain);
+    }
+    let previous;
+    const activeTreePath = path6.join(buildDir, ".public-trees", "active.json");
+    const candidateTreeName = path6.basename(publicTree.root);
+    let previousActiveTree;
+    try {
+      previous = await Promise.all(legacyFiles.map(async (file) => ({
+        target: file.target,
+        contents: await readFile5(file.target).catch((error) => {
+          if (errorDetails2(error).code === "ENOENT") return null;
+          throw error;
+        })
+      })));
+      previousActiveTree = await readFile5(activeTreePath).catch((error) => {
+        if (errorDetails2(error).code === "ENOENT") return null;
+        throw error;
+      });
+      await publishLegacyBundles(buildDir, legacyFiles.filter((file) => file.contents !== null));
+      await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
+      try {
+        options.activeReferenceFault?.("before-active-write");
+        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}
+`);
+        options.activeReferenceFault?.("after-active-write");
+      } catch (error) {
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path6.dirname(activeTreePath));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+        await restoreLegacyBundleFiles(buildDir, previous);
+        throw error;
+      }
+      legacyPublished = true;
+    } catch (error) {
+      throw tagBuildError(error, "publish", frameworkBundleConfig.framework, toolchain);
+    }
+    return async () => {
+      try {
+        options.activeReferenceFault?.("before-active-restore");
+        if (previousActiveTree === null) await rm3(activeTreePath, { force: true });
+        else await replaceBundleStateFile(activeTreePath, previousActiveTree);
+        options.activeReferenceFault?.("after-active-restore");
+      } catch {
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path6.dirname(activeTreePath));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+      }
+      await restoreLegacyBundleFiles(buildDir, previous);
+      legacyPublished = false;
+    };
+  };
+  if (options.publishLegacy !== false) {
+    try {
+      const rollback = await publishLegacy();
+      try {
+        await releasePublicTreeLease(publicTree);
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
+    } catch (error) {
+      if (candidateDiscardIsForbidden(error)) await releasePublicTreeLease(publicTree).catch(() => {
+      });
+      else await discardPublicTree(publicTree);
+      throw error;
+    }
+  }
+  return {
+    paths,
+    buildDir,
+    publishLegacy,
+    releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
+    serverRuntime: {
+      source: serverSource,
+      env: serverEnv,
+      capsuleModuleSource: serverCapsuleModule
+    },
+    staticFiles: {
+      publicTree,
+      publicDir: publicTree.root,
+      indexHtml: path6.join(publicTree.root, "index.html"),
+      clientBundle: clientBundle === null ? null : path6.join(publicTree.root, "client.js")
+    },
+    containerMounts: {
+      files: [
+        { host: paths.serverBundle, container: "/app/server.mjs", mode: "ro" },
+        { host: publicTree.root, container: "/app/public", mode: "ro" },
+        { host: paths.config, container: "/app/sporades.json", mode: "ro" }
+      ],
+      serverEnv: serverEnvFile.exists ? { host: paths.serverEnv, container: "/app/.env.sporades.server", mode: "ro" } : null,
+      sealedServerEnv: sealedEnvelope ? {
+        envelope: { host: sealedPaths.envelope, container: "/app/.sporades/sealed-server-env/server-env.sealed.json", mode: "ro" },
+        privateKey: { host: sealedPaths.privateKey, container: "/app/.sporades/sealed-server-env/server-env.private.pem", mode: "ro" }
+      } : null
+    }
+  };
+}
+async function restoreLegacyBundleFiles(buildDir, previous) {
+  const existing = previous.filter((file) => file.contents !== null);
+  await publishLegacyBundles(buildDir, existing);
+  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
+}
+async function inspectActiveTreeState(filePath) {
+  try {
+    return await parseActiveTreeState(await readFile5(filePath, "utf8"), path6.dirname(filePath));
+  } catch (error) {
+    if (errorDetails2(error).code === "ENOENT") return { kind: "missing" };
+    return { kind: "invalid" };
+  }
+}
+async function parseActiveTreeState(raw, treesDir) {
+  try {
+    return { kind: "valid", tree: await validateActivePublicTreeReference(treesDir, raw) };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+function activeTreeStatesEqual(left, right) {
+  if (left.kind === "missing" && right.kind === "missing") return true;
+  return left.kind === "valid" && right.kind === "valid" && left.tree === right.tree;
+}
+function activeReferenceRecoveryError(candidateTree, activeState) {
+  return commandError(
+    "Active public tree recovery is incomplete.",
+    "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.",
+    { candidateDiscard: "forbidden", candidateTree, activeState }
+  );
+}
+async function replaceBundleStateFile(filePath, contents) {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile3(temporaryPath, contents);
+    await rename3(temporaryPath, filePath);
+  } finally {
+    await rm3(temporaryPath, { force: true });
+  }
+}
+async function publishLegacyBundles(buildDir, files, options = {}) {
+  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const stagingDir = path6.join(buildDir, `.legacy-staging-${nonce}`);
+  const states = [];
+  let preserveStaging = false;
+  await mkdir3(stagingDir, { recursive: false });
+  try {
+    for (const [index, file] of files.entries()) {
+      const stats = await lstat4(file.target).catch((error) => {
+        if (errorDetails2(error).code === "ENOENT") return null;
+        throw error;
+      });
+      if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
+        throw commandError("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
+      }
+      const candidate = path6.join(stagingDir, `candidate-${index}`);
+      await writeFile3(candidate, file.contents);
+      states.push({ target: file.target, candidate, backup: path6.join(stagingDir, `backup-${index}`), moved: false, published: false });
+    }
+    try {
+      for (const state of states) {
+        try {
+          await rename3(state.target, state.backup);
+          state.moved = true;
+        } catch (error) {
+          if (errorDetails2(error).code !== "ENOENT") throw error;
+        }
+      }
+      for (const [index, state] of states.entries()) {
+        options.fault?.("before-publish", index);
+        await rename3(state.candidate, state.target);
+        state.published = true;
+      }
+    } catch (error) {
+      const recoveryFailures = [];
+      for (const [index, state] of [...states.entries()].reverse()) {
+        try {
+          options.fault?.("before-restore", index);
+          if (state.moved) await rename3(state.backup, state.target);
+          else if (state.published) await rm3(state.target, { force: true });
+        } catch {
+          recoveryFailures.push(index);
+        }
+      }
+      if (recoveryFailures.length > 0) {
+        preserveStaging = true;
+        throw commandError(
+          "Legacy Bundle recovery is incomplete.",
+          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path6.basename(stagingDir)}.`,
+          { failedFiles: recoveryFailures.length, recoveryDirectory: path6.basename(stagingDir) }
+        );
+      }
+      throw error;
+    }
+  } finally {
+    if (!preserveStaging) await rm3(stagingDir, { recursive: true, force: true });
+  }
+}
+async function readRequiredSealedPrivateKey(paths) {
+  const keyPair = await readKeyPair(paths);
+  if (!keyPair) {
+    throw commandError(
+      "Sealed Server env private key is missing.",
+      "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values."
+    );
+  }
+  return keyPair;
+}
+async function bundleServerCapsuleModule(options) {
+  const { build } = await import("esbuild");
+  try {
+    const result = await build({
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      write: false,
+      logLevel: "silent",
+      sourcemap: "inline",
+      stdin: {
+        contents: options.serverSource,
+        sourcefile: options.serverSourcePath,
+        resolveDir: path6.dirname(options.serverSourcePath),
+        loader: "ts"
+      },
+      plugins: [sporadesServerPlugin()]
+    });
+    const output = result.outputFiles?.[0];
+    if (!output) {
+      throw commandError("Server bundle failed: esbuild returned no output.", "Fix server/index.ts and save again.");
+    }
+    return output.text;
+  } catch (error) {
+    const message = bundleErrorMessage(error);
+    throw commandError(`Server bundle failed: ${message}`, "Fix server/index.ts and save again.");
+  }
+}
+async function readServerEnvFile(envPath) {
+  try {
+    const raw = await readFile5(envPath, "utf8");
+    if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
+      throw commandError("Invalid server env file.", ".env.sporades.server must be 64KB or smaller.");
+    }
+    return { exists: true, raw };
+  } catch (error) {
+    if (errorDetails2(error).code === "ENOENT") {
+      return { exists: false, raw: "" };
+    }
+    throw error;
+  }
+}
+function parseServerEnv(envFile) {
+  const values = {};
+  for (const [index, line] of envFile.raw.split(/\r?\n/).entries()) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex <= 0) {
+      throw commandError("Invalid server env file.", `Fix line ${index + 1} in .env.sporades.server to use KEY=value.`);
+    }
+    const key = trimmed.slice(0, equalsIndex).trim();
+    if (!isValidServerEnvKeyName(key)) {
+      throw commandError("Invalid server env file.", `Fix invalid key ${key} in .env.sporades.server.`);
+    }
+    if (isReservedServerEnvKeyName(key)) {
+      throw commandError("Invalid server env file.", "Remove reserved SPORADES_ keys from .env.sporades.server.");
+    }
+    values[key] = parseEnvValue(trimmed.slice(equalsIndex + 1).trim());
+  }
+  if (Object.keys(values).length > 64) {
+    throw commandError("Invalid server env file.", ".env.sporades.server can contain at most 64 keys.");
+  }
+  return values;
+}
+function isValidServerEnvKeyName(name) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name !== "__proto__";
+}
+function isReservedServerEnvKeyName(name) {
+  return name.startsWith("SPORADES_");
+}
+function serverEnvPlaintextSize(values) {
+  return Buffer.byteLength(
+    Object.entries(values).map(([key, value]) => `${key}=${value}
+`).join(""),
+    "utf8"
+  );
+}
+function parseEnvValue(value) {
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") {
+        return parsed;
+      }
+    } catch {
+    }
+    return value.slice(1, -1);
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+function authStatus(config, serverEnv) {
+  const authConfig = config.auth ?? { mode: "anonymous" };
+  const normalized = normalizeAuthConfig(authConfig);
+  const providers = {};
+  const port = typeof config.dev === "object" && config.dev && typeof config.dev.port === "number" ? Number(config.dev.port) : typeof config.deploy === "object" && config.deploy && typeof config.deploy.port === "number" ? Number(config.deploy.port) : 4e3;
+  for (const providerName of AUTH_PROVIDER_ORDER) {
+    const provider = normalized.providers[providerName];
+    const configured = providerConfigured(providerName, provider, serverEnv);
+    const result = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : RUNTIME_AUTH_PROVIDERS.has(providerName)
+    };
+    if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
+      result.clientIdEnv = provider.clientIdEnv;
+      result.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") result.tenant = provider.tenant;
+    if (providerName === "facebook") {
+      result.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
+    if (providerName === "apple") {
+      result.clientId = provider.clientId;
+      result.teamId = provider.teamId;
+      result.keyId = provider.keyId;
+      result.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      result.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      if (providerName === "apple") {
+        result.callbackUrl = null;
+        result.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+      }
+    }
+    providers[providerName] = result;
+  }
+  return {
+    mode: normalized.mode,
+    providers,
+    google: {
+      configured: providers.google.configured,
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv
+    }
+  };
+}
+function normalizeAuthConfig(authConfig) {
+  const providerConfig = isRecord2(authConfig.providers) ? authConfig.providers : {};
+  for (const provider of Object.keys(providerConfig)) {
+    if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
+      throw commandError(
+        `Unsupported auth provider: ${provider}`,
+        `Use supported auth providers: ${AUTH_PROVIDER_ORDER.join(", ")}.`
+      );
+    }
+  }
+  const googleConfig = readProviderConfig(providerConfig.google);
+  const legacyGoogle = readProviderConfig(authConfig.google);
+  const microsoftConfig = readProviderConfig(providerConfig.microsoft);
+  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
+  const emailConfig = readProviderConfig(providerConfig.email);
+  const anonymousConfig = readProviderConfig(providerConfig.anonymous);
+  const anonymousEnabled = providerConfig.anonymous === void 0 ? true : anonymousConfig.enabled;
+  const mode = typeof authConfig.mode === "string" ? String(authConfig.mode) : googleEnabled ? "google" : "anonymous";
+  return {
+    mode,
+    providers: {
+      anonymous: {
+        enabled: anonymousEnabled,
+        ...emptyProviderConfig()
+      },
+      google: {
+        ...emptyProviderConfig(),
+        enabled: googleEnabled,
+        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
+        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv
+      },
+      email: {
+        enabled: emailConfig.enabled,
+        ...emptyProviderConfig()
+      },
+      microsoft: {
+        ...microsoftConfig,
+        tenant: microsoftConfig.tenant ?? "common"
+      },
+      apple: readProviderConfig(providerConfig.apple),
+      facebook: readFacebookProviderConfig(providerConfig.facebook)
+    }
+  };
+}
+function readProviderConfig(config) {
+  if (config === true) {
+    return { enabled: true, ...emptyProviderConfig() };
+  }
+  if (config === false || config === void 0 || config === null) {
+    return { enabled: false, ...emptyProviderConfig() };
+  }
+  if (!isRecord2(config)) {
+    return { enabled: false, ...emptyProviderConfig() };
+  }
+  return {
+    enabled: config.enabled !== false,
+    clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
+    clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
+    clientId: typeof config.clientId === "string" ? config.clientId : null,
+    teamId: typeof config.teamId === "string" ? config.teamId : null,
+    keyId: typeof config.keyId === "string" ? config.keyId : null,
+    privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
+    tenant: typeof config.tenant === "string" ? config.tenant : null,
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
+  };
+}
+function readFacebookProviderConfig(config) {
+  const normalized = readProviderConfig(config);
+  if (!isRecord2(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
+}
+function validateAuthConfig(config, serverEnv) {
+  const status = authStatus(config, serverEnv);
+  for (const provider of AUTH_PROVIDER_ORDER) {
+    const state = status.providers[provider];
+    if (!state.enabled || state.configured) continue;
+    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : typeof state.callbackGuidance === "string" ? ` ${state.callbackGuidance}` : "";
+    throw commandError(
+      `${providerLabel(provider)} auth is not fully configured.`,
+      `${providerConfigurationHint(provider)}${callback}`
+    );
+  }
+}
+function emptyProviderConfig() {
+  return {
+    clientIdEnv: null,
+    clientSecretEnv: null,
+    clientId: null,
+    teamId: null,
+    keyId: null,
+    privateKeyEnv: null,
+    tenant: null,
+    graphVersion: null
+  };
+}
+function providerConfigured(provider, config, serverEnv) {
+  if (provider === "anonymous" || provider === "email") return true;
+  if (provider === "apple") {
+    return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
+  }
+  const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  if (provider === "facebook") {
+    return credentialsConfigured && config.graphVersion === "v23.0";
+  }
+  return credentialsConfigured;
+}
+function providerLabel(provider) {
+  return `${provider[0].toUpperCase()}${provider.slice(1)}`;
+}
+function providerConfigurationHint(provider) {
+  if (provider === "apple") {
+    return "Run `sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>` or use `--client-json <path>`.";
+  }
+  return `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`;
+}
+async function readRequiredFile(filePath, message, hint) {
+  try {
+    return await readFile5(filePath, "utf8");
+  } catch (error) {
+    if (errorDetails2(error).code === "ENOENT") {
+      throw commandError(message, hint);
+    }
+    throw error;
+  }
+}
+function readFrameworkBundleConfig(framework) {
+  const capability = clientFrameworkCapability(framework);
+  if (!capability) throw commandError(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
+  return { framework: capability.framework, ...capability.build };
+}
+function readClientToolchain(toolchain, framework) {
+  if (!isClientToolchain(toolchain)) throw commandError(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
+  if (!supportsClientCapability(framework, toolchain)) {
+    const details = clientCapabilityError(framework, toolchain);
+    throw commandError(details.message, details.hint);
+  }
+  return toolchain;
+}
+function sporadesServerPlugin() {
+  return {
+    name: "sporades-server",
+    setup(build) {
+      build.onResolve({ filter: /^sporades\/server$/ }, () => ({
+        path: "sporades/server",
+        namespace: "sporades-runtime"
+      }));
+      build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
+        loader: "js",
+        contents: serverRuntimeModuleSource()
+      }));
+    }
+  };
+}
+function isRecord2(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function errorDetails2(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function candidateDiscardIsForbidden(error) {
+  const diagnostics = errorDetails2(error).diagnostics;
+  return isRecord2(diagnostics) && diagnostics.candidateDiscard === "forbidden";
+}
+function bundleErrorMessage(error) {
+  const details = errorDetails2(error);
+  const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
+  if (isRecord2(firstError) && typeof firstError.text === "string") {
+    return firstError.text;
+  }
+  return typeof details.message === "string" ? details.message : "unknown error";
+}
+function commandError(message, hint, diagnostics) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics !== void 0) error.diagnostics = diagnostics;
+  return error;
+}
+function tagBuildError(error, phase, framework, toolchain) {
+  const tagged = error instanceof Error ? error : commandError(String(error), "Fix the build error and save again.");
+  tagged.phase = phase;
+  tagged.framework = framework;
+  tagged.toolchain = toolchain;
+  return tagged;
+}
+
+// src/file-transaction.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+import { lstat as lstat5, rename as rename4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+import path7 from "node:path";
+var defaultExecutor = async (_operation, action) => action();
+async function replaceFilesAtomically(replacements, options = {}) {
+  if (replacements.length === 0) {
+    return;
+  }
+  validateDistinctTargets(replacements);
+  const execute = options.execute ?? defaultExecutor;
+  const token = `${process.pid}-${randomBytes3(8).toString("hex")}`;
+  const entries = [];
+  try {
+    for (const [index, replacement] of replacements.entries()) {
+      const directory = path7.dirname(replacement.path);
+      const basename = path7.basename(replacement.path);
+      const artifactStem = path7.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
+      const entry = {
+        ...replacement,
+        temporaryPath: `${artifactStem}.tmp`,
+        backupPath: `${artifactStem}.bak`,
+        hadOriginal: false,
+        originalMoved: false,
+        replacementMayExist: false
+      };
+      entries.push(entry);
+      entry.hadOriginal = await targetExists(entry, execute);
+      await performOperation(execute, {
+        phase: "stage",
+        action: "write",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => writeFile4(entry.temporaryPath, entry.contents, { flag: "wx", mode: 384 }));
+    }
+    for (const entry of entries) {
+      if (entry.hadOriginal) {
+        await performOperation(execute, {
+          phase: "commit",
+          action: "backup",
+          label: entry.label,
+          targetPath: entry.path,
+          artifactPath: entry.backupPath
+        }, () => rename4(entry.path, entry.backupPath));
+        entry.originalMoved = true;
+      }
+      entry.replacementMayExist = true;
+      await performOperation(execute, {
+        phase: "commit",
+        action: "replace",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => rename4(entry.temporaryPath, entry.path));
+    }
+  } catch (failure) {
+    const original = asOperationFailure(failure);
+    const recoveryFailures = await recoverEntries(entries, execute);
+    throw transactionError(original, recoveryFailures);
+  }
+  const cleanupFailures = await cleanupCommittedEntries(entries, execute);
+  if (cleanupFailures.length > 0) {
+    throw transactionError({
+      operation: {
+        phase: "cleanup",
+        action: "remove-backup",
+        label: cleanupFailures[0].label,
+        targetPath: ""
+      },
+      cause: Object.assign(new Error("Transaction cleanup failed."), { code: cleanupFailures[0].code })
+    }, cleanupFailures, "committed");
+  }
+}
+async function targetExists(entry, execute) {
+  try {
+    await performOperation(execute, {
+      phase: "inspect",
+      action: "stat",
+      label: entry.label,
+      targetPath: entry.path
+    }, () => lstat5(entry.path));
+    return true;
+  } catch (failure) {
+    const operationFailure = asOperationFailure(failure);
+    if (errorCode2(operationFailure.cause) === "ENOENT") {
+      return false;
+    }
+    throw operationFailure;
+  }
+}
+async function recoverEntries(entries, execute) {
+  const failures = [];
+  for (const entry of entries) {
+    if (entry.hadOriginal) {
+      const backupExists = await artifactExists(entry.backupPath);
+      if (backupExists) {
+        try {
+          await performOperation(execute, {
+            phase: "rollback",
+            action: "restore",
+            label: entry.label,
+            targetPath: entry.path,
+            artifactPath: entry.backupPath
+          }, () => rename4(entry.backupPath, entry.path));
+          entry.originalMoved = false;
+        } catch (failure) {
+          const backupRemains = await artifactExists(entry.backupPath);
+          const targetExistsAfterFailure = await artifactExists(entry.path);
+          if (!backupRemains && targetExistsAfterFailure) {
+            entry.originalMoved = false;
+          } else {
+            failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          }
+        }
+      } else if (entry.originalMoved) {
+        failures.push({ action: "restore", label: entry.label, code: "BACKUP_MISSING" });
+      }
+    } else if (entry.replacementMayExist) {
+      try {
+        await performOperation(execute, {
+          phase: "rollback",
+          action: "remove",
+          label: entry.label,
+          targetPath: entry.path
+        }, () => rm4(entry.path, { force: true }));
+        entry.replacementMayExist = false;
+      } catch (failure) {
+        if (await artifactExists(entry.path)) {
+          failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        } else {
+          entry.replacementMayExist = false;
+        }
+      }
+    }
+  }
+  for (const entry of entries) {
+    try {
+      await performOperation(execute, {
+        phase: "cleanup",
+        action: "remove-temp",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => rm4(entry.temporaryPath, { force: true }));
+    } catch (failure) {
+      if (await artifactExists(entry.temporaryPath)) {
+        failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      }
+    }
+  }
+  return failures;
+}
+async function cleanupCommittedEntries(entries, execute) {
+  const failures = [];
+  for (const entry of entries) {
+    for (const [action, artifactPath] of [
+      ["remove-temp", entry.temporaryPath],
+      ["remove-backup", entry.backupPath]
+    ]) {
+      try {
+        await performOperation(execute, {
+          phase: "cleanup",
+          action,
+          label: entry.label,
+          targetPath: entry.path,
+          artifactPath
+        }, () => rm4(artifactPath, { force: true }));
+      } catch (failure) {
+        if (await artifactExists(artifactPath)) {
+          failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        }
+      }
+    }
+  }
+  return failures;
+}
+async function artifactExists(artifactPath) {
+  try {
+    await lstat5(artifactPath);
+    return true;
+  } catch (error) {
+    if (errorCode2(error) === "ENOENT") {
+      return false;
+    }
+    return true;
+  }
+}
+async function performOperation(execute, operation, action) {
+  try {
+    return await execute(operation, action);
+  } catch (cause) {
+    throw { operation, cause };
+  }
+}
+function asOperationFailure(value) {
+  if (value && typeof value === "object" && "operation" in value && "cause" in value) {
+    return value;
+  }
+  return {
+    operation: {
+      phase: "commit",
+      action: "unknown",
+      label: "transaction",
+      targetPath: ""
+    },
+    cause: value
+  };
+}
+function recoveryFailure(action, label, cause) {
+  return { action, label, code: errorCode2(cause) };
+}
+function validateDistinctTargets(replacements) {
+  const identities = /* @__PURE__ */ new Set();
+  for (const replacement of replacements) {
+    const identity = path7.resolve(replacement.path);
+    if (identities.has(identity)) {
+      throw transactionError({
+        operation: {
+          phase: "validate",
+          action: "reject-duplicate",
+          label: "transaction",
+          targetPath: ""
+        },
+        cause: Object.assign(new Error("Duplicate transaction target."), { code: "DUPLICATE_TARGET" })
+      }, []);
+    }
+    identities.add(identity);
+  }
+}
+function transactionError(originalFailure, recoveryFailures, recoveryOverride) {
+  const recovery = recoveryOverride ?? (recoveryFailures.length === 0 ? "complete" : "incomplete");
+  const error = new Error("Unable to update OAuth configuration atomically.");
+  error.hint = recovery === "complete" ? "The previous project configuration and Server env state were restored. Retry the command." : recovery === "committed" ? "The new project configuration was committed, but transaction artifact cleanup was incomplete." : `Recovery was incomplete for ${[...new Set(recoveryFailures.map((failure) => failure.label))].join(", ")}. Inspect those files before retrying.`;
+  error.diagnostics = {
+    original: {
+      phase: originalFailure.operation.phase,
+      action: originalFailure.operation.action,
+      label: originalFailure.operation.label,
+      code: errorCode2(originalFailure.cause)
+    },
+    recovery,
+    recoveryFailures
+  };
+  return error;
+}
+function errorCode2(error) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "UNKNOWN";
+  return /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : "UNKNOWN";
+}
+
+// src/base-image.ts
+var SPORADES_BASE_IMAGE = {
+  name: "sporades-base",
+  image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+  version: "0.1.0-node22-alpine",
+  runtimeUser: "sporades",
+  runtimeUid: 10001,
+  runtimeGid: 10001,
+  updatePolicy: {
+    defaultMode: "host-managed",
+    modes: ["host-managed", "auto-patch", "manual"],
+    autoPatchSupported: false,
+    autoPatchUnsupportedReason: "Base image updates are applied by replacing containers, not mutating them in place."
+  }
+};
+function baseImageRuntimeUser() {
+  return `${SPORADES_BASE_IMAGE.runtimeUid}:${SPORADES_BASE_IMAGE.runtimeGid}`;
+}
+function normaliseBaseImageUpdatePolicy(value) {
+  const mode = typeof value === "string" ? value : typeof value?.mode === "string" ? value.mode : SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
+  if (!SPORADES_BASE_IMAGE.updatePolicy.modes.includes(mode)) {
+    return SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
+  }
+  return mode;
+}
+function baseImageUpdatePolicy(mode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    mode: normaliseBaseImageUpdatePolicy(mode),
+    autoPatch: {
+      supported: SPORADES_BASE_IMAGE.updatePolicy.autoPatchSupported,
+      reason: SPORADES_BASE_IMAGE.updatePolicy.autoPatchUnsupportedReason
+    }
+  };
+}
+function baseImageMetadata(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    name: SPORADES_BASE_IMAGE.name,
+    image: SPORADES_BASE_IMAGE.image,
+    version: SPORADES_BASE_IMAGE.version,
+    updatePolicy: baseImageUpdatePolicy(updatePolicyMode)
+  };
+}
+function baseImageLabels(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    "com.sporades.base-image.name": SPORADES_BASE_IMAGE.name,
+    "com.sporades.base-image.version": SPORADES_BASE_IMAGE.version,
+    "com.sporades.base-image.update-policy": normaliseBaseImageUpdatePolicy(updatePolicyMode)
+  };
+}
+
+// src/runtime-restart-policy.ts
+var FATAL_RUNTIME_RESTART_POLICY = {
+  dev: {
+    mode: "automatic",
+    maxAttempts: 10,
+    backoffMs: 250,
+    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed", "shutdownHookFailed"],
+    exitFatalEvents: ["sigterm", "sigint"]
+  },
+  container: {
+    mode: "bounded",
+    maxAttempts: 3,
+    backoffMs: 1e3,
+    dockerRestart: "on-failure:3",
+    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
+    exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"]
+  },
+  hosted: {
+    mode: "bounded",
+    maxAttempts: 3,
+    backoffMs: 1e3,
+    dockerRestart: "on-failure:3",
+    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
+    exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"],
+    exhaustedRouteTarget: "hosted-capsule-unavailable",
+    verificationFallbackOnly: true
+  }
+};
+function restartPolicyForMode(mode) {
+  const policy = FATAL_RUNTIME_RESTART_POLICY[mode];
+  if (!policy) {
+    throw new Error(`Unknown Sporades restart policy mode: ${mode}`);
+  }
+  return {
+    ...policy,
+    restartFatalEvents: [...policy.restartFatalEvents],
+    exitFatalEvents: [...policy.exitFatalEvents]
+  };
+}
+function restartPolicyStatus(mode, overrides = {}) {
+  const policy = restartPolicyForMode(mode);
+  return {
+    mode: policy.mode,
+    maxAttempts: policy.maxAttempts,
+    backoffMs: policy.backoffMs,
+    dockerRestart: policy.dockerRestart ?? null,
+    restartFatalEvents: policy.restartFatalEvents,
+    exitFatalEvents: policy.exitFatalEvents,
+    ...policy.exhaustedRouteTarget ? { exhaustedRouteTarget: policy.exhaustedRouteTarget } : {},
+    ...policy.verificationFallbackOnly ? { verificationFallbackOnly: true } : {},
+    ...overrides
+  };
+}
+
 // src/server-runtime-source.ts
-import { createHash as createHash2, createHmac, createPrivateKey, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash as createHash2, randomBytes as randomBytes4, randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config.ts
 function validateMailConfig(mail) {
@@ -2252,781 +4115,7 @@ function validateMailConfig(mail) {
   return { smtp };
 }
 
-// src/server-runtime-source.ts
-var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
-var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
-  validateMailConfig,
-  createMailRuntime,
-  createMailDeliveryLogData,
-  createMailTransport,
-  connectSmtpSocket,
-  createSmtpResponseReader,
-  smtpCommand,
-  smtpRecipientCommand,
-  buildSmtpMessage,
-  encodeMimeHeaderValue,
-  foldMimeHeader,
-  foldMailgunJsonHeader,
-  encodeMimeBase64,
-  normalizeMailMessage,
-  normalizeGenericProvider,
-  captureGenericHeaderValues,
-  normalizePostmarkProvider,
-  normalizeMailgunProvider,
-  serializeMailgunJson,
-  captureMailProviderDataObject,
-  captureMailProviderDataArray,
-  unsupportedMailProviderField,
-  normalizeMailAddresses,
-  normalizeMailAddress,
-  mailError,
-  normalizeMailTransportError,
-  mailJsonSize,
-  normalizeJourneyPolicy,
-  normalizeJourneyState,
-  validateJourneyJson,
-  journeyError,
-  readJsonRequest,
-  readLimitedRequestBody,
-  resolveHttpMaxBodyBytes,
-  createPayloadTooLargeError,
-  isPayloadTooLargeError,
-  writeUnhandledHttpError,
-  emitHttpFailureLog,
-  prepareHttpSecurity,
-  resolveRuntimeSecurityPolicy,
-  defaultRuntimeCspDirectives,
-  serializeCspDirectives,
-  injectPageConnectionToken,
-  requestOriginAllowed,
-  websocketOriginAllowed,
-  isSameOriginRequest,
-  isLocalDevOrigin,
-  normalizeOrigin,
-  resolveOAuthRequestOrigin,
-  singleHttpHeader,
-  validatedRequestHost,
-  appendVaryHeader,
-  sanitizeResponseHeaders,
-  createSqliteDatabaseAdapter,
-  createLibsqlDatabaseAdapter,
-  createPostgresDatabaseAdapter,
-  createRuntimeDatabaseAdapter,
-  createRuntimeClock,
-  resolveSchedulePayloadFactoryTimeoutMs,
-  resolveJourneySessionInactivityMinutes,
-  scheduleDefinitionsFromCapsule,
-  resolveScheduleTimezone,
-  parseScheduleExpression,
-  scheduleWallClockParts,
-  nextScheduleOccurrence,
-  ensureScheduleStorage,
-  scheduledOccurrenceIdentity,
-  claimScheduledOccurrence,
-  recoverPendingScheduleOccurrences,
-  schedulePendingOccurrenceRecovery,
-  reconcileSchedules,
-  startStaticSchedules,
-  finishFailedScheduledOccurrence,
-  recordScheduledOccurrence,
-  acquireSchedulePayloadFactoryLane,
-  acquireSchedulePayloadFactorySlot,
-  resolveSchedulePayload,
-  abortSchedulePayloadFactories,
-  enqueueScheduledOccurrence,
-  createRuntimeInspectionAdapter,
-  inspectRuntimeJobs,
-  inspectRuntimeSchedules,
-  scheduleSummary,
-  jobError,
-  boundedJobJson,
-  jobState,
-  jobActorProvider,
-  normalizeJobRetry,
-  cancelJob,
-  jobSummary,
-  createCurrentUserJobApi,
-  createPrivilegedJobApi,
-  assertJobScheduleProvenance,
-  assertActivePrivilegedJobAccess,
-  encodeJobCursor,
-  decodeJobCursor,
-  flushPendingJobEnqueues,
-  scheduleCurrentUserJobWorker,
-  scheduleNextDelayedJob,
-  runCurrentUserJobWorker,
-  safeJobFailure,
-  postgresPlaceholders,
-  postgresInterpolate,
-  createPostgresConnection,
-  postgresUrlOptions,
-  postgresPasswordMessage,
-  createPostgresScramSession,
-  postgresStartupMessage,
-  postgresQueryMessage,
-  postgresInt32,
-  waitForPostgresData,
-  wakePostgresWaiters,
-  postgresParseRowDescription,
-  postgresParseDataRow,
-  postgresValueFromText,
-  postgresRowCountFromCommand,
-  postgresErrorFromBody,
-  postgresRowsFromResult,
-  postgresRuntimeColumnName,
-  postgresAppTableColumnDefinitions,
-  libsqlPipelineUrl,
-  assertLibsqlOpen,
-  libsqlHasMultipleStatements,
-  libsqlExecute,
-  libsqlDescribe,
-  libsqlPipeline,
-  libsqlRowsFromResult,
-  libsqlValueFromJs,
-  libsqlValueToJs,
-  ensureLibsqlSessionLifecycleColumns,
-  migrateLibsqlAppSchema,
-  migrateExistingLibsqlAppTable,
-  splitSqlStatements,
-  openDevDatabase,
-  recoverExpiredJobLeases,
-  jobHandlersFromCapsuleDefinition,
-  ensureJobStorage,
-  createRuntimeLogSink,
-  requirePathModule,
-  createRuntimeLogger,
-  createPrivilegedAuditEmitter,
-  emitPrivilegedAuditEvent,
-  createContextPrivilegedApi,
-  emitPrivilegedRunAudit,
-  recordPrivilegedAuditEventForTransaction,
-  reindexPrivilegedAuditEventsAfterRollback,
-  privilegedAuditEventAlreadyIndexed,
-  samePrivilegedAuditLogEvent,
-  normalizePrivilegedRunSignal,
-  createPrivilegedRunAbortError,
-  createPrivilegedRunAuditDetails,
-  validatedPrivilegedOperation,
-  validatedPrivilegedMetadata,
-  isPlainPrivilegedMetadata,
-  invalidPrivilegedRunMetadata,
-  createPrivilegedRunPublicError,
-  createPrivilegedAuditEmissionPublicError,
-  isPrivilegedAuditEmissionPublicError,
-  createPrivilegedHandlerContext,
-  createPrivilegedScheduleApi,
-  createPrivilegedFileApi,
-  activePrivilegedFileAccess,
-  privilegedAuthUserId,
-  isReservedAuthUserId,
-  authIdentityRowUnlessReserved,
-  authIdentityRowsUnlessReserved,
-  assertNotReservedAuthUserId,
-  createPrivilegedAuditLogInput,
-  normalizePrivilegedAuditActorKind,
-  normalizePrivilegedAuditOutcome,
-  privilegedAuditLevelForOutcome,
-  normalizePrivilegedAuditCorrelation,
-  safePrivilegedAuditErrorCode,
-  auditString,
-  createLogEnvelope,
-  sanitizeLogData,
-  redactLogData,
-  logDataContainsServerEnvValue,
-  isSensitiveLogString,
-  isSensitiveLogKey,
-  capLogEnvelope,
-  createLogIndexTables,
-  insertLogIndexEvent,
-  pruneLogIndex,
-  readRecentLogEvents,
-  readJsonlLogEvents,
-  logIndexLimit,
-  logPayloadMaxBytes,
-  logRedactedValue,
-  targetsInternalLogIndexTable,
-  readSqlTableReference,
-  skipSqlTrivia,
-  readSqlIdentifier,
-  isInternalLogIndexMetadataRow,
-  extractSchema,
-  schemaFromCapsuleDefinition,
-  schemaTableFromCapsuleTable,
-  normalizeTableAcl,
-  resolveEffectiveAclRule,
-  schemaFieldFromCapsuleField,
-  sqliteTypeForFieldKind,
-  extractEndpoints,
-  endpointHandlersFromCapsuleDefinition,
-  extractQueryHandlers,
-  extractQueryHandlersFromCapsule,
-  extractMutationHandlers,
-  handlersFromCapsuleDefinition,
-  mutationHandlersFromCapsuleDefinition,
-  shouldUseBundledMutationHandler,
-  isInlineHandlerSource,
-  isGeneratedScaffoldMutationHandler,
-  extractMessageHandlers,
-  extractContextMiddleware,
-  extractMutationHooks,
-  extractHookList,
-  extractFields,
-  extractFieldDefaultSource,
-  parseFieldDefault,
-  parseDateFieldDefault,
-  parseJsonFieldDefault,
-  extractObjectPropertySource,
-  findMatchingDelimiter,
-  splitTopLevelList,
-  migrateAppSchema,
-  normalizeSchema,
-  hashSchema,
-  assertValidReferenceTargets,
-  assertAdditiveSchemaMigration,
-  migrateExistingAppTable,
-  columnSelectExpressionForMigration,
-  addedFieldsForTable,
-  createAppTable,
-  appTableColumnDefinitions,
-  appFieldColumnDefinition,
-  fieldDefaultIsSqlNull,
-  fieldColumnDefaultSql,
-  commandError,
-  toSqlLiteral,
-  findMatchingParen,
-  createTransactionDatabase,
-  readEndpointRequest,
-  createEndpointContext,
-  createContextHolder,
-  createTableAclContext,
-  applyContextMiddleware,
-  runContextMiddleware,
-  readEndpointSessionToken,
-  endpointQueryFromUrl,
-  privilegedDbAccessContextSet,
-  grantPrivilegedDbAccess,
-  revokePrivilegedDbAccess,
-  hasPrivilegedDbAccess,
-  createEndpointDatabaseApi,
-  createEndpointTableApi,
-  runTableWriteWithAcl,
-  isPromiseLike,
-  thenIfPromise,
-  chainMaybePromise,
-  applyReadAcl,
-  filterRowsByReadAcl,
-  createAclHelpers,
-  aclRuleTouchedAsyncHelperRead,
-  createAclDbHelpers,
-  createAclStorageHelpers,
-  assertAclHelperReadAllowed,
-  resolveAclAppTable,
-  resolveAclStorageResource,
-  aclStorageMetadataFromFileRow,
-  emitAclDeniedLog,
-  createAclDenialLogData,
-  aclRuleDeclaredOperation,
-  aclRowLogSnapshot,
-  aclVisibleFieldNames,
-  createAclDeniedError,
-  requireAuth,
-  createUnauthenticatedError,
-  createAuthDenialLogData,
-  emitAuthDeniedLog,
-  fieldValueForWrite,
-  invalidReferenceError,
-  referenceExists,
-  serializeFieldValue,
-  deserializeFieldValue,
-  normalizeDateValue,
-  dateValueError,
-  assertJsonCompatible,
-  invalidJsonFieldValueError,
-  deserializeRow,
-  readEndpointBody,
-  createEndpointLogger,
-  authStatus,
-  normalizeAuthConfig,
-  readProviderConfig,
-  readFacebookProviderConfig,
-  emptyProviderConfig,
-  createFileStorageTables,
-  createRuntimeFileStorageAdapter,
-  createLocalFileStorageAdapter,
-  localFileStoragePath,
-  localFileVersionPath,
-  createS3CompatibleFileStorageAdapter,
-  s3ObjectKey,
-  s3Request,
-  s3RequestBodyBuffer,
-  s3SignedHeaders,
-  s3Signature,
-  s3SigningKey,
-  s3CanonicalPath,
-  s3EncodedPathSegment,
-  s3StorageNamespace,
-  s3AmzDate,
-  s3Hmac,
-  s3Sha256Hex,
-  s3ObjectNotFoundError,
-  routeRuntimeHealth,
-  createRuntimeHealthResult,
-  checkRuntimeSqlite,
-  checkRuntimeFileStorage,
-  handleFileHttpRoute,
-  readRequestBytes,
-  writeJsonHttpResponse,
-  writeNotFound,
-  sendFileHttpResponse,
-  createPendingFileUpload,
-  completePendingFileUpload,
-  getPrivateFileUrl,
-  createPublicFileUrl,
-  revokePublicFileUrl,
-  deletePrivateFile,
-  fileMetadataFromRow,
-  fileMetadataFromUpload,
-  runFileMetadataTransaction,
-  resolveFileWriteTarget,
-  normalizeAbsoluteFilePath,
-  normalizeFileName,
-  isAbsoluteFilePath,
-  resolveLiveFileReference,
-  resolvePrivilegedLiveFileReference,
-  singleActiveFileRowByPath,
-  singleLiveFileRowByPath,
-  ambiguousFileReferenceError,
-  structuredFileException,
-  ensureFileBucket,
-  isDuplicateColumnError,
-  isUniqueConstraintError,
-  filePathBackfillSql,
-  activeFilePathDedupeSql,
-  ensureFileUploadTargetColumns,
-  runSchemaExecIgnoringDuplicateColumn,
-  chainSchemaOperation,
-  withFileUploadPathLock,
-  createStructuredFileError,
-  validatePublicUrlExpiry,
-  fileRowForOwner,
-  removeFileVersionBestEffort,
-  contentTypeForFile,
-  createAnonymousAuthTables,
-  createProviderIdentityTables,
-  createLibsqlProviderIdentityTables,
-  ensureOAuthStateColumns,
-  ensureLibsqlOAuthStateColumns,
-  createUserPreferencesTables,
-  ensureSessionLifecycleColumns,
-  ensureSessionProvenanceColumn,
-  ensureLibsqlSessionProvenanceColumn,
-  sessionExpiresAt,
-  isExpiredSession,
-  createSessionToken,
-  refreshSession,
-  refreshSessionOnAdapter,
-  rotateSession,
-  rotateSessionOnAdapter,
-  moveSessionToUser,
-  moveSessionToUserOnAdapter,
-  migrateAnonymousPreferences,
-  resolveAnonymousSession,
-  sessionFromRow,
-  readCurrentUserPreferences,
-  updateCurrentUserPreferences,
-  normalizePreferencesPatch,
-  createPreferencesError,
-  normalizeSimulatedEmail,
-  normalizeSimulatedText,
-  authProvidersForClient,
-  routeSporadesAuth,
-  signUpWithEmail,
-  signInWithEmail,
-  createEmailSignInThrottleState,
-  emailSignInThrottleKeys,
-  currentEmailSignInThrottleState,
-  recordFailedEmailSignInAttempt,
-  resetEmailSignInAttempts,
-  pruneEmailSignInThrottleState,
-  boundEmailSignInThrottleState,
-  emailSignInThrottleEvictionPriority,
-  callerContextKey,
-  invalidEmailCredentialsError,
-  normalizeEmailCredentials,
-  hashEmailPassword,
-  verifyEmailPassword,
-  emailAuthDisabledError,
-  beginOAuthSignIn,
-  oauthProviderAdapter,
-  isOAuthLoopbackHostname,
-  oauthProviderTestEndpoint,
-  fetchBoundedOAuthJson,
-  completeOpenIdOAuthCodeExchange,
-  createGoogleOAuthProviderAdapter,
-  createAppleOAuthProviderAdapter,
-  createFacebookOAuthProviderAdapter,
-  facebookOAuthCallbackError,
-  facebookOAuthEndpoint,
-  facebookOAuthTimeoutSignal,
-  cancelFacebookOAuthResponse,
-  readFacebookOAuthJson,
-  completeFacebookOAuth,
-  completeAppleOAuth,
-  createAppleClientSecret,
-  verifyGoogleIdentityToken,
-  verifyAppleIdentityToken,
-  parseBoundedJwtObject,
-  readBoundedJsonResponse,
-  isPlainJsonObject,
-  appleOAuthOriginEligible,
-  parseAppleAuthorizationUser,
-  sanitizeAppleNamePart,
-  createMicrosoftOAuthProviderAdapter,
-  completeMicrosoftOAuth,
-  discoverMicrosoftOpenIdConfiguration,
-  fetchMicrosoftOidcJson,
-  readBoundedJsonBody,
-  microsoftOidcCache,
-  microsoftOidcNow,
-  microsoftOidcCacheKey,
-  pruneMicrosoftOidcCacheMap,
-  loadMicrosoftJwks,
-  selectMicrosoftJwk,
-  isPlainRecord,
-  parseMicrosoftJwtPart,
-  verifyMicrosoftIdentityToken,
-  microsoftTenantAllowsClaims,
-  validMicrosoftTenant,
-  decodeJwtPart,
-  readOAuthCallbackParameters,
-  oauthFormContentTypeValid,
-  parseOAuthFormBody,
-  decodeOAuthFormComponent,
-  validateOAuthCallbackScalar,
-  validateConsumedOAuthCallbackParameters,
-  normalizeReturnTo,
-  linkProviderIdentity,
-  writeRedirect,
-  createWebSocketAccept,
-  createWebSocketHub,
-  drainWebSocketFrames,
-  closeWebSocketClient,
-  encodeWebSocketJson,
-  sendJson,
-  sendJsonWithCompletion,
-  routeEndpoint,
-  runEndpoint,
-  writeEndpointResult,
-  writeEndpointError,
-  endpointResponseError,
-  runQuery,
-  runCustomQuery,
-  runMutation,
-  runCustomMutation,
-  runAppMessage,
-  validateAppMessageType,
-  isAllAppMessageScope,
-  runMutationHook,
-  runMutationHookAndDrainPendingAclWrites,
-  createMutationContext,
-  drainPendingAclWrites,
-  createMessageContext,
-  createHookErrorResult,
-  runInsertMutation,
-  runUpdateMutation,
-  formatMutationResult,
-  resolveTableForQuery,
-  resolveTableForAddMutation,
-  resolveTableForUpdateMutation,
-  tableNameForSingular,
-  rowToApiValue,
-  toSqlNumber,
-  quoteIdentifier
-];
-async function readJsonRequest(request, limitSource = null) {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
-}
-async function readLimitedRequestBody(request, limitSource = null) {
-  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > maxBytes) {
-      throw createPayloadTooLargeError(maxBytes);
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-function resolveHttpMaxBodyBytes(source = null) {
-  const configured = typeof source === "number" ? source : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
-}
-function createPayloadTooLargeError(maxBytes) {
-  const error = new Error("Request body is too large.");
-  error.code = "PAYLOAD_TOO_LARGE";
-  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
-  return error;
-}
-function isPayloadTooLargeError(error) {
-  return error?.code === "PAYLOAD_TOO_LARGE";
-}
-function writeUnhandledHttpError(database, request, response, error) {
-  emitHttpFailureLog(database, request, error);
-  if (isPayloadTooLargeError(error)) {
-    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
-    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}
-`);
-    return;
-  }
-  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify({
-    ok: false,
-    data: null,
-    error: {
-      message: "Internal server error.",
-      hint: "Check server logs and retry the request."
-    }
-  })}
-`);
-}
-function emitHttpFailureLog(database, request, error, context = {}) {
-  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-  database.log?.emit?.({
-    category: "platform",
-    event: "http.request.failed",
-    level: "error",
-    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-    request: {
-      method: request.method ?? context.method ?? null,
-      path: requestUrl.pathname
-    },
-    data: {
-      code: error?.code ?? null,
-      message: error?.message ?? String(error),
-      hint: error?.hint ?? null,
-      stack: error?.stack ?? null
-    }
-  });
-}
-function prepareHttpSecurity(database, request, response) {
-  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
-  const originalWriteHead = response.writeHead.bind(response);
-  response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
-    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
-    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
-    const headers = {
-      ...sanitizeResponseHeaders(inputHeaders ?? {}),
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "x-frame-options": "DENY",
-      "permissions-policy": "camera=(), microphone=(), geolocation=()",
-      "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
-    };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
-      }
-    }
-    if (statusMessage) {
-      return originalWriteHead(statusCode, statusMessage, headers);
-    }
-    return originalWriteHead(statusCode, headers);
-  });
-  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
-    const headers = {
-      "content-length": "0"
-    };
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
-      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-      headers["access-control-allow-headers"] = String(
-        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token"
-      );
-      headers["access-control-max-age"] = "600";
-      if (!policy.cors.publicDev) {
-        headers.vary = "Origin";
-      }
-    }
-    response.writeHead(204, headers);
-    response.end();
-    return true;
-  }
-  return false;
-}
-function resolveRuntimeSecurityPolicy(config = {}) {
-  const security = config.security ?? {};
-  const cors = security.cors ?? {};
-  const csp = security.csp ?? {};
-  const session = config.__sporadesSession ?? "container";
-  const publicDev = session === "public-dev";
-  const dev = session === "dev" || publicDev;
-  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
-  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
-  const directives = {
-    ...defaultRuntimeCspDirectives(),
-    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
-  };
-  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
-  return {
-    cors: {
-      sameOrigin: !publicDev,
-      publicDev,
-      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
-      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
-      publicOrigin
-    },
-    csp: {
-      mode,
-      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives
-    }
-  };
-}
-function defaultRuntimeCspDirectives() {
-  return {
-    "default-src": ["'self'"],
-    "script-src": ["'self'", "'unsafe-inline'"],
-    "style-src": ["'self'", "'unsafe-inline'"],
-    "img-src": ["'self'", "data:", "blob:"],
-    "connect-src": ["'self'", "ws:", "wss:"],
-    "font-src": ["'self'", "data:"],
-    "object-src": ["'none'"],
-    "base-uri": ["'self'"],
-    "frame-ancestors": ["'none'"]
-  };
-}
-function serializeCspDirectives(directives) {
-  return Object.entries(directives).map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
-}
-function injectPageConnectionToken(html, token) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
-${script}`);
-  }
-  return `${script}
-${html}`;
-}
-function requestOriginAllowed(policy, request) {
-  const origin = request.headers.origin;
-  if (!origin) {
-    return false;
-  }
-  if (policy.cors.publicDev) {
-    return true;
-  }
-  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
-    return true;
-  }
-  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
-    return true;
-  }
-  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
-    return true;
-  }
-  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
-}
-function websocketOriginAllowed(policy, request) {
-  if (!request.headers.origin) {
-    return !policy.cors.publicOrigin;
-  }
-  return requestOriginAllowed(policy, request);
-}
-function isSameOriginRequest(request, origin) {
-  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  if (!host) {
-    return false;
-  }
-  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
-  return origin === `${protocol}://${host}`;
-}
-function normalizeOrigin(value) {
-  if (typeof value !== "string" || value.trim() === "") {
-    return null;
-  }
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-function resolveOAuthRequestOrigin(policy, request) {
-  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
-  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
-  const hostHeader = singleHttpHeader(request.headers.host);
-  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
-  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
-  if (request.headers.host !== void 0 && !hostHeader || request.headers.origin !== void 0 && !singleHttpHeader(request.headers.origin) || request.headers["x-forwarded-host"] !== void 0 && !forwardedHost || request.headers["x-forwarded-proto"] !== void 0 && !forwardedProto) return null;
-  if (configuredOrigin) {
-    const configured = new URL(configuredOrigin);
-    if (originHeader && originHeader !== configuredOrigin) return null;
-    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
-    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
-    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
-    return configuredOrigin;
-  }
-  if (forwardedHost || forwardedProto) return null;
-  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
-  const host = validatedRequestHost(hostHeader, protocol);
-  if (!host) return null;
-  const actualOrigin = `${protocol}//${host}`;
-  if (originHeader && originHeader !== actualOrigin) return null;
-  return actualOrigin;
-}
-function singleHttpHeader(value) {
-  if (Array.isArray(value)) {
-    if (value.length !== 1) return null;
-    value = value[0];
-  }
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.includes(",")) return null;
-  return trimmed;
-}
-function validatedRequestHost(value, protocol) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
-  try {
-    const url = new URL(`${protocol}//${value}`);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    return url.host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-function isLocalDevOrigin(origin) {
-  try {
-    const parsed = new URL(origin);
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-  } catch {
-    return false;
-  }
-}
-function appendVaryHeader(existing, value) {
-  if (!existing) {
-    return value;
-  }
-  const parts = String(existing).split(",").map((part) => part.trim().toLowerCase());
-  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
-}
-function sanitizeResponseHeaders(headers) {
-  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
-  return Object.fromEntries(
-    [...entries].filter(([name]) => {
-      const normalized = String(name).toLowerCase();
-      return normalized !== "x-powered-by" && normalized !== "server";
-    })
-  );
-}
+// src/mail-runtime.ts
 function mailError(code, message, hint) {
   const error = new Error(message);
   error.code = code;
@@ -3037,6 +4126,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   const smtp = mailConfig?.smtp;
   if (!smtp) {
     return {
+      enabled: false,
       async send() {
         throw mailError(
           "MAIL_DISABLED",
@@ -3087,9 +4177,10 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   let closeStarted = false;
   let closeResult;
   return {
+    enabled: true,
     async send(input) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
-      const messageIdentity = `mail_${randomUUID()}`;
+      const messageIdentity = `mail_${crypto.randomUUID()}`;
       const startedAt = Date.now();
       try {
         const result = await transport.send(message);
@@ -3644,26 +4735,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path10) => {
+  const normalize = (candidate, path12) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path12} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path10).map((entry, index) => normalize(entry, `${path10}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path12).map((entry, index) => normalize(entry, `${path12}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path12} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path10, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path12, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path10}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path12}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path10} is not JSON-compatible`);
+    throw new Error(`${path12} is not JSON-compatible`);
   };
   let json;
   try {
@@ -3679,21 +4770,6 @@ function serializeMailgunJson(value, label, maximumBytes) {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Keep \`${label}\` within ${maximumBytes} UTF-8 bytes.`);
   }
   return asciiJson;
-}
-function mailJsonSize(value) {
-  const seen = /* @__PURE__ */ new Set();
-  const json = JSON.stringify(value, (_key, candidate) => {
-    if (typeof candidate === "bigint" || typeof candidate === "function" || typeof candidate === "symbol" || candidate === void 0) {
-      throw new Error("not JSON");
-    }
-    if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error("cyclic");
-      seen.add(candidate);
-    }
-    return candidate;
-  });
-  if (typeof json !== "string") throw new Error("not JSON");
-  return Buffer.byteLength(json);
 }
 function normalizeMailAddresses(value, field, required) {
   if (value === void 0 || value === null) {
@@ -3816,7 +4892,7 @@ function createMailTransport(smtp) {
           throw error;
         }
         await smtpCommand(activeSocket, reader, "DATA", [354]);
-        const messageId = `<${randomUUID()}@sporades.local>`;
+        const messageId = `<${crypto.randomUUID()}@sporades.local>`;
         const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
         activeSocket.write(`${raw}\r
 .\r
@@ -3995,12 +5071,12 @@ function buildSmtpMessage(message) {
     ...message.replyTo ? [foldMimeHeader("Reply-To", formatAddress(message.replyTo))] : [],
     foldMimeHeader("Subject", encodeMimeHeaderValue(message.subject)),
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
-    `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
+    `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
     ...(message.providerHeaders ?? []).map((header) => header.json ? foldMailgunJsonHeader(header.name, header.value) : header.verbatim ? `${header.name}: ${header.value}` : foldMimeHeader(header.name, header.value))
   ];
   if (message.textBody !== void 0 && message.htmlBody !== void 0) {
-    const boundary = `sporades-${randomUUID()}`;
+    const boundary = `sporades-${crypto.randomUUID()}`;
     headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
     return `${headers.join("\r\n")}\r
 \r
@@ -4115,573 +5191,162 @@ function foldMailgunJsonHeader(name, value) {
 function encodeMimeBase64(value) {
   return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
 }
-async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
-  const path10 = await import("node:path");
-  const mailConfig = validateMailConfig(config.mail);
-  let mailLogSink;
-  const mail = createMailRuntime(mailConfig, serverEnv, {
-    ...options,
-    mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event))
-  });
-  const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
-  const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
-  globalThis.requireAuth = requireAuth;
-  const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
-  const serviceEnv = options?.serviceEnv ?? serverEnv;
-  const fileStorage = await createRuntimeFileStorageAdapter({
-    config,
-    databasePath,
-    serviceEnv
-  });
-  const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
-  const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
-  const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
-  const messages = extractMessageHandlers(serverSource);
-  const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
-  const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
-  const clock = createRuntimeClock(options?.clock);
-  const contextMiddleware = extractContextMiddleware(serverSource);
-  const mutationHooks = extractMutationHooks(serverSource);
-  const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
-  const rowCache = /* @__PURE__ */ new Map();
-  const database = {
-    adapter: sqlite,
-    sqlite,
-    schema,
-    endpoints,
-    queries,
-    mutations,
-    messages,
-    jobs,
-    schedules,
-    clock,
-    capsuleIdentity: String(config.name ?? "capsule"),
-    scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
-    schedulePayloadFactoryTimeoutMs,
-    schedulePayloadFactoryActive: 0,
-    schedulePayloadFactoryWaiters: [],
-    schedulePayloadFactoryLanes: /* @__PURE__ */ new Map(),
-    schedulePayloadFactoryControllers: /* @__PURE__ */ new Map(),
-    contextMiddleware,
-    mutationHooks,
-    lifecycleHooks,
-    journeyPolicy: normalizeJourneyPolicy(capsuleDefinition?.journey),
-    journeySessionInactivityMinutes,
-    runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
-    jobScheduleProvenanceByContext: /* @__PURE__ */ new WeakMap(),
-    rowCache,
-    serverEnv,
-    mail,
-    authConfig: authStatus(config, serverEnv),
-    securityPolicy: resolveRuntimeSecurityPolicy(config),
-    fileStorage,
-    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
-    httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
-    close: () => {
-      database.__scheduleStopped = true;
-      abortSchedulePayloadFactories(database);
-      for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
-      database.__scheduleTimers?.clear?.();
-      if (database.__jobWakeTimer) {
-        database.clock.clearTimer(database.__jobWakeTimer);
-        database.__jobWakeTimer = null;
-      }
-      const mailResult = database.mail.close();
-      const sqliteResult = database.sqlite.close();
-      const storageResult = database.fileStorage.close();
-      const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
-      return pending.length > 0 ? Promise.all(pending) : void 0;
-    }
-  };
-  database.init = async () => {
-    if (database.__runtimeInitialized) return;
-    if (database.lifecycleHooks.init !== void 0) {
-      if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-      await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
-    }
-    database.__scheduleStopped = false;
-    database.__scheduleTimers = /* @__PURE__ */ new Set();
-    database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
-    database.__scheduleRecoveryTimer = null;
-    database.__scheduleRecoveryDueAt = null;
-    await reconcileSchedules(database);
-    await startStaticSchedules(database);
-    database.__runtimeInitialized = true;
-  };
-  database.shutdown = () => {
-    if (database.__shutdownPromise) return database.__shutdownPromise;
-    database.__shutdownPromise = (async () => {
-      try {
-        database.__scheduleStopped = true;
-        abortSchedulePayloadFactories(database);
-        for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
-        database.__scheduleTimers?.clear?.();
-        database.__scheduleRecoveryTimer = null;
-        database.__scheduleRecoveryDueAt = null;
-        await Promise.allSettled([...database.__activeScheduleOccurrences ?? []]);
-        if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
-          if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
-        }
-      } finally {
-        database.__runtimeInitialized = false;
-        await database.mail.close();
-      }
-    })();
-    return database.__shutdownPromise;
-  };
-  database.log = createRuntimeLogSink({
-    database: sqlite,
-    config,
-    serverEnv,
-    dataDir: path10.dirname(databasePath)
-  });
-  mailLogSink = database.log;
-  database.audit = createPrivilegedAuditEmitter(database.log);
-  await sqlite.ensureSystemTable();
-  await sqlite.ensureAuthStorage(database.authConfig);
-  await sqlite.ensureUserPreferencesStorage();
-  await ensureJobStorage(sqlite);
-  await ensureScheduleStorage(sqlite);
-  await sqlite.ensureFileStorage();
-  await sqlite.ensureLogStorage();
-  await recoverExpiredJobLeases(database);
-  assertValidReferenceTargets(schema);
-  await sqlite.migrateAppSchema(schema);
-  return database;
-}
-function resolveJourneySessionInactivityMinutes(config = {}) {
-  const value = config.journey?.sessionInactivityMinutes;
-  if (typeof value !== "number" || !Number.isFinite(value)) return 30;
-  return Math.min(1440, Math.max(1, Math.round(value)));
-}
-function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
-  const schedules = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
-    const expression = parseScheduleExpression(definition.expression);
-    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
-    const payload = definition.payload === void 0 ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    const retry = normalizeJobRetry(definition.retry);
-    const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
-    const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+
+// src/runtime-errors.ts
+function commandError2(message, hint, code = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (code) {
+    error.code = code;
   }
-  return schedules;
+  return error;
 }
-function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
-  const scheduling = config.scheduling;
-  if (scheduling === void 0) return 3e4;
-  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  return seconds * 1e3;
-}
-function parseScheduleExpression(value) {
-  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
-  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
-  const fields = parts.map((part, index) => {
-    const values = /* @__PURE__ */ new Set();
-    for (const item of part.split(",")) {
-      const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
-      const step = stepText === void 0 ? 1 : Number(stepText);
-      let start, end;
-      if (base === "*") [start, end] = ranges[index];
-      else if (/^\d+$/.test(base)) start = end = Number(base);
-      else {
-        const match = /^(\d+)-(\d+)$/.exec(base);
-        if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
-        start = Number(match[1]);
-        end = Number(match[2]);
-      }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current = start; current <= end; current += step) values.add(index === 4 && current === 7 ? 0 : current);
-    }
-    return values;
-  });
-  fields.restricted = parts.map((part) => part !== "*");
-  return fields;
-}
-function resolveScheduleTimezone(value) {
-  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
-  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
+function assertJsonCompatible(value) {
+  let context;
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
-  } catch {
-    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
-  }
-}
-function scheduleWallClockParts(formatter, instant) {
-  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
-}
-function nextScheduleOccurrence(fields, after, timezone) {
-  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone: timezone,
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
-  const candidate = new Date(after.getTime());
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
-    const local = scheduleWallClockParts(formatter, candidate);
-    const dom = fields[2].has(local.day);
-    const dow = fields[4].has(local.weekday);
-    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
-    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
-    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
-  }
-  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
-}
-async function ensureScheduleStorage(sqlite) {
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT)");
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)");
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor)");
-}
-async function reconcileSchedules(database) {
-  const now = database.clock.now();
-  const declaredNames = new Set(database.schedules.map((definition) => definition.name));
-  const persisted = await database.sqlite.prepare("SELECT * FROM sporades_schedules").all();
-  const plans = [];
-  for (const definition of database.schedules) {
-    const row = persisted.find((candidate) => candidate.name === definition.name);
-    const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
-    let nextOccurrence = null;
-    let recoveredOccurrence = null;
-    if (definition.enabled) {
-      if (changed || !row?.nextOccurrence) {
-        nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
-      } else {
-        nextOccurrence = String(row.nextOccurrence);
-        if (Date.parse(nextOccurrence) <= now.getTime()) {
-          let latest = new Date(nextOccurrence);
-          let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
-          while (future.getTime() <= now.getTime()) {
-            latest = future;
-            future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
-          }
-          nextOccurrence = future.toISOString();
-          if (definition.missedRun === "latest") recoveredOccurrence = latest;
-        }
-      }
+    const serialized = JSON.stringify(value);
+    if (serialized === void 0) {
+      throw invalidJsonFieldValueError();
     }
-    plans.push({ definition, row, nextOccurrence, recoveredOccurrence });
-  }
-  for (const row of persisted) {
-    if (!declaredNames.has(String(row.name))) await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
-  }
-  for (const { definition, row, nextOccurrence } of plans) {
-    if (row) await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
-    else {
-      try {
-        await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
-      } catch (error) {
-        const concurrent = await database.sqlite.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
-        if (!concurrent) throw error;
-        await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
-      }
-    }
-    definition.nextOccurrence = nextOccurrence;
-  }
-  for (const { definition, recoveredOccurrence } of plans) {
-    if (recoveredOccurrence) await recordScheduledOccurrence(database, definition, recoveredOccurrence);
-  }
-  await recoverPendingScheduleOccurrences(database);
-}
-async function startStaticSchedules(database) {
-  database.__scheduleTimers ??= /* @__PURE__ */ new Set();
-  database.__activeScheduleOccurrences ??= /* @__PURE__ */ new Set();
-  for (const definition of database.schedules) {
-    if (!definition.enabled) continue;
-    const arm = () => {
-      if (database.__scheduleStopped) return;
-      const occurrence = new Date(definition.nextOccurrence);
-      const timer = database.clock.setTimer(() => {
-        database.__scheduleTimers.delete(timer);
-        const active = recordScheduledOccurrence(database, definition, occurrence).catch(async (error) => {
-          database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
-          if (!database.__scheduleStopped) await finishFailedScheduledOccurrence(database, definition, occurrence, error);
-        }).finally(() => {
-          database.__activeScheduleOccurrences.delete(active);
-          if (database.__scheduleStopped) return;
-          arm();
-        });
-        database.__activeScheduleOccurrences.add(active);
-        return active;
-      }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
-      database.__scheduleTimers.add(timer);
-    };
-    arm();
-  }
-}
-async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
-  const scheduledFor = occurrence.toISOString();
-  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const completedAt = database.clock.now().toISOString();
-  const code = "SCHEDULE_ENQUEUE_FAILED";
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
-}
-async function recordScheduledOccurrence(database, definition, occurrence) {
-  const claim = await claimScheduledOccurrence(database, definition, occurrence);
-  if (!claim) {
-    definition.nextOccurrence = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-    return null;
-  }
-  await database.scheduleOccurrenceFault?.("after-pending", { scheduleName: definition.name, scheduledFor: occurrence.toISOString() });
-  const state = await enqueueScheduledOccurrence(database, definition, occurrence);
-  if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
-  const completedAt = database.clock.now().toISOString();
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
-  if (database.__scheduleStopped) return state;
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
-  return state;
-}
-function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
-  return createHash2("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
-}
-async function claimScheduledOccurrence(database, definition, occurrence) {
-  const scheduledFor = occurrence.toISOString();
-  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID();
-  const now = database.clock.now();
-  const nowIso = now.toISOString();
-  const expiresAt = new Date(now.getTime() + 3e4).toISOString();
-  try {
-    await database.sqlite.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
-    return { id, token };
+    JSON.parse(serialized);
   } catch (error) {
-    const existing = await database.sqlite.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
-    if (!existing) throw error;
-    if (existing.status !== "pending") return null;
-    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
-      schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
-      return null;
+    if (error?.hint) {
+      throw error;
     }
-    const result = await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
-    return Number(result.changes) === 1 ? { id, token } : null;
+    throw invalidJsonFieldValueError();
   }
 }
-async function recoverPendingScheduleOccurrences(database) {
-  const rows = await database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
-  for (const row of rows) {
-    const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
-    if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
-  }
-  const next = await database.sqlite.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
-  if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
+function invalidReferenceError(field) {
+  return commandError2(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
 }
-function schedulePendingOccurrenceRecovery(database, claimExpiresAt) {
-  if (database.__scheduleStopped) return;
-  const dueAt = Date.parse(claimExpiresAt);
-  if (!Number.isFinite(dueAt)) return;
-  if (database.__scheduleRecoveryTimer && database.__scheduleRecoveryDueAt <= dueAt) return;
-  if (database.__scheduleRecoveryTimer) {
-    database.clock.clearTimer(database.__scheduleRecoveryTimer);
-    database.__scheduleTimers?.delete(database.__scheduleRecoveryTimer);
-  }
-  database.__scheduleRecoveryDueAt = dueAt;
-  const timer = database.clock.setTimer(() => {
-    database.__scheduleTimers?.delete(timer);
-    database.__scheduleRecoveryTimer = null;
-    database.__scheduleRecoveryDueAt = null;
-    if (database.__scheduleStopped) return;
-    const active = recoverPendingScheduleOccurrences(database).catch((error) => {
-      database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
-    }).finally(() => database.__activeScheduleOccurrences?.delete(active));
-    database.__activeScheduleOccurrences?.add(active);
-    return active;
-  }, Math.max(0, dueAt - database.clock.now().getTime()));
-  database.__scheduleRecoveryTimer = timer;
-  database.__scheduleTimers?.add(timer);
-}
-async function enqueueScheduledOccurrence(database, definition, occurrence) {
-  const scheduledFor = occurrence.toISOString();
-  const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
-  const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
-  const payload = await resolveSchedulePayload(database, definition, scheduledFor, context);
-  if (!payload.ok) return null;
-  database.jobScheduleProvenanceByContext.set(context, { scheduleName: definition.name, scheduledFor });
-  const state = await context.privileged.run(
-    { operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } },
-    (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, payload.value, { retry: definition.retry, idempotencyKey: provenance })
+function invalidJsonFieldValueError() {
+  return commandError2(
+    "Invalid JSON field value.",
+    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
   );
-  return state;
 }
-async function acquireSchedulePayloadFactorySlot(database) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
-  };
+
+// src/user-preferences-runtime.ts
+function createUserPreferencesTables(sqlite) {
+  return sqlite.exec(
+    sqlite.dialect.sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_user_preferences] ([userId] TEXT PRIMARY KEY, [value] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )
+  );
 }
-async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
-  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
-  let unlock = () => {
-  };
-  const current = new Promise((resolve) => {
-    unlock = resolve;
-  });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current);
-  if (previous) await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
-  };
-}
-async function resolveSchedulePayload(database, definition, scheduledFor, context) {
-  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
-  let releaseSlot;
-  const controller = new AbortController();
-  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
-  controllers.add(controller);
-  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
-  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
-  let timeout;
-  try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
-    const timeoutFailure = new Promise((_resolve, reject) => {
-      timeout = database.clock.setTimer(() => {
-        controller.abort();
-        const error = new Error("Schedule payload factory timed out.");
-        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
-        reject(error);
-      }, database.schedulePayloadFactoryTimeoutMs);
+async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite = null) {
+  if (!auth?.isGuest || auth.userId === targetUserId) {
+    return;
+  }
+  const migrate = async (tx) => {
+    const sourceRow = await tx.readUserPreferences(auth.userId);
+    if (!sourceRow) {
+      return;
+    }
+    const targetRow = await tx.readUserPreferences(targetUserId);
+    const source = JSON.parse(sourceRow.value);
+    const target = targetRow ? JSON.parse(targetRow.value) : {};
+    const next = { ...target, ...source };
+    assertJsonCompatible(next);
+    await tx.saveUserPreferences({
+      userId: targetUserId,
+      value: JSON.stringify(next),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
-    database.clock.clearTimer(timeout);
-    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    return { ok: true, value };
-  } catch (error) {
-    database.clock.clearTimer(timeout);
-    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
-    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
-    return { ok: false };
-  } finally {
-    controllers.delete(controller);
-    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
-    releaseSlot?.();
-    releaseLane();
+  };
+  if (sqlite) {
+    await migrate(sqlite);
+    return;
   }
+  await database.adapter.withTransaction(migrate);
 }
-function abortSchedulePayloadFactories(database) {
-  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
-}
-async function recoverExpiredJobLeases(database) {
-  const recoveredAt = database.clock.now();
-  const recoveredIso = recoveredAt.toISOString();
-  const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
-  for (const row of rows) {
-    const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
-    const history = JSON.parse(row.attemptHistory || "[]");
-    history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
-    if (Number(row.attempts) < retry.maxAttempts) {
-      const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
-      database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-    } else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
-  }
-  if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
-}
-function createRuntimeClock(clock) {
-  if (clock) return clock;
+async function readCurrentUserPreferences(database, auth) {
+  const row = await database.adapter.readUserPreferences(auth.userId);
   return {
-    now: () => /* @__PURE__ */ new Date(),
-    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimer: (timer) => clearTimeout(timer)
+    ok: true,
+    data: {
+      preferences: row ? JSON.parse(row.value) : {}
+    },
+    error: null
   };
 }
-function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
-  const handlers = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
-    }
-    if (handlers.some((handler) => handler.name === name)) {
-      throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
-    }
-    handlers.push({ name, handler: definition.handler });
-  }
-  return handlers;
-}
-async function ensureJobStorage(sqlite) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_jobs (id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, actorProvider TEXT, payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)"
-  );
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
-  await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) if (!columns.some((column) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
-  await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
-}
-async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
-  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createLibsqlDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
-      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN
+async function updateCurrentUserPreferences(database, auth, patch) {
+  try {
+    const normalizedPatch = normalizePreferencesPatch(patch);
+    const preferences = await database.adapter.withTransaction(async (tx) => {
+      const row = await tx.readUserPreferences(auth.userId);
+      const current = row ? JSON.parse(row.value) : {};
+      const next = { ...current, ...normalizedPatch };
+      assertJsonCompatible(next);
+      await tx.saveUserPreferences({
+        userId: auth.userId,
+        value: JSON.stringify(next),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      return next;
     });
+    return {
+      ok: true,
+      data: { preferences },
+      changes: normalizedPatch,
+      error: null
+    };
+  } catch (error) {
+    if (error?.code === "INVALID_PREFERENCES_PATCH") {
+      return { ok: false, data: null, error };
+    }
+    return {
+      ok: false,
+      data: null,
+      error: createPreferencesError(
+        "Preferences update failed.",
+        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
+        "PREFERENCES_UPDATE_FAILED"
+      )
+    };
   }
-  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createPostgresDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL
-    });
-  }
-  return await createSqliteDatabaseAdapter(databasePath);
 }
-async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, config = {}) {
-  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
+function normalizePreferencesPatch(patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+    throw createPreferencesError(
+      "Preferences updates must be JSON objects.",
+      "Pass a plain JSON object to preferences.update().",
+      "INVALID_PREFERENCES_PATCH"
+    );
   }
-  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
-  }
-  if (!existsSync(String(databasePath))) return null;
-  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
+  assertJsonCompatible(patch);
+  return patch;
 }
+function createPreferencesError(message, hint, code) {
+  return { code, message, hint };
+}
+
+// src/maybe-promise.ts
+function isPromiseLike(value) {
+  return value && typeof value === "object" && typeof value.then === "function";
+}
+function thenIfPromise(value, onResolved) {
+  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
+}
+function chainMaybePromise(steps) {
+  let pending = null;
+  for (const step of steps) {
+    if (pending) {
+      pending = pending.then(step);
+      continue;
+    }
+    const result = step();
+    if (isPromiseLike(result)) {
+      pending = result;
+    }
+  }
+  return pending ?? void 0;
+}
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path10 = await import("node:path");
+  const path12 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -4693,7 +5358,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path10.join(path10.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path12.join(path12.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -4709,8 +5374,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile8(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
-      const { readFile: readFile9 } = await import("node:fs/promises");
-      return await readFile9(localFileVersionPath(storagePath, fileId, version));
+      const { readFile: readFile10 } = await import("node:fs/promises");
+      return await readFile10(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm7 } = await import("node:fs/promises");
@@ -4718,9 +5383,9 @@ function createLocalFileStorageAdapter({ storagePath }) {
     },
     async checkHealth() {
       const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
-      const path10 = await import("node:path");
-      const probeDirectory = path10.join(storagePath, ".sporades-health");
-      const probeFile = path10.join(probeDirectory, `${randomUUID()}.tmp`);
+      const path12 = await import("node:path");
+      const probeDirectory = path12.join(storagePath, ".sporades-health");
+      const probeFile = path12.join(probeDirectory, `${nodeCryptoModule.randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
         await writeFile8(probeFile, "");
@@ -4958,23 +5623,5010 @@ function s3AmzDate(date) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 function s3Hmac(key, data) {
-  return createHmac("sha256", key).update(data).digest();
+  return nodeCryptoModule.createHmac("sha256", key).update(data).digest();
 }
 function s3Sha256Hex(data) {
-  return createHash2("sha256").update(data).digest("hex");
+  return nodeCryptoModule.createHash("sha256").update(data).digest("hex");
 }
 function s3ObjectNotFoundError() {
   const error = new Error("S3-compatible file object not found.");
   error.code = "ENOENT";
   return error;
 }
+function createFileStorageTables(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
+      )
+    ),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
+    () => sqlite.exec(sql(filePathBackfillSql())),
+    () => sqlite.exec(sql(activeFilePathDedupeSql())),
+    () => sqlite.exec(
+      sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
+      )
+    ),
+    () => ensureFileUploadTargetColumns(sqlite),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
+      )
+    )
+  ]);
+}
+async function readRequestBytes(request, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+function contentTypeForFile(type) {
+  if (typeof type !== "string") {
+    return "application/octet-stream";
+  }
+  const normalized = type.split(";")[0].trim().toLowerCase();
+  const safeInlineTypes = /* @__PURE__ */ new Set([
+    "text/plain",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp"
+  ]);
+  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
+}
+async function createPendingFileUpload(database, auth, message) {
+  const input = message.file ?? {};
+  const size = Number(input.size ?? 0);
+  if (!Number.isFinite(size) || size < 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
+    };
+  }
+  if (size > database.fileMaxSizeBytes) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      )
+    };
+  }
+  return await withFileUploadPathLock("capsule", async () => {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const replacing = message.replace === true;
+    const replaceReference = message.fileReference ?? message.fileId;
+    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    if (!resolvedReplacement.ok) {
+      return resolvedReplacement;
+    }
+    const existingByReference = resolvedReplacement.row;
+    if (replacing && !existingByReference) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    return await database.adapter.withTransaction(async (sqlite) => {
+      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+      let target;
+      try {
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+      } catch (error) {
+        return {
+          ok: false,
+          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+        };
+      }
+      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
+      if (existingByPath?.ambiguous) {
+        return ambiguousFileReferenceError(target.path);
+      }
+      if (existingByPath && existingByPath.ownerId !== auth.userId) {
+        return {
+          ok: false,
+          error: createStructuredFileError(
+            "File path already exists.",
+            "Choose another absolute File path or ask the owning user to delete the existing file first."
+          )
+        };
+      }
+      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
+      const existing = existingByReference ?? existingByPath;
+      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule.randomUUID();
+      const uploadId = nodeCryptoModule.randomUUID();
+      const version = nodeCryptoModule.randomUUID();
+      const name = normalizeFileName(input.name, target.path);
+      const type = String(input.type ?? "application/octet-stream");
+      await sqlite.deleteFileUploadsForPath(target.path);
+      try {
+        await sqlite.insertFileUpload({
+          id: uploadId,
+          fileId,
+          ownerId: auth.userId,
+          bucketId: target.bucket.id,
+          bucketName: target.bucket.name,
+          path: target.path,
+          name,
+          type,
+          version,
+          expectedSize: size,
+          createdAt: now
+        });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        const current = await sqlite.selectPendingFileUploadByPath(target.path);
+        if (!current) throw error;
+        return {
+          ok: true,
+          data: {
+            uploadUrl: `/__sporades/uploads/${current.id}`,
+            method: "PUT",
+            headers: {},
+            file: fileMetadataFromUpload(current)
+          },
+          error: null
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          uploadUrl: `/__sporades/uploads/${uploadId}`,
+          method: "PUT",
+          headers: {},
+          file: fileMetadataFromUpload({
+            fileId,
+            bucketName: target.bucket.name,
+            path: target.path,
+            name,
+            type,
+            expectedSize: size,
+            version
+          })
+        },
+        error: null
+      };
+    });
+  });
+}
+async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  const upload = await database.adapter.selectFileUpload(uploadId);
+  if (!upload) {
+    return {
+      ok: false,
+      data: null,
+      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
+    };
+  }
+  let wroteFileVersion = false;
+  const previousFile = await database.adapter.selectFileById(upload.fileId);
+  try {
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.progress",
+      fileId: upload.fileId,
+      loaded: 0,
+      total: upload.expectedSize
+    });
+    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+    wroteFileVersion = true;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const completion = await database.adapter.withTransaction(async (sqlite) => {
+      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
+      if (completed?.changes === 0) {
+        return { ok: false, superseded: true };
+      }
+      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+    });
+    if (!completion.ok && completion.superseded) {
+      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+      return {
+        ok: false,
+        data: null,
+        error: createStructuredFileError(
+          "Upload URL was superseded.",
+          "Request a fresh upload URL before retrying this file upload."
+        )
+      };
+    }
+    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
+      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
+    }
+    const file = fileMetadataFromRow(completion.row);
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.complete",
+      file
+    });
+    return { ok: true, data: { file }, error: null };
+  } catch (error) {
+    if (wroteFileVersion) {
+      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+    }
+    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
+      message: error.message,
+      hint: error.hint ?? "Request a fresh upload URL and retry."
+    };
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.failed",
+      fileId: upload.fileId,
+      error: structuredError
+    });
+    return {
+      ok: false,
+      data: null,
+      error: structuredError
+    };
+  }
+}
+async function getPrivateFileUrl(database, auth, fileReference) {
+  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const row = resolved.row;
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+      file: fileMetadataFromRow(row)
+    },
+    error: null
+  };
+}
+async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+  const expiry = validatePublicUrlExpiry(options);
+  if (!expiry.ok) {
+    return expiry;
+  }
+  return await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    const id = nodeCryptoModule.randomUUID();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await sqlite.insertPublicFileUrl({
+      id,
+      fileId: row.id,
+      ownerId: auth.userId,
+      version: row.version,
+      expiresAt: expiry.expiresAt,
+      createdAt: now
+    });
+    return {
+      ok: true,
+      data: {
+        publicUrl: {
+          id,
+          fileId: row.id,
+          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
+          expiresAt: expiry.expiresAt,
+          revokedAt: null
+        }
+      },
+      error: null
+    };
+  });
+}
+async function revokePublicFileUrl(database, auth, publicUrlId) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
+  if (result.changes === 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
+    error: null
+  };
+}
+async function deletePrivateFile(database, auth, fileReference) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await sqlite.deleteFileUploadsForPath(row.path);
+    await sqlite.markFileDeleted(row.id, now);
+    await sqlite.revokePublicFileUrlsForFile(row.id, now);
+    return {
+      ok: true,
+      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+      error: null,
+      deletedFile: row
+    };
+  });
+  if (!result.ok) {
+    return result;
+  }
+  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  return {
+    ok: true,
+    data: result.data,
+    error: null
+  };
+}
+async function runFileMetadataTransaction(database, fn) {
+  if (database.__transactionActive) {
+    return await fn(database.adapter);
+  }
+  return await database.adapter.withTransaction(fn);
+}
+function validatePublicUrlExpiry(options) {
+  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
+  if (choices.length !== 1) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "Public file URLs require exactly one expiry choice.",
+        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
+      )
+    };
+  }
+  if (options.noExpiry === true) {
+    return { ok: true, expiresAt: null };
+  }
+  if (options.ttlSeconds !== void 0) {
+    const ttlSeconds = Number(options.ttlSeconds);
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      return {
+        ok: false,
+        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
+      };
+    }
+    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
+  }
+  const expiresAt = new Date(options.expires);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
+    };
+  }
+  return { ok: true, expiresAt: expiresAt.toISOString() };
+}
+async function fileRowForOwner(database, fileId, ownerId) {
+  const reference = String(fileId ?? "");
+  if (isAbsoluteFilePath(reference)) {
+    const resolved = await resolveLiveFileReference(database, ownerId, reference);
+    return resolved.ok ? resolved.row : null;
+  }
+  return await database.adapter.fileRowForOwner(reference, ownerId);
+}
+function fileMetadataFromRow(row) {
+  return {
+    id: row.id,
+    bucket: row.bucketName,
+    size: Number(row.size),
+    type: row.type,
+    name: row.name,
+    path: row.path,
+    version: row.version
+  };
+}
+function fileMetadataFromUpload(upload) {
+  return {
+    id: upload.fileId,
+    bucket: upload.bucketName,
+    size: Number(upload.expectedSize),
+    type: upload.type,
+    name: upload.name,
+    path: upload.path,
+    version: upload.version
+  };
+}
+async function withFileUploadPathLock(path12, fn) {
+  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
+  const key = String(path12);
+  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  const next = previous.then(() => current, () => current);
+  fileUploadPathLocks.set(key, next);
+  try {
+    await previous.catch(() => {
+    });
+    return await fn();
+  } finally {
+    release?.();
+    if (fileUploadPathLocks.get(key) === next) {
+      fileUploadPathLocks.delete(key);
+    }
+  }
+}
+async function resolveFileWriteTarget(database, ownerId, input, now) {
+  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
+  const path12 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path12.split("/").filter(Boolean)[0] ?? "default";
+  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
+  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
+  return { bucket, path: path12 };
+}
+async function ensureFileBucket(database, ownerId, name, now) {
+  const existing = await database.adapter.findFileBucket(ownerId, name);
+  if (existing) return existing;
+  const bucket = { id: nodeCryptoModule.randomUUID(), ownerId, name, createdAt: now };
+  try {
+    await database.adapter.createFileBucket(bucket);
+    return bucket;
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const raced = await database.adapter.findFileBucket(ownerId, name);
+    if (raced) return raced;
+    throw error;
+  }
+}
+function normalizeAbsoluteFilePath(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw.startsWith("/")) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
+  }
+  const segments = raw.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
+  }
+  return `/${segments.join("/")}`;
+}
+function normalizeFileName(name, filePath) {
+  const candidate = String(name ?? "").trim();
+  if (candidate) return candidate;
+  const pathName = filePath?.split("/").filter(Boolean).at(-1);
+  return pathName || "upload";
+}
+function isAbsoluteFilePath(value) {
+  return typeof value === "string" && value.startsWith("/");
+}
+async function resolveLiveFileReference(database, ownerId, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path12;
+    try {
+      path12 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path12);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
+  }
+  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+async function resolvePrivilegedLiveFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path12;
+    try {
+      path12 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path12);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved };
+  }
+  const row = await database.adapter.selectFileById(value);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  return { ok: true, row };
+}
+function singleLiveFileRowByPath(database, path12) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path12), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function singleActiveFileRowByPath(database, path12) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path12), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function ambiguousFileReferenceError(reference) {
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "File reference is ambiguous.",
+      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
+    )
+  };
+}
+function structuredFileException(message, hint) {
+  const error = new Error(message);
+  error.hint = hint;
+  return error;
+}
+function isUniqueConstraintError(error) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text);
+}
+function filePathBackfillSql() {
+  return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
+}
+function activeFilePathDedupeSql() {
+  return "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (SELECT MAX([id]) FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') GROUP BY [path])";
+}
+function ensureFileUploadTargetColumns(sqlite) {
+  const addedColumns = [
+    ["bucketId", "TEXT"],
+    ["bucketName", "TEXT"],
+    ["path", "TEXT"],
+    ["name", "TEXT"],
+    ["type", "TEXT"]
+  ];
+  const statements = [
+    "UPDATE [sporades_file_uploads] SET [bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) WHERE [path] IS NULL OR [path] = ''",
+    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path])",
+    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
+    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])"
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
+    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
+  ]);
+}
+function createStructuredFileError(message, hint) {
+  return { message, hint };
+}
+async function removeFileVersionBestEffort(database, fileId, version) {
+  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {
+  });
+}
+
+// src/http-runtime.ts
+async function readJsonRequest(request, limitSource = null) {
+  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
+  return raw ? JSON.parse(raw) : {};
+}
+async function readLimitedRequestBody(request, limitSource = null) {
+  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw createPayloadTooLargeError(maxBytes);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+function resolveHttpMaxBodyBytes(source = null) {
+  const configured = typeof source === "number" ? source : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
+}
+function createPayloadTooLargeError(maxBytes) {
+  const error = new Error("Request body is too large.");
+  error.code = "PAYLOAD_TOO_LARGE";
+  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
+  return error;
+}
+function isPayloadTooLargeError(error) {
+  return error?.code === "PAYLOAD_TOO_LARGE";
+}
+function writeUnhandledHttpError(database, request, response, error) {
+  emitHttpFailureLog(database, request, error);
+  if (isPayloadTooLargeError(error)) {
+    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
+    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}
+`);
+    return;
+  }
+  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify({
+    ok: false,
+    data: null,
+    error: {
+      message: "Internal server error.",
+      hint: "Check server logs and retry the request."
+    }
+  })}
+`);
+}
+function emitHttpFailureLog(database, request, error, context = {}) {
+  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
+  database.log?.emit?.({
+    category: "platform",
+    event: "http.request.failed",
+    level: "error",
+    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+    request: {
+      method: request.method ?? context.method ?? null,
+      path: requestUrl.pathname
+    },
+    data: {
+      code: error?.code ?? null,
+      message: error?.message ?? String(error),
+      hint: error?.hint ?? null,
+      stack: error?.stack ?? null
+    }
+  });
+}
+function prepareHttpSecurity(database, request, response) {
+  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const originalWriteHead = response.writeHead.bind(response);
+  response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
+    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
+    const headers = {
+      ...sanitizeResponseHeaders(inputHeaders ?? {}),
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "x-frame-options": "DENY",
+      "permissions-policy": "camera=(), microphone=(), geolocation=()",
+      "cross-origin-opener-policy": "same-origin",
+      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
+    };
+    const origin = request.headers.origin;
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
+      if (!policy.cors.publicDev) {
+        headers.vary = appendVaryHeader(headers.vary, "Origin");
+      }
+    }
+    if (statusMessage) {
+      return originalWriteHead(statusCode, statusMessage, headers);
+    }
+    return originalWriteHead(statusCode, headers);
+  });
+  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
+    const headers = {
+      "content-length": "0"
+    };
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
+      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
+      headers["access-control-allow-headers"] = String(
+        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token"
+      );
+      headers["access-control-max-age"] = "600";
+      if (!policy.cors.publicDev) {
+        headers.vary = "Origin";
+      }
+    }
+    response.writeHead(204, headers);
+    response.end();
+    return true;
+  }
+  return false;
+}
+function resolveRuntimeSecurityPolicy(config = {}) {
+  const security = config.security ?? {};
+  const cors = security.cors ?? {};
+  const csp = security.csp ?? {};
+  const session = config.__sporadesSession ?? "container";
+  const publicDev = session === "public-dev";
+  const dev = session === "dev" || publicDev;
+  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
+  const directives = {
+    ...defaultRuntimeCspDirectives(),
+    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
+  };
+  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
+  return {
+    cors: {
+      sameOrigin: !publicDev,
+      publicDev,
+      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
+      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+      publicOrigin
+    },
+    csp: {
+      mode,
+      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      directives
+    }
+  };
+}
+function defaultRuntimeCspDirectives() {
+  return {
+    "default-src": ["'self'"],
+    "script-src": ["'self'", "'unsafe-inline'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "img-src": ["'self'", "data:", "blob:"],
+    "connect-src": ["'self'", "ws:", "wss:"],
+    "font-src": ["'self'", "data:"],
+    "object-src": ["'none'"],
+    "base-uri": ["'self'"],
+    "frame-ancestors": ["'none'"]
+  };
+}
+function serializeCspDirectives(directives) {
+  return Object.entries(directives).map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
+}
+function injectPageConnectionToken(html, token) {
+  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+  if (/<head(\s[^>]*)?>/i.test(html)) {
+    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
+${script}`);
+  }
+  return `${script}
+${html}`;
+}
+function requestOriginAllowed(policy, request) {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return false;
+  }
+  if (policy.cors.publicDev) {
+    return true;
+  }
+  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+    return true;
+  }
+  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
+    return true;
+  }
+  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
+    return true;
+  }
+  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
+}
+function websocketOriginAllowed(policy, request) {
+  if (!request.headers.origin) {
+    return !policy.cors.publicOrigin;
+  }
+  return requestOriginAllowed(policy, request);
+}
+function isSameOriginRequest(request, origin) {
+  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
+  if (!host) {
+    return false;
+  }
+  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
+  return origin === `${protocol}://${host}`;
+}
+function normalizeOrigin(value) {
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+function resolveOAuthRequestOrigin(policy, request) {
+  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
+  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
+  const hostHeader = singleHttpHeader(request.headers.host);
+  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
+  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
+  if (request.headers.host !== void 0 && !hostHeader || request.headers.origin !== void 0 && !singleHttpHeader(request.headers.origin) || request.headers["x-forwarded-host"] !== void 0 && !forwardedHost || request.headers["x-forwarded-proto"] !== void 0 && !forwardedProto) return null;
+  if (configuredOrigin) {
+    const configured = new URL(configuredOrigin);
+    if (originHeader && originHeader !== configuredOrigin) return null;
+    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
+    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
+    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
+    return configuredOrigin;
+  }
+  if (forwardedHost || forwardedProto) return null;
+  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
+  const host = validatedRequestHost(hostHeader, protocol);
+  if (!host) return null;
+  const actualOrigin = `${protocol}//${host}`;
+  if (originHeader && originHeader !== actualOrigin) return null;
+  return actualOrigin;
+}
+function singleHttpHeader(value) {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    value = value[0];
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes(",")) return null;
+  return trimmed;
+}
+function validatedRequestHost(value, protocol) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
+  try {
+    const url = new URL(`${protocol}//${value}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    return url.host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+function isLocalDevOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+function appendVaryHeader(existing, value) {
+  if (!existing) {
+    return value;
+  }
+  const parts = String(existing).split(",").map((part) => part.trim().toLowerCase());
+  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
+}
+function sanitizeResponseHeaders(headers) {
+  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
+  return Object.fromEntries(
+    [...entries].filter(([name]) => {
+      const normalized = String(name).toLowerCase();
+      return normalized !== "x-powered-by" && normalized !== "server";
+    })
+  );
+}
+async function handleFileHttpRoute(database, request, response, websocketHub = null) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
+  if (uploadMatch && request.method === "PUT") {
+    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
+    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
+    return true;
+  }
+  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
+  if (privateMatch && request.method === "GET") {
+    const token = request.headers["x-sporades-session-token"];
+    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
+    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    if (!row || row.version !== requestUrl.searchParams.get("v")) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, row);
+    return true;
+  }
+  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
+  if (publicMatch && request.method === "GET") {
+    const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
+    if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, publicRow);
+    return true;
+  }
+  return false;
+}
+function writeJsonHttpResponse(response, status, result) {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify(result)}
+`);
+}
+function writeNotFound(response) {
+  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  response.end("Not found");
+}
+async function sendFileHttpResponse(database, response, row) {
+  try {
+    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+    response.writeHead(200, {
+      "content-type": contentTypeForFile(row.type),
+      "cache-control": "private, max-age=31536000, immutable"
+    });
+    response.end(bytes);
+  } catch {
+    writeNotFound(response);
+  }
+}
+function writeEndpointResult(response, result) {
+  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
+    const status = result.status ?? 200;
+    if (!Number.isInteger(status) || status < 100 || status > 599) {
+      throw endpointResponseError();
+    }
+    if (result.headers !== void 0 && (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))) {
+      throw endpointResponseError();
+    }
+    const headers = { ...result.headers ?? {} };
+    const body = result.body ?? null;
+    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
+      headers["content-type"] ??= "application/json; charset=utf-8";
+      let payload;
+      try {
+        payload = JSON.stringify(body);
+      } catch {
+        throw endpointResponseError();
+      }
+      response.writeHead(status, headers);
+      response.end(payload);
+      return;
+    }
+    headers["content-type"] ??= "text/plain; charset=utf-8";
+    response.writeHead(status, headers);
+    response.end(String(body ?? ""));
+    return;
+  }
+  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  response.end(String(result ?? ""));
+}
+function writeEndpointError(response, error) {
+  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
+  response.end(
+    `${JSON.stringify({
+      ok: false,
+      data: null,
+      error: {
+        ...error?.code ? { code: error.code } : {},
+        message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
+        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
+      }
+    })}
+`
+  );
+}
+function endpointResponseError() {
+  const error = new Error("Invalid endpoint response.");
+  error.sporadesEndpointResponse = true;
+  return error;
+}
+
+// src/auth-runtime.ts
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var PRIVILEGED_AUTH_USER_ID = "__privileged__";
+var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+var PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
+function privilegedAuthUserId() {
+  return "__privileged__";
+}
+function isReservedAuthUserId(userId) {
+  return userId === privilegedAuthUserId();
+}
+function authIdentityRowUnlessReserved(rowOrPromise) {
+  if (rowOrPromise && typeof rowOrPromise.then === "function") {
+    return rowOrPromise.then((row) => isReservedAuthUserId(row?.userId) ? null : row);
+  }
+  return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
+}
+function authIdentityRowsUnlessReserved(rowsOrPromise) {
+  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
+    return rowsOrPromise.then((rows) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
+  }
+  return rowsOrPromise.filter((row) => !isReservedAuthUserId(row?.userId));
+}
+function assertNotReservedAuthUserId(userId) {
+  if (!isReservedAuthUserId(userId)) {
+    return;
+  }
+  throw commandError2(
+    "Reserved auth user ID cannot be used for a real Sporades user.",
+    "Use runtime-generated user IDs for sessions and auth provider links.",
+    "RESERVED_AUTH_USER_ID"
+  );
+}
+function readEndpointSessionToken(headers, query) {
+  return headers["x-sporades-session-token"] ?? null;
+}
+function requireAuth(context, options = {}) {
+  const linked = options?.linked === true;
+  const auth = context?.auth;
+  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+    return auth;
+  }
+  throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
+}
+function createUnauthenticatedError(logData = null) {
+  const error = commandError2("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+  if (logData) {
+    error.sporadesAuthDenialLogData = logData;
+  }
+  return error;
+}
+function createAuthDenialLogData(context, requirement) {
+  return {
+    requirement,
+    handler: {
+      kind: context?.kind ?? null
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null
+    }
+  };
+}
+function emitAuthDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "auth.denied",
+    level: "warn",
+    message: "requireAuth denied an unauthenticated handler request.",
+    data: details.data ?? null
+  });
+}
+async function simulateLocalIdentitySession(database, options = {}) {
+  const provider = String(options.provider ?? "").trim().toLowerCase();
+  if (!["email", "google"].includes(provider)) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: `Unsupported simulated auth provider: ${provider || ""}`.trim(),
+        hint: "Use `sporades auth as email` for local identity simulation. Google simulation is reserved for provider-shaped browser tests."
+      }
+    };
+  }
+  const email = normalizeSimulatedEmail(options.email);
+  if (!email) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: "Simulated identity requires an email address.",
+        hint: "Pass `--email <address>` to `sporades auth as email`."
+      }
+    };
+  }
+  const displayName = normalizeSimulatedText(options.displayName) ?? email;
+  const picture = normalizeSimulatedText(options.picture);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const token = createSessionToken();
+  return await database.adapter.withTransaction(async (tx) => {
+    const subject = `local:${email}`;
+    const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const userId = identity?.userId ?? nodeCryptoModule2.randomUUID();
+    if (identity) {
+      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
+        displayName,
+        picture,
+        updatedAt: now
+      });
+    } else {
+      await tx.insertAuthUser({
+        id: userId,
+        createdAt: now,
+        displayName,
+        email,
+        picture,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "anonymous"
+      });
+      await tx.insertAuthIdentity({
+        id: nodeCryptoModule2.randomUUID(),
+        userId,
+        provider,
+        subject,
+        email,
+        displayName,
+        picture,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    const auth = {
+      userId,
+      displayName,
+      email,
+      picture,
+      isAuthenticated: true,
+      isGuest: false,
+      provider
+    };
+    return {
+      ok: true,
+      data: {
+        localStorage: {
+          key: "sporades.sessionToken",
+          value: token
+        },
+        auth
+      },
+      error: null
+    };
+  });
+}
+function normalizeSimulatedEmail(value) {
+  const email = normalizeSimulatedText(value)?.toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return null;
+  }
+  return email;
+}
+function normalizeSimulatedText(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  const text = String(value).trim();
+  return text ? text : null;
+}
+function parseOAuthFormBody(body) {
+  const parameters = new URLSearchParams();
+  let error = null;
+  let stateTrustworthy = true;
+  const invalidCallback = () => commandError2(
+    "Invalid OAuth callback.",
+    "Retry sign-in from the app.",
+    "OAUTH_INVALID_CALLBACK"
+  );
+  for (let start = 0; start <= body.length; ) {
+    let end = body.indexOf(38, start);
+    if (end === -1) end = body.length;
+    const separator = body.indexOf(61, start);
+    const hasSeparator = separator !== -1 && separator < end;
+    const rawName = body.subarray(start, hasSeparator ? separator : end);
+    const rawValue = body.subarray(hasSeparator ? separator + 1 : end, end);
+    let name = null;
+    let value = null;
+    try {
+      name = decodeOAuthFormComponent(rawName);
+    } catch {
+      stateTrustworthy = false;
+      error ??= invalidCallback();
+    }
+    if (name !== null) {
+      try {
+        value = decodeOAuthFormComponent(rawValue);
+      } catch {
+        if (name === "state") stateTrustworthy = false;
+        error ??= invalidCallback();
+      }
+    }
+    if (name !== null && value !== null) {
+      parameters.append(name, value);
+    }
+    if (end === body.length) break;
+    start = end + 1;
+  }
+  return { parameters, error, stateTrustworthy };
+}
+function decodeOAuthFormComponent(raw) {
+  const bytes = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const byte = raw[index];
+    if (byte === 43) {
+      bytes.push(32);
+      continue;
+    }
+    if (byte === 37) {
+      if (index + 2 >= raw.length) throw new Error("Malformed percent escape.");
+      const pair = raw.subarray(index + 1, index + 3).toString("ascii");
+      if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("Malformed percent escape.");
+      bytes.push(Number.parseInt(pair, 16));
+      index += 2;
+      continue;
+    }
+    bytes.push(byte);
+  }
+  const value = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  validateOAuthCallbackScalar(value);
+  return value;
+}
+function validateOAuthCallbackScalar(value) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159 || codePoint === 65533 || codePoint >= 64976 && codePoint <= 65007 || (codePoint & 65535) === 65534 || (codePoint & 65535) === 65535) {
+      throw new Error("Invalid callback character.");
+    }
+  }
+}
+function validateConsumedOAuthCallbackParameters(parameters) {
+  for (const name of ["code", "error", "user"]) {
+    if (parameters.getAll(name).length > 1) {
+      throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+  }
+  if (parameters.has("code") && parameters.has("error")) {
+    throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  if (parameters.has("error") && parameters.has("user")) {
+    throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+}
+function normalizeReturnTo(returnTo, origin) {
+  if (!returnTo) {
+    return origin;
+  }
+  try {
+    const url = new URL(returnTo, origin);
+    if (url.origin !== origin) {
+      return origin;
+    }
+    return url.toString();
+  } catch {
+    return origin;
+  }
+}
+function oauthProviderAdapter(database, provider) {
+  if (database.__oauthProviderAdapters?.[provider]) {
+    return database.__oauthProviderAdapters[provider];
+  }
+  const factories = {
+    google: createGoogleOAuthProviderAdapter,
+    facebook: createFacebookOAuthProviderAdapter,
+    apple: createAppleOAuthProviderAdapter,
+    microsoft: createMicrosoftOAuthProviderAdapter
+  };
+  return factories[provider]?.(database) ?? null;
+}
+function isOAuthLoopbackHostname(hostname) {
+  if (typeof hostname !== "string") return false;
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "127.0.0.1" || normalized === "::1";
+}
+function oauthProviderTestEndpoint(override, productionUrl) {
+  if (typeof override !== "string" || process.env.SPORADES_OAUTH_TEST_ENDPOINTS !== "1") {
+    return productionUrl;
+  }
+  try {
+    const url = new URL(override);
+    if (!["http:", "https:"].includes(url.protocol) || !isOAuthLoopbackHostname(url.hostname) || url.username || url.password || url.hash) {
+      return productionUrl;
+    }
+    return url.toString();
+  } catch {
+    return productionUrl;
+  }
+}
+async function fetchBoundedOAuthJson(database, url, request, policy) {
+  const configuredTimeout = Number(database?.[policy.timeoutProperty]);
+  const defaultTimeoutMs = Number.isFinite(policy.defaultTimeoutMs) ? Math.min(Math.max(Math.floor(policy.defaultTimeoutMs), 1), 1e4) : 5e3;
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 1e4 ? Math.floor(configuredTimeout) : defaultTimeoutMs;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const signal = controller.signal;
+  try {
+    const response = await fetch(url, {
+      ...request,
+      redirect: "error",
+      signal
+    });
+    if (!response?.ok) {
+      try {
+        await response?.body?.cancel?.();
+      } catch {
+      }
+      throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+    }
+    try {
+      return await readBoundedJsonBody(response, policy.maxBytes);
+    } catch (error) {
+      if (error?.name === "AbortError" || signal.aborted) {
+        throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+      }
+      throw commandError2(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
+    }
+  } catch (error) {
+    if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode) throw error;
+    throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+async function completeOpenIdOAuthCodeExchange(database, context, contract) {
+  const timeoutMs = Number.isInteger(database?.__oauthExchangeTimeoutMs) ? Math.min(Math.max(database.__oauthExchangeTimeoutMs, 10), 3e4) : 1e4;
+  const signal = AbortSignal.timeout(timeoutMs);
+  const exchangeCode = contract.exchangeCode ?? "OAUTH_EXCHANGE_FAILED";
+  const timeoutCode = contract.timeoutCode ?? "OAUTH_EXCHANGE_TIMEOUT";
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(contract.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(contract.parameters),
+      redirect: "error",
+      signal
+    });
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    throw commandError2(
+      timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.exchangeMessage,
+      contract.exchangeHint,
+      timedOut ? timeoutCode : exchangeCode
+    );
+  }
+  if (!tokenResponse.ok) {
+    await tokenResponse.body?.cancel?.().catch?.(() => {
+    });
+    throw commandError2(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
+  }
+  let token;
+  try {
+    token = await readBoundedJsonResponse(tokenResponse, 64 * 1024);
+  } catch (error) {
+    const timedOut = signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError";
+    throw commandError2(
+      timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.responseMessage,
+      contract.exchangeHint,
+      timedOut ? timeoutCode : exchangeCode
+    );
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError2(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
+  }
+  return await contract.verify(database, token.id_token, context.nonce);
+}
+function createGoogleOAuthProviderAdapter(database) {
+  const google = database.authConfig.providers.google;
+  const configured = Boolean(google.enabled && google.configured);
+  return {
+    provider: "google",
+    responseMode: "query",
+    enabled: configured,
+    begin(context) {
+      const clientId = database.serverEnv[google.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "openid email profile",
+        state: context.state,
+        nonce: context.nonce,
+        code_challenge: context.pkceChallenge,
+        code_challenge_method: "S256"
+      });
+      return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
+    },
+    complete(context) {
+      const clientId = database.serverEnv[google.clientIdEnv];
+      const clientSecret = database.serverEnv[google.clientSecretEnv];
+      return completeOpenIdOAuthCodeExchange(database, context, {
+        tokenUrl: oauthProviderTestEndpoint(
+          process.env.SPORADES_GOOGLE_TOKEN_URL,
+          "https://oauth2.googleapis.com/token"
+        ),
+        parameters: {
+          code: context.code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: context.redirectUri,
+          grant_type: "authorization_code",
+          code_verifier: context.pkceVerifier
+        },
+        exchangeMessage: "Google OAuth code exchange failed.",
+        exchangeHint: "Check the Google OAuth client configuration and retry sign-in.",
+        responseMessage: "Google OAuth response was invalid.",
+        tokenMessage: "Google OAuth response did not include a valid identity token.",
+        tokenHint: "Check the Google OAuth client configuration and retry sign-in.",
+        verify: verifyGoogleIdentityToken
+      });
+    }
+  };
+}
+function createAppleOAuthProviderAdapter(database) {
+  const apple = database.authConfig.providers.apple;
+  const configured = Boolean(apple.enabled && apple.configured);
+  return {
+    provider: "apple",
+    responseMode: "form_post",
+    enabled: configured,
+    begin(context) {
+      if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
+        throw commandError2(
+          "Apple sign-in requires an HTTPS domain origin.",
+          "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.",
+          "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED"
+        );
+      }
+      const params = new URLSearchParams({
+        client_id: apple.clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        response_mode: "form_post",
+        scope: "name email",
+        state: context.state,
+        nonce: context.nonce
+      });
+      return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
+    },
+    complete(context) {
+      return completeAppleOAuth(database, context);
+    }
+  };
+}
+function appleOAuthOriginEligible(origin) {
+  try {
+    const url = new URL(String(origin));
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (url.protocol !== "https:" || url.username || url.password || !hostname) return false;
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return false;
+    if (hostname.includes(":")) return false;
+    if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
+    const labels = hostname.split(".");
+    return hostname.length <= 253 && labels.length >= 2 && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+  } catch {
+    return false;
+  }
+}
+async function completeAppleOAuth(database, context) {
+  const apple = database.authConfig.providers.apple;
+  const tokenUrl = oauthProviderTestEndpoint(
+    process.env.SPORADES_APPLE_TOKEN_URL,
+    "https://appleid.apple.com/auth/token"
+  );
+  let clientSecret;
+  try {
+    clientSecret = createAppleClientSecret(database);
+  } catch {
+    throw commandError2(
+      "Apple client credential could not be generated.",
+      "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  const identity = await completeOpenIdOAuthCodeExchange(database, context, {
+    tokenUrl,
+    parameters: {
+      code: context.code,
+      client_id: apple.clientId,
+      client_secret: clientSecret,
+      redirect_uri: context.redirectUri,
+      grant_type: "authorization_code"
+    },
+    exchangeMessage: "Apple OAuth code exchange failed.",
+    exchangeHint: "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.",
+    responseMessage: "Apple OAuth response was invalid.",
+    tokenMessage: "Apple OAuth response did not include a valid identity token.",
+    tokenHint: "Retry Apple sign-in.",
+    verify: verifyAppleIdentityToken
+  });
+  const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
+  return {
+    ...identity,
+    displayName: authorizationUser?.displayName ?? null
+  };
+}
+function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 1e3)) {
+  const apple = database.authConfig.providers.apple;
+  const privateKey = database.serverEnv[apple.privateKeyEnv];
+  if (!privateKey || ![apple.clientId, apple.teamId, apple.keyId].every((value) => typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))) {
+    throw commandError2(
+      "Apple client credential is invalid.",
+      "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  let signingKey;
+  try {
+    signingKey = nodeCryptoModule2.createPrivateKey(privateKey);
+  } catch {
+    throw commandError2(
+      "Apple client credential is invalid.",
+      "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  if (signingKey.type !== "private" || signingKey.asymmetricKeyType !== "ec" || signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+    throw commandError2(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
+  const claims = Buffer.from(JSON.stringify({
+    iss: apple.teamId,
+    iat: nowSeconds,
+    exp: nowSeconds + 300,
+    aud: "https://appleid.apple.com",
+    sub: apple.clientId
+  })).toString("base64url");
+  const signatureBytes = nodeCryptoModule2.sign(
+    "sha256",
+    Buffer.from(`${header}.${claims}`),
+    { key: signingKey, dsaEncoding: "ieee-p1363" }
+  );
+  if (signatureBytes.length !== 64) {
+    throw commandError2(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
+}
+function createFacebookOAuthProviderAdapter(database) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion;
+  const configured = Boolean(
+    facebook.enabled && facebook.configured && facebook.runtimeAvailable && graphVersion === "v23.0"
+  );
+  return {
+    provider: "facebook",
+    responseMode: "query",
+    enabled: configured,
+    begin(context) {
+      const clientId = database.serverEnv[facebook.clientIdEnv];
+      if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
+        throw commandError2(
+          "Facebook App ID is invalid.",
+          "Configure a valid Facebook App ID and retry sign-in.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "public_profile,email",
+        state: context.state
+      });
+      const authorizationUrl = facebookOAuthEndpoint(
+        process.env.SPORADES_FACEBOOK_AUTH_URL,
+        `https://www.facebook.com/${graphVersion}/dialog/oauth`
+      );
+      authorizationUrl.search = params.toString();
+      if (authorizationUrl.toString().length > 8192) {
+        throw commandError2(
+          "Facebook authorization URL is too large.",
+          "Check the Facebook App ID and callback configuration.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
+      return { url: authorizationUrl.toString() };
+    },
+    callbackError(parameters) {
+      return facebookOAuthCallbackError(parameters);
+    },
+    complete(context) {
+      return completeFacebookOAuth(database, context);
+    }
+  };
+}
+function facebookOAuthCallbackError(parameters) {
+  const reason = parameters.get("error_reason");
+  const code = parameters.get("error_code");
+  const description = parameters.get("error_description")?.toLowerCase() ?? "";
+  if (reason === "user_denied" || code === "200") {
+    return commandError2(
+      "Facebook permissions were declined or are unavailable.",
+      "Allow the requested public profile and email permissions, then retry sign-in.",
+      "FACEBOOK_PERMISSION_DENIED"
+    );
+  }
+  if (code === "191") {
+    return commandError2(
+      "Facebook rejected the OAuth redirect URI.",
+      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
+      "FACEBOOK_REDIRECT_MISMATCH"
+    );
+  }
+  if (description.includes("development mode") || description.includes("app is not set up") || description.includes("app not set up") || description.includes("app is not available")) {
+    return commandError2(
+      "Facebook sign-in is unavailable for this account.",
+      "Check the Facebook app mode and tester access, then retry sign-in.",
+      "FACEBOOK_APP_RESTRICTED"
+    );
+  }
+  return null;
+}
+function facebookOAuthEndpoint(configured, fallback) {
+  const value = configured === void 0 ? fallback : configured;
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
+    throw commandError2(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw commandError2(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" && url.protocol === "http:" && loopback;
+  if (url.protocol !== "https:" && !insecureTestEndpoint || url.username || url.password || url.hash) {
+    throw commandError2(
+      "Facebook OAuth endpoint is unsafe.",
+      "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  return url;
+}
+function facebookOAuthTimeoutSignal() {
+  const testTimeout = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" ? Number(process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS) : NaN;
+  const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 1e4 ? testTimeout : 1e4;
+  return AbortSignal.timeout(timeoutMs);
+}
+async function cancelFacebookOAuthResponse(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+  }
+}
+async function readFacebookOAuthJson(response, signal, failureCode, failureMessage, failureHint, timeoutCode, timeoutMessage) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw commandError2(failureMessage, failureHint, failureCode);
+  }
+  const chunks = [];
+  let length = 0;
+  const aborted = {};
+  let onAbort = null;
+  const abort = signal.aborted ? Promise.resolve(aborted) : new Promise((resolve) => {
+    onAbort = () => resolve(aborted);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), abort]);
+      if (next === aborted) throw aborted;
+      if (next.done) break;
+      if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
+      length += next.value.byteLength;
+      if (length > 64 * 1024) {
+        throw new Error("response too large");
+      }
+      chunks.push(next.value);
+    }
+    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+    }
+    if (error === aborted || signal.aborted) {
+      throw commandError2(timeoutMessage, failureHint, timeoutCode);
+    }
+    throw commandError2(failureMessage, failureHint, failureCode);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+    }
+  }
+}
+async function completeFacebookOAuth(database, context) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion;
+  if (graphVersion !== "v23.0") {
+    throw commandError2(
+      "Facebook Graph API version is unsupported.",
+      "Configure Facebook Graph API version v23.0 and retry sign-in.",
+      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED"
+    );
+  }
+  const clientId = database.serverEnv[facebook.clientIdEnv];
+  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
+  if (typeof context.code !== "string" || context.code.length < 1 || context.code.length > 16 * 1024 || typeof context.redirectUri !== "string" || context.redirectUri.length < 1 || context.redirectUri.length > 2048 || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096 || typeof clientSecret !== "string" || clientSecret.length < 1 || clientSecret.length > 16 * 1024) {
+    throw commandError2(
+      "Facebook OAuth callback or configuration is invalid.",
+      "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
+      "FACEBOOK_CALLBACK_INVALID"
+    );
+  }
+  const tokenUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_TOKEN_URL,
+    `https://graph.facebook.com/${graphVersion}/oauth/access_token`
+  );
+  let tokenResponse;
+  const tokenSignal = facebookOAuthTimeoutSignal();
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri
+      }),
+      redirect: "error",
+      signal: tokenSignal
+    });
+  } catch (error) {
+    throw commandError2(
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook OAuth code exchange timed out." : "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_EXCHANGE_TIMEOUT" : "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  if (!tokenResponse.ok) {
+    await cancelFacebookOAuthResponse(tokenResponse);
+    throw commandError2(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  const token = await readFacebookOAuthJson(
+    tokenResponse,
+    tokenSignal,
+    "FACEBOOK_EXCHANGE_FAILED",
+    "Facebook OAuth response was invalid.",
+    "Check the Facebook app configuration and retry sign-in.",
+    "FACEBOOK_EXCHANGE_TIMEOUT",
+    "Facebook OAuth response timed out."
+  );
+  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
+    throw commandError2(
+      "Facebook OAuth response did not include a valid access token.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  const graphUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_GRAPH_URL,
+    `https://graph.facebook.com/${graphVersion}/me`
+  );
+  graphUrl.searchParams.set("fields", "id,name,email,picture");
+  let graphResponse;
+  const graphSignal = facebookOAuthTimeoutSignal();
+  try {
+    graphResponse = await fetch(graphUrl, {
+      headers: { authorization: `Bearer ${token.access_token}` },
+      redirect: "error",
+      signal: graphSignal
+    });
+  } catch (error) {
+    throw commandError2(
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook profile request timed out." : "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_GRAPH_TIMEOUT" : "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  if (!graphResponse.ok) {
+    await cancelFacebookOAuthResponse(graphResponse);
+    throw commandError2(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  const profile = await readFacebookOAuthJson(
+    graphResponse,
+    graphSignal,
+    "FACEBOOK_GRAPH_FAILED",
+    "Facebook profile response was invalid.",
+    "Check Facebook Graph API access and retry sign-in.",
+    "FACEBOOK_GRAPH_TIMEOUT",
+    "Facebook profile response timed out."
+  );
+  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
+    throw commandError2(
+      "Facebook profile is missing a stable identifier.",
+      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
+      "FACEBOOK_PROFILE_ID_MISSING"
+    );
+  }
+  const email = typeof profile.email === "string" && profile.email.length <= 320 ? profile.email.trim().toLowerCase() || null : null;
+  const displayName = typeof profile.name === "string" && profile.name.length <= 512 ? profile.name.trim() || null : null;
+  const pictureCandidate = profile.picture?.data?.url;
+  let picture = null;
+  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
+    try {
+      const pictureUrl = new URL(pictureCandidate);
+      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
+        picture = pictureUrl.toString();
+      }
+    } catch {
+      picture = null;
+    }
+  }
+  return {
+    subject: profile.id,
+    email,
+    emailVerified: null,
+    displayName,
+    picture
+  };
+}
+async function verifyGoogleIdentityToken(database, token, expectedNonce) {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError2("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+  } catch {
+    throw commandError2("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    throw commandError2("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwksUrl = oauthProviderTestEndpoint(
+    process.env.SPORADES_GOOGLE_JWKS_URL,
+    "https://www.googleapis.com/oauth2/v3/certs"
+  );
+  let jwks;
+  try {
+    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
+      maxBytes: 64 * 1024,
+      timeoutProperty: "__oauthJwksTimeoutMs",
+      defaultTimeoutMs: 5e3,
+      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      unavailableMessage: "Google signing keys could not be loaded.",
+      unavailableHint: "Retry Google sign-in.",
+      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+      invalidMessage: "Google signing keys were invalid.",
+      invalidHint: "Retry Google sign-in."
+    });
+  } catch (error) {
+    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
+    throw commandError2("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+  if (!keys) {
+    throw commandError2("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+  }
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  if (!jwk) {
+    throw commandError2("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = nodeCryptoModule2.verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2])
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const clientId = database.serverEnv[database.authConfig.providers.google.clientIdEnv];
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
+  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
+  if (invalidCode) {
+    throw commandError2("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
+  }
+  return {
+    subject: claims.sub,
+    email: normalizeSimulatedText(claims.email)?.toLowerCase() ?? null,
+    emailVerified: claims.email_verified === true,
+    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
+    picture: normalizeSimulatedText(claims.picture)
+  };
+}
+function createMicrosoftOAuthProviderAdapter(database) {
+  const microsoft = database.authConfig.providers.microsoft;
+  const configured = Boolean(microsoft.enabled && microsoft.configured);
+  return {
+    provider: "microsoft",
+    responseMode: "query",
+    enabled: configured,
+    async begin(context) {
+      const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
+      const clientId = database.serverEnv[microsoft.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        response_mode: "query",
+        scope: "openid profile email",
+        state: context.state,
+        nonce: context.nonce,
+        code_challenge: context.pkceChallenge,
+        code_challenge_method: "S256"
+      });
+      return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
+    },
+    complete(context) {
+      return completeMicrosoftOAuth(database, context);
+    }
+  };
+}
+async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
+  const selectedTenant = validMicrosoftTenant(tenant) ? tenant : null;
+  if (!selectedTenant) {
+    throw commandError2(
+      "Microsoft tenant configuration is invalid.",
+      "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
+      "OAUTH_TENANT_INVALID"
+    );
+  }
+  const productionDiscoveryUrl = `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
+  const discoveryUrl = oauthProviderTestEndpoint(
+    process.env.SPORADES_MICROSOFT_DISCOVERY_URL,
+    productionDiscoveryUrl
+  );
+  const discoveryOverride = discoveryUrl !== productionDiscoveryUrl;
+  let discoveryOrigin;
+  try {
+    const parsedDiscoveryUrl = new URL(discoveryUrl);
+    const loopbackOverride = discoveryOverride && parsedDiscoveryUrl.protocol === "http:" && isOAuthLoopbackHostname(parsedDiscoveryUrl.hostname) && !parsedDiscoveryUrl.username && !parsedDiscoveryUrl.password && !parsedDiscoveryUrl.hash;
+    const microsoftDiscovery = !discoveryOverride && parsedDiscoveryUrl.protocol === "https:" && parsedDiscoveryUrl.hostname === "login.microsoftonline.com";
+    if (!loopbackOverride && !microsoftDiscovery) throw new Error("untrusted discovery");
+    discoveryOrigin = parsedDiscoveryUrl.origin;
+  } catch {
+    throw commandError2(
+      "Microsoft OpenID discovery URL was invalid.",
+      "Use the Microsoft identity platform discovery endpoint.",
+      "OAUTH_DISCOVERY_INVALID"
+    );
+  }
+  const microsoft = database.authConfig.providers.microsoft;
+  const cacheKey = microsoftOidcCacheKey([
+    selectedTenant,
+    discoveryUrl,
+    microsoft.clientIdEnv ?? "",
+    microsoft.clientSecretEnv ?? ""
+  ]);
+  const cacheRoot = microsoftOidcCache(database);
+  const cache = cacheRoot.discovery;
+  const now = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now, 32);
+  let state = cache.get(cacheKey);
+  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
+    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
+    state = {
+      value: null,
+      expiresAt: 0,
+      generation: 0,
+      nextGeneration: 1,
+      inflight: null,
+      lastAccess: cacheRoot.nextAccess++
+    };
+    if (cache.size >= 32) {
+      throw commandError2(
+        "Microsoft OpenID configuration could not be loaded.",
+        "Retry Microsoft sign-in after other provider requests complete.",
+        "OAUTH_DISCOVERY_UNAVAILABLE"
+      );
+    }
+    cache.set(cacheKey, state);
+  }
+  state.lastAccess = cacheRoot.nextAccess++;
+  if (state.value && state.expiresAt > now) return state.value;
+  if (state.inflight) return await state.inflight;
+  const requestGeneration = state.nextGeneration++;
+  const inflight = (async () => {
+    const discovery = await fetchMicrosoftOidcJson(database, discoveryUrl, {}, {
+      maxBytes: 64 * 1024,
+      unavailableCode: "OAUTH_DISCOVERY_UNAVAILABLE",
+      unavailableMessage: "Microsoft OpenID configuration could not be loaded.",
+      unavailableHint: "Check Microsoft tenant selection and network access, then retry sign-in.",
+      invalidCode: "OAUTH_DISCOVERY_INVALID",
+      invalidMessage: "Microsoft OpenID configuration was invalid.",
+      invalidHint: "Check Microsoft tenant selection and retry sign-in."
+    });
+    const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
+    if (!isPlainRecord(discovery) || !required.every(
+      (key) => typeof discovery[key] === "string" && discovery[key].length > 0 && discovery[key].length <= 2048
+    )) {
+      throw commandError2(
+        "Microsoft OpenID configuration was invalid.",
+        "Check Microsoft tenant selection and retry sign-in.",
+        "OAUTH_DISCOVERY_INVALID"
+      );
+    }
+    try {
+      const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
+      const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
+      const endpointsTrusted = discoveryOverride ? endpointUrls.every((url) => url.origin === discoveryOrigin) : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
+      const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
+      if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
+    } catch {
+      throw commandError2(
+        "Microsoft OpenID configuration contained invalid endpoints.",
+        "Check Microsoft tenant selection and retry sign-in.",
+        "OAUTH_DISCOVERY_INVALID"
+      );
+    }
+    if (requestGeneration >= state.generation) {
+      state.value = discovery;
+      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1e3;
+      state.generation = requestGeneration;
+    }
+    return state.value;
+  })();
+  state.inflight = inflight;
+  try {
+    return await inflight;
+  } finally {
+    if (state.inflight === inflight) state.inflight = null;
+  }
+}
+async function fetchMicrosoftOidcJson(database, url, request, policy) {
+  return await fetchBoundedOAuthJson(database, url, request, {
+    ...policy,
+    timeoutProperty: "__microsoftOidcTimeoutMs",
+    defaultTimeoutMs: 5e3
+  });
+}
+async function readBoundedJsonBody(response, maxBytes) {
+  const declaredLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    try {
+      await response.body?.cancel?.();
+    } catch {
+    }
+    throw new Error("OIDC response exceeded its byte limit");
+  }
+  const reader = response.body?.getReader?.();
+  if (!reader) throw new Error("OIDC response body was unavailable");
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+      if (total > maxBytes) {
+        throw new Error("OIDC response exceeded its byte limit");
+      }
+      chunks.push(Buffer.from(chunk.value));
+    }
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+    }
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock?.();
+    } catch {
+    }
+  }
+  return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+}
+function microsoftOidcCache(database) {
+  if (!database.__microsoftOidcCache || !(database.__microsoftOidcCache.discovery instanceof Map) || !(database.__microsoftOidcCache.jwks instanceof Map)) {
+    database.__microsoftOidcCache = {
+      discovery: /* @__PURE__ */ new Map(),
+      jwks: /* @__PURE__ */ new Map(),
+      nextAccess: 1
+    };
+  }
+  if (!Number.isSafeInteger(database.__microsoftOidcCache.nextAccess)) {
+    database.__microsoftOidcCache.nextAccess = 1;
+  }
+  return database.__microsoftOidcCache;
+}
+function microsoftOidcNow(database) {
+  return Number.isFinite(database.__microsoftOidcNowMs) ? Number(database.__microsoftOidcNowMs) : Date.now();
+}
+function microsoftOidcCacheKey(parts) {
+  return JSON.stringify(parts);
+}
+function pruneMicrosoftOidcCacheMap(cache, now, maximumSize, reserveSlot = false) {
+  for (const [key, state] of cache) {
+    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now)) {
+      cache.delete(key);
+    }
+  }
+  const targetSize = Math.max(0, maximumSize - (reserveSlot ? 1 : 0));
+  while (cache.size > targetSize) {
+    const candidates = [...cache.entries()].filter(([, state]) => !state?.inflight).sort(([leftKey, left], [rightKey, right]) => {
+      const accessDifference = Number(left?.lastAccess ?? 0) - Number(right?.lastAccess ?? 0);
+      return accessDifference || leftKey.localeCompare(rightKey);
+    });
+    if (candidates.length === 0) break;
+    cache.delete(candidates[0][0]);
+  }
+}
+async function completeMicrosoftOAuth(database, context) {
+  const microsoft = database.authConfig.providers.microsoft;
+  const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
+  const clientId = database.serverEnv[microsoft.clientIdEnv];
+  const clientSecret = database.serverEnv[microsoft.clientSecretEnv];
+  const token = await fetchMicrosoftOidcJson(database, discovery.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code: context.code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: context.redirectUri,
+      grant_type: "authorization_code",
+      code_verifier: context.pkceVerifier,
+      scope: "openid profile email"
+    })
+  }, {
+    maxBytes: 64 * 1024,
+    unavailableCode: "OAUTH_EXCHANGE_FAILED",
+    unavailableMessage: "Microsoft OAuth code exchange failed.",
+    unavailableHint: "Check the Microsoft client credentials, tenant, consent, and callback URI, then retry sign-in.",
+    invalidCode: "OAUTH_EXCHANGE_FAILED",
+    invalidMessage: "Microsoft OAuth response was invalid.",
+    invalidHint: "Check the Microsoft client configuration and retry sign-in."
+  });
+  if (!isPlainRecord(token)) {
+    throw commandError2(
+      "Microsoft OAuth response was invalid.",
+      "Check the Microsoft client configuration and retry sign-in.",
+      "OAUTH_EXCHANGE_FAILED"
+    );
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError2(
+      "Microsoft OAuth response did not include a valid identity token.",
+      "Check the Microsoft client configuration and retry sign-in.",
+      "OAUTH_ID_TOKEN_INVALID"
+    );
+  }
+  return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
+}
+async function verifyMicrosoftIdentityToken(database, token, expectedNonce, discovery) {
+  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
+    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  let signature;
+  try {
+    header = parseMicrosoftJwtPart(parts[0], 2 * 1024);
+    claims = parseMicrosoftJwtPart(parts[1], 12 * 1024);
+    signature = decodeJwtPart(parts[2]);
+    if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
+  } catch {
+    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const visible = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max && /^[\x21-\x7e]+$/.test(value);
+  const validAudience = typeof claims.aud === "string" ? visible(claims.aud, 512) : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 10 && claims.aud.every((value) => visible(value, 512));
+  const numericDate = (value) => Number.isSafeInteger(value) && value >= 0;
+  const optionalNumericDate = (value) => value === void 0 || numericDate(value);
+  const optionalProfile = (value, max) => value === void 0 || value === null || typeof value === "string" && value.length <= max;
+  const structurallyValid = header.alg === "RS256" && visible(header.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
+  if (!structurallyValid) {
+    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwk = await selectMicrosoftJwk(database, discovery, header.kid);
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = nodeCryptoModule2.verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      signature
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const microsoft = database.authConfig.providers.microsoft;
+  const clientId = database.serverEnv[microsoft.clientIdEnv];
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const expectedIssuer = discovery.issuer.replace("{tenantid}", claims.tid);
+  const expectedKeyIssuer = jwk.issuer.replace("{tenantid}", claims.tid);
+  const nowSeconds = Math.floor(microsoftOidcNow(database) / 1e3);
+  const tenantAllowed = microsoftTenantAllowsClaims(microsoft.tenant, claims.tid, claims.iss, discovery.issuer);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : claims.exp <= nowSeconds ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nbf !== void 0 && claims.nbf > nowSeconds + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID" : claims.iat !== void 0 && claims.iat > nowSeconds + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !tenantAllowed ? "OAUTH_TENANT_REJECTED" : null;
+  if (invalidCode) {
+    const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
+    throw commandError2(
+      tenantFailure ? "Microsoft account is not allowed by the configured tenant." : "Microsoft identity token failed verification.",
+      tenantFailure ? "Use an account accepted by this Capsule's Microsoft tenant selection." : "Retry Microsoft sign-in.",
+      invalidCode
+    );
+  }
+  const email = normalizeSimulatedText(claims.email)?.toLowerCase() ?? null;
+  return {
+    subject: `${claims.tid.toLowerCase()}:${claims.sub}`,
+    email,
+    emailVerified: null,
+    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.preferred_username) ?? email ?? "Microsoft user",
+    picture: null
+  };
+}
+async function verifyAppleIdentityToken(database, token, expectedNonce) {
+  if (typeof token !== "string" || token.length > 16 * 1024) {
+    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = parseBoundedJwtObject(parts[0]);
+    claims = parseBoundedJwtObject(parts[1]);
+  } catch {
+    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header.kid) || header.typ !== void 0 && header.typ !== "JWT") {
+    throw commandError2("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwksUrl = oauthProviderTestEndpoint(
+    process.env.SPORADES_APPLE_JWKS_URL,
+    "https://appleid.apple.com/auth/keys"
+  );
+  let jwks;
+  try {
+    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
+      maxBytes: 64 * 1024,
+      timeoutProperty: "__oauthJwksTimeoutMs",
+      defaultTimeoutMs: 5e3,
+      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      unavailableMessage: "Apple signing keys could not be loaded.",
+      unavailableHint: "Retry Apple sign-in.",
+      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+      invalidMessage: "Apple signing keys were invalid.",
+      invalidHint: "Retry Apple sign-in."
+    });
+  } catch (error) {
+    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
+    throw commandError2("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+  if (!keys) {
+    throw commandError2("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+  }
+  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
+  if (!jwk) {
+    throw commandError2("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = nodeCryptoModule2.verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2])
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const clientId = database.authConfig.providers.apple.clientId;
+  const audiences = typeof claims.aud === "string" ? [claims.aud] : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 8 && claims.aud.every((audience) => typeof audience === "string") ? claims.aud : [];
+  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
+  if (invalidCode) {
+    throw commandError2("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
+  }
+  return {
+    subject: claims.sub,
+    email: normalizeSimulatedEmail(claims.email),
+    emailVerified: claims.email_verified === true || claims.email_verified === "true",
+    displayName: null,
+    picture: null
+  };
+}
+function parseBoundedJwtObject(value) {
+  if (typeof value !== "string" || value.length > 12 * 1024) throw new Error("Invalid JWT part");
+  const bytes = decodeJwtPart(value);
+  if (bytes.length === 0 || bytes.length > 8 * 1024) throw new Error("Invalid JWT part");
+  const parsed = JSON.parse(bytes.toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JWT object");
+  return parsed;
+}
+async function readBoundedJsonResponse(response, maxBytes) {
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel?.().catch?.(() => {
+    });
+    throw new Error("Response too large");
+  }
+  const chunks = [];
+  let size = 0;
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        size += result.value.byteLength;
+        if (size > maxBytes) throw new Error("Response too large");
+        chunks.push(Buffer.from(result.value));
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {
+      });
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    try {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > maxBytes) throw new Error("Response too large");
+      chunks.push(bytes);
+    } catch (error) {
+      await response.body?.cancel?.().catch?.(() => {
+      });
+      throw error;
+    }
+  }
+  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JSON object");
+  return parsed;
+}
+function isPlainJsonObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+function parseAppleAuthorizationUser(value) {
+  if (value === null || value === void 0 || value === "") return null;
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
+    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  let user;
+  try {
+    user = JSON.parse(value);
+  } catch {
+    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  if (!user || typeof user !== "object" || Array.isArray(user) || user.name !== void 0 && (!user.name || typeof user.name !== "object" || Array.isArray(user.name))) {
+    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  const firstName = sanitizeAppleNamePart(user.name?.firstName);
+  const lastName = sanitizeAppleNamePart(user.name?.lastName);
+  const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
+  return { displayName };
+}
+function sanitizeAppleNamePart(value) {
+  if (value === null || value === void 0 || value === "") return null;
+  if (typeof value !== "string") {
+    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (text.length > 128) {
+    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  return text;
+}
+async function loadMicrosoftJwks(database, discovery, forceRefresh = false, observedGeneration = null, missingKid = null) {
+  const microsoft = database.authConfig.providers.microsoft;
+  const cacheKey = microsoftOidcCacheKey([
+    discovery.issuer,
+    discovery.jwks_uri,
+    microsoft.tenant ?? "",
+    microsoft.clientIdEnv ?? ""
+  ]);
+  const cacheRoot = microsoftOidcCache(database);
+  const cache = cacheRoot.jwks;
+  const now = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now, 32);
+  let state = cache.get(cacheKey);
+  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
+    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
+    state = {
+      value: null,
+      expiresAt: 0,
+      generation: 0,
+      nextGeneration: 1,
+      inflight: null,
+      inflightKind: null,
+      missingKidCooldowns: /* @__PURE__ */ new Map(),
+      lastAccess: cacheRoot.nextAccess++
+    };
+    if (cache.size >= 32) {
+      throw commandError2(
+        "Microsoft signing keys could not be loaded.",
+        "Retry Microsoft sign-in after other provider requests complete.",
+        "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE"
+      );
+    }
+    cache.set(cacheKey, state);
+  }
+  state.lastAccess = cacheRoot.nextAccess++;
+  if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = /* @__PURE__ */ new Map();
+  const rememberMissingKid = (jwks, missingKid2, at) => {
+    if (typeof missingKid2 !== "string") return;
+    for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
+      if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
+    }
+    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord(value) && value.kid === missingKid2);
+    state.missingKidCooldowns.delete(missingKid2);
+    if (!found) state.missingKidCooldowns.set(missingKid2, at + 1e4);
+    while (state.missingKidCooldowns.size > 64) {
+      state.missingKidCooldowns.delete(state.missingKidCooldowns.keys().next().value);
+    }
+  };
+  if (forceRefresh) {
+    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
+      rememberMissingKid(state.value, missingKid, now);
+      return state.value;
+    }
+    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
+    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now) return state.value;
+  } else if (state.value && state.expiresAt > now) {
+    return state.value;
+  }
+  if (state.inflight) {
+    const sharedInflight = state.inflight;
+    const sharedKind = state.inflightKind;
+    const shared = await sharedInflight;
+    if (!forceRefresh) return shared;
+    if (sharedKind === "rollover") {
+      rememberMissingKid(shared, missingKid, microsoftOidcNow(database));
+      return shared;
+    }
+    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) {
+      rememberMissingKid(state.value, missingKid, microsoftOidcNow(database));
+      return state.value;
+    }
+    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
+    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > microsoftOidcNow(database)) return state.value;
+  }
+  const requestGeneration = state.nextGeneration++;
+  const requestKind = forceRefresh ? "rollover" : "load";
+  const inflight = (async () => {
+    const jwks = await fetchMicrosoftOidcJson(database, discovery.jwks_uri, {}, {
+      maxBytes: 256 * 1024,
+      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      unavailableMessage: "Microsoft signing keys could not be loaded.",
+      unavailableHint: "Retry Microsoft sign-in.",
+      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+      invalidMessage: "Microsoft signing keys were invalid.",
+      invalidHint: "Retry Microsoft sign-in."
+    });
+    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
+      throw commandError2("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    }
+    if (requestGeneration >= state.generation) {
+      state.value = jwks;
+      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1e3;
+      state.generation = requestGeneration;
+      if (requestKind === "load") state.missingKidCooldowns.clear();
+      else rememberMissingKid(jwks, missingKid, microsoftOidcNow(database));
+    }
+    return state.value;
+  })();
+  state.inflight = inflight;
+  state.inflightKind = requestKind;
+  try {
+    return await inflight;
+  } finally {
+    if (state.inflight === inflight) {
+      state.inflight = null;
+      state.inflightKind = null;
+    }
+  }
+}
+async function selectMicrosoftJwk(database, discovery, kid) {
+  let jwks = await loadMicrosoftJwks(database, discovery, false);
+  let candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+  if (!candidate) {
+    const microsoft = database.authConfig.providers.microsoft;
+    const cacheKey = microsoftOidcCacheKey([
+      discovery.issuer,
+      discovery.jwks_uri,
+      microsoft.tenant ?? "",
+      microsoft.clientIdEnv ?? ""
+    ]);
+    const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
+    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
+    candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+  }
+  if (!candidate) {
+    throw commandError2("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const valid = candidate.kty === "RSA" && (candidate.alg === void 0 || candidate.alg === "RS256") && (candidate.use === void 0 || candidate.use === "sig") && typeof candidate.issuer === "string" && candidate.issuer.length > 0 && candidate.issuer.length <= 2048 && typeof candidate.n === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.n) && candidate.n.length >= 256 && candidate.n.length <= 2048 && typeof candidate.e === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.e) && candidate.e.length >= 2 && candidate.e.length <= 16;
+  if (!valid) {
+    throw commandError2("Microsoft signing key was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+  }
+  return candidate;
+}
+function isPlainRecord(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function parseMicrosoftJwtPart(value, maxBytes) {
+  if (typeof value !== "string" || value.length > Math.ceil(maxBytes * 4 / 3) + 4) {
+    throw new Error("JWT segment exceeded its byte limit");
+  }
+  const decoded = decodeJwtPart(value);
+  if (decoded.length > maxBytes) throw new Error("JWT segment exceeded its byte limit");
+  const parsed = JSON.parse(decoded.toString("utf8"));
+  if (!isPlainRecord(parsed)) throw new Error("JWT segment was not an object");
+  return parsed;
+}
+function microsoftTenantAllowsClaims(selectedTenant, tenantId, issuer, discoveredIssuer) {
+  const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
+  if (selectedTenant === "common") return true;
+  if (selectedTenant === "organizations") return tenantId.toLowerCase() !== consumerTenant;
+  if (selectedTenant === "consumers") return tenantId.toLowerCase() === consumerTenant;
+  if (/^[0-9a-f-]{36}$/i.test(selectedTenant)) return tenantId.toLowerCase() === selectedTenant.toLowerCase();
+  return discoveredIssuer === issuer;
+}
+function validMicrosoftTenant(value) {
+  if (["common", "organizations", "consumers"].includes(value)) return true;
+  if (typeof value !== "string" || value.length > 253) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value);
+}
+function decodeJwtPart(value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Invalid JWT encoding");
+  }
+  return Buffer.from(value, "base64url");
+}
+function writeRedirect(response, location) {
+  response.writeHead(302, { location });
+  response.end();
+}
+function normalizePasswordResetPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+    return null;
+  }
+  if (value.includes("\\") || value.includes("?") || value.includes("#")) {
+    return null;
+  }
+  if (value.split("/").includes("..")) {
+    return null;
+  }
+  return value;
+}
+function passwordResetCodeParts(database) {
+  const selector = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const verifier = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  return {
+    selector,
+    verifier,
+    code: `${selector}.${verifier}`,
+    verifierHash: hashPasswordResetVerifier(verifier),
+    now: database.clock.now()
+  };
+}
+function hashPasswordResetVerifier(verifier) {
+  return nodeCryptoModule2.createHash("sha256").update(verifier).digest("base64url");
+}
+async function issuePasswordResetCode(database, credential) {
+  const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
+  const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
+  await database.adapter.prunePasswordResetCodes(now.toISOString());
+  const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now.toISOString());
+  if (outstanding >= PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL) {
+    return null;
+  }
+  await database.adapter.insertPasswordResetCode({
+    selector,
+    verifierHash,
+    email: credential.email,
+    userId: credential.userId,
+    createdAt: now.toISOString(),
+    expiresAt
+  });
+  const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
+  link.searchParams.set("code", code);
+  return { code, selector, link: link.toString(), expiresAt };
+}
+async function createEmailPasswordResetLink(database, _session, email) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account being reset." } };
+  }
+  const credential = await database.adapter.findEmailCredentialWithUser(cleanEmail);
+  if (!credential) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: false, error: passwordResetLimitError() };
+  }
+  return { ok: true, link: issued.link, expiresAt: issued.expiresAt };
+}
+function serverAuthError(error, fallback) {
+  const failure = new Error(error?.message ?? fallback);
+  if (error?.code) failure.code = error.code;
+  if (error?.hint) failure.hint = error.hint;
+  return failure;
+}
+function passwordResetLimitError() {
+  return {
+    code: "PASSWORD_RESET_LIMIT_REACHED",
+    message: "Too many password reset links are already outstanding for this account.",
+    hint: "Use the most recent reset link, or wait for the outstanding links to expire."
+  };
+}
+function invalidPasswordResetCodeError() {
+  return {
+    code: "INVALID_PASSWORD_RESET_CODE",
+    message: "This password reset link is invalid or has expired.",
+    hint: "Request a new password reset link."
+  };
+}
+async function readPasswordResetCode(database, code) {
+  const parts = typeof code === "string" ? code.split(".") : [];
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return null;
+  }
+  const row = await database.adapter.findPasswordResetCode(parts[0]);
+  const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
+  const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
+  const matches = actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
+  if (!row || !matches) {
+    return null;
+  }
+  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+}
+async function verifyPasswordResetCode(database, _session, code) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  return { ok: true, email: row.email };
+}
+async function confirmPasswordReset(database, _session, code, newPassword) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  const password = hashEmailPassword(newPassword);
+  return await database.adapter.withTransaction(async (tx) => {
+    await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
+    await tx.deletePasswordResetCodesForUser(row.userId);
+    await tx.deleteAuthSessionsForUser(row.userId);
+    return { ok: true };
+  });
+}
+function passwordResetMailBody(link) {
+  return {
+    textBody: `We received a request to reset your password.
+
+Open this link to choose a new password:
+${link}
+
+If you did not request this, you can ignore this message and your password will stay the same.
+`,
+    htmlBody: `<p>We received a request to reset your password.</p><p><a href="${escapeHtmlAttribute(link)}">Choose a new password</a></p><p>If you did not request this, you can ignore this message and your password will stay the same.</p>`
+  };
+}
+function escapeHtmlAttribute(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function mailNotConfiguredError() {
+  return {
+    code: "MAIL_NOT_CONFIGURED",
+    message: "Password reset mail cannot be delivered because SMTP is not configured.",
+    hint: "Set `mail.smtp` in sporades.json, or use ctx.serverAuth.createEmailPasswordResetLink with your own delivery path."
+  };
+}
+async function setOwnEmailPassword(database, session, email, newPassword) {
+  let auth;
+  try {
+    auth = requireAuth({ ...session, kind: "message" }, { linked: true });
+  } catch (error) {
+    return { ok: false, error: { code: error?.code ?? "UNAUTHENTICATED", message: error.message, hint: error.hint } };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential || credential.userId !== auth.userId) {
+    return { ok: false, error: emailNotOwnedError() };
+  }
+  return await setEmailPassword(database, session, cleanEmail, newPassword);
+}
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link."
+  };
+}
+async function setEmailPassword(database, _session, email, newPassword) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account whose password is being changed." } };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const existing = await database.adapter.findEmailCredentialWithUser(cleanEmail);
+  if (!existing) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  await database.adapter.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+  return { ok: true };
+}
+function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const existing = database[scope];
+  if (existing instanceof Map) {
+    return existing;
+  }
+  const next = /* @__PURE__ */ new Map();
+  database[scope] = next;
+  return next;
+}
+function emailSignInThrottleKeys(email, session) {
+  return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
+}
+function currentEmailSignInThrottleState(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
+  const now = Date.now();
+  pruneEmailSignInThrottleState(attempts, now);
+  const keys = emailSignInThrottleKeys(email, session);
+  const entries = keys.map((key) => {
+    const current = attempts.get(key);
+    return {
+      key,
+      count: current?.count ?? 0,
+      resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
+    };
+  });
+  return {
+    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+    entries,
+    count: Math.max(...entries.map((entry) => entry.count)),
+    resetAt: Math.max(...entries.map((entry) => entry.resetAt))
+  };
+}
+function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
+  const current = currentEmailSignInThrottleState(database, email, session, scope);
+  for (const entry of current.entries) {
+    attempts.set(entry.key, {
+      count: entry.count + 1,
+      resetAt: entry.resetAt
+    });
+  }
+  boundEmailSignInThrottleState(attempts);
+}
+function resetEmailSignInAttempts(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
+  for (const key of emailSignInThrottleKeys(email, session)) {
+    attempts.delete(key);
+  }
+}
+function pruneEmailSignInThrottleState(attempts, now = Date.now()) {
+  for (const [key, entry] of attempts) {
+    if (!entry || now >= entry.resetAt) {
+      attempts.delete(key);
+    }
+  }
+}
+function boundEmailSignInThrottleState(attempts) {
+  while (attempts.size > EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES) {
+    let evictionKey = null;
+    let evictionPriority = Infinity;
+    let oldestResetAt = Infinity;
+    for (const [key, entry] of attempts) {
+      const priority = emailSignInThrottleEvictionPriority(key, entry);
+      const resetAt = Number(entry?.resetAt ?? 0);
+      if (priority < evictionPriority || priority === evictionPriority && resetAt < oldestResetAt) {
+        evictionPriority = priority;
+        oldestResetAt = resetAt;
+        evictionKey = key;
+      }
+    }
+    if (evictionKey === null) {
+      return;
+    }
+    attempts.delete(evictionKey);
+  }
+}
+function emailSignInThrottleEvictionPriority(key, entry) {
+  const throttled = Number(entry?.count ?? 0) >= EMAIL_SIGN_IN_FAILURE_LIMIT;
+  if (key.startsWith("email\0") && throttled) {
+    return 3;
+  }
+  if (key.startsWith("caller\0") && throttled) {
+    return 2;
+  }
+  if (key.startsWith("email\0")) {
+    return 1;
+  }
+  return 0;
+}
+function callerContextKey(session) {
+  return String(session?.token ?? session?.auth?.userId ?? "anonymous");
+}
+function invalidEmailCredentialsError(options = {}) {
+  return {
+    message: "Email or password is incorrect.",
+    hint: "Check the credentials and try email sign-in again.",
+    ...options.code ? { code: options.code } : {}
+  };
+}
+function normalizeEmailCredentials(credentials) {
+  const email = String(credentials.email ?? "").trim().toLowerCase();
+  const password = String(credentials.password ?? "");
+  const name = credentials.name == null ? "" : String(credentials.name).trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email address is invalid.",
+        hint: "Pass credentials with a valid email address."
+      }
+    };
+  }
+  if (password.length < 8) {
+    return {
+      ok: false,
+      error: {
+        message: "Password is too short.",
+        hint: "Use a password with at least 8 characters."
+      }
+    };
+  }
+  return { ok: true, email, password, name };
+}
+function hashEmailPassword(password) {
+  const salt = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const hash = nodeCryptoModule2.scryptSync(password, salt, 64).toString("base64url");
+  return { hash, salt };
+}
+function verifyEmailPassword(password, salt, expectedHash) {
+  const actual = nodeCryptoModule2.scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHash, "base64url");
+  return actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
+}
+function emailAuthDisabledError() {
+  return {
+    message: "Email auth is not enabled.",
+    hint: "Enable auth.providers.email in sporades.json."
+  };
+}
+function sessionExpiresAt(from = (/* @__PURE__ */ new Date()).toISOString()) {
+  const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1e3;
+  return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
+}
+function isExpiredSession(row) {
+  return Date.parse(row.expiresAt) <= Date.now();
+}
+function createSessionToken() {
+  return nodeCryptoModule2.randomBytes(32).toString("base64url");
+}
+async function refreshSessionOnAdapter(sqlite, token) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const expiresAt = sessionExpiresAt(now);
+  await sqlite.refreshAuthSession(token, expiresAt);
+  return expiresAt;
+}
+async function resolveAnonymousSession(database, sessionToken) {
+  if (sessionToken) {
+    const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
+    if (existing) {
+      if (isExpiredSession(existing)) {
+        await database.adapter.deleteAuthSession(sessionToken);
+      } else {
+        return sessionFromRow(existing);
+      }
+    }
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const userId = nodeCryptoModule2.randomUUID();
+  const token = createSessionToken();
+  await database.adapter.withTransaction(async (tx) => {
+    await tx.insertAuthUser({
+      id: userId,
+      createdAt: now,
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: 0,
+      isGuest: 1,
+      provider: "anonymous"
+    });
+    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
+  });
+  return {
+    token,
+    auth: {
+      userId,
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: false,
+      isGuest: true,
+      provider: "anonymous"
+    }
+  };
+}
+function sessionFromRow(row) {
+  return {
+    token: row.token,
+    auth: {
+      userId: row.userId,
+      displayName: row.displayName,
+      email: row.email,
+      picture: row.picture,
+      isAuthenticated: Boolean(row.isAuthenticated),
+      isGuest: Boolean(row.isGuest),
+      provider: row.provider
+    }
+  };
+}
+function authStatus2(config, serverEnv) {
+  const authConfig = config.auth ?? { mode: "anonymous" };
+  const normalized = normalizeAuthConfig2(authConfig);
+  const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
+  const runtimeProviders = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
+  const providers = {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
+  for (const providerName of providerOrder) {
+    const provider = normalized.providers[providerName];
+    const credentialsConfigured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const configured = providerName === "facebook" ? credentialsConfigured && provider.graphVersion === "v23.0" : credentialsConfigured;
+    const state = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : runtimeProviders.has(providerName)
+    };
+    if (["google", "microsoft", "facebook"].includes(providerName)) {
+      state.clientIdEnv = provider.clientIdEnv;
+      state.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") state.tenant = provider.tenant;
+    if (providerName === "facebook") {
+      state.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
+    if (providerName === "apple") {
+      state.clientId = provider.clientId;
+      state.teamId = provider.teamId;
+      state.keyId = provider.keyId;
+      state.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      state.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      if (providerName === "apple") {
+        state.callbackUrl = null;
+        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      }
+    }
+    providers[providerName] = state;
+  }
+  return {
+    mode: normalized.mode,
+    providers,
+    google: {
+      configured: providers.google.configured,
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv
+    }
+  };
+}
+function normalizeAuthConfig2(authConfig) {
+  const providerConfig = authConfig.providers ?? {};
+  for (const provider of Object.keys(providerConfig)) {
+    if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
+      throw commandError2(
+        `Unsupported auth provider: ${provider}`,
+        "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook."
+      );
+    }
+  }
+  const googleConfig = readProviderConfig2(providerConfig.google);
+  const legacyGoogle = authConfig.google ?? {};
+  const microsoftConfig = readProviderConfig2(providerConfig.microsoft);
+  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
+  const emailConfig = readProviderConfig2(providerConfig.email);
+  const anonymousConfig = readProviderConfig2(providerConfig.anonymous);
+  const anonymousEnabled = providerConfig.anonymous === void 0 ? true : anonymousConfig.enabled;
+  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
+  return {
+    mode,
+    providers: {
+      anonymous: {
+        enabled: anonymousEnabled,
+        ...emptyProviderConfig2()
+      },
+      google: {
+        ...emptyProviderConfig2(),
+        enabled: googleEnabled,
+        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
+        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null
+      },
+      email: {
+        enabled: emailConfig.enabled,
+        ...emptyProviderConfig2()
+      },
+      microsoft: {
+        ...microsoftConfig,
+        tenant: microsoftConfig.tenant ?? "common"
+      },
+      apple: readProviderConfig2(providerConfig.apple),
+      facebook: readFacebookProviderConfig2(providerConfig.facebook)
+    }
+  };
+}
+function readProviderConfig2(config) {
+  if (config === true) {
+    return { enabled: true, ...emptyProviderConfig2() };
+  }
+  if (config === false || config === void 0 || config === null) {
+    return { enabled: false, ...emptyProviderConfig2() };
+  }
+  return {
+    enabled: config.enabled !== false,
+    clientIdEnv: config.clientIdEnv ?? null,
+    clientSecretEnv: config.clientSecretEnv ?? null,
+    clientId: config.clientId ?? null,
+    teamId: config.teamId ?? null,
+    keyId: config.keyId ?? null,
+    privateKeyEnv: config.privateKeyEnv ?? null,
+    tenant: config.tenant ?? null,
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
+  };
+}
+function readFacebookProviderConfig2(config) {
+  const normalized = readProviderConfig2(config);
+  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
+}
+function emptyProviderConfig2() {
+  return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
+}
+function authProvidersForClient(authConfig, origin = null) {
+  const providers = {};
+  for (const [name, provider] of Object.entries(authConfig.providers)) {
+    providers[name] = {
+      enabled: provider.enabled,
+      configured: provider.configured,
+      runtimeAvailable: provider.runtimeAvailable && (name !== "apple" || appleOAuthOriginEligible(origin)),
+      ...name === "facebook" ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion } : {}
+    };
+  }
+  return providers;
+}
+async function signUpWithEmail(database, session, provider, credentials) {
+  if (provider !== "email") {
+    return {
+      ok: false,
+      error: {
+        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
+        hint: "Use auth.signUp with the email provider."
+      }
+    };
+  }
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+  if (await database.adapter.emailCredentialExists(normalized.email)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email is already registered.",
+        hint: 'Use auth.signIn("email", ...) with this email address.'
+      }
+    };
+  }
+  const password = hashEmailPassword(normalized.password);
+  const displayName = normalized.name || normalized.email;
+  const auth = {
+    userId: session.auth.userId,
+    displayName,
+    email: normalized.email,
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email"
+  };
+  return await database.adapter.withTransaction(async (tx) => {
+    await tx.insertEmailCredential({
+      email: normalized.email,
+      userId: auth.userId,
+      passwordHash: password.hash,
+      passwordSalt: password.salt,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email"
+    });
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
+  });
+}
+async function signInWithEmail(database, session, credentials) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  if (throttle.throttled) {
+    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+  }
+  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
+  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
+    recordFailedEmailSignInAttempt(database, normalized.email, session);
+    return { ok: false, error: invalidEmailCredentialsError() };
+  }
+  resetEmailSignInAttempts(database, normalized.email, session);
+  const auth = {
+    userId: row.userId,
+    displayName: row.displayName,
+    email: row.email,
+    picture: row.picture,
+    isAuthenticated: Boolean(row.isAuthenticated),
+    isGuest: Boolean(row.isGuest),
+    provider: "email"
+  };
+  return await database.adapter.withTransaction(async (tx) => ({
+    ok: true,
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
+    auth
+  }));
+}
+async function linkProviderIdentity(database, session, provider, profile) {
+  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
+  if (!subject) {
+    return {
+      ok: false,
+      error: {
+        message: `${providerName} profile is missing a stable subject.`,
+        hint: "Retry sign-in. Sporades requires a verified stable subject claim."
+      }
+    };
+  }
+  return await database.adapter.withTransaction(async (tx) => {
+    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    if (!identity && email && provider === "google") {
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
+          }
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity."
+          }
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
+    }
+    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
+      return {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: `${providerName} identity is already linked to another account.`,
+          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
+        }
+      };
+    }
+    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
+    const auth = {
+      userId: identity?.userId ?? session.auth.userId,
+      displayName,
+      email,
+      picture: profile.picture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider
+    };
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (identity) {
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        updatedAt: now
+      });
+    } else {
+      await tx.insertAuthIdentity({
+        id: nodeCryptoModule2.randomUUID(),
+        userId: auth.userId,
+        provider,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider
+    });
+    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
+    } else {
+      await tx.setAuthSessionProvider(session.token, provider);
+      await refreshSessionOnAdapter(tx, session.token);
+    }
+    return { ok: true, auth };
+  });
+}
+async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const token = createSessionToken();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  return token;
+}
+async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, {
+    token: session.token,
+    userId,
+    provider,
+    createdAt: now,
+    expiresAt: sessionExpiresAt(now)
+  });
+}
+async function routeSporadesAuth(database, request, response) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+  if (!match) {
+    return false;
+  }
+  const provider = match[1];
+  let callbackParameters;
+  try {
+    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
+  } catch (error) {
+    writeEndpointError(response, error);
+    return true;
+  }
+  const parameters = callbackParameters.parameters;
+  const states = parameters.getAll("state");
+  const state = states.length === 1 ? states[0] : null;
+  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
+    writeEndpointError(response, commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
+    return true;
+  }
+  const stateRow = await database.adapter.consumeOAuthState(state);
+  if (!stateRow) {
+    writeEndpointError(response, commandError2("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
+    return true;
+  }
+  try {
+    if (callbackParameters.error) {
+      throw callbackParameters.error;
+    }
+    validateConsumedOAuthCallbackParameters(parameters);
+    if (stateRow.provider !== provider) {
+      throw commandError2("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+    }
+    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
+      throw commandError2("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+    }
+    const adapter = oauthProviderAdapter(database, provider);
+    if (!adapter?.enabled) {
+      throw commandError2("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+    }
+    if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
+      throw commandError2("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+    }
+    const providerError = parameters.get("error");
+    if (providerError) {
+      const mappedError = adapter.callbackError?.(parameters);
+      if (mappedError) {
+        throw mappedError;
+      }
+      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
+      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
+      throw commandError2(
+        actionRequired ? "OAuth provider requires additional user action." : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
+        actionRequired ? "Retry sign-in and complete the provider's consent or account prompt." : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
+        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED"
+      );
+    }
+    const code = parameters.get("code");
+    if (!code) {
+      throw commandError2("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+    const profile = await adapter.complete({
+      provider,
+      code,
+      redirectUri: stateRow.redirectUri,
+      nonce: stateRow.nonce,
+      pkceVerifier: stateRow.pkceVerifier,
+      parameters
+    });
+    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+    let result;
+    try {
+      result = await linkProviderIdentity(database, session, provider, profile);
+    } catch {
+      throw commandError2(
+        "OAuth account linking failed.",
+        "Retry sign-in. If the problem persists, check the database connection.",
+        "AUTH_TRANSACTION_FAILED"
+      );
+    }
+    if (!result.ok) {
+      throw commandError2(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
+    }
+    writeRedirect(response, stateRow.returnTo);
+  } catch (error) {
+    writeEndpointError(response, error);
+  }
+  return true;
+}
+async function readOAuthCallbackParameters(request, requestUrl) {
+  if (request.method === "GET") {
+    return {
+      parameters: requestUrl.searchParams,
+      error: null,
+      stateTrustworthy: true
+    };
+  }
+  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
+    throw commandError2("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  const body = await readLimitedRequestBody(request, 16 * 1024);
+  return parseOAuthFormBody(body);
+}
+function oauthFormContentTypeValid(value) {
+  const raw = singleHttpHeader(value);
+  if (!raw) return false;
+  const parts = raw.split(";").map((part) => part.trim());
+  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parts.length === 0) return true;
+  if (parts.length !== 1) return false;
+  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
+  return Boolean(match);
+}
+async function beginOAuthSignIn(database, session, provider, options) {
+  const adapter = oauthProviderAdapter(database, provider);
+  if (!adapter?.enabled) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
+        message: `${provider || "OAuth"} provider is not configured.`,
+        hint: provider === "google" ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`." : "Configure this OAuth provider before retrying sign-in."
+      }
+    };
+  }
+  const origin = options.origin;
+  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_ORIGIN_INVALID",
+        message: "OAuth sign-in requires a trusted request origin.",
+        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy."
+      }
+    };
+  }
+  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
+        message: "Apple sign-in requires an HTTPS domain origin.",
+        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL."
+      }
+    };
+  }
+  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
+  const returnTo = normalizeReturnTo(options.returnTo, origin);
+  const state = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const nonce = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const pkceVerifier = nodeCryptoModule2.randomBytes(48).toString("base64url");
+  const pkceChallenge = nodeCryptoModule2.createHash("sha256").update(pkceVerifier).digest("base64url");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
+  let started;
+  try {
+    started = await adapter.begin({
+      provider,
+      state,
+      nonce,
+      redirectUri,
+      pkceChallenge,
+      pkceChallengeMethod: "S256"
+    });
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth sign-in could not be started.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  if (!started?.url) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth provider did not return an authorization URL.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  await database.adapter.insertOAuthState({
+    state,
+    provider,
+    sessionToken: session.token,
+    returnTo,
+    redirectUri,
+    createdAt: now,
+    expiresAt,
+    nonce,
+    pkceVerifier
+  });
+  return { ok: true, url: started.url };
+}
+function resolvePasswordResetConfig(config) {
+  const passwordReset = config.auth?.email?.passwordReset ?? {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
+  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs) ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS) : PASSWORD_RESET_DEFAULT_TTL_MS;
+  return {
+    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
+    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    ttlMs
+  };
+}
+function createAnonymousAuthTables(sqlite, authConfig = null) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] ([token] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
+      )
+    ),
+    () => ensureSessionLifecycleColumns(sqlite),
+    () => ensureSessionProvenanceColumn(sqlite),
+    () => createProviderIdentityTables(sqlite),
+    ...authConfig?.providers?.email?.enabled ? [
+      () => sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+        )
+      ),
+      () => sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
+        )
+      )
+    ] : [],
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT)"
+      )
+    ),
+    () => ensureOAuthStateColumns(sqlite)
+  ]);
+}
+function ensureOAuthStateColumns(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    ...[
+      ["provider", "TEXT"],
+      ["expiresAt", "TEXT"],
+      ["nonce", "TEXT"],
+      ["pkceVerifier", "TEXT"]
+    ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [provider] = 'google' WHERE [provider] IS NULL")),
+    () => sqlite.exec(sql("UPDATE [sporades_auth_oauth_states] SET [expiresAt] = [createdAt] WHERE [expiresAt] IS NULL"))
+  ]);
+}
+function createProviderIdentityTables(sqlite) {
+  const sql = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_identities] ([id] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [subject] TEXT NOT NULL, [email] TEXT, [displayName] TEXT, [picture] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE([provider], [subject]))"
+      )
+    ),
+    () => sqlite.exec(
+      sql(
+        "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) SELECT 'legacy:' || [id], [id], [provider], 'legacy:' || [id], [email], [displayName], [picture], [createdAt], [createdAt] FROM [sporades_auth_users] [u] WHERE [provider] = 'google' AND [id] != '__privileged__' AND NOT EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id] AND [i].[provider] = [u].[provider])"
+      )
+    )
+  ]);
+}
+function ensureSessionLifecycleColumns(sqlite) {
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
+    () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [expiresAt] IS NULL")).run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()))
+  ]);
+}
+function ensureSessionProvenanceColumn(sqlite) {
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
+    () => sqlite.exec(
+      sqlite.dialect.sql(
+        "UPDATE [sporades_auth_sessions] SET [provider] = COALESCE([provider], (SELECT [provider] FROM [sporades_auth_users] WHERE [id] = [sporades_auth_sessions].[userId]), 'anonymous') WHERE [provider] IS NULL"
+      )
+    )
+  ]);
+}
+
+// src/runtime-log-policy.ts
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+
+// src/inspection-sql.ts
+function validateReadOnlyInspectionSql(sql) {
+  const text = String(sql ?? "");
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+    return unrepresentableInspectionSqlError();
+  }
+  const disagreement = sqlTheEnginesLexDifferently(text);
+  if (disagreement) {
+    return ambiguousInspectionSqlError(disagreement);
+  }
+  const firstToken = readFirstSqlToken(text);
+  if (!firstToken || hasMultipleSqlStatements(text)) {
+    return readOnlyInspectionSqlError();
+  }
+  const keyword = firstToken.toLowerCase();
+  if (keyword === "pragma") {
+    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+  }
+  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+    return { ok: true };
+  }
+  return readOnlyInspectionSqlError();
+}
+function readOnlyInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only read-only SQL is allowed.",
+      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
+    }
+  };
+}
+function unrepresentableInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL text the database receives unchanged is allowed.",
+      hint: "Remove the NUL or unpaired surrogate character from the `sporades db query` SQL."
+    }
+  };
+}
+function ambiguousInspectionSqlError(hint) {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only SQL the database reads the same way this check does is allowed.",
+      hint
+    }
+  };
+}
+function sqlTheEnginesLexDifferently(sql) {
+  if (sqlContentFingerprint(sql, true) !== sqlContentFingerprint(sql, false)) {
+    return "Remove the carriage return from inside the `-- ...` comment in the `sporades db query` SQL \u2014 SQLite ends a line comment at a line feed and Postgres ends one at either.";
+  }
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      if (sql[index] === "/" && sql[index + 1] === "*") {
+        if (nestingBlockCommentEnd(sql, index) !== skipped) {
+          return "Remove the nested `/* ... */` comment from the `sporades db query` SQL \u2014 Postgres and SQLite disagree about where it ends.";
+        }
+      }
+      index = skipped;
+      continue;
+    }
+    if (/\s/.test(sql[index]) && !/[ \t\n\r\f]/.test(sql[index])) {
+      return "Replace the invisible character outside quotes \u2014 a non-breaking space, a vertical tab, or another character the engines do not treat as whitespace \u2014 with an ordinary space.";
+    }
+    index += 1;
+  }
+  return null;
+}
+function nestingBlockCommentEnd(sql, index) {
+  let depth = 0;
+  let cursor = index;
+  while (cursor < sql.length) {
+    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+      depth += 1;
+      cursor += 2;
+      continue;
+    }
+    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+      depth -= 1;
+      cursor += 2;
+      if (depth === 0) {
+        break;
+      }
+      continue;
+    }
+    cursor += 1;
+  }
+  return cursor;
+}
+function sqlContentFingerprint(sql, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn);
+  let fingerprint = "";
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      if (opensQuotedRun(sql, index)) {
+        fingerprint += `q${index}-${skipped};`;
+      }
+      index = skipped;
+      continue;
+    }
+    if (!/[ \t\n\r\f]/.test(sql[index])) {
+      fingerprint += `${index}:${sql[index]};`;
+    }
+    index += 1;
+  }
+  return fingerprint;
+}
+function readFirstSqlToken(sql) {
+  return readBareSqlIdentifier(sql, skipSqlTrivia(sql, 0, true))?.value ?? null;
+}
+function hasMultipleSqlStatements(sql) {
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === ";") {
+      return skipSqlTrivia(sql, index + 1, true) < sql.length;
+    }
+    index += 1;
+  }
+  return false;
+}
+function isSafeInspectionPragma(sql, pragmaTokenLength) {
+  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0, true) + pragmaTokenLength, true);
+  let identifier = readBareSqlIdentifier(sql, index);
+  if (!identifier) {
+    return false;
+  }
+  let pragmaName = identifier.value.toLowerCase();
+  index = skipSqlTrivia(sql, identifier.nextIndex, true);
+  if (sql[index] === ".") {
+    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1, true));
+    if (!identifier) {
+      return false;
+    }
+    pragmaName = identifier.value.toLowerCase();
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
+  }
+  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
+    return false;
+  }
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === "=") {
+      return false;
+    }
+    index += 1;
+  }
+  return true;
+}
+var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
+  "database_list",
+  "foreign_key_list",
+  "index_info",
+  "index_list",
+  "index_xinfo",
+  "table_info",
+  "table_list",
+  "table_xinfo"
+]);
+function containsSideEffectSqlToken(sql) {
+  return containsSideEffectSqlTokenUnder(sql, true) || containsSideEffectSqlTokenUnder(sql, false);
+}
+function containsSideEffectSqlTokenUnder(sql, lineCommentEndsAtCarriageReturn) {
+  for (const token of readSqlTokens(sql, lineCommentEndsAtCarriageReturn)) {
+    const value = token.value.toLowerCase();
+    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
+      return true;
+    }
+    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex, lineCommentEndsAtCarriageReturn)] === "(") {
+      return true;
+    }
+  }
+  return false;
+}
+var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
+  "alter",
+  "analyze",
+  "attach",
+  "create",
+  "delete",
+  "detach",
+  "drop",
+  "insert",
+  "merge",
+  "reindex",
+  "replace",
+  "update",
+  "vacuum"
+]);
+var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
+  "load_extension",
+  "nextval",
+  "set_config",
+  "setval"
+]);
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
+  const tokens = [];
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    const identifier = readSqlTokenIdentifier(sql, index);
+    if (identifier) {
+      tokens.push(identifier);
+      index = identifier.nextIndex;
+      continue;
+    }
+    index += 1;
+  }
+  return tokens;
+}
+function readBareSqlIdentifier(sql, index) {
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+}
+function readSqlTokenIdentifier(sql, index) {
+  return readSqlQuotedIdentifier(sql, index, '"`[');
+}
+function readSqlQuotedIdentifier(sql, index, quotes) {
+  const end = skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedIdentifiersOnly(quotes));
+  if (end === index) {
+    return readBareSqlIdentifier(sql, index);
+  }
+  const closingQuote = sql[end - 1];
+  const value = sql.slice(index + 1, end - 1);
+  return {
+    value: closingQuote === sql[index] ? value.replaceAll(closingQuote + closingQuote, closingQuote) : value,
+    nextIndex: end
+  };
+}
+function sqlDialectEveryEngineQuotes(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "'",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn) {
+  return {
+    comments: true,
+    lineCommentEndsAtCarriageReturn,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes: "",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedRunsOnly() {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: true,
+    escapeStrings: true,
+    quotes: "'\"`[",
+    unterminatedQuotedRunReachesEndOfInput: true
+  };
+}
+function sqlDialectQuotedIdentifiersOnly(quotes) {
+  return {
+    comments: false,
+    lineCommentEndsAtCarriageReturn: true,
+    dollarQuoting: false,
+    escapeStrings: false,
+    quotes,
+    unterminatedQuotedRunReachesEndOfInput: false
+  };
+}
+function skipSqlQuotedOrCommented(sql, index, dialect) {
+  if (dialect.comments && sql[index] === "/" && sql[index + 1] === "*") {
+    const end = sql.indexOf("*/", index + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+  if (dialect.comments && sql[index] === "-" && sql[index + 1] === "-") {
+    const end = (dialect.lineCommentEndsAtCarriageReturn ? /[\n\r]/ : /\n/).exec(sql.slice(index + 2));
+    return end ? index + 2 + end.index + 1 : sql.length;
+  }
+  const opensToken = (dialect.dollarQuoting || dialect.escapeStrings) && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
+  if (dialect.dollarQuoting && sql[index] === "$" && opensToken) {
+    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+    if (!delimiter) {
+      return index;
+    }
+    const end = sql.indexOf(delimiter, index + delimiter.length);
+    return end === -1 ? index : end + delimiter.length;
+  }
+  if (dialect.escapeStrings && (sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+    let cursor2 = index + 2;
+    while (cursor2 < sql.length) {
+      if (sql[cursor2] === "\\") {
+        cursor2 += 2;
+        continue;
+      }
+      if (sql[cursor2] === "'") {
+        if (sql[cursor2 + 1] === "'") {
+          cursor2 += 2;
+          continue;
+        }
+        return cursor2 + 1;
+      }
+      cursor2 += 1;
+    }
+    return index;
+  }
+  const quote = sql[index];
+  const closingQuote = quote === "[" ? "]" : quote;
+  if (quote === void 0 || !dialect.quotes.includes(quote)) {
+    return index;
+  }
+  let cursor = index + 1;
+  while (cursor < sql.length) {
+    if (sql[cursor] === closingQuote) {
+      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+        cursor += 2;
+        continue;
+      }
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return dialect.unterminatedQuotedRunReachesEndOfInput ? sql.length : index;
+}
+function opensQuotedRun(sql, index) {
+  return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
+}
+function sqlWithoutTrailingTerminator(sql) {
+  const text = String(sql ?? "");
+  const dialect = sqlDialectEveryEngineQuotes(true);
+  let index = 0;
+  let contentEnd = 0;
+  while (index < text.length) {
+    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
+    if (skipped > index) {
+      if (opensQuotedRun(text, index)) {
+        contentEnd = skipped;
+      }
+      index = skipped;
+      continue;
+    }
+    if (text[index] === ";") {
+      break;
+    }
+    if (!/[ \t\n\r\f]/.test(text[index])) {
+      contentEnd = index + 1;
+    }
+    index += 1;
+  }
+  return text.slice(0, contentEnd);
+}
+function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
+  const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
+  let index = startIndex;
+  let advanced = true;
+  while (advanced) {
+    advanced = false;
+    while (/[ \t\n\r\f]/.test(sql[index] ?? "")) {
+      index += 1;
+      advanced = true;
+    }
+    const skipped = skipSqlQuotedOrCommented(sql, index, dialect);
+    if (skipped > index) {
+      index = skipped;
+      advanced = true;
+    }
+  }
+  return index;
+}
+
+// src/log-index-guard.ts
+function targetsInternalLogIndexTable(sql) {
+  const text = String(sql);
+  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
+  let match;
+  while (match = targetKeywords.exec(text)) {
+    const reference = readSqlTableReference(text, match.index + match[0].length);
+    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
+      return true;
+    }
+  }
+  return false;
+}
+function readSqlTableReference(sql, startIndex) {
+  let index = skipSqlTrivia(sql, startIndex, true);
+  while (sql[index] === "(") {
+    index += 1;
+    index = skipSqlTrivia(sql, index, true);
+  }
+  const parts = [];
+  while (index < sql.length) {
+    const identifier = readSqlIdentifier(sql, index);
+    if (!identifier) {
+      break;
+    }
+    parts.push(identifier.value);
+    index = skipSqlTrivia(sql, identifier.nextIndex, true);
+    if (sql[index] !== ".") {
+      break;
+    }
+    index = skipSqlTrivia(sql, index + 1, true);
+  }
+  return parts;
+}
+function readSqlIdentifier(sql, index) {
+  return readSqlQuotedIdentifier(sql, index, "'\"`[");
+}
+function isInternalLogIndexMetadataRow(row, sql = "") {
+  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
+  return ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") || Object.values(row ?? {}).some(
+    (value) => typeof value === "string" && (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) || queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))
+  );
+}
+
+// src/log-index-storage.ts
+function formatLogIndexSequence(nanosSinceEpoch) {
+  return String(nanosSinceEpoch).padStart(20, "0");
+}
+function nextLogIndexSequence() {
+  const state = nextLogIndexSequence;
+  state.anchor ??= { wallNanos: BigInt(Date.now()) * 1000000n, monotonic: process.hrtime.bigint() };
+  const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
+  const previous = state.previous ?? 0n;
+  state.previous = derived > previous ? derived : previous + 1n;
+  return formatLogIndexSequence(state.previous);
+}
+function backfilledLogIndexSequence(timestamp) {
+  const parsed = Date.parse(String(timestamp ?? ""));
+  return Number.isFinite(parsed) ? BigInt(parsed) * 1000000n : 0n;
+}
+function createLogIndexTables(sqlite) {
+  let chain = chainSchemaOperation(
+    void 0,
+    () => sqlite.exec(
+      sqlite.dialect.sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_log_events] ([id] TEXT PRIMARY KEY, [timestamp] TEXT NOT NULL, [category] TEXT NOT NULL, [event] TEXT NOT NULL, [level] TEXT NOT NULL, [message] TEXT NOT NULL, [capsuleName] TEXT, [capsuleId] TEXT, [releaseId] TEXT, [requestId] TEXT, [correlationId] TEXT, [indexSequence] TEXT, [payload] TEXT NOT NULL)"
+      )
+    )
+  );
+  chain = chainSchemaOperation(
+    chain,
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_log_events", "indexSequence", "TEXT")
+  );
+  return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
+}
+function backfillLogIndexSequences(sqlite) {
+  return thenIfPromise(
+    sqlite.prepare(
+      sqlite.dialect.sql(
+        "SELECT [id], [timestamp] FROM [sporades_log_events] WHERE [indexSequence] IS NULL ORDER BY [timestamp] ASC, [id] ASC"
+      )
+    ).all(),
+    (rows) => {
+      let previous = 0n;
+      let chain = void 0;
+      for (const row of rows) {
+        const derived = backfilledLogIndexSequence(row.timestamp);
+        previous = derived > previous ? derived : previous + 1n;
+        const sequence = formatLogIndexSequence(previous);
+        chain = chainSchemaOperation(
+          chain,
+          () => sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_log_events] SET [indexSequence] = ? WHERE [id] = ?")).run(sequence, row.id)
+        );
+      }
+      return chain;
+    }
+  );
+}
+function insertLogIndexEvent(sqlite, event) {
+  return sqlite.prepare(
+    sqlite.dialect.sql(
+      "INSERT INTO [sporades_log_events] ([id], [timestamp], [category], [event], [level], [message], [capsuleName], [capsuleId], [releaseId], [requestId], [correlationId], [indexSequence], [payload]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+  ).run(
+    crypto.randomUUID(),
+    event.timestamp,
+    event.category,
+    event.event,
+    event.level,
+    event.message,
+    event.capsule?.name ?? null,
+    event.capsule?.id ?? null,
+    event.release?.id ?? event.release ?? null,
+    event.request?.id ?? null,
+    event.correlation?.id ?? event.correlation ?? null,
+    // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
+    // envelope that is stringified into `payload` below. The field orders the Log index; it is
+    // not part of what a log event says.
+    nextLogIndexSequence(),
+    JSON.stringify(event)
+  );
+}
+function pruneLogIndex(sqlite, limit) {
+  return sqlite.prepare(
+    sqlite.dialect.sql(
+      "DELETE FROM [sporades_log_events] WHERE [id] NOT IN (SELECT [id] FROM (SELECT [id] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?) AS [retained])"
+    )
+  ).run(limit);
+}
+function readRecentLogEvents(sqlite, limit = 200) {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
+  return thenIfPromise(
+    sqlite.prepare(sqlite.dialect.sql("SELECT [payload] FROM [sporades_log_events] ORDER BY [indexSequence] DESC LIMIT ?")).all(safeLimit),
+    (rows) => rows.reverse().map((row) => JSON.parse(row.payload))
+  );
+}
+function chainSchemaOperation(previous, operation) {
+  if (isPromiseLike(previous)) {
+    return previous.then(operation);
+  }
+  return operation();
+}
+
+// src/stored-value-coding.ts
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
+}
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
+    }
+  }
+  return output;
+}
+function serializeFieldValue(field, value) {
+  if (value === void 0) {
+    return null;
+  }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
+  if (value === null) {
+    return null;
+  }
+  if (field?.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  if (field?.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
+  if (field?.kind === "Date") {
+    return normalizeDateValue(value, field.name);
+  }
+  if (field?.kind === "Reference") {
+    return String(value);
+  }
+  return String(value ?? "");
+}
+function normalizeDateValue(value, fieldName) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw dateValueError(fieldName);
+    }
+    return value.toISOString();
+  }
+  if (typeof value !== "string") {
+    throw dateValueError(fieldName);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw dateValueError(fieldName);
+  }
+  return parsed.toISOString();
+}
+function toSqlNumber(value, fieldName) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw commandError2(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
+  }
+  return value;
+}
+function dateValueError(fieldName) {
+  return commandError2(
+    `Invalid date value for field: ${fieldName}`,
+    "Pass an ISO 8601 date string or JavaScript Date value."
+  );
+}
+
+// src/database-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeFsModule = process.getBuiltinModule("node:fs");
+async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
+  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createLibsqlDatabaseAdapter({
+      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
+      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN
+    });
+  }
+  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createPostgresDatabaseAdapter({
+      url: serverEnv.SPORADES_SERVICE_DATABASE_URL
+    });
+  }
+  return await createSqliteDatabaseAdapter(databasePath);
+}
+function createDatabaseDialect(spec) {
+  const required = [
+    "name",
+    "quoteIdentifier",
+    "columnType",
+    "upsertSql",
+    "listTables",
+    "describeColumns",
+    "addMissingColumn"
+  ];
+  const missing = required.filter((key) => spec[key] == null);
+  if (missing.length > 0) {
+    throw commandError2(
+      `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry."
+    );
+  }
+  return { ...spec, sql: (statement) => quoteSqlIdentifiers(spec.quoteIdentifier, statement) };
+}
+function quoteSqlIdentifiers(quoteIdentifier2, statement) {
+  return String(statement).replace(/\[([A-Za-z_][A-Za-z0-9_]*)\]/g, (_marker, identifier) => quoteIdentifier2(identifier));
+}
+function createDatabaseNormalization(spec) {
+  const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
+  if (missing.length > 0) {
+    throw commandError2(
+      `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry."
+    );
+  }
+  return {
+    ...spec,
+    row: (raw) => Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)]))
+  };
+}
+function sqliteRowNormalization() {
+  return createDatabaseNormalization({
+    name: "sqlite",
+    columnName: (name) => name,
+    value: (value) => value
+  });
+}
+function postgresRowNormalization() {
+  return createDatabaseNormalization({
+    name: "postgres",
+    // The identity, like the other two engines. Postgres folds an unquoted identifier to lower
+    // case, and a hand-maintained table of declared spellings used to fold it back — a registry
+    // nothing failed for omitting, which is how a missing `verifierHash` entry rejected every valid
+    // password Reset code here while presenting an ordinary "invalid code". Because that table was
+    // applied per result key with no table provenance, it also renamed a Capsule field literally
+    // called `errorcode` or `jobid`. ADR-0039 removed both by quoting every identifier the runtime
+    // emits: nothing folds, so there is nothing to restore and no name to collide with.
+    columnName: (name) => name,
+    // Values are already coerced by the wire parser, which reads each column's type oid from the
+    // row description. The row does not carry the oid, so the per-value entry cannot repeat that
+    // work and does not need to.
+    value: (value) => value
+  });
+}
+function libsqlRowNormalization() {
+  return createDatabaseNormalization({
+    name: "libsql",
+    // libSQL preserves declared case, so there is nothing to restore.
+    columnName: (name) => name,
+    // The pipeline protocol tags every value with its type, and this turns the tagged form back
+    // into JavaScript.
+    value: libsqlValueToJs
+  });
+}
+function sqliteDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "sqlite",
+    quoteIdentifier,
+    // The declared field type is emitted verbatim. `sqliteType` is what the Capsule schema carries,
+    // and an engine whose type names differ maps them here rather than in a copy of every DDL
+    // method.
+    columnType: (field) => field.sqliteType,
+    // Write-or-replace a row identified by its key columns. Table and column names arrive
+    // unquoted and are quoted here, so the upsert asks for the columns in the style every other
+    // statement names them.
+    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    // The catalog. Both entries answer rows carrying a `name`, whatever the engine's catalog calls
+    // the column, so the shared inspection methods read one shape.
+    listTables: (adapter) => adapter.prepare(
+      `SELECT ${quoteIdentifier("name")} FROM ${quoteIdentifier("sqlite_schema")} WHERE ${quoteIdentifier("type")} = 'table' AND ${quoteIdentifier("name")} NOT LIKE 'sqlite_%' ORDER BY ${quoteIdentifier("name")}`
+    ).all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
+    // Declare a column that an older database may not have. SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`, so the ALTER is issued and a duplicate-column error swallowed.
+    // Probing `PRAGMA table_info` first would work here and nowhere else, which is exactly why the
+    // strategy is a dialect entry rather than a line in a shared body.
+    addMissingColumn: (adapter, table, column, type) => runSchemaExecIgnoringDuplicateColumn(
+      adapter,
+      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN ${quoteIdentifier(column)} ${type}`
+    )
+  });
+}
+function postgresDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "postgres",
+    quoteIdentifier,
+    // TEXT, INTEGER and REAL all name real Postgres types, so the mapping is the identity here.
+    // That is a fact about Postgres rather than a reason to drop the entry: the seam exists for the
+    // engine whose type names do differ, and an identity mapping written down is checkable where an
+    // absent one is not.
+    columnType: (field) => field.sqliteType,
+    // Postgres has no `INSERT OR REPLACE`; the same intent is `ON CONFLICT ... DO UPDATE`, which
+    // updates the non-key columns from the row that was offered.
+    upsertSql: (table, columns, conflictColumns) => {
+      const updated = columns.filter((column) => !conflictColumns.includes(column));
+      return `INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictColumns.map(quoteIdentifier).join(", ")}) DO UPDATE SET ` + updated.map((column) => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`).join(", ");
+    },
+    // `sqlite_schema` and `PRAGMA table_info` are SQLite's alone; `information_schema` is the
+    // standard catalog. Both answer rows carrying a `name`, which is the shape the shared
+    // inspection methods read.
+    listTables: (adapter) => adapter.prepare(
+      `SELECT ${quoteIdentifier("table_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("tables")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_type")} = 'BASE TABLE' ORDER BY ${quoteIdentifier("table_name")}`
+    ).all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(
+      `SELECT ${quoteIdentifier("column_name")} AS ${quoteIdentifier("name")} FROM ${quoteIdentifier("information_schema")}.${quoteIdentifier("columns")} WHERE ${quoteIdentifier("table_schema")} = current_schema() AND ${quoteIdentifier("table_name")} = ? ORDER BY ${quoteIdentifier("ordinal_position")}`
+    ).all(tableName),
+    // Postgres has `ADD COLUMN IF NOT EXISTS`, and using it is not merely tidier than swallowing a
+    // duplicate-column error. A swallowed error on Postgres aborts the enclosing transaction, so
+    // every statement after it fails with `current transaction is aborted`. Storage bootstrap runs
+    // outside the migration transaction to keep that hazard out of reach; asking the engine not to
+    // raise the error in the first place removes it.
+    addMissingColumn: (adapter, table, column, type) => adapter.exec(
+      `ALTER TABLE ${quoteIdentifier(table)} ADD COLUMN IF NOT EXISTS ${quoteIdentifier(column)} ${type}`
+    )
+  });
+}
+function createSharedDatabaseAdapterMethods(dialect) {
+  const sql = dialect.sql;
+  return {
+    ensureSystemTable() {
+      return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+    },
+    readSystemMetadata(key) {
+      return this.prepare(sql("SELECT [value] FROM [sporades] WHERE [key] = ?")).get(key) ?? null;
+    },
+    writeSystemMetadata(key, value) {
+      return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
+    },
+    readSchemaMetadata() {
+      return this.readSystemMetadata("schema");
+    },
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+      return chainMaybePromise([
+        () => this.writeSystemMetadata("schemaVersion", schemaVersion),
+        () => this.writeSystemMetadata("schemaHash", schemaHash),
+        () => this.writeSystemMetadata("schema", schemaJson)
+      ]);
+    },
+    ensureLogStorage() {
+      return createLogIndexTables(this);
+    },
+    insertLogIndexEvent(event) {
+      return insertLogIndexEvent(this, event);
+    },
+    pruneLogIndex(limit) {
+      return pruneLogIndex(this, limit);
+    },
+    readRecentLogEvents(limit) {
+      return readRecentLogEvents(this, limit);
+    },
+    ensureFileStorage() {
+      return createFileStorageTables(this);
+    },
+    findFileBucket(ownerId, name) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_buckets] WHERE [ownerId] = ? AND [name] = ?")).get(ownerId, name) ?? null;
+    },
+    createFileBucket(row) {
+      return this.prepare(
+        sql("INSERT INTO [sporades_file_buckets] ([id], [ownerId], [name], [createdAt]) VALUES (?, ?, ?, ?)")
+      ).run(
+        row.id,
+        row.ownerId,
+        row.name,
+        row.createdAt
+      );
+    },
+    insertFileRow(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_files] ([id], [ownerId], [bucketId], [bucketName], [path], [name], [type], [size], [version], [status], [createdAt], [updatedAt], [deletedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
+        )
+      ).run(
+        row.id,
+        row.ownerId,
+        row.bucketId,
+        row.bucketName,
+        row.path,
+        row.name,
+        row.type,
+        row.size,
+        row.version,
+        row.status,
+        row.createdAt,
+        row.updatedAt
+      );
+    },
+    updatePendingFileRow(row) {
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ?, [deletedAt] = NULL WHERE [id] = ?"
+        )
+      ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
+    },
+    insertFileUpload(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_file_uploads] ([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(
+        row.id,
+        row.fileId,
+        row.ownerId,
+        row.bucketId,
+        row.bucketName,
+        row.path,
+        row.name,
+        row.type,
+        row.version,
+        row.expectedSize,
+        row.createdAt
+      );
+    },
+    selectFileById(fileId) {
+      return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
+    },
+    selectLiveFileByPath(path12) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
+      ).all(path12, "uploaded");
+    },
+    selectActiveFileByPath(path12) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
+      ).all(
+        path12,
+        "pending",
+        "uploaded"
+      );
+    },
+    selectPendingFileUploadByPath(path12) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
+      ).get(path12) ?? null;
+    },
+    selectFileUpload(uploadId) {
+      return this.prepare(sql("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
+    },
+    completeFileUpload(upload, size, updatedAt) {
+      return thenIfPromise(
+        this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ? AND [fileId] = ? AND [version] = ?")).run(
+          upload.id,
+          upload.fileId,
+          upload.version
+        ),
+        (consumed) => {
+          if (consumed.changes === 0) {
+            return consumed;
+          }
+          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
+            if (existing) {
+              if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
+                return { changes: 0 };
+              }
+              return this.prepare(
+                sql(
+                  "UPDATE [sporades_files] SET [bucketId] = ?, [bucketName] = ?, [path] = ?, [name] = ?, [type] = ?, [size] = ?, [version] = ?, [status] = ?, [updatedAt] = ? WHERE [id] = ? AND [deletedAt] IS NULL"
+                )
+              ).run(
+                upload.bucketId,
+                upload.bucketName,
+                upload.path,
+                upload.name,
+                upload.type,
+                size,
+                upload.version,
+                "uploaded",
+                updatedAt,
+                upload.fileId
+              );
+            }
+            return this.insertFileRow({
+              id: upload.fileId,
+              ownerId: upload.ownerId,
+              bucketId: upload.bucketId,
+              bucketName: upload.bucketName,
+              path: upload.path,
+              name: upload.name,
+              type: upload.type,
+              size,
+              version: upload.version,
+              status: "uploaded",
+              createdAt: upload.createdAt,
+              updatedAt
+            });
+          });
+        }
+      );
+    },
+    deleteFileUploadsForPath(path12) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path12);
+    },
+    deleteFileUploadsForFile(ownerId, fileId) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
+    },
+    deleteFileUpload(uploadId) {
+      return this.prepare(sql("DELETE FROM [sporades_file_uploads] WHERE [id] = ?")).run(uploadId);
+    },
+    selectPublicFileRow(publicUrlId) {
+      return this.prepare(
+        sql(
+          "SELECT [p].[id] AS [publicUrlId], [p].[fileId], [p].[version] AS [publicVersion], [p].[expiresAt], [p].[revokedAt], [f].[id], [f].[ownerId], [f].[bucketId], [f].[bucketName], [f].[path], [f].[name], [f].[type], [f].[size], [f].[version], [f].[status], [f].[createdAt], [f].[updatedAt], [f].[deletedAt] FROM [sporades_file_public_urls] [p] JOIN [sporades_files] [f] ON [f].[id] = [p].[fileId] WHERE [p].[id] = ?"
+        )
+      ).get(publicUrlId) ?? null;
+    },
+    insertPublicFileUrl(row) {
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_file_public_urls] ([id], [fileId], [ownerId], [version], [expiresAt], [createdAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, NULL)"
+        )
+      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
+    },
+    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [id] = ? AND [ownerId] = ? AND [revokedAt] IS NULL")
+      ).run(
+        revokedAt,
+        publicUrlId,
+        ownerId
+      );
+    },
+    revokePublicFileUrlsForFile(fileId, revokedAt) {
+      return this.prepare(
+        sql("UPDATE [sporades_file_public_urls] SET [revokedAt] = ? WHERE [fileId] = ? AND [revokedAt] IS NULL")
+      ).run(
+        revokedAt,
+        fileId
+      );
+    },
+    markFileDeleted(fileId, deletedAt) {
+      return this.prepare(sql("UPDATE [sporades_files] SET [deletedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(deletedAt, deletedAt, fileId);
+    },
+    fileRowForOwner(fileId, ownerId) {
+      return this.prepare(
+        sql("SELECT * FROM [sporades_files] WHERE [id] = ? AND [ownerId] = ? AND [deletedAt] IS NULL AND [status] = ?")
+      ).get(
+        fileId,
+        ownerId,
+        "uploaded"
+      ) ?? null;
+    },
+    ensureAuthStorage(authConfig = null) {
+      return createAnonymousAuthTables(this, authConfig);
+    },
+    ensureUserPreferencesStorage() {
+      return createUserPreferencesTables(this);
+    },
+    readUserPreferences(userId) {
+      return this.prepare(
+        sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")
+      ).get(userId) ?? null;
+    },
+    saveUserPreferences(row) {
+      return this.prepare(
+        dialect.upsertSql("sporades_user_preferences", ["userId", "value", "updatedAt"], ["userId"])
+      ).run(row.userId, row.value, row.updatedAt);
+    },
+    findAuthIdentityByProviderSubject(provider, subject) {
+      const row = this.prepare(
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [subject] = ?"
+        )
+      ).get(provider, subject) ?? null;
+      return authIdentityRowUnlessReserved(row);
+    },
+    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
+      const rows = this.prepare(
+        sql(
+          "SELECT [id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt] FROM [sporades_auth_identities] WHERE [provider] = ? AND [email] = ? AND [subject] LIKE 'legacy:%' ORDER BY [createdAt], [id]"
+        )
+      ).all(provider, email);
+      return authIdentityRowsUnlessReserved(rows);
+    },
+    insertAuthIdentity(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_identities] ([id], [userId], [provider], [subject], [email], [displayName], [picture], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
+    },
+    updateAuthIdentity(row) {
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_identities] SET [subject] = ?, [email] = ?, [displayName] = ?, [picture] = ?, [updatedAt] = ? WHERE [id] = ?"
+        )
+      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
+    },
+    insertAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+    },
+    updateAuthUserProfile(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+        )
+      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
+    },
+    linkAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_users] SET [displayName] = ?, [email] = ?, [picture] = ?, [isAuthenticated] = ?, [isGuest] = ? WHERE [id] = ?"
+        )
+      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
+    },
+    insertAuthSession(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_sessions] ([token], [userId], [provider], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?)"
+        )
+      ).run(
+        row.token,
+        row.userId,
+        row.provider,
+        row.createdAt,
+        row.expiresAt
+      );
+    },
+    deleteAuthSession(token) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [token] = ?")).run(token);
+    },
+    refreshAuthSession(token, expiresAt) {
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [expiresAt] = ? WHERE [token] = ?")).run(expiresAt, token);
+    },
+    setAuthSessionProvider(token, provider) {
+      return this.prepare(sql("UPDATE [sporades_auth_sessions] SET [provider] = ? WHERE [token] = ?")).run(provider, token);
+    },
+    rotateAuthSession(previousToken, row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_sessions] SET [token] = ?, [userId] = ?, [provider] = ?, [createdAt] = ?, [expiresAt] = ? WHERE [token] = ?"
+        )
+      ).run(
+        row.token,
+        row.userId,
+        row.provider,
+        row.createdAt,
+        row.expiresAt,
+        previousToken
+      );
+    },
+    readAuthSessionWithUser(token) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
+          )
+        ).get(token),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
+    },
+    insertOAuthState(row) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_oauth_states] ([state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+    },
+    // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
+    // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
+    // asynchronous engine the two were in flight together. Both service engines carried their own
+    // `DELETE ... RETURNING` copy for exactly that reason, and node:sqlite speaks RETURNING too, so
+    // there is one definition and no ordering left to get wrong.
+    consumeOAuthState(state) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "DELETE FROM [sporades_auth_oauth_states] WHERE [state] = ? RETURNING [state], [provider], [sessionToken], [returnTo], [redirectUri], [createdAt], [expiresAt], [nonce], [pkceVerifier]"
+          )
+        ).get(state),
+        (row) => row ?? null
+      );
+    },
+    emailCredentialExists(email) {
+      return thenIfPromise(
+        this.prepare(sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [email] = ?")).get(email),
+        (row) => Boolean(row)
+      );
+    },
+    insertEmailCredential(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_email_credentials] ([email], [userId], [passwordHash], [passwordSalt], [createdAt]) VALUES (?, ?, ?, ?, ?)"
+        )
+      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
+    },
+    updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
+      return this.prepare(
+        sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")
+      ).run(passwordHash, passwordSalt, email);
+    },
+    findEmailCredentialWithUser(email) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ?"
+          )
+        ).get(email),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
+    },
+    deleteAuthSessionsForUser(userId) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_sessions] WHERE [userId] = ?")).run(userId);
+    },
+    insertPasswordResetCode(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        sql(
+          "INSERT INTO [sporades_auth_password_reset_codes] ([selector], [verifierHash], [email], [userId], [createdAt], [expiresAt]) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+      ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
+    },
+    findPasswordResetCode(selector) {
+      return this.prepare(
+        sql(
+          "SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?"
+        )
+      ).get(selector) ?? null;
+    },
+    countPasswordResetCodesForEmail(email, now) {
+      return thenIfPromise(
+        this.prepare(
+          sql(
+            "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ? AND [expiresAt] > ?"
+          )
+        ).get(email, now),
+        (row) => Number(row?.count ?? 0)
+      );
+    },
+    deletePasswordResetCodesForUser(userId) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
+    },
+    prunePasswordResetCodes(now) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now);
+    },
+    // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
+    // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
+    // and COMMIT itself. Doing it with bare statements only worked on a synchronous engine: an
+    // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
+    // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
+    migrateAppSchema(schema) {
+      return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
+    },
+    createAppTable(table, tableName = table.name) {
+      return createAppTable(this, table, tableName);
+    },
+    migrateExistingAppTable(existingTable, nextTable) {
+      return this.withTransaction(
+        (transaction) => migrateExistingAppTableInTransaction(transaction, existingTable, nextTable)
+      );
+    },
+    referenceExists(field, value) {
+      return thenIfPromise(
+        this.prepare(
+          `SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE ${dialect.quoteIdentifier("id")} = ? LIMIT 1`
+        ).get(String(value)),
+        (row) => Boolean(row)
+      );
+    },
+    insertAppRow(table, row) {
+      const columns = Object.keys(row);
+      return this.prepare(
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
+      ).run(...columns.map((column) => row[column]));
+    },
+    selectAppRowById(table, id) {
+      return this.prepare(
+        `SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
+      ).get(String(id)) ?? null;
+    },
+    updateAppRow(table, id, values, options = {}) {
+      const columns = Object.keys(values);
+      if (columns.length === 0) {
+        return { changes: 0 };
+      }
+      return this.prepare(
+        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} WHERE ${dialect.quoteIdentifier("id")} = ?` + (options.ownerId === void 0 ? "" : ` AND ${dialect.quoteIdentifier("ownerId")} = ?`)
+      ).run(
+        ...columns.map((column) => values[column]),
+        String(id),
+        ...options.ownerId === void 0 ? [] : [options.ownerId]
+      );
+    },
+    deleteAppRow(table, id) {
+      return this.prepare(
+        `DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
+      ).run(String(id));
+    },
+    selectAppRows(table, query = {}) {
+      const columns = query.columns ?? ["*"];
+      const whereClauses = [];
+      const params = [];
+      if (query.ownerId !== void 0) {
+        whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
+        params.push(query.ownerId);
+      }
+      if (query.where) {
+        whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
+        params.push(query.where.value);
+      }
+      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
+      const orderSql = query.orderBy ? ` ORDER BY ${dialect.quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"}` : "";
+      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+      const limitSql = limit === null ? "" : " LIMIT ?";
+      return this.prepare(
+        `SELECT ${columns.map((column) => column === "*" ? "*" : dialect.quoteIdentifier(column)).join(", ")} FROM ${dialect.quoteIdentifier(
+          table.name
+        )}${whereSql}${orderSql}${limitSql}`
+      ).all(...limit === null ? params : [...params, limit]);
+    },
+    // The three inspection methods below each derive from a statement result, so each resolves it
+    // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
+    // on the asynchronous engines only because each engine shadowed them with an await-shim.
+    listInspectableTables() {
+      return thenIfPromise(
+        dialect.listTables(this),
+        (rows) => rows.map((row) => row.name).filter(
+          (name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"
+        )
+      );
+    },
+    dumpInspectableDatabase() {
+      const dumpTable = (tableName) => thenIfPromise(
+        dialect.describeColumns(this, tableName),
+        (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(tableName)}`).all(), (rows) => ({
+          name: tableName,
+          columns: columnRows.map((column) => column.name),
+          rows
+        }))
+      );
+      return thenIfPromise(
+        this.listInspectableTables(),
+        (tableNames) => tableNames.reduce(
+          (pending, tableName) => thenIfPromise(pending, (tables) => thenIfPromise(dumpTable(tableName), (table) => [...tables, table])),
+          []
+        )
+      );
+    },
+    runReadOnlyInspectionQuery(sql2) {
+      const inspectionQueryFailure = (error) => ({
+        ok: false,
+        data: null,
+        error: {
+          message: error?.message,
+          hint: "Check the SQL syntax and table names, then retry the query."
+        }
+      });
+      try {
+        const validation = validateReadOnlyInspectionSql(sql2);
+        if (!validation.ok) {
+          return validation;
+        }
+        if (targetsInternalLogIndexTable(sql2)) {
+          return {
+            ok: false,
+            data: null,
+            error: {
+              message: "Internal log index tables are not available through generic DB inspection.",
+              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
+            }
+          };
+        }
+        const statement = this.prepare(sqlWithoutTrailingTerminator(sql2));
+        const result = thenIfPromise(
+          statement.columns(),
+          (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
+            ok: true,
+            data: {
+              columns: columnMetadata.map((column) => column.name),
+              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql2))
+            },
+            error: null
+          }))
+        );
+        return isPromiseLike(result) ? result.then((value) => value, inspectionQueryFailure) : result;
+      } catch (error) {
+        return inspectionQueryFailure(error);
+      }
+    },
+    checkHealth() {
+      try {
+        const probe = this.prepare(sql("SELECT 1 AS [ok]")).get();
+        return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    }
+  };
+}
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path10 = await import("node:path");
-  if (!options.readOnly) mkdirSync(path10.dirname(String(databasePath)), { recursive: true });
+  const path12 = await import("node:path");
+  if (!options.readOnly) nodeFsModule.mkdirSync(path12.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  const dialect = sqliteDatabaseDialect();
   const adapter = {
+    ...createSharedDatabaseAdapterMethods(dialect),
     engine: "sqlite",
+    dialect,
+    normalization: sqliteRowNormalization(),
     exec(sql) {
       return connection.exec(sql);
     },
@@ -4994,344 +10646,6 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           return statement.columns();
         }
       };
-    },
-    ensureSystemTable() {
-      return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    },
-    readSystemMetadata(key) {
-      return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
-    },
-    writeSystemMetadata(key, value) {
-      return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
-    },
-    readSchemaMetadata() {
-      return this.readSystemMetadata("schema");
-    },
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      this.writeSystemMetadata("schemaVersion", schemaVersion);
-      this.writeSystemMetadata("schemaHash", schemaHash);
-      this.writeSystemMetadata("schema", schemaJson);
-    },
-    ensureLogStorage() {
-      return createLogIndexTables(this);
-    },
-    insertLogIndexEvent(event) {
-      return insertLogIndexEvent(this, event);
-    },
-    pruneLogIndex(limit) {
-      return pruneLogIndex(this, limit);
-    },
-    readRecentLogEvents(limit) {
-      return readRecentLogEvents(this, limit);
-    },
-    ensureFileStorage() {
-      return createFileStorageTables(this);
-    },
-    findFileBucket(ownerId, name) {
-      return this.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(ownerId, name) ?? null;
-    },
-    createFileBucket(row) {
-      return this.prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)").run(
-        row.id,
-        row.ownerId,
-        row.name,
-        row.createdAt
-      );
-    },
-    insertFileRow(row) {
-      return this.prepare(
-        "INSERT INTO sporades_files (id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
-      ).run(
-        row.id,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.size,
-        row.version,
-        row.status,
-        row.createdAt,
-        row.updatedAt
-      );
-    },
-    updatePendingFileRow(row) {
-      return this.prepare(
-        "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?"
-      ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
-    },
-    insertFileUpload(row) {
-      return this.prepare(
-        "INSERT INTO sporades_file_uploads (id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(
-        row.id,
-        row.fileId,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.version,
-        row.expectedSize,
-        row.createdAt
-      );
-    },
-    selectFileById(fileId) {
-      return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
-    },
-    selectLiveFileByPath(path11) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path11, "uploaded");
-    },
-    selectActiveFileByPath(path11) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
-        path11,
-        "pending",
-        "uploaded"
-      );
-    },
-    selectPendingFileUploadByPath(path11) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path11) ?? null;
-    },
-    selectFileUpload(uploadId) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
-    },
-    completeFileUpload(upload, size, updatedAt) {
-      const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
-        upload.id,
-        upload.fileId,
-        upload.version
-      );
-      if (consumed.changes === 0) {
-        return consumed;
-      }
-      const existing = this.selectFileById(upload.fileId);
-      if (existing) {
-        if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
-          return { changes: 0 };
-        }
-        return this.prepare(
-          "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL"
-        ).run(
-          upload.bucketId,
-          upload.bucketName,
-          upload.path,
-          upload.name,
-          upload.type,
-          size,
-          upload.version,
-          "uploaded",
-          updatedAt,
-          upload.fileId
-        );
-      }
-      return this.insertFileRow({
-        id: upload.fileId,
-        ownerId: upload.ownerId,
-        bucketId: upload.bucketId,
-        bucketName: upload.bucketName,
-        path: upload.path,
-        name: upload.name,
-        type: upload.type,
-        size,
-        version: upload.version,
-        status: "uploaded",
-        createdAt: upload.createdAt,
-        updatedAt
-      });
-    },
-    deleteFileUploadsForPath(path11) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path11);
-    },
-    deleteFileUploadsForFile(ownerId, fileId) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
-    },
-    deleteFileUpload(uploadId) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
-    },
-    selectPublicFileRow(publicUrlId) {
-      return this.prepare(
-        "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId WHERE p.id = ?"
-      ).get(publicUrlId) ?? null;
-    },
-    insertPublicFileUrl(row) {
-      return this.prepare(
-        "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)"
-      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
-    },
-    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL").run(
-        revokedAt,
-        publicUrlId,
-        ownerId
-      );
-    },
-    revokePublicFileUrlsForFile(fileId, revokedAt) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL").run(
-        revokedAt,
-        fileId
-      );
-    },
-    markFileDeleted(fileId, deletedAt) {
-      return this.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(deletedAt, deletedAt, fileId);
-    },
-    fileRowForOwner(fileId, ownerId) {
-      return this.prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?").get(
-        fileId,
-        ownerId,
-        "uploaded"
-      ) ?? null;
-    },
-    ensureAuthStorage(authConfig = null) {
-      return createAnonymousAuthTables(this, authConfig);
-    },
-    ensureUserPreferencesStorage() {
-      return createUserPreferencesTables(this);
-    },
-    readUserPreferences(userId) {
-      return this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
-    },
-    saveUserPreferences(row) {
-      return this.prepare(
-        "INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)"
-      ).run(row.userId, row.value, row.updatedAt);
-    },
-    findAuthIdentityByProviderSubject(provider, subject) {
-      const row = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND subject = ?"
-      ).get(provider, subject) ?? null;
-      return authIdentityRowUnlessReserved(row);
-    },
-    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
-      const rows = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id"
-      ).all(provider, email);
-      return authIdentityRowsUnlessReserved(rows);
-    },
-    insertAuthIdentity(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
-    },
-    updateAuthIdentity(row) {
-      return this.prepare(
-        "UPDATE sporades_auth_identities SET subject = ?, email = ?, displayName = ?, picture = ?, updatedAt = ? WHERE id = ?"
-      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
-    },
-    insertAuthUser(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
-    },
-    updateAuthUserProfile(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?"
-      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    linkAuthUser(row) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?"
-      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    insertAuthSession(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)").run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt
-      );
-    },
-    deleteAuthSession(token) {
-      return this.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(token);
-    },
-    refreshAuthSession(token, expiresAt) {
-      return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
-    },
-    setAuthSessionProvider(token, provider) {
-      return this.prepare("UPDATE sporades_auth_sessions SET provider = ? WHERE token = ?").run(provider, token);
-    },
-    rotateAuthSession(previousToken, row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, provider = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt,
-        previousToken
-      );
-    },
-    readAuthSessionWithUser(token) {
-      const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, s.provider AS provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
-      ).get(token) ?? null;
-      if (isReservedAuthUserId(row?.userId)) {
-        return null;
-      }
-      return row;
-    },
-    insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    consumeOAuthState(state) {
-      const row = this.prepare(
-        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier FROM sporades_auth_oauth_states WHERE state = ?"
-      ).get(state) ?? null;
-      this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
-      return row;
-    },
-    emailCredentialExists(email) {
-      return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
-    },
-    insertEmailCredential(row) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)"
-      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
-    },
-    updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
-      return this.prepare(
-        "UPDATE sporades_auth_email_credentials SET passwordHash = ?, passwordSalt = ? WHERE email = ?"
-      ).run(passwordHash, passwordSalt, email);
-    },
-    findEmailCredentialWithUser(email) {
-      const row = this.prepare(
-        "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest FROM sporades_auth_email_credentials c JOIN sporades_auth_users u ON u.id = c.userId WHERE c.email = ?"
-      ).get(email) ?? null;
-      return isReservedAuthUserId(row?.userId) ? null : row;
-    },
-    migrateAppSchema(schema) {
-      this.exec("BEGIN");
-      try {
-        const result = migrateAppSchema(this, schema);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    createAppTable(table, tableName = table.name) {
-      return createAppTable(this, table, tableName);
-    },
-    migrateExistingAppTable(existingTable, nextTable) {
-      return migrateExistingAppTable(this, existingTable, nextTable);
-    },
-    referenceExists(field, value) {
-      return Boolean(
-        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value))
-      );
     },
     async withTransaction(fn) {
       this.exec("BEGIN");
@@ -5358,109 +10672,6 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         if (!options.readOnly) this.exec("PRAGMA query_only = OFF");
       }
     },
-    insertAppRow(table, row) {
-      const columns = Object.keys(row);
-      return this.prepare(
-        `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
-      ).run(...columns.map((column) => row[column]));
-    },
-    selectAppRowById(table, id) {
-      return this.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
-    },
-    updateAppRow(table, id, values, options2 = {}) {
-      const columns = Object.keys(values);
-      if (columns.length === 0) {
-        return { changes: 0 };
-      }
-      return this.prepare(
-        `UPDATE ${quoteIdentifier(table.name)} SET ${columns.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` + (options2.ownerId === void 0 ? "" : " AND ownerId = ?")
-      ).run(
-        ...columns.map((column) => values[column]),
-        String(id),
-        ...options2.ownerId === void 0 ? [] : [options2.ownerId]
-      );
-    },
-    deleteAppRow(table, id) {
-      return this.prepare(`DELETE FROM ${quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
-    },
-    selectAppRows(table, query = {}) {
-      const columns = query.columns ?? ["*"];
-      const whereClauses = [];
-      const params = [];
-      if (query.ownerId !== void 0) {
-        whereClauses.push(`${quoteIdentifier("ownerId")} = ?`);
-        params.push(query.ownerId);
-      }
-      if (query.where) {
-        whereClauses.push(`${quoteIdentifier(query.where.fieldName)} = ?`);
-        params.push(query.where.value);
-      }
-      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
-      const orderSql = query.orderBy ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"}` : "";
-      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const limitSql = limit === null ? "" : " LIMIT ?";
-      return this.prepare(
-        `SELECT ${columns.map((column) => column === "*" ? "*" : quoteIdentifier(column)).join(", ")} FROM ${quoteIdentifier(
-          table.name
-        )}${whereSql}${orderSql}${limitSql}`
-      ).all(...limit === null ? params : [...params, limit]);
-    },
-    listInspectableTables() {
-      return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    dumpInspectableDatabase() {
-      return this.listInspectableTables().map((tableName) => ({
-        name: tableName,
-        columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all().map((column) => column.name),
-        rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all()
-      }));
-    },
-    runReadOnlyInspectionQuery(sql) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = statement.columns().map((column) => column.name);
-        const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-        return {
-          ok: true,
-          data: {
-            columns,
-            rows
-          },
-          error: null
-        };
-      } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
-      }
-    },
-    checkHealth() {
-      try {
-        this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
     close() {
       return connection.close();
     }
@@ -5473,15 +10684,15 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
 async function createPostgresDatabaseAdapter(options) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
-    throw commandError(
+    throw commandError2(
       "Missing Postgres database service URL.",
       "Start a Dev session or local Container session with services.database.engine set to postgres."
     );
   }
   const client = await createPostgresConnection(url);
   let closed = false;
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
+  const dialect = postgresDatabaseDialect();
+  const normalization = postgresRowNormalization();
   const assertOpen = () => {
     if (closed) {
       throw new Error("database is not open");
@@ -5492,8 +10703,10 @@ async function createPostgresDatabaseAdapter(options) {
     return await client.query(postgresInterpolate(sql, params));
   };
   const adapter = {
-    ...shape,
+    ...createSharedDatabaseAdapterMethods(dialect),
     engine: "postgres",
+    dialect,
+    normalization,
     exec(sql) {
       return query(sql).then(() => void 0);
     },
@@ -5501,7 +10714,7 @@ async function createPostgresDatabaseAdapter(options) {
       assertOpen();
       return {
         all(...params) {
-          return query(sql, params).then((result) => postgresRowsFromResult(result));
+          return query(sql, params).then((result) => postgresRowsFromResult(normalization, result));
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
@@ -5512,212 +10725,43 @@ async function createPostgresDatabaseAdapter(options) {
             lastInsertRowid: void 0
           }));
         },
+        // Postgres has no way to ask a statement for its result shape without running something,
+        // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
+        // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
+        // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
+        // follows it. Both are legal input that `validateReadOnlyInspectionSql` deliberately
+        // admits, and `sporades db query <sql>` is typed by a human, so a semicolon is ordinary.
+        // Left unhandled, the same query answers on SQLite and libSQL and fails here — the
+        // divergence this feature exists to close, reintroduced by the seam meant to prevent it.
+        // Stripping the terminator and any trailing trivia first is what makes the wrap safe.
+        //
+        // This leaves the inspection path issuing two statements on Postgres where the method
+        // override it replaced issued one, and that is a deliberate choice rather than an
+        // oversight. Merging them would mean caching a result on the prepared-statement object so
+        // that `columns()` and a later `all()` share it — which SQLite's and libSQL's statements do
+        // not do, so a statement held across two reads would answer stale rows here and fresh rows
+        // there. That is a new per-engine behavioural difference, bought in the feature whose
+        // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
+        // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
+        // plans the statement and stops before materializing a row.
         columns() {
-          return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then(
-            (result) => result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) }))
-          );
+          return query(
+            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`
+          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
         }
       };
     },
-    async writeSystemMetadata(keyOrMetadata, maybeValue) {
-      if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
-        return await this.writeSchemaMetadata(keyOrMetadata);
-      }
-      return await this.prepare(
-        "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
-      ).run(keyOrMetadata ?? "", maybeValue);
-    },
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
-    async ensureAuthStorage(authConfig = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
-      );
-      await this.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec(
-        "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
-      );
-      await this.exec(
-        "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
-      );
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
-      );
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS expiresAt TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
-      await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-      await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-    },
-    async insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    async consumeOAuthState(state) {
-      const row = await this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
-      ).get(state);
-      return row ?? null;
-    },
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
-      );
-    },
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, deletedAt TEXT)"
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, version TEXT NOT NULL, expectedSize INTEGER NOT NULL, createdAt TEXT NOT NULL)"
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, version TEXT NOT NULL, expiresAt TEXT, createdAt TEXT NOT NULL, revokedAt TEXT)"
-      );
-    },
-    async ensureUserPreferencesStorage() {
-      await createUserPreferencesTables(this);
-    },
-    async readUserPreferences(userId) {
-      return await this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
-    },
-    async saveUserPreferences(row) {
-      return await this.prepare(
-        "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt"
-      ).run(row.userId, row.value, row.updatedAt);
-    },
-    async insertLogIndexEvent(event) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event)
-      );
-    },
-    async pruneLogIndex(limit) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?)"
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
-    },
-    async migrateAppSchema(schema) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
-    },
-    async createAppTable(table, tableName = table.name) {
-      await this.exec(
-        `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` + postgresAppTableColumnDefinitions(table).join(", ") + ")"
-      );
-    },
-    async migrateExistingAppTable(existingTable, nextTable) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare(
-        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name"
-      ).all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(
-          "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position"
-        ).all(tableName)).map((column) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const result = await query(String(sql ?? ""));
-        return {
-          ok: true,
-          data: {
-            columns: result.fields.map((field) => postgresRuntimeColumnName(field.name)),
-            rows: postgresRowsFromResult(result).filter((row) => !isInternalLogIndexMetadataRow(row, sql))
-          },
-          error: null
-        };
-      } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
+    // No behavioural method body lives here, deliberately (ADR-0037). Eleven used to: the upsert
+    // form, the auth and File metadata storage bootstraps, the catalog queries behind the three
+    // inspection methods, the app-table DDL, the OAuth state consume, and two await-shims. Each is
+    // now either a dialect entry or a corrected shared definition, and ADR-0034 and ADR-0036 record
+    // why each existed. `test/database-adapter-engine-seam.test.js` is what stops another appearing.
+    //
+    // The hazard that made removing them better than maintaining them, rather than merely tidier: a
+    // shared body an engine shadows is dormant, not correct. It becomes live the moment the shadow
+    // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
+    // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
+    // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn) {
       await this.exec("BEGIN");
       try {
@@ -5800,7 +10844,7 @@ async function createPostgresConnection(url) {
       if (authType === 10) {
         const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
         if (!mechanisms.includes("SCRAM-SHA-256")) {
-          throw commandError(
+          throw commandError2(
             "Unsupported Postgres SASL mechanism.",
             "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
           );
@@ -5823,7 +10867,7 @@ async function createPostgresConnection(url) {
         scram.verify(message.body.subarray(4).toString("utf8"));
         continue;
       }
-      throw commandError(
+      throw commandError2(
         "Unsupported Postgres authentication method.",
         "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials."
       );
@@ -6133,126 +11177,13 @@ function postgresInterpolate(sql, params = []) {
   }
   return result;
 }
-function postgresPlaceholders(sql) {
-  let index = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let result = "";
-  const text = String(sql ?? "");
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
-    if (lineComment) {
-      result += char;
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      result += char;
-      if (char === "*" && next === "/") {
-        result += next;
-        position += 1;
-        blockComment = false;
-      }
-      continue;
-    }
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      result += char + next;
-      position += 1;
-      lineComment = true;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      result += char + next;
-      position += 1;
-      blockComment = true;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (char === "?") {
-      index += 1;
-      result += `$${index}`;
-      continue;
-    }
-    result += char;
-  }
-  return result;
-}
-function postgresRowsFromResult(result) {
-  return result.rows.map((row) => {
-    const normalized = {};
-    for (const [key, value] of Object.entries(row)) {
-      normalized[postgresRuntimeColumnName(key)] = value;
-    }
-    return normalized;
-  });
-}
-function postgresRuntimeColumnName(name) {
-  return {
-    ownerid: "ownerId",
-    bucketid: "bucketId",
-    bucketname: "bucketName",
-    createdat: "createdAt",
-    updatedat: "updatedAt",
-    deletedat: "deletedAt",
-    fileid: "fileId",
-    expectedsize: "expectedSize",
-    publicurlid: "publicUrlId",
-    publicversion: "publicVersion",
-    expiresat: "expiresAt",
-    revokedat: "revokedAt",
-    userid: "userId",
-    displayname: "displayName",
-    isauthenticated: "isAuthenticated",
-    isguest: "isGuest",
-    passwordhash: "passwordHash",
-    passwordsalt: "passwordSalt",
-    sessiontoken: "sessionToken",
-    returnto: "returnTo",
-    redirecturi: "redirectUri",
-    pkceverifier: "pkceVerifier",
-    capsulename: "capsuleName",
-    capsuleid: "capsuleId",
-    releaseid: "releaseId",
-    requestid: "requestId",
-    correlationid: "correlationId"
-  }[name] ?? name;
-}
-function postgresAppTableColumnDefinitions(table) {
-  return [
-    `${quoteIdentifier("id")} TEXT PRIMARY KEY`,
-    `${quoteIdentifier("createdAt")} TEXT NOT NULL`,
-    `${quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field) => appFieldColumnDefinition(field))
-  ];
+function postgresRowsFromResult(normalization, result) {
+  return result.rows.map((row) => normalization.row(row));
 }
 async function createLibsqlDatabaseAdapter(options) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
-    throw commandError(
+    throw commandError2(
       "Missing libSQL database service URL.",
       "Start a Dev session or local Container session with services.database.engine set to libsql."
     );
@@ -6261,8 +11192,8 @@ async function createLibsqlDatabaseAdapter(options) {
   const authToken = typeof options === "object" ? options.authToken : null;
   let closed = false;
   const activeTransactions = /* @__PURE__ */ new Set();
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
+  const dialect = sqliteDatabaseDialect();
+  const normalization = libsqlRowNormalization();
   const createOperations = (transaction = null) => ({
     exec(sql) {
       assertLibsqlOpen(closed);
@@ -6274,7 +11205,7 @@ async function createLibsqlDatabaseAdapter(options) {
       return {
         all(...params) {
           return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
-            (result) => libsqlRowsFromResult(result)
+            (result) => libsqlRowsFromResult(normalization, result)
           );
         },
         get(...params) {
@@ -6293,169 +11224,22 @@ async function createLibsqlDatabaseAdapter(options) {
     }
   });
   const adapter = {
-    ...shape,
+    ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(),
     engine: "libsql",
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
-      );
-    },
-    async insertLogIndexEvent(event) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event)
-      );
-    },
-    async pruneLogIndex(limit) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)"
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
-    },
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, deletedAt TEXT)"
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, version TEXT NOT NULL, expectedSize INTEGER NOT NULL, createdAt TEXT NOT NULL)"
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, version TEXT NOT NULL, expiresAt TEXT, createdAt TEXT NOT NULL, revokedAt TEXT)"
-      );
-    },
-    async ensureAuthStorage(authConfig = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
-      );
-      await ensureLibsqlSessionLifecycleColumns(this);
-      await ensureLibsqlSessionProvenanceColumn(this);
-      await createLibsqlProviderIdentityTables(this);
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
-      );
-      await ensureLibsqlOAuthStateColumns(this);
-    },
-    async insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    async consumeOAuthState(state) {
-      return await this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
-      ).get(state) ?? null;
-    },
-    async migrateAppSchema(schema) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
-    },
-    async migrateExistingAppTable(existingTable, nextTable) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = (await statement.columns()).map((column) => column.name);
-        const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-        return { ok: true, data: { columns, rows }, error: null };
-      } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
+    dialect,
+    normalization,
+    // No behavioural method body lives here either, for the reasons ADR-0037 records and the
+    // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
+    // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
+    // body instead.
     async withTransaction(fn) {
       const transaction = { baton: null, baseUrl: endpoint };
       const transactionAdapter = {
         ...adapter,
         ...createOperations(transaction),
         async withTransaction() {
-          throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
+          throw commandError2("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
         }
       };
       activeTransactions.add(transaction);
@@ -6571,14 +11355,11 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
   }
   return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
 }
-function libsqlRowsFromResult(result) {
+function libsqlRowsFromResult(normalization, result) {
   const columns = (result.cols ?? []).map((column) => column.name);
-  return (result.rows ?? []).map((row) => {
-    if (!Array.isArray(row)) {
-      return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
-    }
-    return Object.fromEntries(columns.map((column, index) => [column, libsqlValueToJs(row[index])]));
-  });
+  return (result.rows ?? []).map(
+    (row) => normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column, index) => [column, row[index]])) : row)
+  );
 }
 function libsqlValueFromJs(value) {
   if (value === null || value === void 0) {
@@ -6620,79 +11401,661 @@ function libsqlValueToJs(value) {
   }
   return value;
 }
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
-function logPayloadMaxBytes(config = {}) {
-  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
-}
-function logRedactedValue() {
-  return "[REDACTED]";
-}
-function createRuntimeLogSink(options) {
-  const path10 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path10.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path10.dirname(logPath), { recursive: true });
-  return {
-    path: logPath,
-    emit(input) {
-      const event = createLogEnvelope({
-        ...input,
-        config: options.config,
-        serverEnv: options.serverEnv
-      });
-      appendFileSync(logPath, `${JSON.stringify(event)}
-`);
-      let indexed;
+function migrateAppSchemaInTransaction(sqlite, schema) {
+  const nextSchema = normalizeSchema(schema);
+  const nextSchemaJson = JSON.stringify(nextSchema);
+  const nextSchemaHash = hashSchema(nextSchemaJson);
+  return thenIfPromise(sqlite.readSchemaMetadata(), (existingSchemaRow) => {
+    let existingSchema = null;
+    let schemaChanged = false;
+    if (existingSchemaRow) {
       try {
-        const inserted = options.database.insertLogIndexEvent(event);
-        indexed = isPromiseLike(inserted) ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config))) : options.database.pruneLogIndex(logIndexLimit(options.config));
+        existingSchema = JSON.parse(existingSchemaRow.value);
       } catch {
-        indexed = void 0;
+        throw commandError2(
+          "Invalid Sporades schema metadata.",
+          "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
+        );
       }
-      if (process.env.SPORADES_LOG_STDOUT === "1") {
-        process.stdout.write(`${JSON.stringify(event)}
-`);
+      schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+      if (schemaChanged) {
+        assertAdditiveSchemaMigration(existingSchema, nextSchema);
       }
-      return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
-    },
-    recent(limit = logIndexLimit(options.config)) {
-      return options.database.readRecentLogEvents(limit);
-    },
-    tail(limit = logIndexLimit(options.config)) {
-      return readJsonlLogEvents(logPath, limit);
     }
-  };
+    const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+    return chainMaybePromise([
+      ...schema.tables.map((table) => () => {
+        const existingTable = existingTables.get(table.name);
+        return schemaChanged && existingTable ? migrateExistingAppTableInTransaction(sqlite, existingTable, table) : sqlite.createAppTable(table);
+      }),
+      () => sqlite.writeSchemaMetadata({
+        schemaVersion: "v1:additive-fields",
+        schemaHash: nextSchemaHash,
+        schemaJson: nextSchemaJson
+      })
+    ]);
+  });
 }
-function requirePathModule() {
+function normalizeSchema(schema) {
   return {
-    join: (...parts) => parts.join("/").replace(/\/+/g, "/"),
-    dirname: (filePath) => String(filePath).replace(/\/[^/]*$/, "") || "."
+    tables: schema.tables.map((table) => ({
+      name: table.name,
+      fields: table.fields.map((field) => ({
+        name: field.name,
+        kind: field.kind,
+        sqliteType: field.sqliteType,
+        targetTable: field.targetTable,
+        defaultValue: field.defaultValue
+      }))
+    })).sort((left, right) => left.name.localeCompare(right.name))
   };
 }
-function createRuntimeLogger(database, context = {}) {
-  const write = (level, args) => {
-    const [message, data, ...rest] = args;
-    const structuredData = data !== void 0 && rest.length === 0 ? data : rest.length > 0 ? { data, args: rest } : null;
-    database.log.emit({
-      category: context.category ?? "app",
-      event: context.event ?? "ctx.log",
-      level,
-      message: String(message ?? ""),
-      data: structuredData,
-      request: context.request ?? null,
-      release: context.release ?? null,
-      correlation: context.correlation ?? null
+function hashSchema(schemaJson) {
+  return nodeCryptoModule3.createHash("sha256").update(schemaJson).digest("hex");
+}
+function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
+  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
+  for (const existingTable of existingSchema.tables ?? []) {
+    const nextTable = nextTables.get(existingTable.name);
+    if (!nextTable) {
+      throw commandError2(
+        "Unsupported Capsule schema change.",
+        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
+      );
+    }
+    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
+    for (const existingField of existingTable.fields ?? []) {
+      const nextField = nextFields.get(existingField.name);
+      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
+        throw commandError2(
+          "Unsupported Capsule schema change.",
+          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
+        );
+      }
+    }
+  }
+}
+function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
+  const dialect = sqlite.dialect;
+  const tempTableName = `__sporades_migrating_${nextTable.name}`;
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
+  return chainMaybePromise([
+    ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
+      (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+        if (!exists) {
+          throw invalidReferenceError(field);
+        }
+      })
+    ),
+    () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
+    () => sqlite.createAppTable(nextTable, tempTableName),
+    () => sqlite.exec(
+      `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
+    ),
+    () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
+    () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
+  ]);
+}
+function columnSelectExpressionForMigration(dialect, existingTable, nextTable, columnName) {
+  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
+    return dialect.quoteIdentifier(columnName);
+  }
+  if ((existingTable.fields ?? []).some((field2) => field2.name === columnName)) {
+    return dialect.quoteIdentifier(columnName);
+  }
+  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
+  return field?.defaultValue === void 0 ? "NULL" : toSqlLiteral(field.defaultValue, field);
+}
+function addedFieldsForTable(existingTable, nextTable) {
+  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
+  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
+}
+function createAppTable(sqlite, table, tableName = table.name) {
+  return sqlite.exec(
+    `CREATE TABLE IF NOT EXISTS ${sqlite.dialect.quoteIdentifier(tableName)} (` + appTableColumnDefinitions(sqlite.dialect, table).join(", ") + ")"
+  );
+}
+function appTableColumnDefinitions(dialect, table) {
+  return [
+    `${dialect.quoteIdentifier("id")} TEXT PRIMARY KEY`,
+    `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
+    `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
+    ...table.fields.map((field) => appFieldColumnDefinition(dialect, field))
+  ];
+}
+function appFieldColumnDefinition(dialect, field) {
+  const defaultSql = fieldColumnDefaultSql(field);
+  const notNullSql = field.defaultValue !== void 0 && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
+  return `${dialect.quoteIdentifier(field.name)} ${dialect.columnType(field)}${notNullSql}${defaultSql}`;
+}
+function fieldDefaultIsSqlNull(field) {
+  return field.defaultValue === null && field.kind !== "Json";
+}
+function fieldColumnDefaultSql(field) {
+  return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
+}
+function isDuplicateColumnError(error) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /duplicate column|already exists/i.test(text);
+}
+function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
+  try {
+    const result = sqlite.exec(sql);
+    if (isPromiseLike(result)) {
+      return result.catch((error) => {
+        if (!isDuplicateColumnError(error)) throw error;
+      });
+    }
+    return result;
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    return void 0;
+  }
+}
+function toSqlLiteral(value, field = null) {
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
+  }
+  if (value === null) {
+    return "NULL";
+  }
+  if (field?.kind === "Date") {
+    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
+  }
+  if (typeof value === "boolean") {
+    return value ? "1" : "0";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+async function listDatabaseTables(database) {
+  return await (database.adapter ?? database.adapter).listInspectableTables();
+}
+async function dumpDatabase(database) {
+  return await (database.adapter ?? database.adapter).dumpInspectableDatabase();
+}
+async function runReadOnlyQuery(database, sql) {
+  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
+}
+function splitSqlStatements(sql) {
+  const statements = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  const text = String(sql ?? "");
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (lineComment) {
+      if (char === "\n") {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        if (text[index + 1] === quote && quote !== "`") {
+          index += 1;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === ";") {
+      const statement = text.slice(start, index).trim();
+      if (statement) {
+        statements.push(statement);
+      }
+      start = index + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) {
+    statements.push(last);
+  }
+  return statements;
+}
+function quoteIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+// src/jobs-runtime.ts
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
+var RESERVED_JOB_NAME_PREFIX = "_sporades";
+function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
+  const schedules = [];
+  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError2(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
+    if (schedules.some((candidate) => candidate.name === name)) throw commandError2(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
+    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError2(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
+    const expression = parseScheduleExpression(definition.expression);
+    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
+    const payload = definition.payload === void 0 ? null : definition.payload;
+    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    const retry = normalizeJobRetry(definition.retry);
+    const missedRun = definition.missedRun ?? "skip";
+    if (missedRun !== "skip" && missedRun !== "latest") throw commandError2(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
+    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError2(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
+    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
+    const enabled = definition.enabled ?? true;
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
+    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+  }
+  return schedules;
+}
+function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
+  const scheduling = config.scheduling;
+  if (scheduling === void 0) return 3e4;
+  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
+    throw commandError2("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+    throw commandError2("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  return seconds * 1e3;
+}
+function parseScheduleExpression(value) {
+  if (typeof value !== "string") throw commandError2("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 5) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
+  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+  const fields = parts.map((part, index) => {
+    const values = /* @__PURE__ */ new Set();
+    for (const item of part.split(",")) {
+      const [base, stepText] = item.split("/");
+      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
+      const step = stepText === void 0 ? 1 : Number(stepText);
+      let start, end;
+      if (base === "*") [start, end] = ranges[index];
+      else if (/^\d+$/.test(base)) start = end = Number(base);
+      else {
+        const match = /^(\d+)-(\d+)$/.exec(base);
+        if (!match) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
+        start = Number(match[1]);
+        end = Number(match[2]);
+      }
+      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError2(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
+      for (let current = start; current <= end; current += step) values.add(index === 4 && current === 7 ? 0 : current);
+    }
+    return values;
+  });
+  fields.restricted = parts.map((part) => part !== "*");
+  return fields;
+}
+function resolveScheduleTimezone(value) {
+  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError2("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
+  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
+  } catch {
+    throw commandError2(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
+  }
+}
+function scheduleWallClockParts(formatter, instant) {
+  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
+  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
+}
+function nextScheduleOccurrence(fields, after, timezone) {
+  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: timezone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  const candidate = new Date(after.getTime());
+  candidate.setUTCSeconds(0, 0);
+  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
+    const local = scheduleWallClockParts(formatter, candidate);
+    const dom = fields[2].has(local.day);
+    const dow = fields[4].has(local.weekday);
+    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
+    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
+    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
+  }
+  throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
+}
+async function ensureScheduleStorage(sqlite) {
+  const sql = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
+    )
+  );
+}
+async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
+  const scheduledFor = occurrence.toISOString();
+  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+  const completedAt = database.clock.now().toISOString();
+  const code = "SCHEDULE_ENQUEUE_FAILED";
+  const sql = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
+  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+  definition.nextOccurrence = next;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
+}
+function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
+  return nodeCryptoModule4.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
+}
+async function acquireSchedulePayloadFactorySlot(database) {
+  if (database.schedulePayloadFactoryActive >= 4) await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
+  database.schedulePayloadFactoryActive += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    database.schedulePayloadFactoryActive -= 1;
+    database.schedulePayloadFactoryWaiters.shift()?.();
+  };
+}
+async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
+  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
+  let unlock = () => {
+  };
+  const current = new Promise((resolve) => {
+    unlock = resolve;
+  });
+  database.schedulePayloadFactoryLanes.set(scheduleName, current);
+  if (previous) await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unlock();
+    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
+  };
+}
+async function resolveSchedulePayload(database, definition, scheduledFor, context) {
+  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
+  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+  let releaseSlot;
+  const controller = new AbortController();
+  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
+  controllers.add(controller);
+  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
+  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
+  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
+  let timeout;
+  try {
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
+    const timeoutFailure = new Promise((_resolve, reject) => {
+      timeout = database.clock.setTimer(() => {
+        controller.abort();
+        const error = new Error("Schedule payload factory timed out.");
+        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
+        reject(error);
+      }, database.schedulePayloadFactoryTimeoutMs);
     });
-  };
+    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
+      const error = new Error("Schedule payload factory aborted.");
+      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+      reject(error);
+    }, { once: true }));
+    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
+    database.clock.clearTimer(timeout);
+    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    return { ok: true, value };
+  } catch (error) {
+    database.clock.clearTimer(timeout);
+    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
+    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
+    return { ok: false };
+  } finally {
+    controllers.delete(controller);
+    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
+    releaseSlot?.();
+    releaseLane();
+  }
+}
+function abortSchedulePayloadFactories(database) {
+  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
+}
+function createRuntimeClock(clock) {
+  if (clock) return clock;
   return {
-    info: (...args) => write("info", args),
-    warn: (...args) => write("warn", args),
-    error: (...args) => write("error", args)
+    now: () => /* @__PURE__ */ new Date(),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer)
   };
 }
+function runtimeOwnedJobHandlers() {
+  return [
+    {
+      name: PASSWORD_RESET_MAIL_JOB,
+      handler: async (ctx, payload) => ctx.mail.send({
+        to: payload.to,
+        subject: payload.subject,
+        textBody: payload.textBody,
+        htmlBody: payload.htmlBody
+      })
+    }
+  ];
+}
+function isReservedJobName(name) {
+  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
+}
+function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
+  const handlers = [];
+  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
+      throw commandError2("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    if (isReservedJobName(name)) {
+      throw commandError2(
+        `Reserved Job handler name: ${name}`,
+        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
+        "RESERVED_JOB_NAME"
+      );
+    }
+    if (handlers.some((handler) => handler.name === name)) {
+      throw commandError2(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
+    }
+    handlers.push({ name, handler: definition.handler });
+  }
+  return handlers;
+}
+async function ensureJobStorage(sqlite) {
+  const sql = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
+    )
+  );
+  await sqlite.exec(
+    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
+  );
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  await sqlite.exec(
+    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
+  );
+}
+async function scheduleSummary(sqlite, row) {
+  const invalid = (field) => {
+    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
+    error.scheduleName = typeof row?.name === "string" ? row.name : null;
+    error.field = field;
+    return error;
+  };
+  if (typeof row.name !== "string" || !row.name) throw invalid("name");
+  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
+  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
+  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
+  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
+  const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
+  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
+  let latestOccurrence = null;
+  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
+  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome === "enqueued") {
+    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
+    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
+    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
+    if (!job) throw invalid("latestOccurrence.jobId");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
+  } else if (latestOutcome === "payload-failed") {
+    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
+    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
+    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
+  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
+  return {
+    name: String(row.name),
+    expression: String(row.expression),
+    timezone: String(row.effectiveTimezone),
+    missedRun: String(row.missedRunPolicy),
+    enabled: Boolean(row.enabled),
+    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
+    latestOccurrence
+  };
+}
+function assertJobScheduleProvenance(row, expected) {
+  if (!expected) return;
+  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
+    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
+  }
+}
+function jobError(code, message, hint) {
+  const error = new Error(message);
+  error.code = code;
+  error.hint = hint;
+  return error;
+}
+function boundedJobJson(value, limit, code, label) {
+  let serialized;
+  try {
+    assertJsonCompatible(value);
+    serialized = JSON.stringify(value);
+  } catch {
+    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
+  return serialized;
+}
+function jobState(row, includeDetail) {
+  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
+  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
+  if (includeDetail && row.result) state.result = JSON.parse(row.result);
+  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
+  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
+  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
+  return state;
+}
+function jobActorProvider(auth) {
+  const provider = auth?.provider;
+  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
+  return auth?.isGuest ? "anonymous" : "authenticated";
+}
+function normalizeJobRetry(value) {
+  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
+  if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs.");
+  return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
+}
+async function cancelJob(database, context, id) {
+  const sql = database.adapter.dialect.sql;
+  const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
+  if (!row) return null;
+  const now = database.clock.now().toISOString();
+  if (["queued", "delayed"].includes(row.status)) {
+    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
+    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
+  }
+  if (row.status === "running") {
+    database.__jobAbortControllers?.get(id)?.abort();
+    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
+    return jobState({ ...row, cancelRequestedAt: now }, true);
+  }
+  throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+}
+function jobSummary(row) {
+  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
+}
+function encodeJobCursor(row) {
+  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
+}
+function decodeJobCursor(value) {
+  if (value === void 0) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
+    return cursor;
+  } catch {
+    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
+  }
+}
+function safeJobFailure(error) {
+  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
+  const messages = {
+    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
+    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
+    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
+    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    JOB_FAILED: "Job handler failed."
+  };
+  return { code, message: messages[code] };
+}
+
+// src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
 var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
@@ -6709,83 +12072,6 @@ function emitPrivilegedAuditEvent(target, details = {}) {
     throw new Error("Privileged audit events require a runtime log sink.");
   }
   return log.emit(createPrivilegedAuditLogInput(details));
-}
-function createContextPrivilegedApi(database, contextGetter) {
-  return {
-    async run(options, callback) {
-      const context = contextGetter();
-      if (context?.__privilegedRunActive) {
-        throw commandError(
-          "Nested privileged runs are not supported.",
-          "Call separate top-level ctx.privileged.run operations instead of starting one privileged run from inside another.",
-          "NESTED_PRIVILEGED_RUN"
-        );
-      }
-      const auditDetails = createPrivilegedRunAuditDetails(context, options);
-      if (typeof callback !== "function") {
-        throw commandError(
-          "Privileged run requires a callback.",
-          "Pass a callback to ctx.privileged.run after the operation metadata.",
-          "INVALID_PRIVILEGED_RUN_CALLBACK"
-        );
-      }
-      const signal = normalizePrivilegedRunSignal(options.signal);
-      try {
-        await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "started" });
-      } catch (error) {
-        throw createPrivilegedAuditEmissionPublicError(error);
-      }
-      const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
-      let callbackResult;
-      let callbackError;
-      let callbackSettled = false;
-      try {
-        if (signal.aborted) {
-          throw createPrivilegedRunAbortError();
-        }
-        try {
-          callbackResult = await callback(privilegedContext);
-          callbackSettled = true;
-        } catch (error) {
-          callbackError = error;
-          callbackSettled = true;
-          throw error;
-        }
-        try {
-          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "completed" });
-        } catch (error) {
-          throw createPrivilegedAuditEmissionPublicError(error, { callbackResult });
-        }
-        return callbackResult;
-      } catch (error) {
-        if (isPrivilegedAuditEmissionPublicError(error)) {
-          throw error;
-        }
-        const safeErrorCode = signal.aborted && !callbackSettled ? "ABORTED" : safePrivilegedAuditErrorCode(error, "errored");
-        try {
-          await emitPrivilegedRunAudit(database, context, {
-            ...auditDetails,
-            outcome: "errored",
-            safeErrorCode
-          });
-        } catch (auditError) {
-          throw createPrivilegedAuditEmissionPublicError(auditError, { callbackError: callbackSettled ? callbackError ?? error : error });
-        }
-        throw createPrivilegedRunPublicError(error);
-      } finally {
-        try {
-          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "finished" });
-        } catch (error) {
-          throw createPrivilegedAuditEmissionPublicError(
-            error,
-            callbackSettled ? callbackError ? { callbackError } : { callbackResult } : void 0
-          );
-        } finally {
-          revokePrivilegedDbAccess(privilegedContext);
-        }
-      }
-    }
-  };
 }
 async function emitPrivilegedRunAudit(database, context, details) {
   const event = await database.audit.emit(details);
@@ -6815,18 +12101,18 @@ async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
       if (await privilegedAuditEventAlreadyIndexed(database, event)) {
         continue;
       }
-      await database.sqlite.insertLogIndexEvent(event);
+      await database.adapter.insertLogIndexEvent(event);
     } catch {
       return;
     }
   }
   try {
-    await database.sqlite.pruneLogIndex(logIndexLimit(database.config ?? {}));
+    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
   } catch {
   }
 }
 async function privilegedAuditEventAlreadyIndexed(database, event) {
-  const recent = await database.sqlite.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
   return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
 }
 function samePrivilegedAuditLogEvent(left, right) {
@@ -6839,7 +12125,7 @@ function normalizePrivilegedRunSignal(value) {
   return new AbortController().signal;
 }
 function createPrivilegedRunAbortError() {
-  return commandError(
+  return commandError2(
     "Privileged run aborted.",
     "Retry the privileged operation if cancellation was not intended.",
     "ABORTED"
@@ -6892,14 +12178,14 @@ function isPlainPrivilegedMetadata(value) {
   return prototype === Object.prototype || prototype === null;
 }
 function invalidPrivilegedRunMetadata(message) {
-  return commandError(
+  return commandError2(
     message,
     "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
     "INVALID_PRIVILEGED_RUN_METADATA"
   );
 }
 function createPrivilegedRunPublicError(cause) {
-  const error = commandError(
+  const error = commandError2(
     "Privileged run failed.",
     "Check the privileged audit events and server logs before exposing a safe response.",
     "PRIVILEGED_RUN_FAILED"
@@ -6908,7 +12194,7 @@ function createPrivilegedRunPublicError(cause) {
   return error;
 }
 function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
-  const error = commandError(
+  const error = commandError2(
     "Privileged audit emission failed.",
     "Check the server audit log configuration before retrying the privileged operation.",
     "PRIVILEGED_AUDIT_EMISSION_FAILED"
@@ -6922,92 +12208,22 @@ function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
 function isPrivilegedAuditEmissionPublicError(error) {
   return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
 }
-function createPrivilegedHandlerContext(database, context, signal) {
-  const privilegedContext = {
-    ...context,
-    signal,
-    __privilegedRunActive: true,
-    __jobEnqueuedBy: context.auth?.userId ?? null,
-    __jobParentContext: context,
-    auth: {
-      userId: privilegedAuthUserId(),
-      displayName: "Privileged server role",
-      email: null,
-      picture: null,
-      isAuthenticated: false,
-      isGuest: false,
-      provider: "privileged-server-role"
-    }
-  };
-  const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
-  const scheduleProvenance = provenanceStore?.get(context);
-  if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
-  grantPrivilegedDbAccess(privilegedContext);
-  const holder = createContextHolder(privilegedContext);
-  privilegedContext.db = createEndpointDatabaseApi(database, () => holder.current);
-  privilegedContext.files = createPrivilegedFileApi(database, () => holder.current);
-  privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
-  privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
-  privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
-  privilegedContext.mail = database.mail;
-  return privilegedContext;
-}
 function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => (database.__rootDatabase ?? database).sqlite;
+  const sqlite = () => (database.__rootDatabase ?? database).adapter;
   return {
     async get(name) {
       assertActivePrivilegedJobAccess(contextGetter);
       if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare("SELECT * FROM sporades_schedules WHERE name=?").get(name);
+      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
       return row ? await scheduleSummary(sqlite(), row) : null;
     },
     async list() {
       assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
+      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
       const summaries = [];
       for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
       return summaries;
     }
-  };
-}
-async function scheduleSummary(sqlite, row) {
-  const invalid = (field) => {
-    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
-    error.scheduleName = typeof row?.name === "string" ? row.name : null;
-    error.field = field;
-    return error;
-  };
-  if (typeof row.name !== "string" || !row.name) throw invalid("name");
-  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
-  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
-  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
-  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
-  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
-  let latestOccurrence = null;
-  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
-  if (latestOutcome === "enqueued") {
-    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
-    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
-    const job = await sqlite.prepare("SELECT id FROM sporades_jobs WHERE id=? AND scheduleName=? AND scheduledFor=?").get(row.latestJobId, row.name, row.latestScheduledFor);
-    if (!job) throw invalid("latestOccurrence.jobId");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
-  } else if (latestOutcome === "payload-failed") {
-    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
-    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
-    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
-  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
-  return {
-    name: String(row.name),
-    expression: String(row.expression),
-    timezone: String(row.effectiveTimezone),
-    missedRun: String(row.missedRunPolicy),
-    enabled: Boolean(row.enabled),
-    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
-    latestOccurrence
   };
 }
 function createPrivilegedFileApi(database, contextGetter) {
@@ -7077,13 +12293,13 @@ function createPrivilegedFileApi(database, contextGetter) {
     unsupported() {
       const active = activePrivilegedFileAccess(contextGetter);
       if (!active.ok) {
-        throw commandError(
+        throw commandError2(
           active.error?.message ?? "Privileged file access is no longer active.",
           active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
           "PRIVILEGED_FILE_ACCESS_INACTIVE"
         );
       }
-      throw commandError(
+      throw commandError2(
         "Unsupported privileged file operation.",
         "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
         "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
@@ -7102,34 +12318,6 @@ function activePrivilegedFileAccess(contextGetter) {
       "Start a new ctx.privileged.run callback before using privileged file operations."
     )
   };
-}
-function privilegedAuthUserId() {
-  return "__privileged__";
-}
-function isReservedAuthUserId(userId) {
-  return userId === privilegedAuthUserId();
-}
-function authIdentityRowUnlessReserved(rowOrPromise) {
-  if (rowOrPromise && typeof rowOrPromise.then === "function") {
-    return rowOrPromise.then((row) => isReservedAuthUserId(row?.userId) ? null : row);
-  }
-  return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
-}
-function authIdentityRowsUnlessReserved(rowsOrPromise) {
-  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
-    return rowsOrPromise.then((rows) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
-  }
-  return rowsOrPromise.filter((row) => !isReservedAuthUserId(row?.userId));
-}
-function assertNotReservedAuthUserId(userId) {
-  if (!isReservedAuthUserId(userId)) {
-    return;
-  }
-  throw commandError(
-    "Reserved auth user ID cannot be used for a real Sporades user.",
-    "Use runtime-generated user IDs for sessions and auth provider links.",
-    "RESERVED_AUTH_USER_ID"
-  );
 }
 function createPrivilegedAuditLogInput(details = {}) {
   const outcome = normalizePrivilegedAuditOutcome(details.outcome);
@@ -7197,6 +12385,884 @@ function normalizePrivilegedAuditCorrelation(value) {
 function auditString(value, fallback) {
   const text = value === null || value === void 0 ? "" : String(value);
   return text.trim() ? text : fallback;
+}
+function normalizeTableAcl(tableName, aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
+  if (aclRules === void 0) {
+    return {
+      allowByDefault: true,
+      resolve(operation) {
+        return resolveEffectiveAclRule(this, operation);
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError2(
+      `Invalid Capsule table ACL: ${tableName}`,
+      "Pass an object with function rules for read, write, insert, update, and delete."
+    );
+  }
+  const normalized = {
+    allowByDefault: true
+  };
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError2(
+        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
+        "Supported ACL operations are read, write, insert, update, and delete."
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError2(
+        `Invalid Capsule table ACL: ${tableName}.${operation}`,
+        "ACL rules must be functions for read, write, insert, update, and delete."
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation) {
+    return resolveEffectiveAclRule(this, operation);
+  };
+  return normalized;
+}
+function resolveEffectiveAclRule(aclRules, operation) {
+  if (!aclRules || typeof aclRules !== "object") {
+    return void 0;
+  }
+  if (operation === "insert" || operation === "update" || operation === "delete") {
+    return aclRules[operation] ?? aclRules.write;
+  }
+  return aclRules[operation];
+}
+function createTableAclContext(context, database) {
+  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  return {
+    ...aclContext,
+    acl: createAclHelpers(database)
+  };
+}
+function privilegedDbAccessContextSet() {
+  const holder = privilegedDbAccessContextSet;
+  if (!holder.contexts) {
+    Object.defineProperty(holder, "contexts", {
+      value: /* @__PURE__ */ new WeakSet(),
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return holder.contexts;
+}
+function grantPrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().add(context);
+  }
+  return context;
+}
+function revokePrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().delete(context);
+  }
+  return context;
+}
+function hasPrivilegedDbAccess(context) {
+  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
+}
+function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return write();
+  }
+  const rule = table.acl?.resolve?.(operation);
+  if (!rule) {
+    return write();
+  }
+  const context = contextGetter?.();
+  const denialLogData = createAclDenialLogData({
+    context,
+    table,
+    operation,
+    previous,
+    next
+  });
+  const deny = () => {
+    if (!context?.__pendingAclWrites) {
+      emitAclDeniedLog(database, { data: denialLogData });
+    }
+    throw createAclDeniedError(denialLogData);
+  };
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation,
+    table: table.name,
+    previous,
+    next
+  });
+  if (!isPromiseLike(result)) {
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  }
+  const pending = Promise.resolve(result).then((allowed) => {
+    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  });
+  context?.__pendingAclWrites?.push(pending);
+  return pending;
+}
+function applyReadAcl(database, table, row, context) {
+  if (hasPrivilegedDbAccess(context)) {
+    return true;
+  }
+  const rule = table.acl?.resolve?.("read");
+  if (!rule) {
+    return true;
+  }
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation: "read",
+    table: table.name,
+    row
+  });
+  const deny = () => {
+    emitAclDeniedLog(database, {
+      context,
+      table,
+      operation: "read",
+      row
+    });
+    return false;
+  };
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
+}
+function filterRowsByReadAcl(database, table, rows, context) {
+  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
+  if (decisions.some(isPromiseLike)) {
+    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
+  }
+  return rows.filter((_, index) => decisions[index]);
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+function createAclHelpers(database) {
+  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const helpers = {
+    db: createAclDbHelpers(database, state),
+    storage: createAclStorageHelpers(database, state)
+  };
+  Object.defineProperty(helpers, ACL_HELPER_STATE, {
+    value: state,
+    enumerable: false
+  });
+  return Object.freeze(helpers);
+}
+function aclRuleTouchedAsyncHelperRead(aclContext) {
+  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+}
+function markAsyncAclHelperRead(state, result) {
+  if (isPromiseLike(result)) {
+    state.touchedAsyncRead = true;
+    Promise.resolve(result).catch(() => {
+    });
+    return true;
+  }
+  return false;
+}
+function createAclDbHelpers(database, state) {
+  return Object.freeze({
+    get(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return null;
+      }
+      return selected ? deserializeRow(table, selected) : null;
+    },
+    exists(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return false;
+      }
+      return Boolean(selected);
+    }
+  });
+}
+function createAclStorageHelpers(database, state) {
+  return Object.freeze({
+    get(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = resolveAclStorageFileReference(database, state, reference);
+        return row ? aclStorageMetadataFromFileRow(row) : null;
+      }
+      return null;
+    },
+    exists(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        return Boolean(resolveAclStorageFileReference(database, state, reference));
+      }
+      return false;
+    }
+  });
+}
+function resolveAclStorageFileReference(database, state, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path12;
+    try {
+      path12 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return null;
+    }
+    const selected2 = database.adapter.selectLiveFileByPath(path12);
+    if (markAsyncAclHelperRead(state, selected2)) {
+      return null;
+    }
+    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
+    return resolved?.ambiguous ? null : resolved;
+  }
+  const selected = database.adapter.selectFileById(value);
+  if (markAsyncAclHelperRead(state, selected)) {
+    return null;
+  }
+  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
+    return null;
+  }
+  return selected;
+}
+function assertAclHelperReadAllowed(state) {
+  state.readCount += 1;
+  if (state.readCount > state.maxReads) {
+    throw commandError2("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+  }
+}
+function resolveAclAppTable(database, tableName) {
+  const normalized = String(tableName ?? "");
+  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  if (!table) {
+    throw commandError2("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+  }
+  return table;
+}
+function resolveAclStorageResource(resourceName) {
+  const normalized = String(resourceName ?? "");
+  if (normalized === "files") {
+    return normalized;
+  }
+  throw commandError2("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+}
+function aclStorageMetadataFromFileRow(row) {
+  const metadata = fileMetadataFromRow(row);
+  return {
+    ...metadata,
+    originalName: row.name,
+    owner: row.ownerId,
+    ownerId: row.ownerId,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt ?? null
+  };
+}
+function emitAclDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied table operation.",
+    data: details.data ?? createAclDenialLogData(details)
+  });
+}
+function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
+  return {
+    resource: {
+      kind: "table",
+      name: table.name
+    },
+    operation,
+    rule: {
+      category: "table",
+      declaredOperation: aclRuleDeclaredOperation(table, operation)
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null
+    },
+    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
+  };
+}
+function aclRuleDeclaredOperation(table, operation) {
+  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
+    return "write";
+  }
+  return operation;
+}
+function aclRowLogSnapshot(input) {
+  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
+    const previous = input.previous ?? null;
+    const next = input.next ?? null;
+    return {
+      previousId: previous?.id ?? null,
+      nextId: next?.id ?? null,
+      previousFields: aclVisibleFieldNames(previous),
+      nextFields: aclVisibleFieldNames(next),
+      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
+      previousPresent: Boolean(previous),
+      nextPresent: Boolean(next)
+    };
+  }
+  return {
+    id: input?.id ?? null,
+    fields: aclVisibleFieldNames(input)
+  };
+}
+function aclVisibleFieldNames(row) {
+  return Object.keys(row ?? {}).filter(
+    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
+  );
+}
+function createAclDeniedError(logData = null) {
+  const error = commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  if (logData) {
+    error.sporadesAclDenialLogData = logData;
+  }
+  return error;
+}
+function assertActivePrivilegedJobAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) return;
+  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
+}
+async function drainPendingAclWrites(context) {
+  let firstError = null;
+  while (context?.__pendingAclWrites?.length > 0) {
+    const pending = context.__pendingAclWrites.splice(0);
+    const results = await Promise.allSettled(pending);
+    for (const result of results) {
+      if (result.status === "rejected" && !firstError) {
+        firstError = result.reason;
+      }
+    }
+  }
+  if (firstError) {
+    throw firstError;
+  }
+}
+
+// src/server-runtime-source.ts
+async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+  const path12 = await import("node:path");
+  const mailConfig = validateMailConfig(config.mail);
+  let mailLogSink;
+  const mail = createMailRuntime(mailConfig, serverEnv, {
+    ...options,
+    mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event))
+  });
+  const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
+  const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
+  globalThis.requireAuth = requireAuth;
+  const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
+  const serviceEnv = options?.serviceEnv ?? serverEnv;
+  const fileStorage = await createRuntimeFileStorageAdapter({
+    config,
+    databasePath,
+    serviceEnv
+  });
+  const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
+  const endpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
+  const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
+  const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
+  const messages = extractMessageHandlers(serverSource);
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
+  const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
+  const clock = createRuntimeClock(options?.clock);
+  const contextMiddleware = extractContextMiddleware(serverSource);
+  const mutationHooks = extractMutationHooks(serverSource);
+  const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
+  const rowCache = /* @__PURE__ */ new Map();
+  const database = {
+    adapter: sqlite,
+    schema,
+    endpoints,
+    queries,
+    mutations,
+    messages,
+    jobs,
+    schedules,
+    clock,
+    capsuleIdentity: String(config.name ?? "capsule"),
+    scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
+    schedulePayloadFactoryTimeoutMs,
+    schedulePayloadFactoryActive: 0,
+    schedulePayloadFactoryWaiters: [],
+    schedulePayloadFactoryLanes: /* @__PURE__ */ new Map(),
+    schedulePayloadFactoryControllers: /* @__PURE__ */ new Map(),
+    contextMiddleware,
+    mutationHooks,
+    lifecycleHooks,
+    journeyPolicy: normalizeJourneyPolicy(capsuleDefinition?.journey),
+    journeySessionInactivityMinutes,
+    runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
+    jobScheduleProvenanceByContext: /* @__PURE__ */ new WeakMap(),
+    rowCache,
+    serverEnv,
+    mail,
+    authConfig: authStatus2(config, serverEnv),
+    passwordResetConfig: resolvePasswordResetConfig(config),
+    securityPolicy: resolveRuntimeSecurityPolicy(config),
+    fileStorage,
+    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+    httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
+    close: () => {
+      database.__scheduleStopped = true;
+      abortSchedulePayloadFactories(database);
+      for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+      database.__scheduleTimers?.clear?.();
+      if (database.__jobWakeTimer) {
+        database.clock.clearTimer(database.__jobWakeTimer);
+        database.__jobWakeTimer = null;
+      }
+      const mailResult = database.mail.close();
+      const sqliteResult = database.adapter.close();
+      const storageResult = database.fileStorage.close();
+      const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
+      return pending.length > 0 ? Promise.all(pending) : void 0;
+    }
+  };
+  database.init = async () => {
+    if (database.__runtimeInitialized) return;
+    if (database.lifecycleHooks.init !== void 0) {
+      if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
+      await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+    }
+    database.__scheduleStopped = false;
+    database.__scheduleTimers = /* @__PURE__ */ new Set();
+    database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
+    database.__scheduleRecoveryTimer = null;
+    database.__scheduleRecoveryDueAt = null;
+    await reconcileSchedules(database);
+    await startStaticSchedules(database);
+    database.__runtimeInitialized = true;
+  };
+  database.shutdown = () => {
+    if (database.__shutdownPromise) return database.__shutdownPromise;
+    database.__shutdownPromise = (async () => {
+      try {
+        database.__scheduleStopped = true;
+        abortSchedulePayloadFactories(database);
+        for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+        database.__scheduleTimers?.clear?.();
+        database.__scheduleRecoveryTimer = null;
+        database.__scheduleRecoveryDueAt = null;
+        await Promise.allSettled([...database.__activeScheduleOccurrences ?? []]);
+        if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
+          if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError2("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
+          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+        }
+      } finally {
+        database.__runtimeInitialized = false;
+        await database.mail.close();
+      }
+    })();
+    return database.__shutdownPromise;
+  };
+  database.log = createRuntimeLogSink({
+    database: sqlite,
+    config,
+    serverEnv,
+    dataDir: path12.dirname(databasePath)
+  });
+  mailLogSink = database.log;
+  database.audit = createPrivilegedAuditEmitter(database.log);
+  await sqlite.ensureSystemTable();
+  await sqlite.ensureAuthStorage(database.authConfig);
+  await sqlite.ensureUserPreferencesStorage();
+  await ensureJobStorage(sqlite);
+  await ensureScheduleStorage(sqlite);
+  await sqlite.ensureFileStorage();
+  await sqlite.ensureLogStorage();
+  await recoverExpiredJobLeases(database);
+  assertValidReferenceTargets(schema);
+  await sqlite.migrateAppSchema(schema);
+  return database;
+}
+function resolveJourneySessionInactivityMinutes(config = {}) {
+  const value = config.journey?.sessionInactivityMinutes;
+  if (typeof value !== "number" || !Number.isFinite(value)) return 30;
+  return Math.min(1440, Math.max(1, Math.round(value)));
+}
+async function reconcileSchedules(database) {
+  const now = database.clock.now();
+  const sql = database.adapter.dialect.sql;
+  const declaredNames = new Set(database.schedules.map((definition) => definition.name));
+  const persisted = await database.adapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+  const plans = [];
+  for (const definition of database.schedules) {
+    const row = persisted.find((candidate) => candidate.name === definition.name);
+    const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
+    let nextOccurrence = null;
+    let recoveredOccurrence = null;
+    if (definition.enabled) {
+      if (changed || !row?.nextOccurrence) {
+        nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
+      } else {
+        nextOccurrence = String(row.nextOccurrence);
+        if (Date.parse(nextOccurrence) <= now.getTime()) {
+          let latest = new Date(nextOccurrence);
+          let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
+          while (future.getTime() <= now.getTime()) {
+            latest = future;
+            future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
+          }
+          nextOccurrence = future.toISOString();
+          if (definition.missedRun === "latest") recoveredOccurrence = latest;
+        }
+      }
+    }
+    plans.push({ definition, row, nextOccurrence, recoveredOccurrence });
+  }
+  for (const row of persisted) {
+    if (!declaredNames.has(String(row.name))) await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+  }
+  const updateScheduleSql = sql(
+    "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [expression]=?, [effectiveTimezone]=?, [missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?"
+  );
+  for (const { definition, row, nextOccurrence } of plans) {
+    if (row) await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+    else {
+      try {
+        await database.adapter.prepare(sql("INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?)")).run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+      } catch (error) {
+        const concurrent = await database.adapter.prepare(sql("SELECT [name] FROM [sporades_schedules] WHERE [name]=?")).get(definition.name);
+        if (!concurrent) throw error;
+        await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+      }
+    }
+    definition.nextOccurrence = nextOccurrence;
+  }
+  for (const { definition, recoveredOccurrence } of plans) {
+    if (recoveredOccurrence) await recordScheduledOccurrence(database, definition, recoveredOccurrence);
+  }
+  await recoverPendingScheduleOccurrences(database);
+}
+async function startStaticSchedules(database) {
+  database.__scheduleTimers ??= /* @__PURE__ */ new Set();
+  database.__activeScheduleOccurrences ??= /* @__PURE__ */ new Set();
+  for (const definition of database.schedules) {
+    if (!definition.enabled) continue;
+    const arm = () => {
+      if (database.__scheduleStopped) return;
+      const occurrence = new Date(definition.nextOccurrence);
+      const timer = database.clock.setTimer(() => {
+        database.__scheduleTimers.delete(timer);
+        const active = recordScheduledOccurrence(database, definition, occurrence).catch(async (error) => {
+          database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
+          if (!database.__scheduleStopped) await finishFailedScheduledOccurrence(database, definition, occurrence, error);
+        }).finally(() => {
+          database.__activeScheduleOccurrences.delete(active);
+          if (database.__scheduleStopped) return;
+          arm();
+        });
+        database.__activeScheduleOccurrences.add(active);
+        return active;
+      }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
+      database.__scheduleTimers.add(timer);
+    };
+    arm();
+  }
+}
+async function recordScheduledOccurrence(database, definition, occurrence) {
+  const sql = database.adapter.dialect.sql;
+  const claim = await claimScheduledOccurrence(database, definition, occurrence);
+  if (!claim) {
+    definition.nextOccurrence = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+    return null;
+  }
+  await database.scheduleOccurrenceFault?.("after-pending", { scheduleName: definition.name, scheduledFor: occurrence.toISOString() });
+  const state = await enqueueScheduledOccurrence(database, definition, occurrence);
+  if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
+  const completedAt = database.clock.now().toISOString();
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [claimToken]=?")).run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
+  if (database.__scheduleStopped) return state;
+  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+  definition.nextOccurrence = next;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
+  return state;
+}
+async function claimScheduledOccurrence(database, definition, occurrence) {
+  const scheduledFor = occurrence.toISOString();
+  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+  const token = randomUUID();
+  const now = database.clock.now();
+  const nowIso = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 3e4).toISOString();
+  const sql = database.adapter.dialect.sql;
+  try {
+    await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
+    return { id, token };
+  } catch (error) {
+    const existing = await database.adapter.prepare(sql("SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
+    if (!existing) throw error;
+    if (existing.status !== "pending") return null;
+    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
+      schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
+      return null;
+    }
+    const result = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, nowIso);
+    return Number(result.changes) === 1 ? { id, token } : null;
+  }
+}
+async function recoverPendingScheduleOccurrences(database) {
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?) ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all(database.clock.now().toISOString());
+  for (const row of rows) {
+    const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
+    if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+  }
+  const next = await database.adapter.prepare(sql("SELECT [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [claimExpiresAt] IS NOT NULL ORDER BY [claimExpiresAt] ASC LIMIT 1")).get();
+  if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
+}
+function schedulePendingOccurrenceRecovery(database, claimExpiresAt) {
+  if (database.__scheduleStopped) return;
+  const dueAt = Date.parse(claimExpiresAt);
+  if (!Number.isFinite(dueAt)) return;
+  if (database.__scheduleRecoveryTimer && database.__scheduleRecoveryDueAt <= dueAt) return;
+  if (database.__scheduleRecoveryTimer) {
+    database.clock.clearTimer(database.__scheduleRecoveryTimer);
+    database.__scheduleTimers?.delete(database.__scheduleRecoveryTimer);
+  }
+  database.__scheduleRecoveryDueAt = dueAt;
+  const timer = database.clock.setTimer(() => {
+    database.__scheduleTimers?.delete(timer);
+    database.__scheduleRecoveryTimer = null;
+    database.__scheduleRecoveryDueAt = null;
+    if (database.__scheduleStopped) return;
+    const active = recoverPendingScheduleOccurrences(database).catch((error) => {
+      database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
+    }).finally(() => database.__activeScheduleOccurrences?.delete(active));
+    database.__activeScheduleOccurrences?.add(active);
+    return active;
+  }, Math.max(0, dueAt - database.clock.now().getTime()));
+  database.__scheduleRecoveryTimer = timer;
+  database.__scheduleTimers?.add(timer);
+}
+async function enqueueScheduledOccurrence(database, definition, occurrence) {
+  const scheduledFor = occurrence.toISOString();
+  const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
+  const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+  const payload = await resolveSchedulePayload(database, definition, scheduledFor, context);
+  if (!payload.ok) return null;
+  database.jobScheduleProvenanceByContext.set(context, { scheduleName: definition.name, scheduledFor });
+  const state = await context.privileged.run(
+    { operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } },
+    (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, payload.value, { retry: definition.retry, idempotencyKey: provenance })
+  );
+  return state;
+}
+async function recoverExpiredJobLeases(database) {
+  const recoveredAt = database.clock.now();
+  const recoveredIso = recoveredAt.toISOString();
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
+  for (const row of rows) {
+    const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
+    const history = JSON.parse(row.attemptHistory || "[]");
+    history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
+    if (Number(row.attempts) < retry.maxAttempts) {
+      const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt, JSON.stringify(history), row.id);
+      database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
+    } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
+  }
+  if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
+}
+function logPayloadMaxBytes(config = {}) {
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
+}
+function logRedactedValue() {
+  return "[REDACTED]";
+}
+function createRuntimeLogSink(options) {
+  const path12 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path12.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path12.dirname(logPath), { recursive: true });
+  return {
+    path: logPath,
+    emit(input) {
+      const event = createLogEnvelope({
+        ...input,
+        config: options.config,
+        serverEnv: options.serverEnv
+      });
+      appendFileSync(logPath, `${JSON.stringify(event)}
+`);
+      let indexed;
+      try {
+        const inserted = options.database.insertLogIndexEvent(event);
+        indexed = isPromiseLike(inserted) ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config))) : options.database.pruneLogIndex(logIndexLimit(options.config));
+      } catch {
+        indexed = void 0;
+      }
+      if (process.env.SPORADES_LOG_STDOUT === "1") {
+        process.stdout.write(`${JSON.stringify(event)}
+`);
+      }
+      return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+    },
+    recent(limit = logIndexLimit(options.config)) {
+      return options.database.readRecentLogEvents(limit);
+    },
+    tail(limit = logIndexLimit(options.config)) {
+      return readJsonlLogEvents(logPath, limit);
+    }
+  };
+}
+function requirePathModule() {
+  return {
+    join: (...parts) => parts.join("/").replace(/\/+/g, "/"),
+    dirname: (filePath) => String(filePath).replace(/\/[^/]*$/, "") || "."
+  };
+}
+function createRuntimeLogger(database, context = {}) {
+  const write = (level, args) => {
+    const [message, data, ...rest] = args;
+    const structuredData = data !== void 0 && rest.length === 0 ? data : rest.length > 0 ? { data, args: rest } : null;
+    database.log.emit({
+      category: context.category ?? "app",
+      event: context.event ?? "ctx.log",
+      level,
+      message: String(message ?? ""),
+      data: structuredData,
+      request: context.request ?? null,
+      release: context.release ?? null,
+      correlation: context.correlation ?? null
+    });
+  };
+  return {
+    info: (...args) => write("info", args),
+    warn: (...args) => write("warn", args),
+    error: (...args) => write("error", args)
+  };
+}
+function createContextPrivilegedApi(database, contextGetter) {
+  return {
+    async run(options, callback) {
+      const context = contextGetter();
+      if (context?.__privilegedRunActive) {
+        throw commandError2(
+          "Nested privileged runs are not supported.",
+          "Call separate top-level ctx.privileged.run operations instead of starting one privileged run from inside another.",
+          "NESTED_PRIVILEGED_RUN"
+        );
+      }
+      const auditDetails = createPrivilegedRunAuditDetails(context, options);
+      if (typeof callback !== "function") {
+        throw commandError2(
+          "Privileged run requires a callback.",
+          "Pass a callback to ctx.privileged.run after the operation metadata.",
+          "INVALID_PRIVILEGED_RUN_CALLBACK"
+        );
+      }
+      const signal = normalizePrivilegedRunSignal(options.signal);
+      try {
+        await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "started" });
+      } catch (error) {
+        throw createPrivilegedAuditEmissionPublicError(error);
+      }
+      const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
+      let callbackResult;
+      let callbackError;
+      let callbackSettled = false;
+      try {
+        if (signal.aborted) {
+          throw createPrivilegedRunAbortError();
+        }
+        try {
+          callbackResult = await callback(privilegedContext);
+          callbackSettled = true;
+        } catch (error) {
+          callbackError = error;
+          callbackSettled = true;
+          throw error;
+        }
+        try {
+          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "completed" });
+        } catch (error) {
+          throw createPrivilegedAuditEmissionPublicError(error, { callbackResult });
+        }
+        return callbackResult;
+      } catch (error) {
+        if (isPrivilegedAuditEmissionPublicError(error)) {
+          throw error;
+        }
+        const safeErrorCode = signal.aborted && !callbackSettled ? "ABORTED" : safePrivilegedAuditErrorCode(error, "errored");
+        try {
+          await emitPrivilegedRunAudit(database, context, {
+            ...auditDetails,
+            outcome: "errored",
+            safeErrorCode
+          });
+        } catch (auditError) {
+          throw createPrivilegedAuditEmissionPublicError(auditError, { callbackError: callbackSettled ? callbackError ?? error : error });
+        }
+        throw createPrivilegedRunPublicError(error);
+      } finally {
+        try {
+          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "finished" });
+        } catch (error) {
+          throw createPrivilegedAuditEmissionPublicError(
+            error,
+            callbackSettled ? callbackError ? { callbackError } : { callbackResult } : void 0
+          );
+        } finally {
+          revokePrivilegedDbAccess(privilegedContext);
+        }
+      }
+    }
+  };
+}
+function createPrivilegedHandlerContext(database, context, signal) {
+  const privilegedContext = {
+    ...context,
+    signal,
+    __privilegedRunActive: true,
+    __jobEnqueuedBy: context.auth?.userId ?? null,
+    __jobParentContext: context,
+    auth: {
+      userId: privilegedAuthUserId(),
+      displayName: "Privileged server role",
+      email: null,
+      picture: null,
+      isAuthenticated: false,
+      isGuest: false,
+      provider: "privileged-server-role"
+    }
+  };
+  const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
+  const scheduleProvenance = provenanceStore?.get(context);
+  if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
+  grantPrivilegedDbAccess(privilegedContext);
+  const holder = createContextHolder(privilegedContext);
+  privilegedContext.db = createEndpointDatabaseApi(database, () => holder.current);
+  privilegedContext.files = createPrivilegedFileApi(database, () => holder.current);
+  privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
+  privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
+  privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
+  privilegedContext.mail = database.mail;
+  return privilegedContext;
 }
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -7267,9 +13333,6 @@ function logDataContainsServerEnvValue(value, serverEnv) {
   );
   return values.some((secret) => serialized.includes(String(secret)));
 }
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
-}
 function isSensitiveLogString(value) {
   return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
 }
@@ -7306,38 +13369,6 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
-function createLogIndexTables(sqlite) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
-  );
-}
-function insertLogIndexEvent(sqlite, event) {
-  sqlite.prepare(
-    "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(
-    randomUUID(),
-    event.timestamp,
-    event.category,
-    event.event,
-    event.level,
-    event.message,
-    event.capsule?.name ?? null,
-    event.capsule?.id ?? null,
-    event.release?.id ?? event.release ?? null,
-    event.request?.id ?? null,
-    event.correlation?.id ?? event.correlation ?? null,
-    JSON.stringify(event)
-  );
-}
-function pruneLogIndex(sqlite, limit) {
-  sqlite.prepare(
-    "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)"
-  ).run(limit);
-}
-function readRecentLogEvents(sqlite, limit = 200) {
-  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-  return sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit).reverse().map((row) => JSON.parse(row.payload));
-}
 function readJsonlLogEvents(logPath, limit = 200) {
   let raw = "";
   try {
@@ -7353,7 +13384,7 @@ function readJsonlLogEvents(logPath, limit = 200) {
 function schemaFromCapsuleDefinition(definition) {
   const schema = definition?.schema ?? {};
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Capsule schema.",
       "Pass an object whose values are table(...) declarations to capsule({ schema })."
     );
@@ -7364,7 +13395,7 @@ function schemaFromCapsuleDefinition(definition) {
 }
 function schemaTableFromCapsuleTable(name, table) {
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
-    throw commandError(
+    throw commandError2(
       `Invalid Capsule table: ${name}`,
       "Declare schema tables with table({ fieldName: FieldBuilder() })."
     );
@@ -7375,71 +13406,23 @@ function schemaTableFromCapsuleTable(name, table) {
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field))
   };
 }
-function normalizeTableAcl(tableName, aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === void 0) {
-    return {
-      allowByDefault: true,
-      resolve(operation) {
-        return resolveEffectiveAclRule(this, operation);
-      }
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete."
-    );
-  }
-  const normalized = {
-    allowByDefault: true
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete."
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete."
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve(operation) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-function resolveEffectiveAclRule(aclRules, operation) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return void 0;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
-}
 function schemaFieldFromCapsuleField(name, field) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
-    throw commandError(
+    throw commandError2(
       `Invalid Capsule field: ${name}`,
       "Use Sporades field builders such as String(), Boolean(), Number(), Date(), Json(), or Reference(...)."
     );
   }
   const supportedKinds = /* @__PURE__ */ new Set(["String", "Boolean", "Number", "Date", "Json", "Reference"]);
   if (!supportedKinds.has(field.kind)) {
-    throw commandError(
+    throw commandError2(
       `Unsupported Capsule field type: ${field.kind}`,
       "Use supported Sporades field builders: String, Boolean, Number, Date, Json, Reference."
     );
   }
   let defaultValue = field.defaultValue;
   if (field.kind === "Number" && defaultValue !== void 0 && !Number.isFinite(defaultValue)) {
-    throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+    throw commandError2("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
   }
   if (field.kind === "Date" && defaultValue !== void 0) {
     defaultValue = normalizeDateValue(defaultValue, "default");
@@ -7464,214 +13447,18 @@ function sqliteTypeForFieldKind(kind) {
   }
   return "TEXT";
 }
-function migrateAppSchema(sqlite, schema) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
-      );
-    }
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-  return chainMaybePromise([
-    ...schema.tables.map((table) => () => {
-      const existingTable = existingTables.get(table.name);
-      return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
-    }),
-    () => sqlite.writeSchemaMetadata({
-      schemaVersion: "v1:additive-fields",
-      schemaHash: nextSchemaHash,
-      schemaJson: nextSchemaJson
-    })
-  ]);
-}
-async function migrateLibsqlAppSchema(sqlite, schema) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = await sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
-      );
-    }
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-  for (const table of schema.tables) {
-    const existingTable = existingTables.get(table.name);
-    if (schemaChanged && existingTable) {
-      await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
-    } else {
-      await sqlite.createAppTable(table);
-    }
-  }
-  await sqlite.writeSchemaMetadata({
-    schemaVersion: "v1:additive-fields",
-    schemaHash: nextSchemaHash,
-    schemaJson: nextSchemaJson
-  });
-}
-function normalizeSchema(schema) {
-  return {
-    tables: schema.tables.map((table) => ({
-      name: table.name,
-      fields: table.fields.map((field) => ({
-        name: field.name,
-        kind: field.kind,
-        sqliteType: field.sqliteType,
-        targetTable: field.targetTable,
-        defaultValue: field.defaultValue
-      }))
-    })).sort((left, right) => left.name.localeCompare(right.name))
-  };
-}
-function hashSchema(schemaJson) {
-  return createHash2("sha256").update(schemaJson).digest("hex");
-}
 function assertValidReferenceTargets(schema) {
   const tableNames = new Set(schema.tables.map((table) => table.name));
   for (const table of schema.tables) {
     for (const field of table.fields) {
       if (field.kind === "Reference" && !tableNames.has(field.targetTable)) {
-        throw commandError(
+        throw commandError2(
           `Unknown reference target: ${field.targetTable}`,
           "Reference fields must point at another table in the Capsule schema."
         );
       }
     }
   }
-}
-function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
-  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
-  for (const existingTable of existingSchema.tables ?? []) {
-    const nextTable = nextTables.get(existingTable.name);
-    if (!nextTable) {
-      throw commandError(
-        "Unsupported Capsule schema change.",
-        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
-      );
-    }
-    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
-    for (const existingField of existingTable.fields ?? []) {
-      const nextField = nextFields.get(existingField.name);
-      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
-        throw commandError(
-          "Unsupported Capsule schema change.",
-          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
-        );
-      }
-    }
-  }
-}
-function migrateExistingAppTable(sqlite, existingTable, nextTable) {
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  return chainMaybePromise([
-    ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
-      (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
-        if (!exists) {
-          throw invalidReferenceError(field);
-        }
-      })
-    ),
-    () => sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`),
-    () => sqlite.createAppTable(nextTable, tempTableName),
-    () => sqlite.exec(
-      `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} FROM ${quoteIdentifier(nextTable.name)}`
-    ),
-    () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
-    () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`)
-  ]);
-}
-async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
-  await sqlite.withTransaction(async (transaction) => {
-    await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
-  });
-}
-async function migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, nextTable) {
-  for (const field of addedFieldsForTable(existingTable, nextTable)) {
-    if (field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null && !await sqlite.referenceExists(field, field.defaultValue)) {
-      throw invalidReferenceError(field);
-    }
-  }
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  await sqlite.createAppTable(nextTable, tempTableName);
-  await sqlite.exec(
-    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} FROM ${quoteIdentifier(nextTable.name)}`
-  );
-  await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-  await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
-}
-function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
-  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
-    return quoteIdentifier(columnName);
-  }
-  if ((existingTable.fields ?? []).some((field2) => field2.name === columnName)) {
-    return quoteIdentifier(columnName);
-  }
-  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
-  return field?.defaultValue === void 0 ? "NULL" : toSqlLiteral(field.defaultValue, field);
-}
-function addedFieldsForTable(existingTable, nextTable) {
-  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
-  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
-}
-function createAppTable(sqlite, table, tableName = table.name) {
-  return sqlite.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` + appTableColumnDefinitions(table).join(", ") + ")"
-  );
-}
-function appTableColumnDefinitions(table) {
-  return [
-    "id TEXT PRIMARY KEY",
-    "createdAt TEXT NOT NULL",
-    "updatedAt TEXT NOT NULL",
-    ...table.fields.map((field) => appFieldColumnDefinition(field))
-  ];
-}
-function appFieldColumnDefinition(field) {
-  const defaultSql = fieldColumnDefaultSql(field);
-  const notNullSql = field.defaultValue !== void 0 && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
-  return `${quoteIdentifier(field.name)} ${field.sqliteType}${notNullSql}${defaultSql}`;
-}
-function fieldDefaultIsSqlNull(field) {
-  return field.defaultValue === null && field.kind !== "Json";
-}
-function fieldColumnDefaultSql(field) {
-  return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
-}
-function commandError(message, hint, code = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (code) {
-    error.code = code;
-  }
-  return error;
 }
 function extractSchema(serverSource) {
   const tables = [];
@@ -8146,717 +13933,13 @@ async function routeEndpoint(database, request, response) {
   }
   return true;
 }
-async function handleFileHttpRoute(database, request, response, websocketHub = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
-  if (uploadMatch && request.method === "PUT") {
-    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
-    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
-    return true;
-  }
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
-  if (privateMatch && request.method === "GET") {
-    const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, row);
-    return true;
-  }
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
-  if (publicMatch && request.method === "GET") {
-    const publicRow = await database.sqlite.selectPublicFileRow(publicMatch[1]);
-    if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, publicRow);
-    return true;
-  }
-  return false;
-}
-async function routeRuntimeHealth(database, request, response) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
-    return false;
-  }
-  const probe = request.headers["x-sporades-host-probe"];
-  if (typeof probe !== "string" || probe.length === 0) {
-    writeNotFound(response);
-    return true;
-  }
-  const result = await createRuntimeHealthResult(database);
-  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
-  return true;
-}
-async function createRuntimeHealthResult(database) {
-  const checks = {
-    sqlite: await checkRuntimeSqlite(database),
-    fileStorage: await checkRuntimeFileStorage(database)
-  };
-  const ready = checks.sqlite.ok && checks.fileStorage.ok;
-  return {
-    ok: ready,
-    data: {
-      runtime: { ready },
-      checks
-    },
-    error: ready ? null : {
-      message: "Sporades runtime is not ready.",
-      hint: "Check Hosted Capsule logs and data volume permissions."
-    }
-  };
-}
-async function checkRuntimeSqlite(database) {
-  return await (database.adapter ?? database.sqlite).checkHealth();
-}
-async function checkRuntimeFileStorage(database) {
-  return await database.fileStorage.checkHealth();
-}
-function createFileStorageTables(sqlite) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_files (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, deletedAt TEXT)"
-  );
-  try {
-    sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
-  } catch (error) {
-    if (!isDuplicateColumnError(error)) throw error;
-  }
-  sqlite.exec(filePathBackfillSql());
-  sqlite.exec(activeFilePathDedupeSql());
-  sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-  sqlite.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')"
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_uploads (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, bucketId TEXT NOT NULL, bucketName TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, version TEXT NOT NULL, expectedSize INTEGER NOT NULL, createdAt TEXT NOT NULL)"
-  );
-  ensureFileUploadTargetColumns(sqlite);
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, version TEXT NOT NULL, expiresAt TEXT, createdAt TEXT NOT NULL, revokedAt TEXT)"
-  );
-}
-async function readRequestBytes(request, maxBytes) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      );
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-function writeJsonHttpResponse(response, status, result) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(result)}
-`);
-}
-function writeNotFound(response) {
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("Not found");
-}
-async function sendFileHttpResponse(database, response, row) {
-  try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
-    response.writeHead(200, {
-      "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable"
-    });
-    response.end(bytes);
-  } catch {
-    writeNotFound(response);
-  }
-}
-function contentTypeForFile(type) {
-  if (typeof type !== "string") {
-    return "application/octet-stream";
-  }
-  const normalized = type.split(";")[0].trim().toLowerCase();
-  const safeInlineTypes = /* @__PURE__ */ new Set([
-    "text/plain",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/bmp"
-  ]);
-  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
-}
-async function createPendingFileUpload(database, auth, message) {
-  const input = message.file ?? {};
-  const size = Number(input.size ?? 0);
-  if (!Number.isFinite(size) || size < 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
-    };
-  }
-  if (size > database.fileMaxSizeBytes) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      )
-    };
-  }
-  return await withFileUploadPathLock("capsule", async () => {
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const replacing = message.replace === true;
-    const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-    if (!resolvedReplacement.ok) {
-      return resolvedReplacement;
-    }
-    const existingByReference = resolvedReplacement.row;
-    if (replacing && !existingByReference) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    return await database.sqlite.withTransaction(async (sqlite) => {
-      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-      let target;
-      try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
-      } catch (error) {
-        return {
-          ok: false,
-          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
-        };
-      }
-      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
-      if (existingByPath?.ambiguous) {
-        return ambiguousFileReferenceError(target.path);
-      }
-      if (existingByPath && existingByPath.ownerId !== auth.userId) {
-        return {
-          ok: false,
-          error: createStructuredFileError(
-            "File path already exists.",
-            "Choose another absolute File path or ask the owning user to delete the existing file first."
-          )
-        };
-      }
-      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
-      const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? randomUUID();
-      const uploadId = randomUUID();
-      const version = randomUUID();
-      const name = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
-      await sqlite.deleteFileUploadsForPath(target.path);
-      try {
-        await sqlite.insertFileUpload({
-          id: uploadId,
-          fileId,
-          ownerId: auth.userId,
-          bucketId: target.bucket.id,
-          bucketName: target.bucket.name,
-          path: target.path,
-          name,
-          type,
-          version,
-          expectedSize: size,
-          createdAt: now
-        });
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        const current = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current) throw error;
-        return {
-          ok: true,
-          data: {
-            uploadUrl: `/__sporades/uploads/${current.id}`,
-            method: "PUT",
-            headers: {},
-            file: fileMetadataFromUpload(current)
-          },
-          error: null
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          uploadUrl: `/__sporades/uploads/${uploadId}`,
-          method: "PUT",
-          headers: {},
-          file: fileMetadataFromUpload({
-            fileId,
-            bucketName: target.bucket.name,
-            path: target.path,
-            name,
-            type,
-            expectedSize: size,
-            version
-          })
-        },
-        error: null
-      };
-    });
-  });
-}
-async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  const upload = await database.sqlite.selectFileUpload(uploadId);
-  if (!upload) {
-    return {
-      ok: false,
-      data: null,
-      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
-    };
-  }
-  let wroteFileVersion = false;
-  const previousFile = await database.sqlite.selectFileById(upload.fileId);
-  try {
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.progress",
-      fileId: upload.fileId,
-      loaded: 0,
-      total: upload.expectedSize
-    });
-    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-    wroteFileVersion = true;
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const completion = await database.sqlite.withTransaction(async (sqlite) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
-      if (completed?.changes === 0) {
-        return { ok: false, superseded: true };
-      }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
-      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
-    });
-    if (!completion.ok && completion.superseded) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-      return {
-        ok: false,
-        data: null,
-        error: createStructuredFileError(
-          "Upload URL was superseded.",
-          "Request a fresh upload URL before retrying this file upload."
-        )
-      };
-    }
-    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
-      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
-    }
-    const file = fileMetadataFromRow(completion.row);
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.complete",
-      file
-    });
-    return { ok: true, data: { file }, error: null };
-  } catch (error) {
-    if (wroteFileVersion) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-    }
-    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
-      message: error.message,
-      hint: error.hint ?? "Request a fresh upload URL and retry."
-    };
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.failed",
-      fileId: upload.fileId,
-      error: structuredError
-    });
-    return {
-      ok: false,
-      data: null,
-      error: structuredError
-    };
-  }
-}
-async function getPrivateFileUrl(database, auth, fileReference) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-      file: fileMetadataFromRow(row)
-    },
-    error: null
-  };
-}
-async function createPublicFileUrl(database, auth, fileReference, options = {}) {
-  const expiry = validatePublicUrlExpiry(options);
-  if (!expiry.ok) {
-    return expiry;
-  }
-  return await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    const id = randomUUID();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    await sqlite.insertPublicFileUrl({
-      id,
-      fileId: row.id,
-      ownerId: auth.userId,
-      version: row.version,
-      expiresAt: expiry.expiresAt,
-      createdAt: now
-    });
-    return {
-      ok: true,
-      data: {
-        publicUrl: {
-          id,
-          fileId: row.id,
-          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-          expiresAt: expiry.expiresAt,
-          revokedAt: null
-        }
-      },
-      error: null
-    };
-  });
-}
-async function revokePublicFileUrl(database, auth, publicUrlId) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
-  if (result.changes === 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
-    error: null
-  };
-}
-async function deletePrivateFile(database, auth, fileReference) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-    await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now);
-    return {
-      ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
-      error: null,
-      deletedFile: row
-    };
-  });
-  if (!result.ok) {
-    return result;
-  }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
-  return {
-    ok: true,
-    data: result.data,
-    error: null
-  };
-}
-async function runFileMetadataTransaction(database, fn) {
-  if (database.__transactionActive) {
-    return await fn(database.sqlite);
-  }
-  return await database.sqlite.withTransaction(fn);
-}
-function validatePublicUrlExpiry(options) {
-  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
-  if (choices.length !== 1) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "Public file URLs require exactly one expiry choice.",
-        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
-      )
-    };
-  }
-  if (options.noExpiry === true) {
-    return { ok: true, expiresAt: null };
-  }
-  if (options.ttlSeconds !== void 0) {
-    const ttlSeconds = Number(options.ttlSeconds);
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-      return {
-        ok: false,
-        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
-      };
-    }
-    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
-  }
-  const expiresAt = new Date(options.expires);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
-    };
-  }
-  return { ok: true, expiresAt: expiresAt.toISOString() };
-}
-async function fileRowForOwner(database, fileId, ownerId) {
-  const reference = String(fileId ?? "");
-  if (isAbsoluteFilePath(reference)) {
-    const resolved = await resolveLiveFileReference(database, ownerId, reference);
-    return resolved.ok ? resolved.row : null;
-  }
-  return await database.sqlite.fileRowForOwner(reference, ownerId);
-}
-function fileMetadataFromRow(row) {
-  return {
-    id: row.id,
-    bucket: row.bucketName,
-    size: Number(row.size),
-    type: row.type,
-    name: row.name,
-    path: row.path,
-    version: row.version
-  };
-}
-function fileMetadataFromUpload(upload) {
-  return {
-    id: upload.fileId,
-    bucket: upload.bucketName,
-    size: Number(upload.expectedSize),
-    type: upload.type,
-    name: upload.name,
-    path: upload.path,
-    version: upload.version
-  };
-}
-async function withFileUploadPathLock(path10, fn) {
-  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path10);
-  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release;
-  const current = new Promise((resolve) => {
-    release = resolve;
-  });
-  const next = previous.then(() => current, () => current);
-  fileUploadPathLocks.set(key, next);
-  try {
-    await previous.catch(() => {
-    });
-    return await fn();
-  } finally {
-    release?.();
-    if (fileUploadPathLocks.get(key) === next) {
-      fileUploadPathLocks.delete(key);
-    }
-  }
-}
-async function resolveFileWriteTarget(database, ownerId, input, now) {
-  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path10 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path10.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
-  return { bucket, path: path10 };
-}
-async function ensureFileBucket(database, ownerId, name, now) {
-  const existing = await database.sqlite.findFileBucket(ownerId, name);
-  if (existing) return existing;
-  const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
-  try {
-    await database.sqlite.createFileBucket(bucket);
-    return bucket;
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.sqlite.findFileBucket(ownerId, name);
-    if (raced) return raced;
-    throw error;
-  }
-}
-function normalizeAbsoluteFilePath(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/")) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
-  }
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
-  }
-  return `/${segments.join("/")}`;
-}
-function normalizeFileName(name, filePath) {
-  const candidate = String(name ?? "").trim();
-  if (candidate) return candidate;
-  const pathName = filePath?.split("/").filter(Boolean).at(-1);
-  return pathName || "upload";
-}
-function isAbsoluteFilePath(value) {
-  return typeof value === "string" && value.startsWith("/");
-}
-async function resolveLiveFileReference(database, ownerId, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path10;
-    try {
-      path10 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path10);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
-  }
-  return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
-}
-async function resolvePrivilegedLiveFileReference(database, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path10;
-    try {
-      path10 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path10);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved };
-  }
-  const row = await database.sqlite.selectFileById(value);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  return { ok: true, row };
-}
-function singleLiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path10), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function singleActiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path10), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function ambiguousFileReferenceError(reference) {
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "File reference is ambiguous.",
-      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
-    )
-  };
-}
-function structuredFileException(message, hint) {
-  const error = new Error(message);
-  error.hint = hint;
-  return error;
-}
-function isDuplicateColumnError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /duplicate column|already exists/i.test(text);
-}
-function isUniqueConstraintError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
-}
-function filePathBackfillSql() {
-  return "UPDATE sporades_files SET path = CASE WHEN (SELECT COUNT(*) FROM sporades_files AS matching WHERE matching.ownerId = sporades_files.ownerId AND matching.bucketName = sporades_files.bucketName AND matching.name = sporades_files.name AND matching.deletedAt IS NULL AND matching.status IN ('pending', 'uploaded')) = 1 THEN '/' || bucketName || '/' || name ELSE '/' || bucketName || '/' || id || '/' || name END WHERE path IS NULL OR path = ''";
-}
-function activeFilePathDedupeSql() {
-  return "UPDATE sporades_files SET deletedAt = COALESCE(deletedAt, updatedAt), updatedAt = updatedAt WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') AND id NOT IN (SELECT MAX(id) FROM sporades_files WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') GROUP BY path)";
-}
-function ensureFileUploadTargetColumns(sqlite) {
-  const statements = [
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketId TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketName TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN path TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN name TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN type TEXT",
-    "UPDATE sporades_file_uploads SET bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) WHERE path IS NULL OR path = ''",
-    "DELETE FROM sporades_file_uploads WHERE id NOT IN (SELECT MAX(id) FROM sporades_file_uploads GROUP BY path)",
-    "CREATE INDEX IF NOT EXISTS sporades_file_uploads_path ON sporades_file_uploads (path)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_path_unique ON sporades_file_uploads (path)"
-  ];
-  let chain = void 0;
-  for (const statement of statements) {
-    const operation = () => statement.startsWith("ALTER TABLE") ? runSchemaExecIgnoringDuplicateColumn(sqlite, statement) : sqlite.exec(statement);
-    chain = chainSchemaOperation(chain, operation);
-  }
-  return chain;
-}
-function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
-  try {
-    const result = sqlite.exec(sql);
-    if (isPromiseLike(result)) {
-      return result.catch((error) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-    }
-    return result;
-  } catch (error) {
-    if (!isDuplicateColumnError(error)) throw error;
-    return void 0;
-  }
-}
-function chainSchemaOperation(previous, operation) {
-  if (isPromiseLike(previous)) {
-    return previous.then(operation);
-  }
-  return operation();
-}
-function createStructuredFileError(message, hint) {
-  return { message, hint };
-}
-async function removeFileVersionBestEffort(database, fileId, version) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {
-  });
-}
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
   try {
-    const result = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
         transactionDatabase,
@@ -8924,6 +14007,24 @@ function createEndpointContext(database, endpointRequest, session) {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+    async sendEmailPasswordResetLink(email, options = {}) {
+      const result = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email) {
+      const result = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code) {
+      const result = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code, newPassword) {
+      const result = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
   return context;
@@ -8936,13 +14037,6 @@ function createContextHolder(context) {
     configurable: true
   });
   return holder;
-}
-function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
-  return {
-    ...aclContext,
-    acl: createAclHelpers(database)
-  };
 }
 async function applyContextMiddleware(database, baseContext, kind) {
   let context = {
@@ -8980,9 +14074,6 @@ function runContextMiddleware(middlewareSource, context) {
   const middleware = createMiddleware();
   return middleware(context);
 }
-function readEndpointSessionToken(headers, query) {
-  return headers["x-sporades-session-token"] ?? null;
-}
 function endpointQueryFromUrl(requestUrl) {
   const query = {};
   for (const [name, value] of requestUrl.searchParams.entries()) {
@@ -8992,32 +14083,6 @@ function endpointQueryFromUrl(requestUrl) {
     query[name] = value;
   }
   return query;
-}
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: /* @__PURE__ */ new WeakSet(),
-      enumerable: false,
-      configurable: false
-    });
-  }
-  return holder.contexts;
-}
-function grantPrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().add(context);
-  }
-  return context;
-}
-function revokePrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().delete(context);
-  }
-  return context;
-}
-function hasPrivilegedDbAccess(context) {
-  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
 }
 function createEndpointDatabaseApi(database, contextGetter = null) {
   return Object.fromEntries(
@@ -9047,7 +14112,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         const columns = Object.keys(row);
         const next = deserializeRow(table, row);
         return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
-          const result = database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
+          const result = database.adapter.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
           database.rowCache.clear();
           return thenIfPromise(result, () => next);
         });
@@ -9081,7 +14146,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])]))
           };
           return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
-            const result = database.sqlite.updateAppRow(table, id, serializedValues);
+            const result = database.adapter.updateAppRow(table, id, serializedValues);
             database.rowCache.clear();
             return thenIfPromise(result, (writeResult2) => {
               if (writeResult2.changes === 0) {
@@ -9093,7 +14158,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         };
         return fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finishValues) : finishValues(fieldValues);
       };
-      const selected = database.sqlite.selectAppRowById(table, id);
+      const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
@@ -9107,12 +14172,12 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         }
         const previous = deserializeRow(table, existing);
         return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
-          const result = database.sqlite.deleteAppRow(table, id);
+          const result = database.adapter.deleteAppRow(table, id);
           database.rowCache.clear();
           return thenIfPromise(result, (writeResult2) => writeResult2.changes > 0);
         });
       };
-      const operation = thenIfPromise(database.sqlite.selectAppRowById(table, id), finish);
+      const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
       }
@@ -9128,7 +14193,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where ? {
           fieldName: query.where.fieldName,
           value: serializeFieldValue(
@@ -9151,7 +14216,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     },
     all() {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where ? {
           fieldName: query.where.fieldName,
           value: serializeFieldValue(
@@ -9169,338 +14234,6 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     }
   };
 }
-function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context,
-    table,
-    operation,
-    previous,
-    next
-  });
-  const deny = () => {
-    if (!context?.__pendingAclWrites) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next
-  });
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  });
-  context?.__pendingAclWrites?.push(pending);
-  return pending;
-}
-function isPromiseLike(value) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
-function thenIfPromise(value, onResolved) {
-  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
-}
-function chainMaybePromise(steps) {
-  let pending = null;
-  for (const step of steps) {
-    if (pending) {
-      pending = pending.then(step);
-      continue;
-    }
-    const result = step();
-    if (isPromiseLike(result)) {
-      pending = result;
-    }
-  }
-  return pending ?? void 0;
-}
-function applyReadAcl(database, table, row, context) {
-  if (hasPrivilegedDbAccess(context)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row
-  });
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context,
-      table,
-      operation: "read",
-      row
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
-  }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
-}
-function filterRowsByReadAcl(database, table, rows, context) {
-  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
-  }
-  return rows.filter((_, index) => decisions[index]);
-}
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-function createAclHelpers(database) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state)
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false
-  });
-  return Object.freeze(helpers);
-}
-function aclRuleTouchedAsyncHelperRead(aclContext) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
-}
-function markAsyncAclHelperRead(state, result) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {
-    });
-    return true;
-  }
-  return false;
-}
-function createAclDbHelpers(database, state) {
-  return Object.freeze({
-    get(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
-    },
-    exists(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
-    }
-  });
-}
-function createAclStorageHelpers(database, state) {
-  return Object.freeze({
-    get(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
-      }
-      return null;
-    },
-    exists(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
-      }
-      return false;
-    }
-  });
-}
-function resolveAclStorageFileReference(database, state, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path10;
-    try {
-      path10 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected2 = database.sqlite.selectLiveFileByPath(path10);
-    if (markAsyncAclHelperRead(state, selected2)) {
-      return null;
-    }
-    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
-    return resolved?.ambiguous ? null : resolved;
-  }
-  const selected = database.sqlite.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
-}
-function assertAclHelperReadAllowed(state) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-function resolveAclAppTable(database, tableName) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
-  if (!table) {
-    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-function resolveAclStorageResource(resourceName) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-function aclStorageMetadataFromFileRow(row) {
-  const metadata = fileMetadataFromRow(row);
-  return {
-    ...metadata,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null
-  };
-}
-function emitAclDeniedLog(database, details) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details)
-  });
-}
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation)
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null
-    },
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
-  };
-}
-function aclRuleDeclaredOperation(table, operation) {
-  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-function aclRowLogSnapshot(input) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next)
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input)
-  };
-}
-function aclVisibleFieldNames(row) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
-  );
-}
-function createAclDeniedError(logData = null) {
-  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
-function requireAuth(context, options = {}) {
-  const linked = options?.linked === true;
-  const auth = context?.auth;
-  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
-    return auth;
-  }
-  throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
-}
-function createUnauthenticatedError(logData = null) {
-  const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-  if (logData) {
-    error.sporadesAuthDenialLogData = logData;
-  }
-  return error;
-}
-function createAuthDenialLogData(context, requirement) {
-  return {
-    requirement,
-    handler: {
-      kind: context?.kind ?? null
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null
-    }
-  };
-}
-function emitAuthDeniedLog(database, details) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "auth.denied",
-    level: "warn",
-    message: "requireAuth denied an unauthenticated handler request.",
-    data: details.data ?? null
-  });
-}
 function fieldValueForWrite(database, field, value) {
   if (field.kind === "Reference" && value !== void 0 && value !== null) {
     return thenIfPromise(referenceExists(database, field, value), (exists) => {
@@ -9512,105 +14245,8 @@ function fieldValueForWrite(database, field, value) {
   }
   return serializeFieldValue(field, value);
 }
-function invalidReferenceError(field) {
-  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
-}
 function referenceExists(database, field, value) {
-  return database.sqlite.referenceExists(field, value);
-}
-function serializeFieldValue(field, value) {
-  if (value === void 0) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-function deserializeFieldValue(field, value) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
-function normalizeDateValue(value, fieldName) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-function dateValueError(fieldName) {
-  return commandError(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value."
-  );
-}
-function assertJsonCompatible(value) {
-  let context;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === void 0) {
-      throw invalidJsonFieldValueError();
-    }
-    JSON.parse(serialized);
-  } catch (error) {
-    if (error?.hint) {
-      throw error;
-    }
-    throw invalidJsonFieldValueError();
-  }
-}
-function invalidJsonFieldValueError() {
-  return commandError(
-    "Invalid JSON field value.",
-    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
-  );
-}
-function deserializeRow(table, row) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
+  return database.adapter.referenceExists(field, value);
 }
 async function readEndpointBody(request, headers, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -9629,57 +14265,6 @@ function createEndpointLogger(database, context = {}) {
     ...context
   });
 }
-function writeEndpointResult(response, result) {
-  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
-    const status = result.status ?? 200;
-    if (!Number.isInteger(status) || status < 100 || status > 599) {
-      throw endpointResponseError();
-    }
-    if (result.headers !== void 0 && (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))) {
-      throw endpointResponseError();
-    }
-    const headers = { ...result.headers ?? {} };
-    const body = result.body ?? null;
-    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
-      headers["content-type"] ??= "application/json; charset=utf-8";
-      let payload;
-      try {
-        payload = JSON.stringify(body);
-      } catch {
-        throw endpointResponseError();
-      }
-      response.writeHead(status, headers);
-      response.end(payload);
-      return;
-    }
-    headers["content-type"] ??= "text/plain; charset=utf-8";
-    response.writeHead(status, headers);
-    response.end(String(body ?? ""));
-    return;
-  }
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  response.end(String(result ?? ""));
-}
-function writeEndpointError(response, error) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
-  response.end(
-    `${JSON.stringify({
-      ok: false,
-      data: null,
-      error: {
-        ...error?.code ? { code: error.code } : {},
-        message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
-        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
-      }
-    })}
-`
-  );
-}
-function endpointResponseError() {
-  const error = new Error("Invalid endpoint response.");
-  error.sporadesEndpointResponse = true;
-  return error;
-}
 function parseFieldDefault(kind, rawDefault) {
   if (rawDefault === void 0) {
     return void 0;
@@ -9690,7 +14275,7 @@ function parseFieldDefault(kind, rawDefault) {
   if (kind === "Number") {
     const value = Number(rawDefault.trim());
     if (!Number.isFinite(value)) {
-      throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+      throw commandError2("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
     }
     return value;
   }
@@ -9710,7 +14295,7 @@ function parseJsonFieldDefault(rawDefault) {
     assertJsonCompatible(value);
     return value;
   } catch {
-    throw commandError(
+    throw commandError2(
       "Invalid JSON field default.",
       "Use a JSON-compatible default value for Json().default(...)."
     );
@@ -9721,452 +14306,22 @@ function parseDateFieldDefault(rawDefault) {
     const createDefault = new Function(`return (${rawDefault});`);
     return normalizeDateValue(createDefault(), "default");
   } catch {
-    throw commandError(
+    throw commandError2(
       "Invalid Date() default.",
       "Pass an ISO 8601 date string or JavaScript Date value to Date().default(...)."
     );
   }
 }
-function toSqlLiteral(value, field = null) {
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
-  }
-  if (value === null) {
-    return "NULL";
-  }
-  if (field?.kind === "Date") {
-    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
-  }
-  if (typeof value === "boolean") {
-    return value ? "1" : "0";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
-async function listDatabaseTables(database) {
-  return await (database.adapter ?? database.sqlite).listInspectableTables();
-}
-async function dumpDatabase(database) {
-  return await (database.adapter ?? database.sqlite).dumpInspectableDatabase();
-}
-async function runReadOnlyQuery(database, sql) {
-  return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
-}
-function validateReadOnlyInspectionSql(sql) {
-  const text = String(sql ?? "");
-  const firstToken = readFirstSqlToken(text);
-  if (!firstToken || hasMultipleSqlStatements(text)) {
-    return readOnlyInspectionSqlError();
-  }
-  const keyword = firstToken.toLowerCase();
-  if (keyword === "pragma") {
-    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
-  }
-  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
-    return { ok: true };
-  }
-  return readOnlyInspectionSqlError();
-}
-function readOnlyInspectionSqlError() {
-  return {
-    ok: false,
-    data: null,
-    error: {
-      message: "Only read-only SQL is allowed.",
-      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
-    }
-  };
-}
-function readFirstSqlToken(sql) {
-  const index = skipSqlTrivia(sql, 0);
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match?.[0] ?? null;
-}
-function hasMultipleSqlStatements(sql) {
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === ";") {
-      return skipSqlTrivia(sql, index + 1) < sql.length;
-    }
-    index += 1;
-  }
-  return false;
-}
-function isSafeInspectionPragma(sql, pragmaTokenLength) {
-  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0) + pragmaTokenLength);
-  let identifier = readBareSqlIdentifier(sql, index);
-  if (!identifier) {
-    return false;
-  }
-  let pragmaName = identifier.value.toLowerCase();
-  index = skipSqlTrivia(sql, identifier.nextIndex);
-  if (sql[index] === ".") {
-    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1));
-    if (!identifier) {
-      return false;
-    }
-    pragmaName = identifier.value.toLowerCase();
-    index = skipSqlTrivia(sql, identifier.nextIndex);
-  }
-  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
-    return false;
-  }
-  while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === "=") {
-      return false;
-    }
-    index += 1;
-  }
-  return true;
-}
-var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
-  "database_list",
-  "foreign_key_list",
-  "index_info",
-  "index_list",
-  "index_xinfo",
-  "table_info",
-  "table_list",
-  "table_xinfo"
-]);
-function containsSideEffectSqlToken(sql) {
-  for (const token of readSqlTokens(sql)) {
-    const value = token.value.toLowerCase();
-    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
-      return true;
-    }
-    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
-      return true;
-    }
-  }
-  return false;
-}
-var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
-  "alter",
-  "analyze",
-  "attach",
-  "create",
-  "delete",
-  "detach",
-  "drop",
-  "insert",
-  "reindex",
-  "replace",
-  "update",
-  "vacuum"
-]);
-var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
-  "load_extension",
-  "nextval",
-  "set_config",
-  "setval"
-]);
-function readSqlTokens(sql) {
-  const tokens = [];
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlLiteralOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    const identifier = readSqlTokenIdentifier(sql, index);
-    if (identifier) {
-      tokens.push(identifier);
-      index = identifier.nextIndex;
-      continue;
-    }
-    index += 1;
-  }
-  return tokens;
-}
-function readBareSqlIdentifier(sql, index) {
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
-}
-function readSqlTokenIdentifier(sql, index) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-  return readBareSqlIdentifier(sql, index);
-}
-function skipSqlLiteralOrComment(sql, index) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
-  }
-  if (sql[index] !== "'") {
-    return index;
-  }
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === "'") {
-      if (sql[cursor + 1] === "'") {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return sql.length;
-}
-function skipSqlStringOrComment(sql, index) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
-  }
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
-    return index;
-  }
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === closingQuote) {
-      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return sql.length;
-}
-function targetsInternalLogIndexTable(sql) {
-  const text = String(sql);
-  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
-  let match;
-  while (match = targetKeywords.exec(text)) {
-    const reference = readSqlTableReference(text, match.index + match[0].length);
-    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
-      return true;
-    }
-  }
-  return false;
-}
-function readSqlTableReference(sql, startIndex) {
-  let index = skipSqlTrivia(sql, startIndex);
-  while (sql[index] === "(") {
-    index += 1;
-    index = skipSqlTrivia(sql, index);
-  }
-  const parts = [];
-  while (index < sql.length) {
-    const identifier = readSqlIdentifier(sql, index);
-    if (!identifier) {
-      break;
-    }
-    parts.push(identifier.value);
-    index = skipSqlTrivia(sql, identifier.nextIndex);
-    if (sql[index] !== ".") {
-      break;
-    }
-    index = skipSqlTrivia(sql, index + 1);
-  }
-  return parts;
-}
-function skipSqlTrivia(sql, startIndex) {
-  let index = startIndex;
-  let advanced = true;
-  while (advanced) {
-    advanced = false;
-    while (/\s/.test(sql[index] ?? "")) {
-      index += 1;
-      advanced = true;
-    }
-    if (sql[index] === "/" && sql[index + 1] === "*") {
-      const end = sql.indexOf("*/", index + 2);
-      index = end === -1 ? sql.length : end + 2;
-      advanced = true;
-      continue;
-    }
-    if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = sql.indexOf("\n", index + 2);
-      index = end === -1 ? sql.length : end + 1;
-      advanced = true;
-    }
-  }
-  return index;
-}
-function readSqlIdentifier(sql, index) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "'" || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (sql[cursor + 1] === closingQuote && quote !== "[") {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
-}
-function isInternalLogIndexMetadataRow(row, sql = "") {
-  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
-  return ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") || Object.values(row ?? {}).some(
-    (value) => typeof value === "string" && (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) || queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))
-  );
-}
-async function simulateLocalIdentitySession(database, options = {}) {
-  const provider = String(options.provider ?? "").trim().toLowerCase();
-  if (!["email", "google"].includes(provider)) {
-    return {
-      ok: false,
-      data: null,
-      error: {
-        message: `Unsupported simulated auth provider: ${provider || ""}`.trim(),
-        hint: "Use `sporades auth as email` for local identity simulation. Google simulation is reserved for provider-shaped browser tests."
-      }
-    };
-  }
-  const email = normalizeSimulatedEmail(options.email);
-  if (!email) {
-    return {
-      ok: false,
-      data: null,
-      error: {
-        message: "Simulated identity requires an email address.",
-        hint: "Pass `--email <address>` to `sporades auth as email`."
-      }
-    };
-  }
-  const displayName = normalizeSimulatedText(options.displayName) ?? email;
-  const picture = normalizeSimulatedText(options.picture);
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const token = createSessionToken();
-  return await database.sqlite.withTransaction(async (tx) => {
-    const subject = `local:${email}`;
-    const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const userId = identity?.userId ?? randomUUID();
-    if (identity) {
-      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName,
-        picture,
-        updatedAt: now
-      });
-    } else {
-      await tx.insertAuthUser({
-        id: userId,
-        createdAt: now,
-        displayName,
-        email,
-        picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "anonymous"
-      });
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId,
-        provider,
-        subject,
-        email,
-        displayName,
-        picture,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-    const auth = {
-      userId,
-      displayName,
-      email,
-      picture,
-      isAuthenticated: true,
-      isGuest: false,
-      provider
-    };
-    return {
-      ok: true,
-      data: {
-        localStorage: {
-          key: "sporades.sessionToken",
-          value: token
-        },
-        auth
-      },
-      error: null
-    };
-  });
-}
-function normalizeSimulatedEmail(value) {
-  const email = normalizeSimulatedText(value)?.toLowerCase();
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    return null;
-  }
-  return email;
-}
-function normalizeSimulatedText(value) {
-  if (value === null || value === void 0) {
-    return null;
-  }
-  const text = String(value).trim();
-  return text ? text : null;
-}
 function normalizeJourneyPolicy(value) {
   if (value == null) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError2("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
   const ttlSeconds = value.ttlSeconds ?? 30;
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError2("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
   const capture = {};
-  if (value.capture !== void 0 && (value.capture === null || typeof value.capture !== "object" || Array.isArray(value.capture) || Object.getPrototypeOf(value.capture) !== Object.prototype)) throw commandError("Invalid Journey capture policy.", "Set journey.capture to a plain object of boolean source settings.");
+  if (value.capture !== void 0 && (value.capture === null || typeof value.capture !== "object" || Array.isArray(value.capture) || Object.getPrototypeOf(value.capture) !== Object.prototype)) throw commandError2("Invalid Journey capture policy.", "Set journey.capture to a plain object of boolean source settings.");
   for (const key of ["navigation", "focus", "interactions"]) {
     const setting = value.capture?.[key];
-    if (setting !== void 0 && typeof setting !== "boolean") throw commandError("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
+    if (setting !== void 0 && typeof setting !== "boolean") throw commandError2("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
     capture[key] = setting ?? true;
   }
   return { ttlSeconds, capture };
@@ -10214,7 +14369,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   return {
     createConnectionToken() {
       pruneConnectionTokens();
-      const token = randomBytes2(32).toString("base64url");
+      const token = randomBytes4(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
     },
@@ -10496,10 +14651,51 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (message.type === "auth.setPassword") {
-      const result = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.sendPasswordResetLink") {
+      const result = await sendEmailPasswordResetLink(database, client.session, message.email ?? "");
+      const misconfigured = result.error?.code === "MAIL_NOT_CONFIGURED";
+      if (misconfigured) {
+        database.log?.emit?.({
+          category: "platform",
+          event: "auth.password_reset.undeliverable",
+          level: "error",
+          message: result.error.message,
+          data: { code: result.error.code, hint: result.error.hint }
+        });
+      }
+      const ok = result.ok || misconfigured;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: ok ? "auth.sendPasswordResetLink.result" : "error",
+        data: ok ? { ok: true } : null,
+        error: ok ? null : result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.verifyPasswordResetCode") {
+      const result = await verifyPasswordResetCode(database, client.session, message.code ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.verifyPasswordResetCode.result" : "error",
+        data: result.ok ? { email: result.email } : null,
+        error: result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.confirmPasswordReset") {
+      const result = await confirmPasswordReset(database, client.session, message.code ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.confirmPasswordReset.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null
       });
@@ -10662,7 +14858,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         const nowDate = database.clock.now();
         const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
         if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
-          client.journey.sessionId = randomBytes2(24).toString("base64url");
+          client.journey.sessionId = randomBytes4(24).toString("base64url");
           client.journey.sessionIds.add(client.journey.sessionId);
         }
         const previous = journeys.get(client.journey.sessionId);
@@ -10867,7 +15063,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   }
   async function signOutSession(database, client) {
     try {
-      await database.sqlite.deleteAuthSession(client.session.token);
+      await database.adapter.deleteAuthSession(client.session.token);
       client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {
@@ -10917,2316 +15113,59 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   }
 }
-async function routeSporadesAuth(database, request, response) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
-  if (!match) {
-    return false;
-  }
-  const provider = match[1];
-  let callbackParameters;
-  try {
-    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
-  } catch (error) {
-    writeEndpointError(response, error);
-    return true;
-  }
-  const parameters = callbackParameters.parameters;
-  const states = parameters.getAll("state");
-  const state = states.length === 1 ? states[0] : null;
-  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
-    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
-    return true;
-  }
-  const stateRow = await database.sqlite.consumeOAuthState(state);
-  if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
-    return true;
-  }
-  try {
-    if (callbackParameters.error) {
-      throw callbackParameters.error;
-    }
-    validateConsumedOAuthCallbackParameters(parameters);
-    if (stateRow.provider !== provider) {
-      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
-    }
-    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
-      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
-    }
-    const adapter = oauthProviderAdapter(database, provider);
-    if (!adapter?.enabled) {
-      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
-    }
-    if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
-      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
-    }
-    const providerError = parameters.get("error");
-    if (providerError) {
-      const mappedError = adapter.callbackError?.(parameters);
-      if (mappedError) {
-        throw mappedError;
-      }
-      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
-      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
-      throw commandError(
-        actionRequired ? "OAuth provider requires additional user action." : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
-        actionRequired ? "Retry sign-in and complete the provider's consent or account prompt." : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
-        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED"
-      );
-    }
-    const code = parameters.get("code");
-    if (!code) {
-      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-    const profile = await adapter.complete({
-      provider,
-      code,
-      redirectUri: stateRow.redirectUri,
-      nonce: stateRow.nonce,
-      pkceVerifier: stateRow.pkceVerifier,
-      parameters
-    });
-    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    let result;
-    try {
-      result = await linkProviderIdentity(database, session, provider, profile);
-    } catch {
-      throw commandError(
-        "OAuth account linking failed.",
-        "Retry sign-in. If the problem persists, check the database connection.",
-        "AUTH_TRANSACTION_FAILED"
-      );
-    }
-    if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
-    }
-    writeRedirect(response, stateRow.returnTo);
-  } catch (error) {
-    writeEndpointError(response, error);
-  }
-  return true;
-}
-async function readOAuthCallbackParameters(request, requestUrl) {
-  if (request.method === "GET") {
-    return {
-      parameters: requestUrl.searchParams,
-      error: null,
-      stateTrustworthy: true
-    };
-  }
-  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
-    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  const body = await readLimitedRequestBody(request, 16 * 1024);
-  return parseOAuthFormBody(body);
-}
-function oauthFormContentTypeValid(value) {
-  const raw = singleHttpHeader(value);
-  if (!raw) return false;
-  const parts = raw.split(";").map((part) => part.trim());
-  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
-  if (parts.length === 0) return true;
-  if (parts.length !== 1) return false;
-  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
-  return Boolean(match);
-}
-function parseOAuthFormBody(body) {
-  const parameters = new URLSearchParams();
-  let error = null;
-  let stateTrustworthy = true;
-  const invalidCallback = () => commandError(
-    "Invalid OAuth callback.",
-    "Retry sign-in from the app.",
-    "OAUTH_INVALID_CALLBACK"
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey) {
+  const queueDatabase = database.__rootDatabase ?? database;
+  const now = queueDatabase.clock.now().toISOString();
+  const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
+  await queueDatabase.adapter.prepare(
+    queueDatabase.adapter.dialect.sql(
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
+    )
+  ).run(
+    randomUUID(),
+    handlerName,
+    PRIVILEGED_AUTH_USER_ID,
+    PRIVILEGED_AUTH_USER_ID,
+    "privileged",
+    payloadJson,
+    now,
+    idempotencyKey,
+    now,
+    JSON.stringify(normalizeJobRetry(void 0))
   );
-  for (let start = 0; start <= body.length; ) {
-    let end = body.indexOf(38, start);
-    if (end === -1) end = body.length;
-    const separator = body.indexOf(61, start);
-    const hasSeparator = separator !== -1 && separator < end;
-    const rawName = body.subarray(start, hasSeparator ? separator : end);
-    const rawValue = body.subarray(hasSeparator ? separator + 1 : end, end);
-    let name = null;
-    let value = null;
-    try {
-      name = decodeOAuthFormComponent(rawName);
-    } catch {
-      stateTrustworthy = false;
-      error ??= invalidCallback();
-    }
-    if (name !== null) {
-      try {
-        value = decodeOAuthFormComponent(rawValue);
-      } catch {
-        if (name === "state") stateTrustworthy = false;
-        error ??= invalidCallback();
-      }
-    }
-    if (name !== null && value !== null) {
-      parameters.append(name, value);
-    }
-    if (end === body.length) break;
-    start = end + 1;
-  }
-  return { parameters, error, stateTrustworthy };
+  scheduleCurrentUserJobWorker(queueDatabase);
 }
-function decodeOAuthFormComponent(raw) {
-  const bytes = [];
-  for (let index = 0; index < raw.length; index += 1) {
-    const byte = raw[index];
-    if (byte === 43) {
-      bytes.push(32);
-      continue;
-    }
-    if (byte === 37) {
-      if (index + 2 >= raw.length) throw new Error("Malformed percent escape.");
-      const pair = raw.subarray(index + 1, index + 3).toString("ascii");
-      if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("Malformed percent escape.");
-      bytes.push(Number.parseInt(pair, 16));
-      index += 2;
-      continue;
-    }
-    bytes.push(byte);
-  }
-  const value = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
-  validateOAuthCallbackScalar(value);
-  return value;
-}
-function validateOAuthCallbackScalar(value) {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0);
-    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159 || codePoint === 65533 || codePoint >= 64976 && codePoint <= 65007 || (codePoint & 65535) === 65534 || (codePoint & 65535) === 65535) {
-      throw new Error("Invalid callback character.");
-    }
-  }
-}
-function validateConsumedOAuthCallbackParameters(parameters) {
-  for (const name of ["code", "error", "user"]) {
-    if (parameters.getAll(name).length > 1) {
-      throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-  }
-  if (parameters.has("code") && parameters.has("error")) {
-    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  if (parameters.has("error") && parameters.has("user")) {
-    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-}
-async function beginOAuthSignIn(database, session, provider, options) {
-  const adapter = oauthProviderAdapter(database, provider);
-  if (!adapter?.enabled) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
-        message: `${provider || "OAuth"} provider is not configured.`,
-        hint: provider === "google" ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`." : "Configure this OAuth provider before retrying sign-in."
-      }
-    };
-  }
-  const origin = options.origin;
-  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_ORIGIN_INVALID",
-        message: "OAuth sign-in requires a trusted request origin.",
-        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy."
-      }
-    };
-  }
-  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
-        message: "Apple sign-in requires an HTTPS domain origin.",
-        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL."
-      }
-    };
-  }
-  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
-  const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = randomBytes2(32).toString("base64url");
-  const nonce = randomBytes2(32).toString("base64url");
-  const pkceVerifier = randomBytes2(48).toString("base64url");
-  const pkceChallenge = createHash2("sha256").update(pkceVerifier).digest("base64url");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
-  let started;
-  try {
-    started = await adapter.begin({
-      provider,
-      state,
-      nonce,
-      redirectUri,
-      pkceChallenge,
-      pkceChallengeMethod: "S256"
-    });
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth sign-in could not be started.",
-        hint: "Check the provider configuration and retry sign-in."
-      }
-    };
-  }
-  if (!started?.url) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth provider did not return an authorization URL.",
-        hint: "Check the provider configuration and retry sign-in."
-      }
-    };
-  }
-  await database.sqlite.insertOAuthState({
-    state,
-    provider,
-    sessionToken: session.token,
-    returnTo,
-    redirectUri,
-    createdAt: now,
-    expiresAt,
-    nonce,
-    pkceVerifier
-  });
-  return { ok: true, url: started.url };
-}
-function normalizeReturnTo(returnTo, origin) {
-  if (!returnTo) {
-    return origin;
-  }
-  try {
-    const url = new URL(returnTo, origin);
-    if (url.origin !== origin) {
-      return origin;
-    }
-    return url.toString();
-  } catch {
-    return origin;
-  }
-}
-function oauthProviderAdapter(database, provider) {
-  if (database.__oauthProviderAdapters?.[provider]) {
-    return database.__oauthProviderAdapters[provider];
-  }
-  const factories = {
-    google: createGoogleOAuthProviderAdapter,
-    facebook: createFacebookOAuthProviderAdapter,
-    apple: createAppleOAuthProviderAdapter,
-    microsoft: createMicrosoftOAuthProviderAdapter
-  };
-  return factories[provider]?.(database) ?? null;
-}
-function isOAuthLoopbackHostname(hostname) {
-  if (typeof hostname !== "string") return false;
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return normalized === "127.0.0.1" || normalized === "::1";
-}
-function oauthProviderTestEndpoint(override, productionUrl) {
-  if (typeof override !== "string" || process.env.SPORADES_OAUTH_TEST_ENDPOINTS !== "1") {
-    return productionUrl;
-  }
-  try {
-    const url = new URL(override);
-    if (!["http:", "https:"].includes(url.protocol) || !isOAuthLoopbackHostname(url.hostname) || url.username || url.password || url.hash) {
-      return productionUrl;
-    }
-    return url.toString();
-  } catch {
-    return productionUrl;
-  }
-}
-async function fetchBoundedOAuthJson(database, url, request, policy) {
-  const configuredTimeout = Number(database?.[policy.timeoutProperty]);
-  const defaultTimeoutMs = Number.isFinite(policy.defaultTimeoutMs) ? Math.min(Math.max(Math.floor(policy.defaultTimeoutMs), 1), 1e4) : 5e3;
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 1e4 ? Math.floor(configuredTimeout) : defaultTimeoutMs;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const signal = controller.signal;
-  try {
-    const response = await fetch(url, {
-      ...request,
-      redirect: "error",
-      signal
-    });
-    if (!response?.ok) {
-      try {
-        await response?.body?.cancel?.();
-      } catch {
-      }
-      throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-    }
-    try {
-      return await readBoundedJsonBody(response, policy.maxBytes);
-    } catch (error) {
-      if (error?.name === "AbortError" || signal.aborted) {
-        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-      }
-      throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
-    }
-  } catch (error) {
-    if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode) throw error;
-    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-async function completeOpenIdOAuthCodeExchange(database, context, contract) {
-  const timeoutMs = Number.isInteger(database?.__oauthExchangeTimeoutMs) ? Math.min(Math.max(database.__oauthExchangeTimeoutMs, 10), 3e4) : 1e4;
-  const signal = AbortSignal.timeout(timeoutMs);
-  const exchangeCode = contract.exchangeCode ?? "OAUTH_EXCHANGE_FAILED";
-  const timeoutCode = contract.timeoutCode ?? "OAUTH_EXCHANGE_TIMEOUT";
-  let tokenResponse;
-  try {
-    tokenResponse = await fetch(contract.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(contract.parameters),
-      redirect: "error",
-      signal
-    });
-  } catch (error) {
-    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError(
-      timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.exchangeMessage,
-      contract.exchangeHint,
-      timedOut ? timeoutCode : exchangeCode
-    );
-  }
-  if (!tokenResponse.ok) {
-    await tokenResponse.body?.cancel?.().catch?.(() => {
-    });
-    throw commandError(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
-  }
-  let token;
-  try {
-    token = await readBoundedJsonResponse(tokenResponse, 64 * 1024);
-  } catch (error) {
-    const timedOut = signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError(
-      timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.responseMessage,
-      contract.exchangeHint,
-      timedOut ? timeoutCode : exchangeCode
-    );
-  }
-  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
-  }
-  return await contract.verify(database, token.id_token, context.nonce);
-}
-function createGoogleOAuthProviderAdapter(database) {
-  const google = database.authConfig.providers.google;
-  const configured = Boolean(google.enabled && google.configured);
-  return {
-    provider: "google",
-    responseMode: "query",
-    enabled: configured,
-    begin(context) {
-      const clientId = database.serverEnv[google.clientIdEnv];
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        scope: "openid email profile",
-        state: context.state,
-        nonce: context.nonce,
-        code_challenge: context.pkceChallenge,
-        code_challenge_method: "S256"
-      });
-      return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
-    },
-    complete(context) {
-      const clientId = database.serverEnv[google.clientIdEnv];
-      const clientSecret = database.serverEnv[google.clientSecretEnv];
-      return completeOpenIdOAuthCodeExchange(database, context, {
-        tokenUrl: oauthProviderTestEndpoint(
-          process.env.SPORADES_GOOGLE_TOKEN_URL,
-          "https://oauth2.googleapis.com/token"
-        ),
-        parameters: {
-          code: context.code,
-          client_id: clientId,
-          client_secret: clientSecret,
-          redirect_uri: context.redirectUri,
-          grant_type: "authorization_code",
-          code_verifier: context.pkceVerifier
-        },
-        exchangeMessage: "Google OAuth code exchange failed.",
-        exchangeHint: "Check the Google OAuth client configuration and retry sign-in.",
-        responseMessage: "Google OAuth response was invalid.",
-        tokenMessage: "Google OAuth response did not include a valid identity token.",
-        tokenHint: "Check the Google OAuth client configuration and retry sign-in.",
-        verify: verifyGoogleIdentityToken
-      });
-    }
-  };
-}
-function createAppleOAuthProviderAdapter(database) {
-  const apple = database.authConfig.providers.apple;
-  const configured = Boolean(apple.enabled && apple.configured);
-  return {
-    provider: "apple",
-    responseMode: "form_post",
-    enabled: configured,
-    begin(context) {
-      if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
-        throw commandError(
-          "Apple sign-in requires an HTTPS domain origin.",
-          "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.",
-          "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED"
-        );
-      }
-      const params = new URLSearchParams({
-        client_id: apple.clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        response_mode: "form_post",
-        scope: "name email",
-        state: context.state,
-        nonce: context.nonce
-      });
-      return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
-    },
-    complete(context) {
-      return completeAppleOAuth(database, context);
-    }
-  };
-}
-function appleOAuthOriginEligible(origin) {
-  try {
-    const url = new URL(String(origin));
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (url.protocol !== "https:" || url.username || url.password || !hostname) return false;
-    if (hostname === "localhost" || hostname.endsWith(".localhost")) return false;
-    if (hostname.includes(":")) return false;
-    if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
-    const labels = hostname.split(".");
-    return hostname.length <= 253 && labels.length >= 2 && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
-  } catch {
-    return false;
-  }
-}
-async function completeAppleOAuth(database, context) {
-  const apple = database.authConfig.providers.apple;
-  const tokenUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_APPLE_TOKEN_URL,
-    "https://appleid.apple.com/auth/token"
-  );
-  let clientSecret;
-  try {
-    clientSecret = createAppleClientSecret(database);
-  } catch {
-    throw commandError(
-      "Apple client credential could not be generated.",
-      "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID"
-    );
-  }
-  const identity = await completeOpenIdOAuthCodeExchange(database, context, {
-    tokenUrl,
-    parameters: {
-      code: context.code,
-      client_id: apple.clientId,
-      client_secret: clientSecret,
-      redirect_uri: context.redirectUri,
-      grant_type: "authorization_code"
-    },
-    exchangeMessage: "Apple OAuth code exchange failed.",
-    exchangeHint: "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.",
-    responseMessage: "Apple OAuth response was invalid.",
-    tokenMessage: "Apple OAuth response did not include a valid identity token.",
-    tokenHint: "Retry Apple sign-in.",
-    verify: verifyAppleIdentityToken
-  });
-  const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
-  return {
-    ...identity,
-    displayName: authorizationUser?.displayName ?? null
-  };
-}
-function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 1e3)) {
-  const apple = database.authConfig.providers.apple;
-  const privateKey = database.serverEnv[apple.privateKeyEnv];
-  if (!privateKey || ![apple.clientId, apple.teamId, apple.keyId].every((value) => typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))) {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID"
-    );
-  }
-  let signingKey;
-  try {
-    signingKey = createPrivateKey(privateKey);
-  } catch {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID"
-    );
-  }
-  if (signingKey.type !== "private" || signingKey.asymmetricKeyType !== "ec" || signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID"
-    );
-  }
-  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
-  const claims = Buffer.from(JSON.stringify({
-    iss: apple.teamId,
-    iat: nowSeconds,
-    exp: nowSeconds + 300,
-    aud: "https://appleid.apple.com",
-    sub: apple.clientId
-  })).toString("base64url");
-  const signatureBytes = sign(
-    "sha256",
-    Buffer.from(`${header}.${claims}`),
-    { key: signingKey, dsaEncoding: "ieee-p1363" }
-  );
-  if (signatureBytes.length !== 64) {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID"
-    );
-  }
-  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
-}
-function createFacebookOAuthProviderAdapter(database) {
-  const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion;
-  const configured = Boolean(
-    facebook.enabled && facebook.configured && facebook.runtimeAvailable && graphVersion === "v23.0"
-  );
-  return {
-    provider: "facebook",
-    responseMode: "query",
-    enabled: configured,
-    begin(context) {
-      const clientId = database.serverEnv[facebook.clientIdEnv];
-      if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
-        throw commandError(
-          "Facebook App ID is invalid.",
-          "Configure a valid Facebook App ID and retry sign-in.",
-          "FACEBOOK_CONFIGURATION_INVALID"
-        );
-      }
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        scope: "public_profile,email",
-        state: context.state
-      });
-      const authorizationUrl = facebookOAuthEndpoint(
-        process.env.SPORADES_FACEBOOK_AUTH_URL,
-        `https://www.facebook.com/${graphVersion}/dialog/oauth`
-      );
-      authorizationUrl.search = params.toString();
-      if (authorizationUrl.toString().length > 8192) {
-        throw commandError(
-          "Facebook authorization URL is too large.",
-          "Check the Facebook App ID and callback configuration.",
-          "FACEBOOK_CONFIGURATION_INVALID"
-        );
-      }
-      return { url: authorizationUrl.toString() };
-    },
-    callbackError(parameters) {
-      return facebookOAuthCallbackError(parameters);
-    },
-    complete(context) {
-      return completeFacebookOAuth(database, context);
-    }
-  };
-}
-function facebookOAuthCallbackError(parameters) {
-  const reason = parameters.get("error_reason");
-  const code = parameters.get("error_code");
-  const description = parameters.get("error_description")?.toLowerCase() ?? "";
-  if (reason === "user_denied" || code === "200") {
-    return commandError(
-      "Facebook permissions were declined or are unavailable.",
-      "Allow the requested public profile and email permissions, then retry sign-in.",
-      "FACEBOOK_PERMISSION_DENIED"
-    );
-  }
-  if (code === "191") {
-    return commandError(
-      "Facebook rejected the OAuth redirect URI.",
-      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
-      "FACEBOOK_REDIRECT_MISMATCH"
-    );
-  }
-  if (description.includes("development mode") || description.includes("app is not set up") || description.includes("app not set up") || description.includes("app is not available")) {
-    return commandError(
-      "Facebook sign-in is unavailable for this account.",
-      "Check the Facebook app mode and tester access, then retry sign-in.",
-      "FACEBOOK_APP_RESTRICTED"
-    );
-  }
-  return null;
-}
-function facebookOAuthEndpoint(configured, fallback) {
-  const value = configured === void 0 ? fallback : configured;
-  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
-    throw commandError(
-      "Facebook OAuth endpoint is invalid.",
-      "Use the built-in HTTPS Meta endpoint.",
-      "FACEBOOK_ENDPOINT_UNSAFE"
-    );
-  }
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw commandError(
-      "Facebook OAuth endpoint is invalid.",
-      "Use the built-in HTTPS Meta endpoint.",
-      "FACEBOOK_ENDPOINT_UNSAFE"
-    );
-  }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" && url.protocol === "http:" && loopback;
-  if (url.protocol !== "https:" && !insecureTestEndpoint || url.username || url.password || url.hash) {
-    throw commandError(
-      "Facebook OAuth endpoint is unsafe.",
-      "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
-      "FACEBOOK_ENDPOINT_UNSAFE"
-    );
-  }
-  return url;
-}
-function facebookOAuthTimeoutSignal() {
-  const testTimeout = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" ? Number(process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS) : NaN;
-  const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 1e4 ? testTimeout : 1e4;
-  return AbortSignal.timeout(timeoutMs);
-}
-async function cancelFacebookOAuthResponse(response) {
-  try {
-    await response.body?.cancel();
-  } catch {
-  }
-}
-async function readFacebookOAuthJson(response, signal, failureCode, failureMessage, failureHint, timeoutCode, timeoutMessage) {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw commandError(failureMessage, failureHint, failureCode);
-  }
-  const chunks = [];
-  let length = 0;
-  const aborted = {};
-  let onAbort = null;
-  const abort = signal.aborted ? Promise.resolve(aborted) : new Promise((resolve) => {
-    onAbort = () => resolve(aborted);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    while (true) {
-      const next = await Promise.race([reader.read(), abort]);
-      if (next === aborted) throw aborted;
-      if (next.done) break;
-      if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
-      length += next.value.byteLength;
-      if (length > 64 * 1024) {
-        throw new Error("response too large");
-      }
-      chunks.push(next.value);
-    }
-    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-  } catch (error) {
-    try {
-      await reader.cancel();
-    } catch {
-    }
-    if (error === aborted || signal.aborted) {
-      throw commandError(timeoutMessage, failureHint, timeoutCode);
-    }
-    throw commandError(failureMessage, failureHint, failureCode);
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-    try {
-      reader.releaseLock();
-    } catch {
-    }
-  }
-}
-async function completeFacebookOAuth(database, context) {
-  const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion;
-  if (graphVersion !== "v23.0") {
-    throw commandError(
-      "Facebook Graph API version is unsupported.",
-      "Configure Facebook Graph API version v23.0 and retry sign-in.",
-      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED"
-    );
-  }
-  const clientId = database.serverEnv[facebook.clientIdEnv];
-  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
-  if (typeof context.code !== "string" || context.code.length < 1 || context.code.length > 16 * 1024 || typeof context.redirectUri !== "string" || context.redirectUri.length < 1 || context.redirectUri.length > 2048 || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096 || typeof clientSecret !== "string" || clientSecret.length < 1 || clientSecret.length > 16 * 1024) {
-    throw commandError(
-      "Facebook OAuth callback or configuration is invalid.",
-      "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
-      "FACEBOOK_CALLBACK_INVALID"
-    );
-  }
-  const tokenUrl = facebookOAuthEndpoint(
-    process.env.SPORADES_FACEBOOK_TOKEN_URL,
-    `https://graph.facebook.com/${graphVersion}/oauth/access_token`
-  );
-  let tokenResponse;
-  const tokenSignal = facebookOAuthTimeoutSignal();
-  try {
-    tokenResponse = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: context.code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: context.redirectUri
-      }),
-      redirect: "error",
-      signal: tokenSignal
-    });
-  } catch (error) {
-    throw commandError(
-      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook OAuth code exchange timed out." : "Facebook OAuth code exchange failed.",
-      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
-      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_EXCHANGE_TIMEOUT" : "FACEBOOK_EXCHANGE_FAILED"
-    );
-  }
-  if (!tokenResponse.ok) {
-    await cancelFacebookOAuthResponse(tokenResponse);
-    throw commandError(
-      "Facebook OAuth code exchange failed.",
-      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED"
-    );
-  }
-  const token = await readFacebookOAuthJson(
-    tokenResponse,
-    tokenSignal,
-    "FACEBOOK_EXCHANGE_FAILED",
-    "Facebook OAuth response was invalid.",
-    "Check the Facebook app configuration and retry sign-in.",
-    "FACEBOOK_EXCHANGE_TIMEOUT",
-    "Facebook OAuth response timed out."
-  );
-  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
-    throw commandError(
-      "Facebook OAuth response did not include a valid access token.",
-      "Check the Facebook app configuration and retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED"
-    );
-  }
-  const graphUrl = facebookOAuthEndpoint(
-    process.env.SPORADES_FACEBOOK_GRAPH_URL,
-    `https://graph.facebook.com/${graphVersion}/me`
-  );
-  graphUrl.searchParams.set("fields", "id,name,email,picture");
-  let graphResponse;
-  const graphSignal = facebookOAuthTimeoutSignal();
-  try {
-    graphResponse = await fetch(graphUrl, {
-      headers: { authorization: `Bearer ${token.access_token}` },
-      redirect: "error",
-      signal: graphSignal
-    });
-  } catch (error) {
-    throw commandError(
-      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook profile request timed out." : "Facebook profile could not be loaded.",
-      "Check Facebook Graph API access and retry sign-in.",
-      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_GRAPH_TIMEOUT" : "FACEBOOK_GRAPH_FAILED"
-    );
-  }
-  if (!graphResponse.ok) {
-    await cancelFacebookOAuthResponse(graphResponse);
-    throw commandError(
-      "Facebook profile could not be loaded.",
-      "Check Facebook Graph API access and retry sign-in.",
-      "FACEBOOK_GRAPH_FAILED"
-    );
-  }
-  const profile = await readFacebookOAuthJson(
-    graphResponse,
-    graphSignal,
-    "FACEBOOK_GRAPH_FAILED",
-    "Facebook profile response was invalid.",
-    "Check Facebook Graph API access and retry sign-in.",
-    "FACEBOOK_GRAPH_TIMEOUT",
-    "Facebook profile response timed out."
-  );
-  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
-    throw commandError(
-      "Facebook profile is missing a stable identifier.",
-      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
-      "FACEBOOK_PROFILE_ID_MISSING"
-    );
-  }
-  const email = typeof profile.email === "string" && profile.email.length <= 320 ? profile.email.trim().toLowerCase() || null : null;
-  const displayName = typeof profile.name === "string" && profile.name.length <= 512 ? profile.name.trim() || null : null;
-  const pictureCandidate = profile.picture?.data?.url;
-  let picture = null;
-  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
-    try {
-      const pictureUrl = new URL(pictureCandidate);
-      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
-        picture = pictureUrl.toString();
-      }
-    } catch {
-      picture = null;
-    }
-  }
-  return {
-    subject: profile.id,
-    email,
-    emailVerified: null,
-    displayName,
-    picture
-  };
-}
-async function verifyGoogleIdentityToken(database, token, expectedNonce) {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  try {
-    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
-    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
-  } catch {
-    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  if (header.alg !== "RS256" || typeof header.kid !== "string") {
-    throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwksUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_GOOGLE_JWKS_URL,
-    "https://www.googleapis.com/oauth2/v3/certs"
-  );
-  let jwks;
-  try {
-    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
-      maxBytes: 64 * 1024,
-      timeoutProperty: "__oauthJwksTimeoutMs",
-      defaultTimeoutMs: 5e3,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Google signing keys could not be loaded.",
-      unavailableHint: "Retry Google sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Google signing keys were invalid.",
-      invalidHint: "Retry Google sign-in."
-    });
-  } catch (error) {
-    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
-  }
-  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
-  if (!keys) {
-    throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
-  if (!jwk) {
-    throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      decodeJwtPart(parts[2])
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const clientId = database.serverEnv[database.authConfig.providers.google.clientIdEnv];
-  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
-  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
-  if (invalidCode) {
-    throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
-  }
-  return {
-    subject: claims.sub,
-    email: normalizeSimulatedText(claims.email)?.toLowerCase() ?? null,
-    emailVerified: claims.email_verified === true,
-    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
-    picture: normalizeSimulatedText(claims.picture)
-  };
-}
-function createMicrosoftOAuthProviderAdapter(database) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const configured = Boolean(microsoft.enabled && microsoft.configured);
-  return {
-    provider: "microsoft",
-    responseMode: "query",
-    enabled: configured,
-    async begin(context) {
-      const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
-      const clientId = database.serverEnv[microsoft.clientIdEnv];
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        response_mode: "query",
-        scope: "openid profile email",
-        state: context.state,
-        nonce: context.nonce,
-        code_challenge: context.pkceChallenge,
-        code_challenge_method: "S256"
-      });
-      return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
-    },
-    complete(context) {
-      return completeMicrosoftOAuth(database, context);
-    }
-  };
-}
-async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
-  const selectedTenant = validMicrosoftTenant(tenant) ? tenant : null;
-  if (!selectedTenant) {
-    throw commandError(
-      "Microsoft tenant configuration is invalid.",
-      "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
-      "OAUTH_TENANT_INVALID"
-    );
-  }
-  const productionDiscoveryUrl = `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
-  const discoveryUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_MICROSOFT_DISCOVERY_URL,
-    productionDiscoveryUrl
-  );
-  const discoveryOverride = discoveryUrl !== productionDiscoveryUrl;
-  let discoveryOrigin;
-  try {
-    const parsedDiscoveryUrl = new URL(discoveryUrl);
-    const loopbackOverride = discoveryOverride && parsedDiscoveryUrl.protocol === "http:" && isOAuthLoopbackHostname(parsedDiscoveryUrl.hostname) && !parsedDiscoveryUrl.username && !parsedDiscoveryUrl.password && !parsedDiscoveryUrl.hash;
-    const microsoftDiscovery = !discoveryOverride && parsedDiscoveryUrl.protocol === "https:" && parsedDiscoveryUrl.hostname === "login.microsoftonline.com";
-    if (!loopbackOverride && !microsoftDiscovery) throw new Error("untrusted discovery");
-    discoveryOrigin = parsedDiscoveryUrl.origin;
-  } catch {
-    throw commandError(
-      "Microsoft OpenID discovery URL was invalid.",
-      "Use the Microsoft identity platform discovery endpoint.",
-      "OAUTH_DISCOVERY_INVALID"
-    );
-  }
-  const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = microsoftOidcCacheKey([
-    selectedTenant,
-    discoveryUrl,
-    microsoft.clientIdEnv ?? "",
-    microsoft.clientSecretEnv ?? ""
-  ]);
-  const cacheRoot = microsoftOidcCache(database);
-  const cache = cacheRoot.discovery;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
-  let state = cache.get(cacheKey);
-  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
-    state = {
-      value: null,
-      expiresAt: 0,
-      generation: 0,
-      nextGeneration: 1,
-      inflight: null,
-      lastAccess: cacheRoot.nextAccess++
-    };
-    if (cache.size >= 32) {
-      throw commandError(
-        "Microsoft OpenID configuration could not be loaded.",
-        "Retry Microsoft sign-in after other provider requests complete.",
-        "OAUTH_DISCOVERY_UNAVAILABLE"
-      );
-    }
-    cache.set(cacheKey, state);
-  }
-  state.lastAccess = cacheRoot.nextAccess++;
-  if (state.value && state.expiresAt > now) return state.value;
-  if (state.inflight) return await state.inflight;
-  const requestGeneration = state.nextGeneration++;
-  const inflight = (async () => {
-    const discovery = await fetchMicrosoftOidcJson(database, discoveryUrl, {}, {
-      maxBytes: 64 * 1024,
-      unavailableCode: "OAUTH_DISCOVERY_UNAVAILABLE",
-      unavailableMessage: "Microsoft OpenID configuration could not be loaded.",
-      unavailableHint: "Check Microsoft tenant selection and network access, then retry sign-in.",
-      invalidCode: "OAUTH_DISCOVERY_INVALID",
-      invalidMessage: "Microsoft OpenID configuration was invalid.",
-      invalidHint: "Check Microsoft tenant selection and retry sign-in."
-    });
-    const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
-    if (!isPlainRecord(discovery) || !required.every(
-      (key) => typeof discovery[key] === "string" && discovery[key].length > 0 && discovery[key].length <= 2048
-    )) {
-      throw commandError(
-        "Microsoft OpenID configuration was invalid.",
-        "Check Microsoft tenant selection and retry sign-in.",
-        "OAUTH_DISCOVERY_INVALID"
-      );
-    }
-    try {
-      const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
-      const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
-      const endpointsTrusted = discoveryOverride ? endpointUrls.every((url) => url.origin === discoveryOrigin) : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
-      const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
-      if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
-    } catch {
-      throw commandError(
-        "Microsoft OpenID configuration contained invalid endpoints.",
-        "Check Microsoft tenant selection and retry sign-in.",
-        "OAUTH_DISCOVERY_INVALID"
-      );
-    }
-    if (requestGeneration >= state.generation) {
-      state.value = discovery;
-      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1e3;
-      state.generation = requestGeneration;
-    }
-    return state.value;
-  })();
-  state.inflight = inflight;
-  try {
-    return await inflight;
-  } finally {
-    if (state.inflight === inflight) state.inflight = null;
-  }
-}
-async function fetchMicrosoftOidcJson(database, url, request, policy) {
-  return await fetchBoundedOAuthJson(database, url, request, {
-    ...policy,
-    timeoutProperty: "__microsoftOidcTimeoutMs",
-    defaultTimeoutMs: 5e3
-  });
-}
-async function readBoundedJsonBody(response, maxBytes) {
-  const declaredLength = Number(response.headers?.get?.("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    try {
-      await response.body?.cancel?.();
-    } catch {
-    }
-    throw new Error("OIDC response exceeded its byte limit");
-  }
-  const reader = response.body?.getReader?.();
-  if (!reader) throw new Error("OIDC response body was unavailable");
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > maxBytes) {
-        throw new Error("OIDC response exceeded its byte limit");
-      }
-      chunks.push(Buffer.from(chunk.value));
-    }
-  } catch (error) {
-    try {
-      await reader.cancel();
-    } catch {
-    }
-    throw error;
-  } finally {
-    try {
-      reader.releaseLock?.();
-    } catch {
-    }
-  }
-  return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
-}
-function microsoftOidcCache(database) {
-  if (!database.__microsoftOidcCache || !(database.__microsoftOidcCache.discovery instanceof Map) || !(database.__microsoftOidcCache.jwks instanceof Map)) {
-    database.__microsoftOidcCache = {
-      discovery: /* @__PURE__ */ new Map(),
-      jwks: /* @__PURE__ */ new Map(),
-      nextAccess: 1
-    };
-  }
-  if (!Number.isSafeInteger(database.__microsoftOidcCache.nextAccess)) {
-    database.__microsoftOidcCache.nextAccess = 1;
-  }
-  return database.__microsoftOidcCache;
-}
-function microsoftOidcNow(database) {
-  return Number.isFinite(database.__microsoftOidcNowMs) ? Number(database.__microsoftOidcNowMs) : Date.now();
-}
-function microsoftOidcCacheKey(parts) {
-  return JSON.stringify(parts);
-}
-function pruneMicrosoftOidcCacheMap(cache, now, maximumSize, reserveSlot = false) {
-  for (const [key, state] of cache) {
-    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now)) {
-      cache.delete(key);
-    }
-  }
-  const targetSize = Math.max(0, maximumSize - (reserveSlot ? 1 : 0));
-  while (cache.size > targetSize) {
-    const candidates = [...cache.entries()].filter(([, state]) => !state?.inflight).sort(([leftKey, left], [rightKey, right]) => {
-      const accessDifference = Number(left?.lastAccess ?? 0) - Number(right?.lastAccess ?? 0);
-      return accessDifference || leftKey.localeCompare(rightKey);
-    });
-    if (candidates.length === 0) break;
-    cache.delete(candidates[0][0]);
-  }
-}
-async function completeMicrosoftOAuth(database, context) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
-  const clientId = database.serverEnv[microsoft.clientIdEnv];
-  const clientSecret = database.serverEnv[microsoft.clientSecretEnv];
-  const token = await fetchMicrosoftOidcJson(database, discovery.token_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code: context.code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: context.redirectUri,
-      grant_type: "authorization_code",
-      code_verifier: context.pkceVerifier,
-      scope: "openid profile email"
-    })
-  }, {
-    maxBytes: 64 * 1024,
-    unavailableCode: "OAUTH_EXCHANGE_FAILED",
-    unavailableMessage: "Microsoft OAuth code exchange failed.",
-    unavailableHint: "Check the Microsoft client credentials, tenant, consent, and callback URI, then retry sign-in.",
-    invalidCode: "OAUTH_EXCHANGE_FAILED",
-    invalidMessage: "Microsoft OAuth response was invalid.",
-    invalidHint: "Check the Microsoft client configuration and retry sign-in."
-  });
-  if (!isPlainRecord(token)) {
-    throw commandError(
-      "Microsoft OAuth response was invalid.",
-      "Check the Microsoft client configuration and retry sign-in.",
-      "OAUTH_EXCHANGE_FAILED"
-    );
-  }
-  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError(
-      "Microsoft OAuth response did not include a valid identity token.",
-      "Check the Microsoft client configuration and retry sign-in.",
-      "OAUTH_ID_TOKEN_INVALID"
-    );
-  }
-  return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
-}
-async function verifyMicrosoftIdentityToken(database, token, expectedNonce, discovery) {
-  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const parts = token.split(".");
-  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  let signature;
-  try {
-    header = parseMicrosoftJwtPart(parts[0], 2 * 1024);
-    claims = parseMicrosoftJwtPart(parts[1], 12 * 1024);
-    signature = decodeJwtPart(parts[2]);
-    if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
-  } catch {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const visible = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max && /^[\x21-\x7e]+$/.test(value);
-  const validAudience = typeof claims.aud === "string" ? visible(claims.aud, 512) : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 10 && claims.aud.every((value) => visible(value, 512));
-  const numericDate = (value) => Number.isSafeInteger(value) && value >= 0;
-  const optionalNumericDate = (value) => value === void 0 || numericDate(value);
-  const optionalProfile = (value, max) => value === void 0 || value === null || typeof value === "string" && value.length <= max;
-  const structurallyValid = header.alg === "RS256" && visible(header.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
-  if (!structurallyValid) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwk = await selectMicrosoftJwk(database, discovery, header.kid);
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      signature
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const microsoft = database.authConfig.providers.microsoft;
-  const clientId = database.serverEnv[microsoft.clientIdEnv];
-  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  const expectedIssuer = discovery.issuer.replace("{tenantid}", claims.tid);
-  const expectedKeyIssuer = jwk.issuer.replace("{tenantid}", claims.tid);
-  const nowSeconds = Math.floor(microsoftOidcNow(database) / 1e3);
-  const tenantAllowed = microsoftTenantAllowsClaims(microsoft.tenant, claims.tid, claims.iss, discovery.issuer);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : claims.exp <= nowSeconds ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nbf !== void 0 && claims.nbf > nowSeconds + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID" : claims.iat !== void 0 && claims.iat > nowSeconds + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !tenantAllowed ? "OAUTH_TENANT_REJECTED" : null;
-  if (invalidCode) {
-    const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
-    throw commandError(
-      tenantFailure ? "Microsoft account is not allowed by the configured tenant." : "Microsoft identity token failed verification.",
-      tenantFailure ? "Use an account accepted by this Capsule's Microsoft tenant selection." : "Retry Microsoft sign-in.",
-      invalidCode
-    );
-  }
-  const email = normalizeSimulatedText(claims.email)?.toLowerCase() ?? null;
-  return {
-    subject: `${claims.tid.toLowerCase()}:${claims.sub}`,
-    email,
-    emailVerified: null,
-    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.preferred_username) ?? email ?? "Microsoft user",
-    picture: null
-  };
-}
-async function verifyAppleIdentityToken(database, token, expectedNonce) {
-  if (typeof token !== "string" || token.length > 16 * 1024) {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  try {
-    header = parseBoundedJwtObject(parts[0]);
-    claims = parseBoundedJwtObject(parts[1]);
-  } catch {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  if (header.alg !== "RS256" || typeof header.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header.kid) || header.typ !== void 0 && header.typ !== "JWT") {
-    throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwksUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_APPLE_JWKS_URL,
-    "https://appleid.apple.com/auth/keys"
-  );
-  let jwks;
-  try {
-    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
-      maxBytes: 64 * 1024,
-      timeoutProperty: "__oauthJwksTimeoutMs",
-      defaultTimeoutMs: 5e3,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Apple signing keys could not be loaded.",
-      unavailableHint: "Retry Apple sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Apple signing keys were invalid.",
-      invalidHint: "Retry Apple sign-in."
-    });
-  } catch (error) {
-    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
-  }
-  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
-  if (!keys) {
-    throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
-  if (!jwk) {
-    throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      decodeJwtPart(parts[2])
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const clientId = database.authConfig.providers.apple.clientId;
-  const audiences = typeof claims.aud === "string" ? [claims.aud] : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 8 && claims.aud.every((audience) => typeof audience === "string") ? claims.aud : [];
-  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
-  if (invalidCode) {
-    throw commandError("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
-  }
-  return {
-    subject: claims.sub,
-    email: normalizeSimulatedEmail(claims.email),
-    emailVerified: claims.email_verified === true || claims.email_verified === "true",
-    displayName: null,
-    picture: null
-  };
-}
-function parseBoundedJwtObject(value) {
-  if (typeof value !== "string" || value.length > 12 * 1024) throw new Error("Invalid JWT part");
-  const bytes = decodeJwtPart(value);
-  if (bytes.length === 0 || bytes.length > 8 * 1024) throw new Error("Invalid JWT part");
-  const parsed = JSON.parse(bytes.toString("utf8"));
-  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JWT object");
-  return parsed;
-}
-async function readBoundedJsonResponse(response, maxBytes) {
-  const contentLength = Number(response.headers?.get?.("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    await response.body?.cancel?.().catch?.(() => {
-    });
-    throw new Error("Response too large");
-  }
-  const chunks = [];
-  let size = 0;
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        size += result.value.byteLength;
-        if (size > maxBytes) throw new Error("Response too large");
-        chunks.push(Buffer.from(result.value));
-      }
-    } catch (error) {
-      await reader.cancel().catch(() => {
-      });
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-  } else {
-    try {
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > maxBytes) throw new Error("Response too large");
-      chunks.push(bytes);
-    } catch (error) {
-      await response.body?.cancel?.().catch?.(() => {
-      });
-      throw error;
-    }
-  }
-  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JSON object");
-  return parsed;
-}
-function isPlainJsonObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-}
-function parseAppleAuthorizationUser(value) {
-  if (value === null || value === void 0 || value === "") return null;
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  let user;
-  try {
-    user = JSON.parse(value);
-  } catch {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  if (!user || typeof user !== "object" || Array.isArray(user) || user.name !== void 0 && (!user.name || typeof user.name !== "object" || Array.isArray(user.name))) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  const firstName = sanitizeAppleNamePart(user.name?.firstName);
-  const lastName = sanitizeAppleNamePart(user.name?.lastName);
-  const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
-  return { displayName };
-}
-function sanitizeAppleNamePart(value) {
-  if (value === null || value === void 0 || value === "") return null;
-  if (typeof value !== "string") {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!text) return null;
-  if (text.length > 128) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  return text;
-}
-async function loadMicrosoftJwks(database, discovery, forceRefresh = false, observedGeneration = null, missingKid = null) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = microsoftOidcCacheKey([
-    discovery.issuer,
-    discovery.jwks_uri,
-    microsoft.tenant ?? "",
-    microsoft.clientIdEnv ?? ""
-  ]);
-  const cacheRoot = microsoftOidcCache(database);
-  const cache = cacheRoot.jwks;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
-  let state = cache.get(cacheKey);
-  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
-    state = {
-      value: null,
-      expiresAt: 0,
-      generation: 0,
-      nextGeneration: 1,
-      inflight: null,
-      inflightKind: null,
-      missingKidCooldowns: /* @__PURE__ */ new Map(),
-      lastAccess: cacheRoot.nextAccess++
-    };
-    if (cache.size >= 32) {
-      throw commandError(
-        "Microsoft signing keys could not be loaded.",
-        "Retry Microsoft sign-in after other provider requests complete.",
-        "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE"
-      );
-    }
-    cache.set(cacheKey, state);
-  }
-  state.lastAccess = cacheRoot.nextAccess++;
-  if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = /* @__PURE__ */ new Map();
-  const rememberMissingKid = (jwks, missingKid2, at) => {
-    if (typeof missingKid2 !== "string") return;
-    for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
-      if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
-    }
-    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord(value) && value.kid === missingKid2);
-    state.missingKidCooldowns.delete(missingKid2);
-    if (!found) state.missingKidCooldowns.set(missingKid2, at + 1e4);
-    while (state.missingKidCooldowns.size > 64) {
-      state.missingKidCooldowns.delete(state.missingKidCooldowns.keys().next().value);
-    }
-  };
-  if (forceRefresh) {
-    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
-      rememberMissingKid(state.value, missingKid, now);
-      return state.value;
-    }
-    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
-    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now) return state.value;
-  } else if (state.value && state.expiresAt > now) {
-    return state.value;
-  }
-  if (state.inflight) {
-    const sharedInflight = state.inflight;
-    const sharedKind = state.inflightKind;
-    const shared = await sharedInflight;
-    if (!forceRefresh) return shared;
-    if (sharedKind === "rollover") {
-      rememberMissingKid(shared, missingKid, microsoftOidcNow(database));
-      return shared;
-    }
-    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) {
-      rememberMissingKid(state.value, missingKid, microsoftOidcNow(database));
-      return state.value;
-    }
-    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
-    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > microsoftOidcNow(database)) return state.value;
-  }
-  const requestGeneration = state.nextGeneration++;
-  const requestKind = forceRefresh ? "rollover" : "load";
-  const inflight = (async () => {
-    const jwks = await fetchMicrosoftOidcJson(database, discovery.jwks_uri, {}, {
-      maxBytes: 256 * 1024,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Microsoft signing keys could not be loaded.",
-      unavailableHint: "Retry Microsoft sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Microsoft signing keys were invalid.",
-      invalidHint: "Retry Microsoft sign-in."
-    });
-    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
-      throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-    }
-    if (requestGeneration >= state.generation) {
-      state.value = jwks;
-      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1e3;
-      state.generation = requestGeneration;
-      if (requestKind === "load") state.missingKidCooldowns.clear();
-      else rememberMissingKid(jwks, missingKid, microsoftOidcNow(database));
-    }
-    return state.value;
-  })();
-  state.inflight = inflight;
-  state.inflightKind = requestKind;
-  try {
-    return await inflight;
-  } finally {
-    if (state.inflight === inflight) {
-      state.inflight = null;
-      state.inflightKind = null;
-    }
-  }
-}
-async function selectMicrosoftJwk(database, discovery, kid) {
-  let jwks = await loadMicrosoftJwks(database, discovery, false);
-  let candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
-  if (!candidate) {
-    const microsoft = database.authConfig.providers.microsoft;
-    const cacheKey = microsoftOidcCacheKey([
-      discovery.issuer,
-      discovery.jwks_uri,
-      microsoft.tenant ?? "",
-      microsoft.clientIdEnv ?? ""
-    ]);
-    const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
-    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
-    candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
-  }
-  if (!candidate) {
-    throw commandError("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const valid = candidate.kty === "RSA" && (candidate.alg === void 0 || candidate.alg === "RS256") && (candidate.use === void 0 || candidate.use === "sig") && typeof candidate.issuer === "string" && candidate.issuer.length > 0 && candidate.issuer.length <= 2048 && typeof candidate.n === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.n) && candidate.n.length >= 256 && candidate.n.length <= 2048 && typeof candidate.e === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.e) && candidate.e.length >= 2 && candidate.e.length <= 16;
-  if (!valid) {
-    throw commandError("Microsoft signing key was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  return candidate;
-}
-function isPlainRecord(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-function parseMicrosoftJwtPart(value, maxBytes) {
-  if (typeof value !== "string" || value.length > Math.ceil(maxBytes * 4 / 3) + 4) {
-    throw new Error("JWT segment exceeded its byte limit");
-  }
-  const decoded = decodeJwtPart(value);
-  if (decoded.length > maxBytes) throw new Error("JWT segment exceeded its byte limit");
-  const parsed = JSON.parse(decoded.toString("utf8"));
-  if (!isPlainRecord(parsed)) throw new Error("JWT segment was not an object");
-  return parsed;
-}
-function microsoftTenantAllowsClaims(selectedTenant, tenantId, issuer, discoveredIssuer) {
-  const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
-  if (selectedTenant === "common") return true;
-  if (selectedTenant === "organizations") return tenantId.toLowerCase() !== consumerTenant;
-  if (selectedTenant === "consumers") return tenantId.toLowerCase() === consumerTenant;
-  if (/^[0-9a-f-]{36}$/i.test(selectedTenant)) return tenantId.toLowerCase() === selectedTenant.toLowerCase();
-  return discoveredIssuer === issuer;
-}
-function validMicrosoftTenant(value) {
-  if (["common", "organizations", "consumers"].includes(value)) return true;
-  if (typeof value !== "string" || value.length > 253) return false;
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
-  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value);
-}
-function decodeJwtPart(value) {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error("Invalid JWT encoding");
-  }
-  return Buffer.from(value, "base64url");
-}
-async function linkProviderIdentity(database, session, provider, profile) {
-  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
-  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
-  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
-  if (!subject) {
-    return {
-      ok: false,
-      error: {
-        message: `${providerName} profile is missing a stable subject.`,
-        hint: "Retry sign-in. Sporades requires a verified stable subject claim."
-      }
-    };
-  }
-  return await database.sqlite.withTransaction(async (tx) => {
-    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
-    if (!identity && email && provider === "google") {
-      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
-      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
-            message: "Google did not verify the email needed to restore this legacy account.",
-            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
-          }
-        };
-      }
-      if (legacyIdentities.length > 1) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
-            message: "Google email matches more than one legacy account.",
-            hint: "Sign in with an existing authentication method before linking this Google identity."
-          }
-        };
-      }
-      identity = legacyIdentities[0] ?? null;
-    }
-    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
-      return {
-        ok: false,
-        error: {
-          code: "AUTH_IDENTITY_CONFLICT",
-          message: `${providerName} identity is already linked to another account.`,
-          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
-        }
-      };
-    }
-    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
-    const auth = {
-      userId: identity?.userId ?? session.auth.userId,
-      displayName,
-      email,
-      picture: profile.picture ?? null,
-      isAuthenticated: true,
-      isGuest: false,
-      provider
-    };
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    if (identity) {
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        updatedAt: now
-      });
-    } else {
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId: auth.userId,
-        provider,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider
-    });
-    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
-    } else {
-      await tx.setAuthSessionProvider(session.token, provider);
-      await refreshSessionOnAdapter(tx, session.token);
-    }
-    return { ok: true, auth };
-  });
-}
-function writeRedirect(response, location) {
-  response.writeHead(302, { location });
-  response.end();
-}
-async function setEmailPassword(database, _session, email, newPassword) {
+async function sendEmailPasswordResetLink(database, session, email, options = {}) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (!database.mail.enabled) {
+    return { ok: false, error: mailNotConfiguredError() };
   }
   const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
-  if (!cleanEmail) {
-    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account whose password is being changed." } };
-  }
-  if (typeof newPassword !== "string" || newPassword.length < 8) {
-    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
-  }
-  const existing = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
-  if (!existing) {
-    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
-  }
-  const password = hashEmailPassword(newPassword);
-  await database.sqlite.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
-  return { ok: true };
-}
-async function signUpWithEmail(database, session, provider, credentials) {
-  if (provider !== "email") {
-    return {
-      ok: false,
-      error: {
-        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-        hint: "Use auth.signUp with the email provider."
-      }
-    };
-  }
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-  const normalized = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-  if (await database.sqlite.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: 'Use auth.signIn("email", ...) with this email address.'
-      }
-    };
-  }
-  const password = hashEmailPassword(normalized.password);
-  const displayName = normalized.name || normalized.email;
-  const auth = {
-    userId: session.auth.userId,
-    displayName,
-    email: normalized.email,
-    picture: null,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "email"
-  };
-  return await database.sqlite.withTransaction(async (tx) => {
-    await tx.insertEmailCredential({
-      email: normalized.email,
-      userId: auth.userId,
-      passwordHash: password.hash,
-      passwordSalt: password.salt,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider: "email"
-    });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
-  });
-}
-async function signInWithEmail(database, session, credentials) {
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-  const normalized = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
   if (throttle.throttled) {
-    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+    return { ok: true };
   }
-  const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
-  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, normalized.email, session);
-    return { ok: false, error: invalidEmailCredentialsError() };
+  recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential) {
+    hashPasswordResetVerifier(randomBytes4(32).toString("base64url"));
+    return { ok: true };
   }
-  resetEmailSignInAttempts(database, normalized.email, session);
-  const auth = {
-    userId: row.userId,
-    displayName: row.displayName,
-    email: row.email,
-    picture: row.picture,
-    isAuthenticated: Boolean(row.isAuthenticated),
-    isGuest: Boolean(row.isGuest),
-    provider: "email"
-  };
-  return await database.sqlite.withTransaction(async (tx) => ({
-    ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-    auth
-  }));
-}
-function createEmailSignInThrottleState(database) {
-  const existing = database.__emailSignInThrottle;
-  if (existing instanceof Map) {
-    return existing;
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: true };
   }
-  const next = /* @__PURE__ */ new Map();
-  database.__emailSignInThrottle = next;
-  return next;
-}
-function emailSignInThrottleKeys(email, session) {
-  return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
-}
-function currentEmailSignInThrottleState(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
-  const now = Date.now();
-  pruneEmailSignInThrottleState(attempts, now);
-  const keys = emailSignInThrottleKeys(email, session);
-  const entries = keys.map((key) => {
-    const current = attempts.get(key);
-    return {
-      key,
-      count: current?.count ?? 0,
-      resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
-    };
-  });
-  return {
-    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
-    entries,
-    count: Math.max(...entries.map((entry) => entry.count)),
-    resetAt: Math.max(...entries.map((entry) => entry.resetAt))
-  };
-}
-function recordFailedEmailSignInAttempt(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
-  const current = currentEmailSignInThrottleState(database, email, session);
-  for (const entry of current.entries) {
-    attempts.set(entry.key, {
-      count: entry.count + 1,
-      resetAt: entry.resetAt
-    });
-  }
-  boundEmailSignInThrottleState(attempts);
-}
-function resetEmailSignInAttempts(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
-  for (const key of emailSignInThrottleKeys(email, session)) {
-    attempts.delete(key);
-  }
-}
-function pruneEmailSignInThrottleState(attempts, now = Date.now()) {
-  for (const [key, entry] of attempts) {
-    if (!entry || now >= entry.resetAt) {
-      attempts.delete(key);
-    }
-  }
-}
-function boundEmailSignInThrottleState(attempts) {
-  while (attempts.size > EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES) {
-    let evictionKey = null;
-    let evictionPriority = Infinity;
-    let oldestResetAt = Infinity;
-    for (const [key, entry] of attempts) {
-      const priority = emailSignInThrottleEvictionPriority(key, entry);
-      const resetAt = Number(entry?.resetAt ?? 0);
-      if (priority < evictionPriority || priority === evictionPriority && resetAt < oldestResetAt) {
-        evictionPriority = priority;
-        oldestResetAt = resetAt;
-        evictionKey = key;
-      }
-    }
-    if (evictionKey === null) {
-      return;
-    }
-    attempts.delete(evictionKey);
-  }
-}
-function emailSignInThrottleEvictionPriority(key, entry) {
-  const throttled = Number(entry?.count ?? 0) >= EMAIL_SIGN_IN_FAILURE_LIMIT;
-  if (key.startsWith("email\0") && throttled) {
-    return 3;
-  }
-  if (key.startsWith("caller\0") && throttled) {
-    return 2;
-  }
-  if (key.startsWith("email\0")) {
-    return 1;
-  }
-  return 0;
-}
-function callerContextKey(session) {
-  return String(session?.token ?? session?.auth?.userId ?? "anonymous");
-}
-function invalidEmailCredentialsError(options = {}) {
-  return {
-    message: "Email or password is incorrect.",
-    hint: "Check the credentials and try email sign-in again.",
-    ...options.code ? { code: options.code } : {}
-  };
-}
-function normalizeEmailCredentials(credentials) {
-  const email = String(credentials.email ?? "").trim().toLowerCase();
-  const password = String(credentials.password ?? "");
-  const name = credentials.name == null ? "" : String(credentials.name).trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email address is invalid.",
-        hint: "Pass credentials with a valid email address."
-      }
-    };
-  }
-  if (password.length < 8) {
-    return {
-      ok: false,
-      error: {
-        message: "Password is too short.",
-        hint: "Use a password with at least 8 characters."
-      }
-    };
-  }
-  return { ok: true, email, password, name };
-}
-function hashEmailPassword(password) {
-  const salt = randomBytes2(16).toString("base64url");
-  const hash = scryptSync(password, salt, 64).toString("base64url");
-  return { hash, salt };
-}
-function verifyEmailPassword(password, salt, expectedHash) {
-  const actual = scryptSync(password, salt, 64);
-  const expected = Buffer.from(expectedHash, "base64url");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-function emailAuthDisabledError() {
-  return {
-    message: "Email auth is not enabled.",
-    hint: "Enable auth.providers.email in sporades.json."
-  };
-}
-function createAnonymousAuthTables(sqlite, authConfig = null) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
-  );
-  ensureSessionLifecycleColumns(sqlite);
-  ensureSessionProvenanceColumn(sqlite);
-  createProviderIdentityTables(sqlite);
-  if (authConfig?.providers?.email?.enabled) {
-    sqlite.exec(
-      "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
-    );
-  }
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
-  );
-  ensureOAuthStateColumns(sqlite);
-}
-function ensureOAuthStateColumns(sqlite) {
-  const existing = new Set(sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all().map((row) => row.name));
-  const columns = [
-    ["provider", "TEXT"],
-    ["expiresAt", "TEXT"],
-    ["nonce", "TEXT"],
-    ["pkceVerifier", "TEXT"]
-  ];
-  for (const [name, type] of columns) {
-    if (!existing.has(name)) {
-      sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-}
-async function ensureLibsqlOAuthStateColumns(sqlite) {
-  const rows = await sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all();
-  const existing = new Set(rows.map((row) => row.name));
-  for (const [name, type] of [["provider", "TEXT"], ["expiresAt", "TEXT"], ["nonce", "TEXT"], ["pkceVerifier", "TEXT"]]) {
-    if (!existing.has(name)) {
-      await sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-}
-function createProviderIdentityTables(sqlite) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
-  );
-  sqlite.exec(
-    "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
-  );
-}
-async function createUserPreferencesTables(sqlite) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_user_preferences (userId TEXT PRIMARY KEY, value TEXT NOT NULL, updatedAt TEXT NOT NULL)"
-  );
-}
-function ensureSessionLifecycleColumns(sqlite) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL").run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()));
-  }
-}
-function ensureSessionProvenanceColumn(sqlite) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasProvider = columns.some((column) => column.name === "provider");
-  if (!hasProvider) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
-  );
-}
-async function ensureLibsqlSessionLifecycleColumns(sqlite) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    await sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL").run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()));
-  }
-}
-async function ensureLibsqlSessionProvenanceColumn(sqlite) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  if (!columns.some((column) => column.name === "provider")) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  await sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
-  );
-}
-async function createLibsqlProviderIdentityTables(sqlite) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
-  );
-  await sqlite.exec(
-    "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
-  );
-}
-function splitSqlStatements(sql) {
-  const statements = [];
-  let start = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  const text = String(sql ?? "");
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (lineComment) {
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        if (text[index + 1] === quote && quote !== "`") {
-          index += 1;
-          continue;
-        }
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === ";") {
-      const statement = text.slice(start, index).trim();
-      if (statement) {
-        statements.push(statement);
-      }
-      start = index + 1;
-    }
-  }
-  const last = text.slice(start).trim();
-  if (last) {
-    statements.push(last);
-  }
-  return statements;
-}
-function sessionExpiresAt(from = (/* @__PURE__ */ new Date()).toISOString()) {
-  const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1e3;
-  return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
-}
-function isExpiredSession(row) {
-  return Date.parse(row.expiresAt) <= Date.now();
-}
-function createSessionToken() {
-  return randomBytes2(32).toString("base64url");
-}
-async function refreshSession(database, token) {
-  return await refreshSessionOnAdapter(database.sqlite, token);
-}
-async function refreshSessionOnAdapter(sqlite, token) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const expiresAt = sessionExpiresAt(now);
-  await sqlite.refreshAuthSession(token, expiresAt);
-  return expiresAt;
-}
-async function rotateSession(database, session, userId, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
-}
-async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const token = createSessionToken();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-  return token;
-}
-async function moveSessionToUser(database, session, userId, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
-}
-async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, {
-    token: session.token,
-    userId,
-    provider,
-    createdAt: now,
-    expiresAt: sessionExpiresAt(now)
-  });
-}
-async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite = null) {
-  if (!auth?.isGuest || auth.userId === targetUserId) {
-    return;
-  }
-  const migrate = async (tx) => {
-    const sourceRow = await tx.readUserPreferences(auth.userId);
-    if (!sourceRow) {
-      return;
-    }
-    const targetRow = await tx.readUserPreferences(targetUserId);
-    const source = JSON.parse(sourceRow.value);
-    const target = targetRow ? JSON.parse(targetRow.value) : {};
-    const next = { ...target, ...source };
-    assertJsonCompatible(next);
-    await tx.saveUserPreferences({
-      userId: targetUserId,
-      value: JSON.stringify(next),
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-  };
-  if (sqlite) {
-    await migrate(sqlite);
-    return;
-  }
-  await database.sqlite.withTransaction(migrate);
-}
-async function resolveAnonymousSession(database, sessionToken) {
-  if (sessionToken) {
-    const existing = await database.sqlite.readAuthSessionWithUser(sessionToken);
-    if (existing) {
-      if (isExpiredSession(existing)) {
-        await database.sqlite.deleteAuthSession(sessionToken);
-      } else {
-        return sessionFromRow(existing);
-      }
-    }
-  }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const userId = randomUUID();
-  const token = createSessionToken();
-  await database.sqlite.withTransaction(async (tx) => {
-    await tx.insertAuthUser({
-      id: userId,
-      createdAt: now,
-      displayName: "Anonymous",
-      email: null,
-      picture: null,
-      isAuthenticated: 0,
-      isGuest: 1,
-      provider: "anonymous"
-    });
-    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
-  });
-  return {
-    token,
-    auth: {
-      userId,
-      displayName: "Anonymous",
-      email: null,
-      picture: null,
-      isAuthenticated: false,
-      isGuest: true,
-      provider: "anonymous"
-    }
-  };
-}
-function sessionFromRow(row) {
-  return {
-    token: row.token,
-    auth: {
-      userId: row.userId,
-      displayName: row.displayName,
-      email: row.email,
-      picture: row.picture,
-      isAuthenticated: Boolean(row.isAuthenticated),
-      isGuest: Boolean(row.isGuest),
-      provider: row.provider
-    }
-  };
-}
-async function readCurrentUserPreferences(database, auth) {
-  const row = await database.sqlite.readUserPreferences(auth.userId);
-  return {
-    ok: true,
-    data: {
-      preferences: row ? JSON.parse(row.value) : {}
-    },
-    error: null
-  };
-}
-async function updateCurrentUserPreferences(database, auth, patch) {
-  try {
-    const normalizedPatch = normalizePreferencesPatch(patch);
-    const preferences = await database.sqlite.withTransaction(async (tx) => {
-      const row = await tx.readUserPreferences(auth.userId);
-      const current = row ? JSON.parse(row.value) : {};
-      const next = { ...current, ...normalizedPatch };
-      assertJsonCompatible(next);
-      await tx.saveUserPreferences({
-        userId: auth.userId,
-        value: JSON.stringify(next),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      return next;
-    });
-    return {
-      ok: true,
-      data: { preferences },
-      changes: normalizedPatch,
-      error: null
-    };
-  } catch (error) {
-    if (error?.code === "INVALID_PREFERENCES_PATCH") {
-      return { ok: false, data: null, error };
-    }
-    return {
-      ok: false,
-      data: null,
-      error: createPreferencesError(
-        "Preferences update failed.",
-        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
-        "PREFERENCES_UPDATE_FAILED"
-      )
-    };
-  }
-}
-function normalizePreferencesPatch(patch) {
-  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-    throw createPreferencesError(
-      "Preferences updates must be JSON objects.",
-      "Pass a plain JSON object to preferences.update().",
-      "INVALID_PREFERENCES_PATCH"
-    );
-  }
-  assertJsonCompatible(patch);
-  return patch;
-}
-function createPreferencesError(message, hint, code) {
-  return { code, message, hint };
+  const body = passwordResetMailBody(issued.link);
+  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
+    to: credential.email,
+    subject: typeof options.subject === "string" ? options.subject : "Reset your password",
+    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody
+    // Job execution is at least once; the key keeps one Reset code to one mail.
+  }, `password-reset:${issued.selector}`);
+  return { ok: true };
 }
 function createWebSocketAccept(key) {
   return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
@@ -13354,7 +15293,7 @@ async function runQuery(database, auth, queryName) {
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
     const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-    const rows2 = (await database.sqlite.selectAppRows(table, {
+    const rows2 = (await database.adapter.selectAppRows(table, {
       columns,
       ownerId: ownerScoped ? context.auth.userId : void 0,
       orderBy: { fieldName: "createdAt", direction: "desc" }
@@ -13392,7 +15331,7 @@ async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
   try {
-    const committed = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
       for (const hookSource of database.mutationHooks.beforeMutation) {
@@ -13481,7 +15420,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       assertJsonCompatible(data);
     }
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    const response = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
         transactionDatabase,
@@ -13522,13 +15461,13 @@ function validateAppMessageType(type) {
   const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "upload."];
   const reservedExact = /* @__PURE__ */ new Set(["error", "refresh"]);
   if (reservedExact.has(value) || reservedPrefixes.some((prefix) => value.startsWith(prefix))) {
-    throw commandError(
+    throw commandError2(
       `Reserved app message type: ${value}`,
       "Use an unprefixed app message type that does not start with a Sporades platform namespace."
     );
   }
   if (!value || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value)) {
-    throw commandError(
+    throw commandError2(
       `Invalid app message type: ${value}`,
       "Use an unprefixed app message type containing letters, numbers, underscores, or hyphens."
     );
@@ -13543,7 +15482,7 @@ function createMessageContext(database, auth, sendAppMessage) {
     send(appMessage) {
       validateAppMessageType(appMessage?.type);
       if (isAllAppMessageScope(appMessage?.scope)) {
-        throw commandError(
+        throw commandError2(
           "Client-origin app messages cannot broadcast to all clients.",
           "Use the default current-user scope or an explicit users scope authorized by the message handler."
         );
@@ -13584,6 +15523,24 @@ function createMutationContext(database, auth) {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+    async sendEmailPasswordResetLink(email, options = {}) {
+      const result = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email) {
+      const result = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code) {
+      const result = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code, newPassword) {
+      const result = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
   return context;
@@ -13607,7 +15564,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) {
           assertJobScheduleProvenance(existing, scheduleProvenance);
           return jobState(existing, true);
@@ -13634,10 +15591,10 @@ function createCurrentUserJobApi(database, contextGetter) {
         return jobState(row, true);
       }
       try {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) {
             assertJobScheduleProvenance(existing, scheduleProvenance);
             return jobState(existing, true);
@@ -13646,11 +15603,12 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw error;
       }
       scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+      return jobState(await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id) {
       const context = contextGetter();
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async cancel(id) {
@@ -13663,158 +15621,34 @@ function createCurrentUserJobApi(database, contextGetter) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const queueDatabase = database.__rootDatabase ?? database;
-      const clauses = ["actorUserId = ?"];
+      const sql = queueDatabase.adapter.dialect.sql;
+      const clauses = ["[actorUserId] = ?"];
       const params = [context.auth.userId];
       if (options.status) {
-        clauses.push("status = ?");
+        clauses.push("[status] = ?");
         params.push(options.status);
       }
       if (options.handler) {
-        clauses.push("handler = ?");
+        clauses.push("[handler] = ?");
         params.push(options.handler);
       }
       if (options.createdAfter) {
-        clauses.push("createdAt >= ?");
+        clauses.push("[createdAt] >= ?");
         params.push(options.createdAfter);
       }
       if (options.createdBefore) {
-        clauses.push("createdAt <= ?");
+        clauses.push("[createdAt] <= ?");
         params.push(options.createdBefore);
       }
       if (cursor) {
-        clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");
+        clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await queueDatabase.sqlite.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params, limit + 1);
+      const rows = await queueDatabase.adapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     }
   };
-}
-function assertJobScheduleProvenance(row, expected) {
-  if (!expected) return;
-  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
-    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
-  }
-}
-function jobError(code, message, hint) {
-  const error = new Error(message);
-  error.code = code;
-  error.hint = hint;
-  return error;
-}
-function boundedJobJson(value, limit, code, label) {
-  let serialized;
-  try {
-    assertJsonCompatible(value);
-    serialized = JSON.stringify(value);
-  } catch {
-    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
-  }
-  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized;
-}
-function jobState(row, includeDetail) {
-  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
-  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
-  if (includeDetail && row.result) state.result = JSON.parse(row.result);
-  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
-  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
-  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
-  return state;
-}
-function jobActorProvider(auth) {
-  const provider = auth?.provider;
-  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
-  return auth?.isGuest ? "anonymous" : "authenticated";
-}
-async function inspectRuntimeJobs(adapter) {
-  const decode = (row, field, value, fallback) => {
-    if (value === null || value === void 0 || value === "") return fallback;
-    try {
-      return JSON.parse(String(value));
-    } catch {
-      const error = jobError("JOB_INSPECTION_INVALID_STATE", "Stored Job state is invalid.", "Repair or remove the malformed Job before retrying inspection.");
-      error.jobId = String(row.id);
-      error.field = field;
-      throw error;
-    }
-  };
-  const read = async (tx) => {
-    let rows;
-    try {
-      rows = await tx.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt DESC, id DESC").all();
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    return rows.map((row) => ({
-      id: String(row.id),
-      handler: String(row.handler),
-      status: String(row.status),
-      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
-      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
-      attempts: Number(row.attempts),
-      retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
-      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== void 0,
-      availableAt: row.availableAt ?? null,
-      createdAt: row.createdAt ?? null,
-      startedAt: row.startedAt ?? null,
-      completedAt: row.completedAt ?? null,
-      failedAt: row.failedAt ?? null,
-      cancelRequestedAt: row.cancelRequestedAt ?? null,
-      leaseExpiresAt: row.leaseExpiresAt ?? null,
-      attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
-      // until the runtime has a separate safe-result metadata classifier.
-      result: (decode(row, "result", row.result, null), null),
-      failure: decode(row, "failure", row.failure, null)
-    }));
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-async function inspectRuntimeSchedules(adapter) {
-  const read = async (tx) => {
-    let rows;
-    try {
-      rows = await tx.prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    const summaries = [];
-    for (const row of rows) summaries.push(await scheduleSummary(tx, row));
-    return summaries;
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("SCHEDULE_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Schedule inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-function normalizeJobRetry(value) {
-  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
-  if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs.");
-  return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
-}
-async function cancelJob(database, context, id) {
-  const row = context.__privilegedJobAccess ? await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
-  if (!row) return null;
-  const now = database.clock.now().toISOString();
-  if (["queued", "delayed"].includes(row.status)) {
-    await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now, id);
-    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
-  }
-  if (row.status === "running") {
-    database.__jobAbortControllers?.get(id)?.abort();
-    await database.sqlite.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now, id);
-    return jobState({ ...row, cancelRequestedAt: now }, true);
-  }
-  throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
-}
-function jobSummary(row) {
-  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
 }
 function createPrivilegedJobApi(database, contextGetter) {
   const current = createCurrentUserJobApi(database, contextGetter);
@@ -13825,7 +15659,8 @@ function createPrivilegedJobApi(database, contextGetter) {
     },
     async get(id) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id);
       return row ? jobState(row, true) : null;
     },
     async list(options = {}) {
@@ -13834,30 +15669,31 @@ function createPrivilegedJobApi(database, contextGetter) {
       const limit = options.limit === void 0 ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const sqlite = (database.__rootDatabase ?? database).sqlite;
+      const sqlite = (database.__rootDatabase ?? database).adapter;
+      const sql = sqlite.dialect.sql;
       const clauses = [];
       const params = [];
       if (options.status) {
-        clauses.push("status = ?");
+        clauses.push("[status] = ?");
         params.push(options.status);
       }
       if (options.handler) {
-        clauses.push("handler = ?");
+        clauses.push("[handler] = ?");
         params.push(options.handler);
       }
       if (options.createdAfter) {
-        clauses.push("createdAt >= ?");
+        clauses.push("[createdAt] >= ?");
         params.push(options.createdAfter);
       }
       if (options.createdBefore) {
-        clauses.push("createdAt <= ?");
+        clauses.push("[createdAt] <= ?");
         params.push(options.createdBefore);
       }
       if (cursor) {
-        clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");
+        clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await sqlite.prepare(`SELECT * FROM sporades_jobs${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params, limit + 1);
+      const rows = await sqlite.prepare(sql(`SELECT * FROM [sporades_jobs]${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
@@ -13867,29 +15703,12 @@ function createPrivilegedJobApi(database, contextGetter) {
     }
   };
 }
-function assertActivePrivilegedJobAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-function encodeJobCursor(row) {
-  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
-}
-function decodeJobCursor(value) {
-  if (value === void 0) return null;
-  try {
-    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
-    return cursor;
-  } catch {
-    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
-  }
-}
 async function flushPendingJobEnqueues(context) {
   if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+    await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -13902,7 +15721,7 @@ function scheduleCurrentUserJobWorker(database) {
   }, 0);
 }
 async function scheduleNextDelayedJob(database) {
-  const row = await database.sqlite.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
+  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
   if (!row) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => {
@@ -13913,16 +15732,17 @@ async function scheduleNextDelayedJob(database) {
 async function runCurrentUserJobWorker(database) {
   if (database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
+  const sql = database.adapter.dialect.sql;
   try {
     while (true) {
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
-      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
+      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
       if (!row) {
         await scheduleNextDelayedJob(database);
         return;
       }
       const startedAt = database.clock.now().toISOString();
-      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
+      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate) => candidate.name === row.handler);
       database.__jobAbortControllers ??= /* @__PURE__ */ new Map();
@@ -13935,8 +15755,10 @@ async function runCurrentUserJobWorker(database) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
-          const user = await database.sqlite.prepare(
-            "SELECT id, displayName, email, picture, isAuthenticated, isGuest FROM sporades_auth_users WHERE id = ?"
+          const user = await database.adapter.prepare(
+            sql(
+              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?"
+            )
           ).get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = {
@@ -13956,7 +15778,7 @@ async function runCurrentUserJobWorker(database) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
+        await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
       } catch (error) {
         const failure = safeJobFailure(error);
         const failedAt = database.clock.now().toISOString();
@@ -13965,45 +15787,18 @@ async function runCurrentUserJobWorker(database) {
         const abortError = error?.cause ?? error;
         const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
-        if (cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
+        if (cancelled) await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
         else if (Number(row.attempts) + 1 < retry.maxAttempts) {
           const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
-          await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
+          await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt, JSON.stringify(history), row.id);
           database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-        } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
+        } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
       } finally {
         database.__jobAbortControllers?.delete(row.id);
       }
     }
   } finally {
     database.__jobWorkerRunning = false;
-  }
-}
-function safeJobFailure(error) {
-  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
-  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
-  const messages = {
-    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
-    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
-    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
-    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
-    JOB_FAILED: "Job handler failed."
-  };
-  return { code, message: messages[code] };
-}
-async function drainPendingAclWrites(context) {
-  let firstError = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
   }
 }
 function createHookErrorResult(error) {
@@ -14068,7 +15863,7 @@ async function runInsertMutation(database, context, mutationName, args) {
     };
   }
   await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, async () => {
-    await database.sqlite.insertAppRow(table, values);
+    await database.adapter.insertAppRow(table, values);
     database.rowCache.clear();
   });
   return { ok: true, error: null };
@@ -14105,7 +15900,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
-  const previousRow = (await database.sqlite.selectAppRows(resolved.table, {
+  const previousRow = (await database.adapter.selectAppRows(resolved.table, {
     ownerId: ownerScoped ? context.auth.userId : void 0,
     where: { fieldName: "id", value: String(id) },
     limit: 1
@@ -14117,7 +15912,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
   const write = async () => {
-    await database.sqlite.updateAppRow(
+    await database.adapter.updateAppRow(
       resolved.table,
       id,
       {
@@ -14154,142 +15949,6 @@ function formatMutationResult(message, mutationName, result) {
     formatted.ok = result.ok;
   }
   return formatted;
-}
-function authStatus(config, serverEnv) {
-  const authConfig = config.auth ?? { mode: "anonymous" };
-  const normalized = normalizeAuthConfig(authConfig);
-  const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
-  const runtimeProviders = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
-  const providers = {};
-  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
-  for (const providerName of providerOrder) {
-    const provider = normalized.providers[providerName];
-    const credentialsConfigured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
-    const configured = providerName === "facebook" ? credentialsConfigured && provider.graphVersion === "v23.0" : credentialsConfigured;
-    const state = {
-      enabled: provider.enabled,
-      configured,
-      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : runtimeProviders.has(providerName)
-    };
-    if (["google", "microsoft", "facebook"].includes(providerName)) {
-      state.clientIdEnv = provider.clientIdEnv;
-      state.clientSecretEnv = provider.clientSecretEnv;
-    }
-    if (providerName === "microsoft") state.tenant = provider.tenant;
-    if (providerName === "facebook") {
-      state.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
-    }
-    if (providerName === "apple") {
-      state.clientId = provider.clientId;
-      state.teamId = provider.teamId;
-      state.keyId = provider.keyId;
-      state.privateKeyEnv = provider.privateKeyEnv;
-    }
-    if (!["anonymous", "email"].includes(providerName)) {
-      state.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      if (providerName === "apple") {
-        state.callbackUrl = null;
-        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
-      } else {
-        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
-      }
-    }
-    providers[providerName] = state;
-  }
-  return {
-    mode: normalized.mode,
-    providers,
-    google: {
-      configured: providers.google.configured,
-      clientIdEnv: normalized.providers.google.clientIdEnv,
-      clientSecretEnv: normalized.providers.google.clientSecretEnv
-    }
-  };
-}
-function normalizeAuthConfig(authConfig) {
-  const providerConfig = authConfig.providers ?? {};
-  for (const provider of Object.keys(providerConfig)) {
-    if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
-      throw commandError(
-        `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook."
-      );
-    }
-  }
-  const googleConfig = readProviderConfig(providerConfig.google);
-  const legacyGoogle = authConfig.google ?? {};
-  const microsoftConfig = readProviderConfig(providerConfig.microsoft);
-  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
-  const emailConfig = readProviderConfig(providerConfig.email);
-  const anonymousConfig = readProviderConfig(providerConfig.anonymous);
-  const anonymousEnabled = providerConfig.anonymous === void 0 ? true : anonymousConfig.enabled;
-  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
-  return {
-    mode,
-    providers: {
-      anonymous: {
-        enabled: anonymousEnabled,
-        ...emptyProviderConfig()
-      },
-      google: {
-        ...emptyProviderConfig(),
-        enabled: googleEnabled,
-        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
-        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null
-      },
-      email: {
-        enabled: emailConfig.enabled,
-        ...emptyProviderConfig()
-      },
-      microsoft: {
-        ...microsoftConfig,
-        tenant: microsoftConfig.tenant ?? "common"
-      },
-      apple: readProviderConfig(providerConfig.apple),
-      facebook: readFacebookProviderConfig(providerConfig.facebook)
-    }
-  };
-}
-function readProviderConfig(config) {
-  if (config === true) {
-    return { enabled: true, ...emptyProviderConfig() };
-  }
-  if (config === false || config === void 0 || config === null) {
-    return { enabled: false, ...emptyProviderConfig() };
-  }
-  return {
-    enabled: config.enabled !== false,
-    clientIdEnv: config.clientIdEnv ?? null,
-    clientSecretEnv: config.clientSecretEnv ?? null,
-    clientId: config.clientId ?? null,
-    teamId: config.teamId ?? null,
-    keyId: config.keyId ?? null,
-    privateKeyEnv: config.privateKeyEnv ?? null,
-    tenant: config.tenant ?? null,
-    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
-  };
-}
-function readFacebookProviderConfig(config) {
-  const normalized = readProviderConfig(config);
-  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
-    return { ...normalized, graphVersion: "v23.0" };
-  }
-  return normalized;
-}
-function emptyProviderConfig() {
-  return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
-}
-function authProvidersForClient(authConfig, origin = null) {
-  const providers = {};
-  for (const [name, provider] of Object.entries(authConfig.providers)) {
-    providers[name] = {
-      enabled: provider.enabled,
-      configured: provider.configured,
-      runtimeAvailable: provider.runtimeAvailable && (name !== "apple" || appleOAuthOriginEligible(origin)),
-      ...name === "facebook" ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion } : {}
-    };
-  }
-  return providers;
 }
 function resolveTableForQuery(schema, queryName) {
   return schema.tables.find((table) => table.name === queryName) ?? null;
@@ -14330,1993 +15989,6 @@ function rowToApiValue(row, table) {
     }
   }
   return value;
-}
-function toSqlNumber(value, fieldName) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
-  }
-  return value;
-}
-function quoteIdentifier(identifier) {
-  return `"${String(identifier).replaceAll('"', '""')}"`;
-}
-
-// src/public-tree-contract.ts
-var PUBLIC_TREE_LIMITS = {
-  files: 512,
-  fileBytes: 16 * 1024 * 1024,
-  totalBytes: 64 * 1024 * 1024,
-  pathBytes: 240
-};
-function normalizePublicTreePath(value) {
-  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) return null;
-  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) return null;
-  const segments = value.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
-  return segments.join("/");
-}
-function publicTreePathFromRequest(rawPathname) {
-  if (/%2f|%5c/i.test(rawPathname)) return null;
-  let decoded;
-  try {
-    decoded = decodeURIComponent(rawPathname);
-  } catch {
-    return null;
-  }
-  if (decoded === "/") return "index.html";
-  if (!decoded.startsWith("/") || /%[0-9a-f]{2}/i.test(decoded)) return null;
-  return normalizePublicTreePath(decoded.slice(1));
-}
-function validatePublicTreeFileSet(files) {
-  if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
-  const canonicalPrefixes = /* @__PURE__ */ new Map();
-  const canonicalFiles = /* @__PURE__ */ new Set();
-  let totalBytes = 0;
-  let hasIndex = false;
-  for (const file of files) {
-    const normalized = normalizePublicTreePath(file.path);
-    if (normalized === null || !Number.isSafeInteger(file.size) || file.size < 0) return { ok: false, reason: "path" };
-    const segments = normalized.split("/");
-    let canonical = "";
-    let raw = "";
-    for (let index = 0; index < segments.length; index += 1) {
-      raw = raw ? `${raw}/${segments[index]}` : segments[index];
-      const canonicalSegment = segments[index].normalize("NFC");
-      canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
-      const existingRaw = canonicalPrefixes.get(canonical);
-      if (existingRaw !== void 0 && existingRaw !== raw) return { ok: false, reason: "collision" };
-      if (index < segments.length - 1 && canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
-      canonicalPrefixes.set(canonical, raw);
-    }
-    if (canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
-    if ([...canonicalFiles].some((existing) => existing.startsWith(`${canonical}/`))) return { ok: false, reason: "collision" };
-    canonicalFiles.add(canonical);
-    if (file.size > PUBLIC_TREE_LIMITS.fileBytes) return { ok: false, reason: "file-bytes", path: normalized };
-    totalBytes += file.size;
-    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) return { ok: false, reason: "total-bytes" };
-    if (normalized === "index.html") hasIndex = true;
-  }
-  if (!hasIndex) return { ok: false, reason: "index" };
-  return { ok: true, fileCount: files.length, totalBytes };
-}
-
-// src/templates/server-bundle-template.ts
-function createServerBundleSource({
-  config,
-  serverEnv,
-  sealedServerEnv = { enabled: false },
-  serverSource,
-  serverModuleSource
-}) {
-  const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
-  const publicTreeContract = [
-    `const PUBLIC_TREE_LIMITS = ${JSON.stringify(PUBLIC_TREE_LIMITS)};`,
-    normalizePublicTreePath.toString(),
-    publicTreePathFromRequest.toString()
-  ].join("\n\n");
-  const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
-  return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import path from "node:path";
-
-export const sporadesConfig = ${JSON.stringify(config, null, 2)};
-export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
-export const sporadesSealedServerEnv = ${JSON.stringify(sealedServerEnv, null, 2)};
-export const sporadesServerSource = ${JSON.stringify(serverSource)};
-const sporadesActionIndex = process.argv.indexOf("--sporades-action");
-const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
-const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
-const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-${runtimeFunctions}
-${publicTreeContract}
-
-const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
-const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
-const runtimeConfig = {
-  ...sporadesConfig,
-  __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
-  __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
-};
-const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
-const runtimeServiceEnv = readRuntimeServiceEnv();
-if (sporadesAction) {
-  if (!['jobs.inspect', 'schedules.inspect'].includes(sporadesAction)) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
-    process.exit(1);
-  }
-  const adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
-  try {
-    const items = adapter ? await (sporadesAction === 'jobs.inspect' ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
-    const key = sporadesAction === 'jobs.inspect' ? 'jobs' : 'schedules';
-    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\\n");
-  } catch (error) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? (sporadesAction === 'jobs.inspect' ? "JOB_INSPECTION_FAILED" : "SCHEDULE_INSPECTION_FAILED"), message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) } }) + "\\n");
-    process.exitCode = 1;
-  } finally { await adapter?.close(); }
-  process.exit();
-}
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
-  serviceEnv: runtimeServiceEnv,
-});
-await database.init();
-database.log.emit({
-  category: "platform",
-  event: "runtime.started",
-  level: "info",
-  message: "Capsule runtime started",
-  data: { diagnostics: database.runtimeDiagnostics },
-  release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
-});
-const websocketHub = createWebSocketHub(() => database);
-const runtimePublicRoot = resolveRuntimePublicRoot();
-
-const server = createServer(async (request, response) => {
-  try {
-    if (prepareHttpSecurity(database, request, response)) {
-      return;
-    }
-
-    if (await routeRuntimeHealth(database, request, response)) {
-      return;
-    }
-
-    if (await routeSporadesAuth(database, request, response)) {
-      return;
-    }
-
-    if (await handleFileHttpRoute(database, request, response, websocketHub)) {
-      return;
-    }
-
-    if (await routeEndpoint(database, request, response)) {
-      return;
-    }
-
-    if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
-      return;
-    }
-
-    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-    response.end("Not found");
-  } catch (error) {
-    writeUnhandledHttpError(database, request, response, error);
-  }
-});
-
-server.on("upgrade", (request, socket) => {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (requestUrl.pathname !== "/__sporades/ws") {
-    socket.destroy();
-    return;
-  }
-  websocketHub.accept(request, socket);
-});
-
-await new Promise((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(port, "0.0.0.0", resolve);
-});
-
-let shutdownStarted = false;
-const shutdown = async () => {
-  if (shutdownStarted) return;
-  shutdownStarted = true;
-  websocketHub.disconnectAll();
-  await database.shutdown();
-  server.close(() => {
-    database.close();
-    process.exit(0);
-  });
-};
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
-
-function resolveRuntimePublicRoot() {
-  const mounted = path.join(process.cwd(), "public");
-  if (process.cwd() === "/app") return mounted;
-  return resolveActiveRuntimePublicRoot() ?? mounted;
-}
-
-function resolveActiveRuntimePublicRoot() {
-  try {
-    const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
-    const treesStats = lstatSync(treesDir);
-    const referencePath = path.join(treesDir, "active.json");
-    const referenceStats = lstatSync(referencePath);
-    const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
-    if (!/^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(tree)) return null;
-    const candidate = path.join(treesDir, tree);
-    const candidateStats = lstatSync(candidate);
-    const indexStats = lstatSync(path.join(candidate, "index.html"));
-    if (
-      treesStats.isDirectory() && !treesStats.isSymbolicLink()
-      && referenceStats.isFile() && !referenceStats.isSymbolicLink()
-      && candidateStats.isDirectory() && !candidateStats.isSymbolicLink()
-      && indexStats.isFile() && !indexStats.isSymbolicLink()
-    ) return candidate;
-  } catch {}
-  return null;
-}
-
-async function routePublicAsset(request, response, publicRoot, hub) {
-  const rawPathname = String(request.url ?? "/").split("?", 1)[0];
-  const relativePath = publicTreePathFromRequest(rawPathname);
-  if (relativePath === null) return false;
-  const filePath = path.join(publicRoot, ...relativePath.split("/"));
-  const stats = await lstat(filePath).catch(() => null);
-  if (!stats?.isFile() || stats.isSymbolicLink()) return false;
-  const body = await readFile(filePath);
-  const html = relativePath === "index.html";
-  response.writeHead(200, { "content-type": publicContentType(relativePath) });
-  response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
-  return true;
-}
-
-function publicContentType(relativePath) {
-  switch (path.extname(relativePath).toLowerCase()) {
-    case ".html": return "text/html; charset=utf-8";
-    case ".js": case ".mjs": return "text/javascript; charset=utf-8";
-    case ".css": return "text/css; charset=utf-8";
-    case ".json": case ".map": return "application/json; charset=utf-8";
-    case ".svg": return "image/svg+xml";
-    case ".png": return "image/png";
-    case ".jpg": case ".jpeg": return "image/jpeg";
-    case ".gif": return "image/gif";
-    case ".webp": return "image/webp";
-    case ".ico": return "image/x-icon";
-    case ".woff": return "font/woff";
-    case ".woff2": return "font/woff2";
-    case ".txt": return "text/plain; charset=utf-8";
-    default: return "application/octet-stream";
-  }
-}
-
-async function readRuntimeServerEnv(fallbackEnv, sealed) {
-  let env;
-  if (!sealed?.enabled) {
-    env = fallbackEnv;
-  } else {
-    const envelopePath = process.env.SPORADES_SEALED_SERVER_ENV_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.sealed.json");
-    const privateKeyPath = process.env.SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.private.pem");
-    const [envelopeRaw, privateKey] = await Promise.all([readFile(envelopePath, "utf8"), readFile(privateKeyPath, "utf8")]);
-    env = unsealRuntimeServerEnv(JSON.parse(envelopeRaw), privateKey);
-  }
-  return env;
-}
-
-function readRuntimeServiceEnv() {
-  const keys = [
-    "SPORADES_SERVICE_DATABASE_ENGINE",
-    "SPORADES_SERVICE_DATABASE_URL",
-    "SPORADES_SERVICE_DATABASE_AUTH_TOKEN",
-    "SPORADES_SERVICE_STORAGE_ENGINE",
-    "SPORADES_SERVICE_STORAGE_ENDPOINT",
-    "SPORADES_SERVICE_STORAGE_ACCESS_KEY",
-    "SPORADES_SERVICE_STORAGE_SECRET_KEY",
-    "SPORADES_SERVICE_STORAGE_BUCKET",
-    "SPORADES_SERVICE_STORAGE_REGION",
-    "SPORADES_SERVICE_STORAGE_NAMESPACE",
-  ];
-  return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
-}
-
-function unsealRuntimeServerEnv(envelope, privateKey) {
-  const values = {};
-  for (const [key, entry] of Object.entries(envelope.entries ?? {})) {
-    const dataKey = privateDecrypt(privateKey, Buffer.from(entry.encryptedKey, "base64"));
-    const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(entry.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(entry.tag, "base64"));
-    values[key] = Buffer.concat([
-      decipher.update(Buffer.from(entry.ciphertext, "base64")),
-      decipher.final(),
-    ]).toString("utf8");
-  }
-  return values;
-}
-`;
-}
-
-// src/public-tree.ts
-import { lstat as lstat3, mkdir as mkdir2, readdir, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { randomBytes as randomBytes3 } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import path3 from "node:path";
-var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
-var OWNER_HEARTBEATS = /* @__PURE__ */ new Map();
-var execFileAsync = promisify(execFile);
-var UNVERIFIED_OWNER_TTL_MS = 3e4;
-var OWNER_HEARTBEAT_INTERVAL_MS = 1e4;
-var OWNER_CLOCK_SKEW_MS = 5e3;
-async function createPublicTree(buildDir, files, options = {}) {
-  const nonce = `${process.pid}-${Date.now()}-${randomBytes3(8).toString("hex")}`;
-  const treesDir = path3.join(buildDir, ".public-trees");
-  const stagingDir = path3.join(treesDir, `.staging-${nonce}`);
-  const publicDir = path3.join(treesDir, nonce);
-  const normalizedFiles = normalizePublicFiles(files);
-  await mkdir2(treesDir, { recursive: true });
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  let published = false;
-  let lease = null;
-  try {
-    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1, fault: options.cleanupFault });
-    await mkdir2(stagingDir, { recursive: false });
-    for (const file of normalizedFiles) {
-      const destination = path3.join(stagingDir, ...file.path.split("/"));
-      await mkdir2(path3.dirname(destination), { recursive: true });
-      await writeFile2(destination, file.contents);
-    }
-    await validatePublicTree(stagingDir);
-    lease = await createPublicTreeLease(treesDir, nonce);
-    await rename2(stagingDir, publicDir);
-    published = true;
-    await cleanupPublicTreesUnlocked(buildDir, { keepRoots: [publicDir], maxCompleted: 1, fault: options.cleanupFault });
-    return {
-      root: publicDir,
-      assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)])),
-      lease
-    };
-  } catch (error) {
-    if (published) await rm2(publicDir, { recursive: true, force: true });
-    if (lease) await removePublicTreeLease(lease).catch(() => {
-    });
-    throw error;
-  } finally {
-    await rm2(stagingDir, { recursive: true, force: true });
-    await releaseLock();
-  }
-}
-async function discardPublicTree(tree) {
-  const treesDir = path3.dirname(tree.root);
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  try {
-    const activeReference = await readActivePublicTreeReference(treesDir);
-    if (activeReference === path3.basename(tree.root)) {
-      throw publicTreeError(
-        "Active public tree cannot be discarded.",
-        "Preserve the referenced candidate until the active public tree reference is repaired.",
-        { candidateDiscard: "forbidden", activeTree: activeReference }
-      );
-    }
-    await removePublicTreeLease(tree.lease);
-    await rm2(tree.root, { recursive: true, force: true });
-  } finally {
-    await releaseLock();
-  }
-}
-async function releasePublicTreeLease(tree) {
-  const treesDir = path3.dirname(tree.root);
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  try {
-    await removePublicTreeLease(tree.lease);
-    await cleanupPublicTreesUnlocked(path3.dirname(treesDir), { maxCompleted: 1 });
-  } finally {
-    await releaseLock();
-  }
-}
-async function readPublicTreeConsumer(buildDir, consumer) {
-  validateConsumerName(consumer);
-  const recordPath = path3.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
-  const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-    throw error;
-  });
-  return validConsumerRecord(record, consumer) ? record : null;
-}
-async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
-  validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
-  if (path3.dirname(treeRoot) !== treesDir || !isPublicTreeName(path3.basename(treeRoot))) {
-    throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
-  }
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  try {
-    const consumersDir = path3.join(treesDir, ".consumers");
-    await mkdir2(consumersDir, { recursive: true });
-    const recordPath = path3.join(consumersDir, `${consumer}.json`);
-    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
-    await validatePublicTree(treeRoot);
-    const record = {
-      consumer,
-      tree: path3.basename(treeRoot),
-      identity,
-      token: randomBytes3(16).toString("hex"),
-      createdAt: Date.now()
-    };
-    await replaceStateFile(recordPath, `${JSON.stringify(record)}
-`);
-    return record;
-  } finally {
-    await releaseLock();
-  }
-}
-async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCurrent) {
-  validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
-  await mkdir2(treesDir, { recursive: true });
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  try {
-    const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
-    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
-    if (record === null) {
-      await rm2(recordPath, { recursive: true, force: true });
-      return;
-    }
-    if (!validConsumerRecord(record, consumer)) {
-      throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
-    }
-    const root = path3.join(treesDir, record.tree);
-    await validatePublicTree(root);
-    await mkdir2(path3.dirname(recordPath), { recursive: true });
-    await replaceStateFile(recordPath, `${JSON.stringify(record)}
-`);
-  } finally {
-    await releaseLock();
-  }
-}
-async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
-  validateConsumerName(consumer);
-  const treesDir = path3.join(buildDir, ".public-trees");
-  await mkdir2(treesDir, { recursive: true });
-  const releaseLock = await acquirePublicTreeLock(treesDir);
-  try {
-    const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
-    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
-    await rm2(recordPath, { recursive: true, force: true });
-    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
-  } finally {
-    await releaseLock();
-  }
-}
-async function verifyConsumerExpectation(recordPath, consumer, expected) {
-  const raw = await readFile3(recordPath, "utf8").catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-    throw error;
-  });
-  const current = raw === null ? null : (() => {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return void 0;
-    }
-  })();
-  const matches = expected === null ? current === null : validConsumerRecord(current, consumer) && current.token === expected.token && current.identity === expected.identity;
-  if (!matches) {
-    throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
-  }
-}
-async function validatePublicTree(root) {
-  const rootStats = await lstat3(root);
-  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
-    throw publicTreeError("Invalid public tree.", "The public output root must be a real directory.");
-  }
-  const canonicalPaths = /* @__PURE__ */ new Map();
-  const filePaths = [];
-  let fileCount = 0;
-  let totalBytes = 0;
-  async function visit(directory, prefix = "") {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      validateRelativePublicPath(relativePath);
-      const canonicalPath = relativePath.normalize("NFC");
-      const collision = canonicalPaths.get(canonicalPath);
-      if (collision && collision !== relativePath) {
-        throw publicTreeError(
-          "Invalid public tree.",
-          `Remove the normalization collision between ${collision} and ${relativePath}.`
-        );
-      }
-      canonicalPaths.set(canonicalPath, relativePath);
-      const absolutePath = path3.join(directory, entry.name);
-      const stats = await lstat3(absolutePath);
-      if (stats.isSymbolicLink()) {
-        throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
-      }
-      if (stats.isDirectory()) {
-        await visit(absolutePath, relativePath);
-        continue;
-      }
-      if (!stats.isFile()) {
-        throw publicTreeError("Invalid public tree.", `Remove the unsupported entry at ${relativePath}.`);
-      }
-      fileCount += 1;
-      totalBytes += stats.size;
-      filePaths.push(relativePath);
-      if (fileCount > PUBLIC_TREE_LIMITS.files) {
-        throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
-      }
-      if (stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
-        throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
-      }
-      if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
-        throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
-      }
-    }
-  }
-  await visit(root);
-  const indexStats = await lstat3(path3.join(root, "index.html")).catch(() => null);
-  if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
-    throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
-  }
-  return { fileCount, totalBytes, paths: filePaths.sort() };
-}
-async function summarizePublicTree(root) {
-  const validated = await validatePublicTree(root);
-  const paths = validated.paths.slice(0, 20);
-  return {
-    htmlEntry: "index.html",
-    fileCount: validated.fileCount,
-    totalBytes: validated.totalBytes,
-    paths,
-    truncated: validated.paths.length > paths.length
-  };
-}
-async function validateActivePublicTreeReference(treesDir, raw) {
-  let tree;
-  try {
-    tree = JSON.parse(raw)?.tree;
-  } catch {
-    tree = null;
-  }
-  if (!(typeof tree === "string" && isPublicTreeName(tree))) {
-    throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
-  }
-  const root = path3.join(treesDir, tree);
-  const stats = await lstat3(root).catch(() => null);
-  if (!stats?.isDirectory() || stats.isSymbolicLink()) {
-    throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
-  }
-  await validatePublicTree(root);
-  return tree;
-}
-async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
-  const treesDir = path3.join(buildDir, ".public-trees");
-  const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  });
-  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path3.dirname(root) === treesDir).map((root) => path3.basename(root)));
-  const activeReference = await readActivePublicTreeReference(treesDir);
-  if (typeof activeReference === "string") {
-    keepNames.add(activeReference);
-  }
-  for (const consumerTree of await publicTreeConsumerNames(treesDir)) keepNames.add(consumerTree);
-  const now = options.now ?? Date.now;
-  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
-  for (const name of liveLeaseNames) keepNames.add(name);
-  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path3.join(treesDir, entry.name))).mtimeMs })));
-  completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
-  let recoverableCount = 0;
-  for (const item of completed) {
-    if (keepNames.has(item.entry.name)) continue;
-    if (staleLeaseNames.has(item.entry.name)) continue;
-    if (recoverableCount >= (options.maxCompleted ?? 1)) break;
-    keepNames.add(item.entry.name);
-    recoverableCount += 1;
-  }
-  const failures = [];
-  for (const entry of entries) {
-    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
-    if (keepNames.has(entry.name)) continue;
-    const entryPath = path3.join(treesDir, entry.name);
-    try {
-      options.fault?.("before-remove", entryPath);
-      await rm2(entryPath, { recursive: true, force: true });
-    } catch {
-      failures.push(entry.name);
-    }
-  }
-  if (failures.length > 0) {
-    throw publicTreeError(
-      "Public tree cleanup degraded.",
-      `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
-    );
-  }
-  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)), now);
-  await removeOrphanedOwnerHeartbeats(treesDir);
-}
-async function readPublicAsset(tree, rawPathname) {
-  const relativePath = publicTreePathFromRequest(rawPathname);
-  return relativePath ? tree.assets.get(relativePath) ?? null : null;
-}
-function validateRelativePublicPath(value) {
-  const normalized = normalizePublicTreePath(value);
-  if (normalized === null) throw publicTreeError("Invalid public path.", "Public paths must be bounded safe relative POSIX paths.");
-  return normalized;
-}
-function normalizePublicFiles(files) {
-  const normalized = files.map((file) => {
-    const relativePath = validateRelativePublicPath(file.path);
-    const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
-    return { path: relativePath, contents };
-  });
-  const validation = validatePublicTreeFileSet(normalized.map((file) => ({ path: file.path, size: file.contents.byteLength })));
-  if (!validation.ok) {
-    const hints = {
-      path: "Public paths must be bounded safe relative POSIX paths.",
-      collision: "Remove Unicode normalization collisions from public output.",
-      files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
-      "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
-      "total-bytes": "Public output exceeds the aggregate size limit.",
-      index: "Client output must contain a regular index.html file."
-    };
-    throw publicTreeError("Invalid public tree.", hints[validation.reason]);
-  }
-  return normalized;
-}
-function publicAsset(relativePath, contents) {
-  return {
-    body: Buffer.from(contents),
-    contentType: publicContentType(relativePath),
-    relativePath,
-    html: relativePath === "index.html"
-  };
-}
-function publicContentType(relativePath) {
-  switch (path3.extname(relativePath).toLowerCase()) {
-    case ".html":
-      return "text/html; charset=utf-8";
-    case ".js":
-    case ".mjs":
-      return "text/javascript; charset=utf-8";
-    case ".css":
-      return "text/css; charset=utf-8";
-    case ".json":
-    case ".map":
-      return "application/json; charset=utf-8";
-    case ".svg":
-      return "image/svg+xml";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".ico":
-      return "image/x-icon";
-    case ".woff":
-      return "font/woff";
-    case ".woff2":
-      return "font/woff2";
-    case ".txt":
-      return "text/plain; charset=utf-8";
-    default:
-      return "application/octet-stream";
-  }
-}
-async function createPublicTreeLease(treesDir, treeName) {
-  const leasesDir = path3.join(treesDir, ".leases");
-  await mkdir2(leasesDir, { recursive: true });
-  const token = randomBytes3(16).toString("hex");
-  const leasePath = path3.join(leasesDir, `${treeName}.json`);
-  const processStart = await getProcessStartIdentity(process.pid);
-  const record = {
-    tree: treeName,
-    pid: process.pid,
-    processStart,
-    createdAt: Date.now(),
-    heartbeatAt: Date.now(),
-    token
-  };
-  await writeFile2(leasePath, `${JSON.stringify(record)}
-`, { flag: "wx" });
-  LIVE_PUBLIC_TREE_LEASES.add(token);
-  if (processStart === null) startOwnerHeartbeat(leasePath, record);
-  return { path: leasePath, token };
-}
-async function removePublicTreeLease(lease) {
-  await stopOwnerHeartbeat(lease.token);
-  const record = await readFile3(lease.path, "utf8").then(JSON.parse).catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (record && record.token !== lease.token) {
-    LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
-    throw publicTreeError("Public tree lease ownership changed.", "Preserve the candidate and retry cleanup from its owning build.");
-  }
-  await rm2(lease.path, { force: true });
-  LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
-}
-async function publicTreeLeaseStates(treesDir, now) {
-  const leasesDir = path3.join(treesDir, ".leases");
-  const entries = await readdir(leasesDir).catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  });
-  const live = /* @__PURE__ */ new Set();
-  const stale = /* @__PURE__ */ new Set();
-  for (const entry of entries) {
-    try {
-      const lease = JSON.parse(await readFile3(path3.join(leasesDir, entry), "utf8"));
-      if (validLeaseRecord(lease)) {
-        if (await leaseIsLive(lease, path3.join(leasesDir, entry), now)) live.add(lease.tree);
-        else stale.add(lease.tree);
-      } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
-    } catch {
-      if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
-    }
-  }
-  return { live, stale };
-}
-async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
-  const leasesDir = path3.join(treesDir, ".leases");
-  const entries = await readdir(leasesDir).catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  });
-  for (const entry of entries) {
-    const leasePath = path3.join(leasesDir, entry);
-    let lease = null;
-    try {
-      lease = JSON.parse(await readFile3(leasePath, "utf8"));
-    } catch {
-    }
-    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
-      if (validLeaseRecord(lease)) {
-        LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
-        await stopOwnerHeartbeat(lease.token);
-      }
-      await rm2(leasePath, { force: true });
-    }
-  }
-}
-function validLeaseRecord(lease) {
-  return Boolean(
-    lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && lease.pid > 0 && (typeof lease.processStart === "string" || lease.processStart === null) && Number.isFinite(lease.createdAt) && Number.isFinite(lease.heartbeatAt) && typeof lease.token === "string" && lease.token.length > 0
-  );
-}
-async function leaseIsLive(lease, recordPath, now) {
-  if (lease.pid === process.pid && !LIVE_PUBLIC_TREE_LEASES.has(lease.token)) return false;
-  return ownerIdentityIsLive(lease, recordPath, now);
-}
-async function readActivePublicTreeReference(treesDir) {
-  try {
-    return await validateActivePublicTreeReference(treesDir, await readFile3(path3.join(treesDir, "active.json"), "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-    throw publicTreeError(
-      "Public tree cleanup degraded.",
-      "The active public tree reference is invalid; no referenced candidate may be discarded.",
-      { candidateDiscard: "forbidden" }
-    );
-  }
-}
-function isPublicTreeName(value) {
-  return /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(value);
-}
-async function acquirePublicTreeLock(treesDir) {
-  const lockDir = path3.join(treesDir, ".lifecycle-lock");
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    try {
-      await mkdir2(lockDir);
-      const ownerPath = path3.join(lockDir, "owner.json");
-      const token = randomBytes3(16).toString("hex");
-      const processStart = await getProcessStartIdentity(process.pid);
-      const owner = {
-        pid: process.pid,
-        processStart,
-        createdAt: Date.now(),
-        heartbeatAt: Date.now(),
-        token
-      };
-      await writeFile2(ownerPath, `${JSON.stringify(owner)}
-`);
-      if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
-      return async () => {
-        await stopOwnerHeartbeat(token);
-        const currentOwner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch((error) => {
-          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-          throw error;
-        });
-        if (currentOwner === null) return;
-        if (currentOwner.token !== token) {
-          throw publicTreeError("Public tree lock ownership changed.", "Preserve the successor lock and retry after its owner completes.");
-        }
-        await rm2(lockDir, { recursive: true, force: true });
-      };
-    } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile3(path3.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
-      if (owner !== null && !await ownerIdentityIsLive(owner, path3.join(lockDir, "owner.json"))) {
-        await rm2(lockDir, { recursive: true, force: true });
-        continue;
-      }
-      if (owner === null) {
-        const ageMs = Date.now() - await lstat3(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
-        if (ageMs > 1e3) {
-          await rm2(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  throw publicTreeError("Public tree lifecycle is busy.", "Retry after the other Bundle operation completes.");
-}
-async function ownerIdentityIsLive(owner, recordPath, clock = Date.now) {
-  if (!validOwnerRecord(owner)) return false;
-  const actualStart = await getProcessStartIdentity(owner.pid);
-  if (actualStart !== null && typeof owner.processStart === "string") return actualStart === owner.processStart;
-  const heartbeatAge = clock() - await readOwnerHeartbeat(recordPath, owner);
-  return processIsLive2(owner.pid) && heartbeatAge >= -OWNER_CLOCK_SKEW_MS && heartbeatAge <= UNVERIFIED_OWNER_TTL_MS;
-}
-function validOwnerRecord(owner) {
-  return Boolean(
-    owner && Number.isInteger(owner.pid) && owner.pid > 0 && (typeof owner.processStart === "string" || owner.processStart === null) && Number.isFinite(owner.createdAt) && Number.isFinite(owner.heartbeatAt) && typeof owner.token === "string" && owner.token.length > 0
-  );
-}
-function startOwnerHeartbeat(recordPath, record) {
-  let stopped = false;
-  let inFlight = Promise.resolve();
-  const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
-  const refresh = async () => {
-    const current = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
-    if (!validOwnerRecord(current) || current.token !== record.token) {
-      stopped = true;
-      clearInterval(timer);
-      return;
-    }
-    await publishOwnerHeartbeat(recordPath, record.token, Date.now());
-  };
-  const timer = setInterval(() => {
-    if (!stopped) inFlight = inFlight.then(refresh).catch(() => {
-    });
-  }, OWNER_HEARTBEAT_INTERVAL_MS);
-  timer.unref();
-  OWNER_HEARTBEATS.set(record.token, {
-    stop: async () => {
-      stopped = true;
-      clearInterval(timer);
-      await inFlight;
-      await rm2(heartbeatPath, { force: true });
-    }
-  });
-}
-async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {}) {
-  const heartbeatPath = ownerHeartbeatPath(recordPath, token);
-  await mkdir2(path3.dirname(heartbeatPath), { recursive: true });
-  const temporaryPath = path3.join(path3.dirname(heartbeatPath), `${token}.${randomBytes3(8).toString("hex")}.tmp`);
-  try {
-    await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
-`, { flag: "wx" });
-    await options.afterTempWrite?.();
-    const currentOwner = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
-    if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
-      throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
-    }
-    await rename2(temporaryPath, heartbeatPath);
-  } finally {
-    await rm2(temporaryPath, { force: true });
-  }
-}
-function ownerHeartbeatPath(recordPath, token) {
-  const ownerDir = path3.dirname(recordPath);
-  const treesDir = [".leases", ".lifecycle-lock"].includes(path3.basename(ownerDir)) ? path3.dirname(ownerDir) : ownerDir;
-  return path3.join(treesDir, ".owner-heartbeats", `${token}.json`);
-}
-async function readOwnerHeartbeat(recordPath, owner) {
-  try {
-    const heartbeat = JSON.parse(await readFile3(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
-    if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
-    return heartbeat.heartbeatAt;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return owner.heartbeatAt;
-    return Number.NaN;
-  }
-}
-async function stopOwnerHeartbeat(token) {
-  const heartbeat = OWNER_HEARTBEATS.get(token);
-  OWNER_HEARTBEATS.delete(token);
-  await heartbeat?.stop();
-}
-async function removeOrphanedOwnerHeartbeats(treesDir) {
-  const retained = /* @__PURE__ */ new Set();
-  const leaseFiles = await readdir(path3.join(treesDir, ".leases")).catch(() => []);
-  for (const entry of leaseFiles) {
-    const lease = await readFile3(path3.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
-    if (validLeaseRecord(lease)) retained.add(lease.token);
-  }
-  const lock = await readFile3(path3.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
-  if (validOwnerRecord(lock)) retained.add(lock.token);
-  const heartbeatDir = path3.join(treesDir, ".owner-heartbeats");
-  const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
-  for (const entry of heartbeatFiles) {
-    const entryPath = path3.join(heartbeatDir, entry);
-    if (entry.endsWith(".tmp")) {
-      const age = Date.now() - await lstat3(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
-      if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
-        await rm2(entryPath, { recursive: true, force: true });
-      }
-      continue;
-    }
-    const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    if (!retained.has(token)) await rm2(entryPath, { recursive: true, force: true });
-  }
-}
-async function publicTreeConsumerNames(treesDir) {
-  const consumersDir = path3.join(treesDir, ".consumers");
-  const entries = await readdir(consumersDir).catch(() => []);
-  const trees = /* @__PURE__ */ new Set();
-  for (const entry of entries) {
-    const recordPath = path3.join(consumersDir, entry);
-    const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
-    if (!validConsumerRecord(record, consumer)) {
-      await rm2(recordPath, { recursive: true, force: true });
-      continue;
-    }
-    const root = path3.join(treesDir, record.tree);
-    try {
-      await validatePublicTree(root);
-      trees.add(record.tree);
-    } catch {
-      await rm2(recordPath, { force: true });
-    }
-  }
-  return trees;
-}
-function validateConsumerName(consumer) {
-  if (!/^[a-z][a-z0-9-]{0,31}$/.test(consumer)) {
-    throw publicTreeError("Invalid public tree consumer.", "Use a short lowercase consumer name.");
-  }
-}
-function validConsumerRecord(record, consumer) {
-  return Boolean(
-    record && record.consumer === consumer && isPublicTreeName(record.tree) && typeof record.identity === "string" && record.identity.length > 0 && typeof record.token === "string" && /^[a-f0-9]{32}$/.test(record.token) && Number.isFinite(record.createdAt)
-  );
-}
-async function replaceStateFile(target, contents) {
-  const temporary = `${target}.${process.pid}-${randomBytes3(8).toString("hex")}.tmp`;
-  try {
-    await writeFile2(temporary, contents, { flag: "wx" });
-    await rename2(temporary, target);
-  } finally {
-    await rm2(temporary, { force: true });
-  }
-}
-async function getProcessStartIdentity(pid, options = {}) {
-  if (!(Number.isInteger(pid) && pid > 0)) return null;
-  const platform = options.platform ?? process.platform;
-  if (platform === "linux") {
-    try {
-      const stat = await readFile3(`/proc/${pid}/stat`, "utf8");
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-      return fields[19] ? `linux:${fields[19]}` : null;
-    } catch {
-      return null;
-    }
-  }
-  if (platform === "darwin") {
-    try {
-      const run2 = options.execFile ?? execFileAsync;
-      const { stdout } = await run2("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
-        env: { ...process.env, LC_ALL: "C", LANG: "C" }
-      });
-      const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(stdout.trim().replace(/\s+/g, " "));
-      if (!match) return null;
-      const month = String(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]) + 1).padStart(2, "0");
-      return `darwin:${match[4]}-${month}-${match[2].padStart(2, "0")}T${match[3]}`;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-function processIsLive2(pid) {
-  if (pid === process.pid) return true;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
-  }
-}
-function publicTreeError(message, hint, diagnostics) {
-  return Object.assign(new Error(message), { hint, ...diagnostics === void 0 ? {} : { diagnostics } });
-}
-
-// src/bundle-pipeline.ts
-var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
-var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
-var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
-async function createBundle(projectDir, config, options = {}) {
-  const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
-  const buildDir = path4.join(projectDir, ".sporades", "build");
-  const paths = {
-    config: path4.join(projectDir, "sporades.json"),
-    serverEntry: path4.join(projectDir, "server", "index.ts"),
-    clientEntry: path4.join(projectDir, "client", frameworkBundleConfig.entry),
-    indexHtml: path4.join(projectDir, "index.html"),
-    serverEnv: path4.join(projectDir, ".env.sporades.server"),
-    serverBundle: path4.join(buildDir, "server.mjs"),
-    clientBundle: path4.join(buildDir, "client.js")
-  };
-  const indexHtml = await readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.").catch((error) => {
-    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
-  });
-  try {
-    validateClientToolchainInput({ frameworkConfig: frameworkBundleConfig, toolchain, indexHtml });
-  } catch (error) {
-    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
-  }
-  const sealedPaths = sealedServerEnvPaths(projectDir);
-  const sealedEnvelope = await readSealedServerEnv(sealedPaths);
-  const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
-  const serverEnv = sealedEnvelope ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey) : parseServerEnv(serverEnvFile);
-  validateAuthConfig(config, serverEnv);
-  const [serverSource, clientSource] = await Promise.all([
-    readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.").catch((error) => {
-      throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
-    }),
-    readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.").catch((error) => {
-      throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
-    })
-  ]);
-  const serverCapsuleModule = await bundleServerCapsuleModule({
-    serverSource,
-    serverSourcePath: paths.serverEntry
-  }).catch((error) => {
-    throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
-  });
-  const clientOutput = await buildClientToolchain({
-    projectDir,
-    toolchain,
-    indexHtml,
-    indexHtmlPath: paths.indexHtml,
-    clientSource,
-    clientSourcePath: paths.clientEntry,
-    frameworkConfig: frameworkBundleConfig,
-    devRefresh: options.devClientRefresh === true
-  }).catch((error) => {
-    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
-  });
-  const clientBundle = clientOutput.legacyClientBundle;
-  const serverBundle = createServerBundleSource({
-    config,
-    serverEnv: sealedEnvelope ? {} : serverEnv,
-    sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
-    serverSource,
-    serverModuleSource: serverCapsuleModule
-  });
-  await mkdir3(buildDir, { recursive: true });
-  const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles).catch((error) => {
-    throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain);
-  });
-  const legacyFiles = [
-    { target: paths.serverBundle, contents: serverBundle },
-    { target: paths.clientBundle, contents: clientBundle }
-  ];
-  let legacyPublished = false;
-  const publishLegacy = async () => {
-    if (legacyPublished) {
-      throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework, toolchain);
-    }
-    let previous;
-    const activeTreePath = path4.join(buildDir, ".public-trees", "active.json");
-    const candidateTreeName = path4.basename(publicTree.root);
-    let previousActiveTree;
-    try {
-      previous = await Promise.all(legacyFiles.map(async (file) => ({
-        target: file.target,
-        contents: await readFile4(file.target).catch((error) => {
-          if (errorDetails2(error).code === "ENOENT") return null;
-          throw error;
-        })
-      })));
-      previousActiveTree = await readFile4(activeTreePath).catch((error) => {
-        if (errorDetails2(error).code === "ENOENT") return null;
-        throw error;
-      });
-      await publishLegacyBundles(buildDir, legacyFiles.filter((file) => file.contents !== null));
-      await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
-      try {
-        options.activeReferenceFault?.("before-active-write");
-        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}
-`);
-        options.activeReferenceFault?.("after-active-write");
-      } catch (error) {
-        const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path4.dirname(activeTreePath));
-        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
-        await restoreLegacyBundleFiles(buildDir, previous);
-        throw error;
-      }
-      legacyPublished = true;
-    } catch (error) {
-      throw tagBuildError(error, "publish", frameworkBundleConfig.framework, toolchain);
-    }
-    return async () => {
-      try {
-        options.activeReferenceFault?.("before-active-restore");
-        if (previousActiveTree === null) await rm3(activeTreePath, { force: true });
-        else await replaceBundleStateFile(activeTreePath, previousActiveTree);
-        options.activeReferenceFault?.("after-active-restore");
-      } catch {
-        const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path4.dirname(activeTreePath));
-        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
-      }
-      await restoreLegacyBundleFiles(buildDir, previous);
-      legacyPublished = false;
-    };
-  };
-  if (options.publishLegacy !== false) {
-    try {
-      const rollback = await publishLegacy();
-      try {
-        await releasePublicTreeLease(publicTree);
-      } catch (error) {
-        await rollback();
-        throw error;
-      }
-    } catch (error) {
-      if (candidateDiscardIsForbidden(error)) await releasePublicTreeLease(publicTree).catch(() => {
-      });
-      else await discardPublicTree(publicTree);
-      throw error;
-    }
-  }
-  return {
-    paths,
-    buildDir,
-    publishLegacy,
-    releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
-    serverRuntime: {
-      source: serverSource,
-      env: serverEnv,
-      capsuleModuleSource: serverCapsuleModule
-    },
-    staticFiles: {
-      publicTree,
-      publicDir: publicTree.root,
-      indexHtml: path4.join(publicTree.root, "index.html"),
-      clientBundle: clientBundle === null ? null : path4.join(publicTree.root, "client.js")
-    },
-    containerMounts: {
-      files: [
-        { host: paths.serverBundle, container: "/app/server.mjs", mode: "ro" },
-        { host: publicTree.root, container: "/app/public", mode: "ro" },
-        { host: paths.config, container: "/app/sporades.json", mode: "ro" }
-      ],
-      serverEnv: serverEnvFile.exists ? { host: paths.serverEnv, container: "/app/.env.sporades.server", mode: "ro" } : null,
-      sealedServerEnv: sealedEnvelope ? {
-        envelope: { host: sealedPaths.envelope, container: "/app/.sporades/sealed-server-env/server-env.sealed.json", mode: "ro" },
-        privateKey: { host: sealedPaths.privateKey, container: "/app/.sporades/sealed-server-env/server-env.private.pem", mode: "ro" }
-      } : null
-    }
-  };
-}
-async function restoreLegacyBundleFiles(buildDir, previous) {
-  const existing = previous.filter((file) => file.contents !== null);
-  await publishLegacyBundles(buildDir, existing);
-  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
-}
-async function inspectActiveTreeState(filePath) {
-  try {
-    return await parseActiveTreeState(await readFile4(filePath, "utf8"), path4.dirname(filePath));
-  } catch (error) {
-    if (errorDetails2(error).code === "ENOENT") return { kind: "missing" };
-    return { kind: "invalid" };
-  }
-}
-async function parseActiveTreeState(raw, treesDir) {
-  try {
-    return { kind: "valid", tree: await validateActivePublicTreeReference(treesDir, raw) };
-  } catch {
-    return { kind: "invalid" };
-  }
-}
-function activeTreeStatesEqual(left, right) {
-  if (left.kind === "missing" && right.kind === "missing") return true;
-  return left.kind === "valid" && right.kind === "valid" && left.tree === right.tree;
-}
-function activeReferenceRecoveryError(candidateTree, activeState) {
-  return commandError2(
-    "Active public tree recovery is incomplete.",
-    "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.",
-    { candidateDiscard: "forbidden", candidateTree, activeState }
-  );
-}
-async function replaceBundleStateFile(filePath, contents) {
-  const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  try {
-    await writeFile3(temporaryPath, contents);
-    await rename3(temporaryPath, filePath);
-  } finally {
-    await rm3(temporaryPath, { force: true });
-  }
-}
-async function publishLegacyBundles(buildDir, files, options = {}) {
-  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const stagingDir = path4.join(buildDir, `.legacy-staging-${nonce}`);
-  const states = [];
-  let preserveStaging = false;
-  await mkdir3(stagingDir, { recursive: false });
-  try {
-    for (const [index, file] of files.entries()) {
-      const stats = await lstat4(file.target).catch((error) => {
-        if (errorDetails2(error).code === "ENOENT") return null;
-        throw error;
-      });
-      if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
-        throw commandError2("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
-      }
-      const candidate = path4.join(stagingDir, `candidate-${index}`);
-      await writeFile3(candidate, file.contents);
-      states.push({ target: file.target, candidate, backup: path4.join(stagingDir, `backup-${index}`), moved: false, published: false });
-    }
-    try {
-      for (const state of states) {
-        try {
-          await rename3(state.target, state.backup);
-          state.moved = true;
-        } catch (error) {
-          if (errorDetails2(error).code !== "ENOENT") throw error;
-        }
-      }
-      for (const [index, state] of states.entries()) {
-        options.fault?.("before-publish", index);
-        await rename3(state.candidate, state.target);
-        state.published = true;
-      }
-    } catch (error) {
-      const recoveryFailures = [];
-      for (const [index, state] of [...states.entries()].reverse()) {
-        try {
-          options.fault?.("before-restore", index);
-          if (state.moved) await rename3(state.backup, state.target);
-          else if (state.published) await rm3(state.target, { force: true });
-        } catch {
-          recoveryFailures.push(index);
-        }
-      }
-      if (recoveryFailures.length > 0) {
-        preserveStaging = true;
-        throw commandError2(
-          "Legacy Bundle recovery is incomplete.",
-          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path4.basename(stagingDir)}.`,
-          { failedFiles: recoveryFailures.length, recoveryDirectory: path4.basename(stagingDir) }
-        );
-      }
-      throw error;
-    }
-  } finally {
-    if (!preserveStaging) await rm3(stagingDir, { recursive: true, force: true });
-  }
-}
-async function readRequiredSealedPrivateKey(paths) {
-  const keyPair = await readKeyPair(paths);
-  if (!keyPair) {
-    throw commandError2(
-      "Sealed Server env private key is missing.",
-      "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values."
-    );
-  }
-  return keyPair;
-}
-async function bundleServerCapsuleModule(options) {
-  const { build } = await import("esbuild");
-  try {
-    const result = await build({
-      bundle: true,
-      format: "esm",
-      platform: "node",
-      write: false,
-      logLevel: "silent",
-      sourcemap: "inline",
-      stdin: {
-        contents: options.serverSource,
-        sourcefile: options.serverSourcePath,
-        resolveDir: path4.dirname(options.serverSourcePath),
-        loader: "ts"
-      },
-      plugins: [sporadesServerPlugin()]
-    });
-    const output = result.outputFiles?.[0];
-    if (!output) {
-      throw commandError2("Server bundle failed: esbuild returned no output.", "Fix server/index.ts and save again.");
-    }
-    return output.text;
-  } catch (error) {
-    const message = bundleErrorMessage(error);
-    throw commandError2(`Server bundle failed: ${message}`, "Fix server/index.ts and save again.");
-  }
-}
-async function readServerEnvFile(envPath) {
-  try {
-    const raw = await readFile4(envPath, "utf8");
-    if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
-      throw commandError2("Invalid server env file.", ".env.sporades.server must be 64KB or smaller.");
-    }
-    return { exists: true, raw };
-  } catch (error) {
-    if (errorDetails2(error).code === "ENOENT") {
-      return { exists: false, raw: "" };
-    }
-    throw error;
-  }
-}
-function parseServerEnv(envFile) {
-  const values = {};
-  for (const [index, line] of envFile.raw.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-    const equalsIndex = trimmed.indexOf("=");
-    if (equalsIndex <= 0) {
-      throw commandError2("Invalid server env file.", `Fix line ${index + 1} in .env.sporades.server to use KEY=value.`);
-    }
-    const key = trimmed.slice(0, equalsIndex).trim();
-    if (!isValidServerEnvKeyName(key)) {
-      throw commandError2("Invalid server env file.", `Fix invalid key ${key} in .env.sporades.server.`);
-    }
-    if (isReservedServerEnvKeyName(key)) {
-      throw commandError2("Invalid server env file.", "Remove reserved SPORADES_ keys from .env.sporades.server.");
-    }
-    values[key] = parseEnvValue(trimmed.slice(equalsIndex + 1).trim());
-  }
-  if (Object.keys(values).length > 64) {
-    throw commandError2("Invalid server env file.", ".env.sporades.server can contain at most 64 keys.");
-  }
-  return values;
-}
-function isValidServerEnvKeyName(name) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name !== "__proto__";
-}
-function isReservedServerEnvKeyName(name) {
-  return name.startsWith("SPORADES_");
-}
-function serverEnvPlaintextSize(values) {
-  return Buffer.byteLength(
-    Object.entries(values).map(([key, value]) => `${key}=${value}
-`).join(""),
-    "utf8"
-  );
-}
-function parseEnvValue(value) {
-  if (value.startsWith('"') && value.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === "string") {
-        return parsed;
-      }
-    } catch {
-    }
-    return value.slice(1, -1);
-  }
-  if (value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-function authStatus2(config, serverEnv) {
-  const authConfig = config.auth ?? { mode: "anonymous" };
-  const normalized = normalizeAuthConfig2(authConfig);
-  const providers = {};
-  const port = typeof config.dev === "object" && config.dev && typeof config.dev.port === "number" ? Number(config.dev.port) : typeof config.deploy === "object" && config.deploy && typeof config.deploy.port === "number" ? Number(config.deploy.port) : 4e3;
-  for (const providerName of AUTH_PROVIDER_ORDER) {
-    const provider = normalized.providers[providerName];
-    const configured = providerConfigured(providerName, provider, serverEnv);
-    const result = {
-      enabled: provider.enabled,
-      configured,
-      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : RUNTIME_AUTH_PROVIDERS.has(providerName)
-    };
-    if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
-      result.clientIdEnv = provider.clientIdEnv;
-      result.clientSecretEnv = provider.clientSecretEnv;
-    }
-    if (providerName === "microsoft") result.tenant = provider.tenant;
-    if (providerName === "facebook") {
-      result.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
-    }
-    if (providerName === "apple") {
-      result.clientId = provider.clientId;
-      result.teamId = provider.teamId;
-      result.keyId = provider.keyId;
-      result.privateKeyEnv = provider.privateKeyEnv;
-    }
-    if (!["anonymous", "email"].includes(providerName)) {
-      result.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      if (providerName === "apple") {
-        result.callbackUrl = null;
-        result.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
-      } else {
-        result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
-      }
-    }
-    providers[providerName] = result;
-  }
-  return {
-    mode: normalized.mode,
-    providers,
-    google: {
-      configured: providers.google.configured,
-      clientIdEnv: normalized.providers.google.clientIdEnv,
-      clientSecretEnv: normalized.providers.google.clientSecretEnv
-    }
-  };
-}
-function normalizeAuthConfig2(authConfig) {
-  const providerConfig = isRecord2(authConfig.providers) ? authConfig.providers : {};
-  for (const provider of Object.keys(providerConfig)) {
-    if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
-      throw commandError2(
-        `Unsupported auth provider: ${provider}`,
-        `Use supported auth providers: ${AUTH_PROVIDER_ORDER.join(", ")}.`
-      );
-    }
-  }
-  const googleConfig = readProviderConfig2(providerConfig.google);
-  const legacyGoogle = readProviderConfig2(authConfig.google);
-  const microsoftConfig = readProviderConfig2(providerConfig.microsoft);
-  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
-  const emailConfig = readProviderConfig2(providerConfig.email);
-  const anonymousConfig = readProviderConfig2(providerConfig.anonymous);
-  const anonymousEnabled = providerConfig.anonymous === void 0 ? true : anonymousConfig.enabled;
-  const mode = typeof authConfig.mode === "string" ? String(authConfig.mode) : googleEnabled ? "google" : "anonymous";
-  return {
-    mode,
-    providers: {
-      anonymous: {
-        enabled: anonymousEnabled,
-        ...emptyProviderConfig2()
-      },
-      google: {
-        ...emptyProviderConfig2(),
-        enabled: googleEnabled,
-        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
-        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv
-      },
-      email: {
-        enabled: emailConfig.enabled,
-        ...emptyProviderConfig2()
-      },
-      microsoft: {
-        ...microsoftConfig,
-        tenant: microsoftConfig.tenant ?? "common"
-      },
-      apple: readProviderConfig2(providerConfig.apple),
-      facebook: readFacebookProviderConfig2(providerConfig.facebook)
-    }
-  };
-}
-function readProviderConfig2(config) {
-  if (config === true) {
-    return { enabled: true, ...emptyProviderConfig2() };
-  }
-  if (config === false || config === void 0 || config === null) {
-    return { enabled: false, ...emptyProviderConfig2() };
-  }
-  if (!isRecord2(config)) {
-    return { enabled: false, ...emptyProviderConfig2() };
-  }
-  return {
-    enabled: config.enabled !== false,
-    clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
-    clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
-    clientId: typeof config.clientId === "string" ? config.clientId : null,
-    teamId: typeof config.teamId === "string" ? config.teamId : null,
-    keyId: typeof config.keyId === "string" ? config.keyId : null,
-    privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
-    tenant: typeof config.tenant === "string" ? config.tenant : null,
-    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
-  };
-}
-function readFacebookProviderConfig2(config) {
-  const normalized = readProviderConfig2(config);
-  if (!isRecord2(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
-    return { ...normalized, graphVersion: "v23.0" };
-  }
-  return normalized;
-}
-function validateAuthConfig(config, serverEnv) {
-  const status = authStatus2(config, serverEnv);
-  for (const provider of AUTH_PROVIDER_ORDER) {
-    const state = status.providers[provider];
-    if (!state.enabled || state.configured) continue;
-    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : typeof state.callbackGuidance === "string" ? ` ${state.callbackGuidance}` : "";
-    throw commandError2(
-      `${providerLabel(provider)} auth is not fully configured.`,
-      `${providerConfigurationHint(provider)}${callback}`
-    );
-  }
-}
-function emptyProviderConfig2() {
-  return {
-    clientIdEnv: null,
-    clientSecretEnv: null,
-    clientId: null,
-    teamId: null,
-    keyId: null,
-    privateKeyEnv: null,
-    tenant: null,
-    graphVersion: null
-  };
-}
-function providerConfigured(provider, config, serverEnv) {
-  if (provider === "anonymous" || provider === "email") return true;
-  if (provider === "apple") {
-    return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
-  }
-  const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
-  if (provider === "facebook") {
-    return credentialsConfigured && config.graphVersion === "v23.0";
-  }
-  return credentialsConfigured;
-}
-function providerLabel(provider) {
-  return `${provider[0].toUpperCase()}${provider.slice(1)}`;
-}
-function providerConfigurationHint(provider) {
-  if (provider === "apple") {
-    return "Run `sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>` or use `--client-json <path>`.";
-  }
-  return `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`;
-}
-async function readRequiredFile(filePath, message, hint) {
-  try {
-    return await readFile4(filePath, "utf8");
-  } catch (error) {
-    if (errorDetails2(error).code === "ENOENT") {
-      throw commandError2(message, hint);
-    }
-    throw error;
-  }
-}
-function readFrameworkBundleConfig(framework) {
-  const capability = clientFrameworkCapability(framework);
-  if (!capability) throw commandError2(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
-  return { framework: capability.framework, ...capability.build };
-}
-function readClientToolchain(toolchain, framework) {
-  if (!isClientToolchain(toolchain)) throw commandError2(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
-  if (!supportsClientCapability(framework, toolchain)) {
-    const details = clientCapabilityError(framework, toolchain);
-    throw commandError2(details.message, details.hint);
-  }
-  return toolchain;
-}
-function sporadesServerPlugin() {
-  return {
-    name: "sporades-server",
-    setup(build) {
-      build.onResolve({ filter: /^sporades\/server$/ }, () => ({
-        path: "sporades/server",
-        namespace: "sporades-runtime"
-      }));
-      build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
-        loader: "js",
-        contents: serverRuntimeModuleSource()
-      }));
-    }
-  };
-}
-function isRecord2(value) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-function errorDetails2(error) {
-  if (error === null || error === void 0) {
-    return {};
-  }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function candidateDiscardIsForbidden(error) {
-  const diagnostics = errorDetails2(error).diagnostics;
-  return isRecord2(diagnostics) && diagnostics.candidateDiscard === "forbidden";
-}
-function bundleErrorMessage(error) {
-  const details = errorDetails2(error);
-  const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
-  if (isRecord2(firstError) && typeof firstError.text === "string") {
-    return firstError.text;
-  }
-  return typeof details.message === "string" ? details.message : "unknown error";
-}
-function commandError2(message, hint, diagnostics) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics !== void 0) error.diagnostics = diagnostics;
-  return error;
-}
-function tagBuildError(error, phase, framework, toolchain) {
-  const tagged = error instanceof Error ? error : commandError2(String(error), "Fix the build error and save again.");
-  tagged.phase = phase;
-  tagged.framework = framework;
-  tagged.toolchain = toolchain;
-  return tagged;
-}
-
-// src/file-transaction.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
-import { lstat as lstat5, rename as rename4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
-import path5 from "node:path";
-var defaultExecutor = async (_operation, action) => action();
-async function replaceFilesAtomically(replacements, options = {}) {
-  if (replacements.length === 0) {
-    return;
-  }
-  validateDistinctTargets(replacements);
-  const execute = options.execute ?? defaultExecutor;
-  const token = `${process.pid}-${randomBytes4(8).toString("hex")}`;
-  const entries = [];
-  try {
-    for (const [index, replacement] of replacements.entries()) {
-      const directory = path5.dirname(replacement.path);
-      const basename = path5.basename(replacement.path);
-      const artifactStem = path5.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
-      const entry = {
-        ...replacement,
-        temporaryPath: `${artifactStem}.tmp`,
-        backupPath: `${artifactStem}.bak`,
-        hadOriginal: false,
-        originalMoved: false,
-        replacementMayExist: false
-      };
-      entries.push(entry);
-      entry.hadOriginal = await targetExists(entry, execute);
-      await performOperation(execute, {
-        phase: "stage",
-        action: "write",
-        label: entry.label,
-        targetPath: entry.path,
-        artifactPath: entry.temporaryPath
-      }, () => writeFile4(entry.temporaryPath, entry.contents, { flag: "wx", mode: 384 }));
-    }
-    for (const entry of entries) {
-      if (entry.hadOriginal) {
-        await performOperation(execute, {
-          phase: "commit",
-          action: "backup",
-          label: entry.label,
-          targetPath: entry.path,
-          artifactPath: entry.backupPath
-        }, () => rename4(entry.path, entry.backupPath));
-        entry.originalMoved = true;
-      }
-      entry.replacementMayExist = true;
-      await performOperation(execute, {
-        phase: "commit",
-        action: "replace",
-        label: entry.label,
-        targetPath: entry.path,
-        artifactPath: entry.temporaryPath
-      }, () => rename4(entry.temporaryPath, entry.path));
-    }
-  } catch (failure) {
-    const original = asOperationFailure(failure);
-    const recoveryFailures = await recoverEntries(entries, execute);
-    throw transactionError(original, recoveryFailures);
-  }
-  const cleanupFailures = await cleanupCommittedEntries(entries, execute);
-  if (cleanupFailures.length > 0) {
-    throw transactionError({
-      operation: {
-        phase: "cleanup",
-        action: "remove-backup",
-        label: cleanupFailures[0].label,
-        targetPath: ""
-      },
-      cause: Object.assign(new Error("Transaction cleanup failed."), { code: cleanupFailures[0].code })
-    }, cleanupFailures, "committed");
-  }
-}
-async function targetExists(entry, execute) {
-  try {
-    await performOperation(execute, {
-      phase: "inspect",
-      action: "stat",
-      label: entry.label,
-      targetPath: entry.path
-    }, () => lstat5(entry.path));
-    return true;
-  } catch (failure) {
-    const operationFailure = asOperationFailure(failure);
-    if (errorCode2(operationFailure.cause) === "ENOENT") {
-      return false;
-    }
-    throw operationFailure;
-  }
-}
-async function recoverEntries(entries, execute) {
-  const failures = [];
-  for (const entry of entries) {
-    if (entry.hadOriginal) {
-      const backupExists = await artifactExists(entry.backupPath);
-      if (backupExists) {
-        try {
-          await performOperation(execute, {
-            phase: "rollback",
-            action: "restore",
-            label: entry.label,
-            targetPath: entry.path,
-            artifactPath: entry.backupPath
-          }, () => rename4(entry.backupPath, entry.path));
-          entry.originalMoved = false;
-        } catch (failure) {
-          const backupRemains = await artifactExists(entry.backupPath);
-          const targetExistsAfterFailure = await artifactExists(entry.path);
-          if (!backupRemains && targetExistsAfterFailure) {
-            entry.originalMoved = false;
-          } else {
-            failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
-          }
-        }
-      } else if (entry.originalMoved) {
-        failures.push({ action: "restore", label: entry.label, code: "BACKUP_MISSING" });
-      }
-    } else if (entry.replacementMayExist) {
-      try {
-        await performOperation(execute, {
-          phase: "rollback",
-          action: "remove",
-          label: entry.label,
-          targetPath: entry.path
-        }, () => rm4(entry.path, { force: true }));
-        entry.replacementMayExist = false;
-      } catch (failure) {
-        if (await artifactExists(entry.path)) {
-          failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
-        } else {
-          entry.replacementMayExist = false;
-        }
-      }
-    }
-  }
-  for (const entry of entries) {
-    try {
-      await performOperation(execute, {
-        phase: "cleanup",
-        action: "remove-temp",
-        label: entry.label,
-        targetPath: entry.path,
-        artifactPath: entry.temporaryPath
-      }, () => rm4(entry.temporaryPath, { force: true }));
-    } catch (failure) {
-      if (await artifactExists(entry.temporaryPath)) {
-        failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
-      }
-    }
-  }
-  return failures;
-}
-async function cleanupCommittedEntries(entries, execute) {
-  const failures = [];
-  for (const entry of entries) {
-    for (const [action, artifactPath] of [
-      ["remove-temp", entry.temporaryPath],
-      ["remove-backup", entry.backupPath]
-    ]) {
-      try {
-        await performOperation(execute, {
-          phase: "cleanup",
-          action,
-          label: entry.label,
-          targetPath: entry.path,
-          artifactPath
-        }, () => rm4(artifactPath, { force: true }));
-      } catch (failure) {
-        if (await artifactExists(artifactPath)) {
-          failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
-        }
-      }
-    }
-  }
-  return failures;
-}
-async function artifactExists(artifactPath) {
-  try {
-    await lstat5(artifactPath);
-    return true;
-  } catch (error) {
-    if (errorCode2(error) === "ENOENT") {
-      return false;
-    }
-    return true;
-  }
-}
-async function performOperation(execute, operation, action) {
-  try {
-    return await execute(operation, action);
-  } catch (cause) {
-    throw { operation, cause };
-  }
-}
-function asOperationFailure(value) {
-  if (value && typeof value === "object" && "operation" in value && "cause" in value) {
-    return value;
-  }
-  return {
-    operation: {
-      phase: "commit",
-      action: "unknown",
-      label: "transaction",
-      targetPath: ""
-    },
-    cause: value
-  };
-}
-function recoveryFailure(action, label, cause) {
-  return { action, label, code: errorCode2(cause) };
-}
-function validateDistinctTargets(replacements) {
-  const identities = /* @__PURE__ */ new Set();
-  for (const replacement of replacements) {
-    const identity = path5.resolve(replacement.path);
-    if (identities.has(identity)) {
-      throw transactionError({
-        operation: {
-          phase: "validate",
-          action: "reject-duplicate",
-          label: "transaction",
-          targetPath: ""
-        },
-        cause: Object.assign(new Error("Duplicate transaction target."), { code: "DUPLICATE_TARGET" })
-      }, []);
-    }
-    identities.add(identity);
-  }
-}
-function transactionError(originalFailure, recoveryFailures, recoveryOverride) {
-  const recovery = recoveryOverride ?? (recoveryFailures.length === 0 ? "complete" : "incomplete");
-  const error = new Error("Unable to update OAuth configuration atomically.");
-  error.hint = recovery === "complete" ? "The previous project configuration and Server env state were restored. Retry the command." : recovery === "committed" ? "The new project configuration was committed, but transaction artifact cleanup was incomplete." : `Recovery was incomplete for ${[...new Set(recoveryFailures.map((failure) => failure.label))].join(", ")}. Inspect those files before retrying.`;
-  error.diagnostics = {
-    original: {
-      phase: originalFailure.operation.phase,
-      action: originalFailure.operation.action,
-      label: originalFailure.operation.label,
-      code: errorCode2(originalFailure.cause)
-    },
-    recovery,
-    recoveryFailures
-  };
-  return error;
-}
-function errorCode2(error) {
-  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "UNKNOWN";
-  return /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : "UNKNOWN";
-}
-
-// src/base-image.ts
-var SPORADES_BASE_IMAGE = {
-  name: "sporades-base",
-  image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
-  version: "0.1.0-node22-alpine",
-  runtimeUser: "sporades",
-  runtimeUid: 10001,
-  runtimeGid: 10001,
-  updatePolicy: {
-    defaultMode: "host-managed",
-    modes: ["host-managed", "auto-patch", "manual"],
-    autoPatchSupported: false,
-    autoPatchUnsupportedReason: "Base image updates are applied by replacing containers, not mutating them in place."
-  }
-};
-function baseImageRuntimeUser() {
-  return `${SPORADES_BASE_IMAGE.runtimeUid}:${SPORADES_BASE_IMAGE.runtimeGid}`;
-}
-function normaliseBaseImageUpdatePolicy(value) {
-  const mode = typeof value === "string" ? value : typeof value?.mode === "string" ? value.mode : SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
-  if (!SPORADES_BASE_IMAGE.updatePolicy.modes.includes(mode)) {
-    return SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
-  }
-  return mode;
-}
-function baseImageUpdatePolicy(mode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    mode: normaliseBaseImageUpdatePolicy(mode),
-    autoPatch: {
-      supported: SPORADES_BASE_IMAGE.updatePolicy.autoPatchSupported,
-      reason: SPORADES_BASE_IMAGE.updatePolicy.autoPatchUnsupportedReason
-    }
-  };
-}
-function baseImageMetadata(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    name: SPORADES_BASE_IMAGE.name,
-    image: SPORADES_BASE_IMAGE.image,
-    version: SPORADES_BASE_IMAGE.version,
-    updatePolicy: baseImageUpdatePolicy(updatePolicyMode)
-  };
-}
-function baseImageLabels(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    "com.sporades.base-image.name": SPORADES_BASE_IMAGE.name,
-    "com.sporades.base-image.version": SPORADES_BASE_IMAGE.version,
-    "com.sporades.base-image.update-policy": normaliseBaseImageUpdatePolicy(updatePolicyMode)
-  };
-}
-
-// src/runtime-restart-policy.ts
-var FATAL_RUNTIME_RESTART_POLICY = {
-  dev: {
-    mode: "automatic",
-    maxAttempts: 10,
-    backoffMs: 250,
-    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed", "shutdownHookFailed"],
-    exitFatalEvents: ["sigterm", "sigint"]
-  },
-  container: {
-    mode: "bounded",
-    maxAttempts: 3,
-    backoffMs: 1e3,
-    dockerRestart: "on-failure:3",
-    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
-    exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"]
-  },
-  hosted: {
-    mode: "bounded",
-    maxAttempts: 3,
-    backoffMs: 1e3,
-    dockerRestart: "on-failure:3",
-    restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
-    exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"],
-    exhaustedRouteTarget: "hosted-capsule-unavailable",
-    verificationFallbackOnly: true
-  }
-};
-function restartPolicyForMode(mode) {
-  const policy = FATAL_RUNTIME_RESTART_POLICY[mode];
-  if (!policy) {
-    throw new Error(`Unknown Sporades restart policy mode: ${mode}`);
-  }
-  return {
-    ...policy,
-    restartFatalEvents: [...policy.restartFatalEvents],
-    exitFatalEvents: [...policy.exitFatalEvents]
-  };
-}
-function restartPolicyStatus(mode, overrides = {}) {
-  const policy = restartPolicyForMode(mode);
-  return {
-    mode: policy.mode,
-    maxAttempts: policy.maxAttempts,
-    backoffMs: policy.backoffMs,
-    dockerRestart: policy.dockerRestart ?? null,
-    restartFatalEvents: policy.restartFatalEvents,
-    exitFatalEvents: policy.exitFatalEvents,
-    ...policy.exhaustedRouteTarget ? { exhaustedRouteTarget: policy.exhaustedRouteTarget } : {},
-    ...policy.verificationFallbackOnly ? { verificationFallbackOnly: true } : {},
-    ...overrides
-  };
 }
 
 // src/templates/scaffold-template.ts
@@ -19150,8 +18822,8 @@ function escapeHtml(value) {
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes5 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
-import path6 from "node:path";
+import { mkdir as mkdir4, readFile as readFile6, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
+import path8 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -19163,9 +18835,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path6.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path6.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path6.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path8.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path8.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path8.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -19190,13 +18862,13 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path6.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm5(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir4(path6.dirname(composePath), { recursive: true });
+  await mkdir4(path8.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
@@ -19212,10 +18884,10 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path6.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path8.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
-    const parsed = JSON.parse(await readFile5(credentialsPath, "utf8"));
+    const parsed = JSON.parse(await readFile6(credentialsPath, "utf8"));
     if (isRecord3(parsed)) {
       existing = parsed;
     }
@@ -19228,7 +18900,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
     storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes5(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir4(path6.dirname(credentialsPath), { recursive: true });
+    await mkdir4(path8.dirname(credentialsPath), { recursive: true });
     await writeFile5(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
@@ -19276,7 +18948,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path8.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -19294,7 +18966,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path8.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -19741,7 +19413,7 @@ Scaffold a new Capsule.
 Options:
   --framework <name>  Client framework: ${frameworkHelp}
   --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)
-  --template <name>   Template: ${templateHelp}
+  --template <name>   Template: ${templateHelp}, or a local directory path
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
@@ -19992,9 +19664,9 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat6, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat6, readFile as readFile8, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
-import path8 from "node:path";
+import path10 from "node:path";
 
 // src/cli/cli-support.ts
 function errorDetails3(error) {
@@ -20032,8 +19704,8 @@ function writeResult(result, failed = false) {
 
 // src/cli/project-config.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile6 } from "node:fs/promises";
-import path7 from "node:path";
+import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
+import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -20067,7 +19739,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "template"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path7.join(projectDir, "sporades.json");
+  const configPath = path9.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -20083,8 +19755,48 @@ async function readProjectConfig(projectDir) {
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   if (config.mail !== void 0) config.mail = validateMailConfig(config.mail);
+  validatePasswordResetConfig(config.auth);
   validateCapsuleServicesConfig(config.services);
   return config;
+}
+var PASSWORD_RESET_MIN_TTL_MS3 = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS3 = 24 * 60 * 60 * 1e3;
+function validatePasswordResetConfig(auth) {
+  const passwordReset = auth?.email?.passwordReset;
+  if (passwordReset === void 0) return;
+  const fail = (message, hint) => {
+    const error = new Error(message);
+    error.code = "INVALID_AUTH_CONFIG";
+    error.hint = hint;
+    throw error;
+  };
+  if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
+    fail("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+  }
+  const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
+  if (unknown.length > 0) {
+    fail(
+      `Unsupported password reset option: ${unknown.sort().join(", ")}`,
+      "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`."
+    );
+  }
+  if (passwordReset.path !== void 0 && !isSameOriginResetPath(passwordReset.path)) {
+    fail(
+      "Invalid password reset page path.",
+      "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
+    );
+  }
+  if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS3 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS3)) {
+    fail(
+      "Invalid password reset code lifetime.",
+      "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."
+    );
+  }
+}
+function isSameOriginResetPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  if (value.includes("\\") || value.includes("?") || value.includes("#")) return false;
+  return !value.split("/").includes("..");
 }
 function validateClientConfig(client) {
   if (client === void 0) return;
@@ -20203,8 +19915,8 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path7.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path7.join(sshDir, "authorized_keys");
+  const sshDir = path9.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path9.join(sshDir, "authorized_keys");
   await mkdir5(sshDir, { recursive: true });
   await writeFile6(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
@@ -20271,7 +19983,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile6(filePath, "utf8");
+    return await readFile7(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -20281,7 +19993,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile6(filePath, "utf8");
+    return await readFile7(filePath, "utf8");
   } catch {
     throw commandError4(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -20293,13 +20005,13 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path7.join(home, filePath.slice(2));
+      return path9.join(home, filePath.slice(2));
     }
   }
-  if (path7.isAbsolute(filePath)) {
+  if (path9.isAbsolute(filePath)) {
     return filePath;
   }
-  return path7.join(projectDir, filePath);
+  return path9.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
@@ -20557,7 +20269,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile8(path10.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -20613,9 +20325,9 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path8.join(projectDir, "server", "index.ts");
+  const serverEntry = path10.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile7(serverEntry, "utf8");
+    const serverSource = await readFile8(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -20805,7 +20517,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile8(path10.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -21079,7 +20791,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path8.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path10.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -21092,7 +20804,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path8.join(".sporades", "dev-session.json"),
+          bindingPath: path10.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -21121,7 +20833,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path8.join(".sporades", "dev-session.json"),
+        bindingPath: path10.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -21146,7 +20858,7 @@ async function devSessionChecks(options) {
   ];
 }
 async function localContainerChecks(options) {
-  const bindingPath = path8.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path10.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -21160,7 +20872,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path8.join(".sporades", "binding.json"),
+          bindingPath: path10.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -21177,7 +20889,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path8.join(".sporades", "binding.json"),
+        bindingPath: path10.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -21292,7 +21004,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path8.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path10.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -21321,7 +21033,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path8.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path10.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
@@ -21438,16 +21150,16 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path10.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path10.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile7(composePath, "utf8");
+    raw = await readFile8(composePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") {
       throw error;
@@ -21498,7 +21210,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path8.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path10.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: volumeExists
       },
       containerName: service.name,
@@ -21597,13 +21309,13 @@ function dockerStatus(args, cwd) {
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile7(filePath, "utf8"));
+    return JSON.parse(await readFile8(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError4(`Invalid Runtime metadata: ${path8.basename(filePath)}`, `Delete or fix ${path8.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError4(`Invalid Runtime metadata: ${path10.basename(filePath)}`, `Delete or fix ${path10.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
@@ -21916,11 +21628,11 @@ var CLI_VERSION = "0.6.6";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path9.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path9.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path11.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path11.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path9.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path9.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path11.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path11.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -21932,7 +21644,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path9.resolve(path9.dirname(fileURLToPath(import.meta.url)), "..");
+var CLI_ROOT = path11.resolve(path11.dirname(fileURLToPath2(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -22156,7 +21868,8 @@ function parseCreateArgs(args) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError4(details.message, details.hint);
   }
-  if (!SUPPORTED_TEMPLATES.has(template)) {
+  const localTemplateDir = isLocalTemplateReference(template) ? path11.resolve(process.cwd(), template) : null;
+  if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
   return {
@@ -22164,11 +21877,15 @@ function parseCreateArgs(args) {
     framework,
     toolchain,
     template,
+    localTemplateDir,
     install,
     git,
     json,
-    projectDir: path9.resolve(process.cwd(), name)
+    projectDir: path11.resolve(process.cwd(), name)
   };
+}
+function isLocalTemplateReference(value) {
+  return path11.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 function parseDevArgs(args) {
   const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "reset"]);
@@ -22932,7 +22649,7 @@ function parseHostArgs(args) {
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  const resolvedPath = path9.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path11.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
@@ -23098,6 +22815,10 @@ function isValidAuthClientTarget(value) {
   return value === "current" || value === "all" || /^client-[a-z0-9]+$/.test(value);
 }
 async function createProject(options) {
+  if (options.localTemplateDir) {
+    await createProjectFromLocalTemplate(options);
+    return;
+  }
   await mkdir6(options.projectDir, { recursive: false });
   const files = scaffoldFiles({
     ...options,
@@ -23105,8 +22826,8 @@ async function createProject(options) {
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path9.join(options.projectDir, relativePath);
-      await mkdir6(path9.dirname(filePath), { recursive: true });
+      const filePath = path11.join(options.projectDir, relativePath);
+      await mkdir6(path11.dirname(filePath), { recursive: true });
       await writeFile7(filePath, contents);
     })
   );
@@ -23116,6 +22837,107 @@ async function createProject(options) {
   if (options.git) {
     run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
   }
+}
+async function createProjectFromLocalTemplate(options) {
+  const sourceDir = path11.resolve(options.localTemplateDir);
+  const projectDir = path11.resolve(options.projectDir);
+  let sourceStat;
+  try {
+    sourceStat = await lstat7(sourceDir);
+  } catch {
+    throw commandError4(`Local template not found: ${options.template}`, "Pass a readable template directory.");
+  }
+  if (!sourceStat.isDirectory()) {
+    throw commandError4(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
+  }
+  const relativeDestination = path11.relative(sourceDir, projectDir);
+  if (!relativeDestination || !relativeDestination.startsWith("..") && !path11.isAbsolute(relativeDestination)) {
+    throw commandError4("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
+  }
+  const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
+  await mkdir6(projectDir, { recursive: false });
+  try {
+    await cp(sourceDir, projectDir, {
+      recursive: true,
+      filter: (sourcePath) => shouldCopyLocalTemplatePath(sourceDir, sourcePath, ignoreRules)
+    });
+    await finalizeLocalTemplateProject(options, projectDir);
+    if (options.install) {
+      run("npm", ["install"], projectDir, "Dependency install failed.", "Run `npm install` inside the scaffold.");
+    }
+    if (options.git) {
+      run("git", ["init"], projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
+    }
+  } catch (error) {
+    await rm6(projectDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+async function readLocalTemplateIgnoreRules(sourceDir) {
+  let contents = "";
+  try {
+    contents = await readFile9(path11.join(sourceDir, ".gitignore"), "utf8");
+  } catch {
+    return [];
+  }
+  return contents.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => {
+    const ignored = !line.startsWith("!");
+    const raw = (ignored ? line : line.slice(1)).replace(/^\//, "").replace(/\/$/, "");
+    const escaped = raw.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\0").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, ".*");
+    const prefix = raw.includes("/") ? "^" : "^(?:.*/)?";
+    return { ignored, pattern: new RegExp(`${prefix}${escaped}(?:/.*)?$`) };
+  });
+}
+function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
+  const relative = path11.relative(sourceDir, sourcePath).split(path11.sep).join("/");
+  if (!relative) return true;
+  const first = relative.split("/")[0];
+  if (first === ".git" || first === "node_modules" || first === ".sporades") return false;
+  if (relative === ".env.sporades.server") return false;
+  let ignored = false;
+  for (const rule of rules) {
+    if (rule.pattern.test(relative)) ignored = rule.ignored;
+  }
+  return !ignored;
+}
+async function finalizeLocalTemplateProject(options, projectDir) {
+  const packagePath = path11.join(projectDir, "package.json");
+  const configPath = path11.join(projectDir, "sporades.json");
+  let packageJson;
+  let projectConfig;
+  try {
+    packageJson = JSON.parse(await readFile9(packagePath, "utf8"));
+    projectConfig = JSON.parse(await readFile9(configPath, "utf8"));
+  } catch {
+    throw commandError4(
+      "Local template must include valid package.json and sporades.json files.",
+      "Add both metadata files to the template and try again."
+    );
+  }
+  const { localTemplateDir: _localTemplateDir, ...scaffoldOptions } = options;
+  const defaults = scaffoldFiles({
+    ...scaffoldOptions,
+    template: "blank",
+    sporadesDependency: defaultSporadesDependency()
+  });
+  const defaultPackage = JSON.parse(defaults["package.json"]);
+  const dependencies = { ...packageJson.dependencies ?? {} };
+  delete dependencies.sporades;
+  const nextPackage = {
+    ...packageJson,
+    name: options.name,
+    scripts: { ...defaultPackage.scripts, ...packageJson.scripts ?? {} },
+    dependencies,
+    devDependencies: {
+      ...packageJson.devDependencies ?? {},
+      sporades: defaultSporadesDependency()
+    }
+  };
+  const nextConfig = { ...projectConfig, name: options.name };
+  await writeFile7(packagePath, `${JSON.stringify(nextPackage, null, 2)}
+`);
+  await writeFile7(configPath, `${JSON.stringify(nextConfig, null, 2)}
+`);
 }
 async function runDoctor(options) {
   const envelope = createDoctorEnvelope(options, await runDoctorChecks(options));
@@ -23130,7 +22952,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path9.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path11.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -23232,11 +23054,11 @@ async function inspectDevJobs(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path11.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -23248,17 +23070,17 @@ async function inspectDevSchedules(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path11.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile8(path9.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile9(path11.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -23271,9 +23093,9 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path9.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir6(path9.dirname(filePath), { recursive: true });
-  const previous = await readFile8(filePath).catch((error) => {
+  const filePath = path11.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir6(path11.dirname(filePath), { recursive: true });
+  const previous = await readFile9(filePath).catch((error) => {
     if (errorDetails3(error).code === "ENOENT") return null;
     throw error;
   });
@@ -23411,8 +23233,8 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const sessionFilePath = path9.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path9.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path11.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path11.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
     databasePath,
     serverSource: bundle.serverRuntime.source,
@@ -23847,7 +23669,7 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm6(path9.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm6(path11.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     await runtime.shutdown();
@@ -23965,11 +23787,11 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    { path: path9.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path9.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path9.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path9.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path9.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path11.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path11.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path11.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path11.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path11.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -24068,7 +23890,7 @@ function collectPathSignature(filePath, entries) {
       return;
     }
     for (const child of children) {
-      collectPathSignature(path9.join(filePath, child), entries);
+      collectPathSignature(path11.join(filePath, child), entries);
     }
     return;
   }
@@ -24131,9 +23953,9 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath2 = path9.join(options.projectDir, ".env.sporades.server");
+      const envPath2 = path11.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
-      const status2 = authStatus2(config2, serverEnv);
+      const status2 = authStatus(config2, serverEnv);
       if (options.json) {
         writeResult({ ok: true, data: status2, error: null });
       } else {
@@ -24194,7 +24016,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path9.join(options.projectDir, "sporades.json");
+  const configPath = path11.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
   const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
@@ -24235,9 +24057,9 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  const envPath = path9.join(options.projectDir, ".env.sporades.server");
+  const envPath = path11.join(options.projectDir, ".env.sporades.server");
   await writeAuthConfiguration(configPath, envPath, config, envValues);
-  const status = authStatus2(config, parseServerEnv(await readServerEnvFile(envPath)));
+  const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
     writeResult({ ok: true, data: status, error: null });
   } else {
@@ -24285,7 +24107,7 @@ async function manageEnv(options) {
           }
           values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
         } else {
-          values = parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server")));
+          values = parseServerEnv(await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server")));
           keyPair = await ensureSealedServerEnvKeyPair(paths);
         }
         values[options.name] = value;
@@ -24309,7 +24131,7 @@ async function manageEnv(options) {
     case "has": {
       const envelope = await readSealedServerEnv(paths);
       const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
-        parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))),
+        parseServerEnv(await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))),
         options.name
       );
       if (options.json) {
@@ -24337,7 +24159,7 @@ async function manageEnv(options) {
     }
     case "import": {
       await withSealedServerEnvMutationLock(paths, async () => {
-        const envPath = path9.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        const envPath = path11.resolve(options.projectDir, options.file ?? ".env.sporades.server");
         if (options.sealed) {
           const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
           await writeSealedServerEnv(paths, envelope2);
@@ -24345,20 +24167,20 @@ async function manageEnv(options) {
             ...envelopeSummary(envelope2, paths),
             imported: true,
             sealed: true,
-            source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
+            source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath)
           });
           return;
         }
         const env = parseServerEnv(await readServerEnvFile(envPath));
         const keyPair = await ensureSealedServerEnvKeyPair(paths);
         const envelope = sealServerEnv(env, keyPair.publicKey, {
-          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath)
         });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath),
+          source: normalisePathForOutput(path11.relative(options.projectDir, envPath) || envPath),
           privateKeyConfigured: true
         });
       });
@@ -24370,7 +24192,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -24381,15 +24203,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path9.resolve(options.projectDir, options.output);
-        await mkdir6(path9.dirname(outputPath), { recursive: true });
+        const outputPath = path11.resolve(options.projectDir, options.output);
+        await mkdir6(path11.dirname(outputPath), { recursive: true });
         await writeFile7(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path9.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path11.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -24413,11 +24235,11 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path9.join(
+      const hostEnvelopePath = path11.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir6(path9.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await mkdir6(path11.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
       await writeFile7(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
@@ -24444,7 +24266,7 @@ function stripOneTrailingLineEnding(value) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile8(filePath, "utf8"));
+    envelope = JSON.parse(await readFile9(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(
@@ -24611,8 +24433,8 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      const bindingPath = path11.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path11.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
@@ -24644,8 +24466,8 @@ async function manageHost(options) {
         }
         throw commandError4(result.error.message, result.error.hint);
       }
-      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      const bindingPath = path11.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path11.dirname(bindingPath), { recursive: true });
       await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data = {
@@ -25108,7 +24930,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir6(path9.dirname(logPath), { recursive: true });
+  await mkdir6(path11.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -25141,25 +24963,25 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path9.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path11.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync2(path9.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path11.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path9.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path9.basename(options.projectDir)}`;
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path11.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path11.basename(options.projectDir)}`;
+  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
-  const previousConsumer = await readPublicTreeConsumer(path9.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path11.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const dataDir = path9.join(runtimeDir, "data");
+  const dataDir = path11.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir6(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
@@ -25173,7 +24995,7 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path9.basename(bundle.staticFiles.publicDir),
+      publicTree: path11.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
@@ -25434,7 +25256,7 @@ async function startContainerSession(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data2 = localContainerSshState({
@@ -25614,7 +25436,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path9.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path11.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -25768,8 +25590,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path9.join(options.projectDir, ".sporades", "data");
-  return path9.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path11.join(options.projectDir, ".sporades", "data");
+  return path11.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -25782,7 +25604,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -25929,7 +25751,7 @@ async function writeAuthConfiguration(configPath, envPath, config, envValues) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile8(filePath, "utf8");
+    return await readFile9(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -25939,7 +25761,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile8(bindingPath, "utf8"));
+    return JSON.parse(await readFile9(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -25955,7 +25777,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile8(path9.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile9(path11.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -25985,7 +25807,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile8(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile9(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -26002,13 +25824,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir6(path9.dirname(filePath), { recursive: true });
+  await mkdir6(path11.dirname(filePath), { recursive: true });
   await writeFile7(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path9.join(process.env.XDG_CONFIG_HOME ?? path9.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path9.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path11.join(process.env.XDG_CONFIG_HOME ?? path11.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path11.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -26134,7 +25956,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError4(
@@ -26151,7 +25973,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path11.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -26234,10 +26056,10 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path9.join(options.projectDir, ".sporades", "host-push");
+  const hostPushDir = path11.join(options.projectDir, ".sporades", "host-push");
   await mkdir6(hostPushDir, { recursive: true });
-  const localArchive = path9.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path9.join(hostPushDir, `${releaseId}-files`);
+  const localArchive = path11.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path11.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -26256,27 +26078,27 @@ async function createHostReleaseArchive(options) {
     publicFiles
   });
   await rm6(packageDir, { recursive: true, force: true });
-  await mkdir6(path9.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir6(path9.join(packageDir, ".sporades", "ssh"), { recursive: true });
-  await cp(options.bundle.staticFiles.publicDir, path9.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await mkdir6(path11.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir6(path11.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await cp(options.bundle.staticFiles.publicDir, path11.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile7(path9.join(packageDir, "server.mjs"), await readFile8(path9.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile7(path9.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile7(path11.join(packageDir, "server.mjs"), await readFile9(path11.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile7(path11.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile7(path9.join(packageDir, ".env.sporades.server"), await readFile8(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile7(path11.join(packageDir, ".env.sporades.server"), await readFile9(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile7(
-      path9.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      path11.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path9.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    const authorizedKeysPath = path11.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile7(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod2(authorizedKeysPath, 420);
@@ -26318,9 +26140,9 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir2(directory, { withFileTypes: true })) {
-    const entryPath = path9.join(directory, entry.name);
+    const entryPath = path11.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path9.relative(root, entryPath).split(path9.sep).join("/")}`);
+    else if (entry.isFile()) files.push(`public/${path11.relative(root, entryPath).split(path11.sep).join("/")}`);
     else throw commandError4("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
@@ -26611,12 +26433,12 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path9.join(path9.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
+  return path11.join(path11.dirname(fileURLToPath2(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path9.posix.dirname(remoteHelper);
+  const remoteBin = path11.posix.dirname(remoteHelper);
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
@@ -26677,9 +26499,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path9.resolve(options.projectDir, options.file);
-  const relativeFile = path9.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path9.sep}`) || path9.isAbsolute(relativeFile)) {
+  const outputPath = path11.resolve(options.projectDir, options.file);
+  const relativeFile = path11.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path11.sep}`) || path11.isAbsolute(relativeFile)) {
     throw commandError4(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -26706,7 +26528,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile8(outputPath, "utf8");
+    await readFile9(outputPath, "utf8");
     if (!options.force) {
       throw commandError4(
         "GitHub Actions workflow already exists.",
@@ -26718,7 +26540,7 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir6(path9.dirname(outputPath), { recursive: true });
+  await mkdir6(path11.dirname(outputPath), { recursive: true });
   await writeFile7(outputPath, workflow);
   return {
     ok: true,
@@ -26732,7 +26554,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path9.sep).join("/");
+  return filePath.split(path11.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -26835,7 +26657,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path9.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path11.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError4("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -26877,7 +26699,7 @@ function runDocker(args, cwd, message, hint) {
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path9.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path11.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data = {
     ...binding?.containerId ? {
       container: {
@@ -26904,7 +26726,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path11.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -26913,7 +26735,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError4(
@@ -26968,7 +26790,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 async function removeLocalContainerSession(options) {
-  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path11.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -26979,7 +26801,7 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path9.join(options.projectDir, ".sporades", "build");
+  const buildDir = path11.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
@@ -26990,7 +26812,7 @@ async function removeLocalContainerSession(options) {
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path9.join(buildDir, ".public-trees", currentConsumer.tree),
+      path11.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -27117,7 +26939,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path11.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -27187,7 +27009,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "starting",
       engine: service.engine,
-      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
+      statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name)
     });
   }
   try {
@@ -27238,7 +27060,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "ready",
       engine: service.engine,
-      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
+      statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name),
       host: connection.host,
       port: connection.port
     });
@@ -27300,7 +27122,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
+        statePath: path11.join(CAPSULE_SERVICES_STATE_DIR, name)
       }
     ])
   );
@@ -27545,7 +27367,7 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path9.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path11.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -27601,23 +27423,23 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path9.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir6(path9.dirname(lockDir), { recursive: true });
+  const lockDir = path11.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir6(path11.dirname(lockDir), { recursive: true });
   const token = randomBytes6(16).toString("hex");
-  const ownerPath = path9.join(lockDir, "owner.json");
+  const ownerPath = path11.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir6(lockDir);
       await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm6(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
         const age = Date.now() - await lstat7(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
@@ -27674,7 +27496,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod2(targetPath, 448);
     const entries = await readdir2(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path9.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path11.join(targetPath, entry.name));
     }
     return;
   }

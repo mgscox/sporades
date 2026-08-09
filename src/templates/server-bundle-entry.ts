@@ -1,40 +1,59 @@
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
-import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
-export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
-    const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
-        .map((fn) => fn.toString())
-        .join("\n\n");
-    const publicTreeContract = [
-        `const PUBLIC_TREE_LIMITS = ${JSON.stringify(PUBLIC_TREE_LIMITS)};`,
-        normalizePublicTreePath.toString(),
-        publicTreePathFromRequest.toString(),
-    ].join("\n\n");
-    const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
-    return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
+// The generated Capsule server bundle: the boot program a deployed Capsule runs, written as
+// ordinary imports so that esbuild resolves every name.
+//
+// `server-bundle-template.ts` built the same program until ticket 05, by writing out `fn.toString()`
+// for every entry in a registry of 528 runtime functions, next to a hand-assembled preamble that
+// re-declared the runtime's module constants. That mechanism decided the runtime's shape rather than
+// serving it: a function could not call a helper unless the helper was also registered, could not
+// close over a module constant, and a name that failed to travel was a `ReferenceError` in a
+// deployed Capsule rather than a build error. This file was the expand half of an expand–contract
+// sequence; the contract half deleted the other builder, and this is the only one now.
+//
+// Only the entry points the boot program actually calls are imported, so esbuild's reachability
+// analysis decides what a Capsule carries. That was worth stating while a registry existed —
+// importing it would have pinned all 528 functions into the graph — and it is still the rule: an
+// import added here for convenience carries its whole subgraph into every deployed Capsule.
+import { createDecipheriv, privateDecrypt } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 
-export const sporadesConfig = ${JSON.stringify(config, null, 2)};
-export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
-export const sporadesSealedServerEnv = ${JSON.stringify(sealedServerEnv, null, 2)};
-export const sporadesServerSource = ${JSON.stringify(serverSource)};
+import {
+  createRuntimeInspectionAdapter,
+  createWebSocketHub,
+  handleFileHttpRoute,
+  injectPageConnectionToken,
+  inspectRuntimeJobs,
+  inspectRuntimeSchedules,
+  openDevDatabase,
+  prepareHttpSecurity,
+  routeEndpoint,
+  routeRuntimeHealth,
+  routeSporadesAuth,
+  writeUnhandledHttpError,
+} from "../server-runtime-source.js";
+import { publicTreePathFromRequest } from "../public-tree-contract.js";
+import {
+  sporadesCapsuleModuleUrl,
+  sporadesConfig,
+  sporadesSealedServerEnv,
+  sporadesServerEnv,
+  sporadesServerSource,
+} from "sporades:server-bundle-inputs";
+
+// The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
+// the same module interface, not because a deployed Capsule imports itself: `server.mjs` is
+// executed by the container's `CMD`, never imported.
+export { sporadesConfig, sporadesServerEnv, sporadesSealedServerEnv, sporadesServerSource };
+
 const sporadesActionIndex = process.argv.indexOf("--sporades-action");
 const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
-const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
+// Loaded through a variable rather than a literal so esbuild leaves the import for the runtime to
+// perform. Resolving it at build time would both inline the Capsule into the graph and evaluate it
+// on the one-shot action path, which ADR-0028 requires stay unevaluated.
+const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsuleModuleUrl);
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-${runtimeFunctions}
-${publicTreeContract}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
@@ -46,22 +65,22 @@ const runtimeConfig = {
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
 if (sporadesAction) {
-  if (!['jobs.inspect', 'schedules.inspect'].includes(sporadesAction)) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
+  if (!["jobs.inspect", "schedules.inspect"].includes(sporadesAction)) {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
     process.exit(1);
   }
   const adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
   try {
-    const items = adapter ? await (sporadesAction === 'jobs.inspect' ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
-    const key = sporadesAction === 'jobs.inspect' ? 'jobs' : 'schedules';
-    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\\n");
-  } catch (error) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? (sporadesAction === 'jobs.inspect' ? "JOB_INSPECTION_FAILED" : "SCHEDULE_INSPECTION_FAILED"), message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) } }) + "\\n");
+    const items = adapter ? await (sporadesAction === "jobs.inspect" ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
+    const key = sporadesAction === "jobs.inspect" ? "jobs" : "schedules";
+    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\n");
+  } catch (error: any) {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? (sporadesAction === "jobs.inspect" ? "JOB_INSPECTION_FAILED" : "SCHEDULE_INSPECTION_FAILED"), message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) } }) + "\n");
     process.exitCode = 1;
   } finally { await adapter?.close(); }
   process.exit();
 }
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
+const database: any = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
 await database.init();
@@ -82,7 +101,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (await routeRuntimeHealth(database, request, response)) {
+    if (await routeRuntimeHealth(database, request as any, response)) {
       return;
     }
 
@@ -110,7 +129,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.on("upgrade", (request, socket) => {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (requestUrl.pathname !== "/__sporades/ws") {
     socket.destroy();
     return;
@@ -118,9 +137,9 @@ server.on("upgrade", (request, socket) => {
   websocketHub.accept(request, socket);
 });
 
-await new Promise((resolve, reject) => {
+await new Promise<void>((resolve, reject) => {
   server.once("error", reject);
-  server.listen(port, "0.0.0.0", resolve);
+  server.listen(port, "0.0.0.0", () => resolve());
 });
 
 let shutdownStarted = false;
@@ -164,7 +183,7 @@ function resolveActiveRuntimePublicRoot() {
   return null;
 }
 
-async function routePublicAsset(request, response, publicRoot, hub) {
+async function routePublicAsset(request: IncomingMessage, response: ServerResponse, publicRoot: string, hub: any) {
   const rawPathname = String(request.url ?? "/").split("?", 1)[0];
   const relativePath = publicTreePathFromRequest(rawPathname);
   if (relativePath === null) return false;
@@ -178,7 +197,7 @@ async function routePublicAsset(request, response, publicRoot, hub) {
   return true;
 }
 
-function publicContentType(relativePath) {
+function publicContentType(relativePath: string) {
   switch (path.extname(relativePath).toLowerCase()) {
     case ".html": return "text/html; charset=utf-8";
     case ".js": case ".mjs": return "text/javascript; charset=utf-8";
@@ -197,7 +216,7 @@ function publicContentType(relativePath) {
   }
 }
 
-async function readRuntimeServerEnv(fallbackEnv, sealed) {
+async function readRuntimeServerEnv(fallbackEnv: any, sealed: any) {
   let env;
   if (!sealed?.enabled) {
     env = fallbackEnv;
@@ -226,9 +245,9 @@ function readRuntimeServiceEnv() {
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }
 
-function unsealRuntimeServerEnv(envelope, privateKey) {
-  const values = {};
-  for (const [key, entry] of Object.entries(envelope.entries ?? {})) {
+function unsealRuntimeServerEnv(envelope: any, privateKey: string) {
+  const values: Record<string, string> = {};
+  for (const [key, entry] of Object.entries<any>(envelope.entries ?? {})) {
     const dataKey = privateDecrypt(privateKey, Buffer.from(entry.encryptedKey, "base64"));
     const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(entry.iv, "base64"));
     decipher.setAuthTag(Buffer.from(entry.tag, "base64"));
@@ -239,6 +258,3 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
   }
   return values;
 }
-`;
-}
-//# sourceMappingURL=server-bundle-template.js.map

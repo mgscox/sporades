@@ -27,20 +27,20 @@
     }
   },
   "scripts": {
-    "build": "node ./scripts/write-cli-version.mjs && tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
+    "build": "node ./scripts/write-cli-version.mjs && tsc --project tsconfig.json && tsc --project tsconfig.runtime.json && node ./scripts/build-bin.mjs",
     "docs:build": "node ./scripts/build-docs.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:preview": "vitepress preview docs",
     "docs:api": "typedoc",
     "package": "node ./scripts/package.mjs",
-    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1",
     "test:real-vite-container": "SPORADES_REAL_VITE_CONTAINER=1 node --test --test-concurrency=1 test/real-vite-container.test.js",
     "prepublishOnly": "npm test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.3.0"
   },
   "dependencies": {
     "esbuild": "0.25.12",

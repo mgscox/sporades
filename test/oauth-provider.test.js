@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -9,29 +10,47 @@ import { generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
 import { promisify } from "node:util";
 
+// Thirteen of these were `SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === …)` until batch 3
+// moved the auth domain into `auth-runtime.ts`. That lookup does not fail when a domain leaves the
+// emitted list — it returns `undefined`, and every test below would then call `undefined(…)` or,
+// worse, assert against a value derived from one. Named imports through the re-export bridge on
+// `server-runtime-source.js` fail at load instead, which is the point of converting them.
+//
+// `beginOAuthSignIn` and `resolveOAuthRequestOrigin` joined them in batch 8, which moved the HTTP
+// layer that had been holding them — the first into `auth-runtime.ts` with the rest of its domain,
+// the second into `http-runtime.ts`, because its body validates a request origin against the CORS
+// policy and reaches no auth name. Both resolve through the re-export bridge either way. They were
+// the last two `.find` lookups in this file, and converting them is not optional: a module-scope
+// `.find` that binds `undefined` does not fail the test that uses it, it fails the *import* of the
+// whole file, which reports as fewer tests run rather than as a red.
+//
+// `linkProviderIdentity` joined the named imports in batch 5, which moved the user-preferences
+// domain and with it the seven auth functions `migrateAnonymousPreferences` had been holding. It is
+// the exact failure this comment describes: it left the emitted list in that batch, so the `.find`
+// spelling below would have bound `undefined` and every assertion using it would have called
+// `undefined(…)` rather than going red at load.
 import {
+  appleOAuthOriginEligible,
+  beginOAuthSignIn,
+  linkProviderIdentity,
+  completeMicrosoftOAuth,
+  completeOpenIdOAuthCodeExchange,
+  createAppleClientSecret,
+  discoverMicrosoftOpenIdConfiguration,
+  fetchBoundedOAuthJson,
+  fetchMicrosoftOidcJson,
+  isOAuthLoopbackHostname,
+  loadMicrosoftJwks,
+  oauthProviderTestEndpoint,
   openDevDatabase,
   resolveAnonymousSession,
+  resolveOAuthRequestOrigin,
   routeSporadesAuth,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
+  verifyAppleIdentityToken,
+  verifyGoogleIdentityToken,
+  verifyMicrosoftIdentityToken,
 } from "../dist/server-runtime-source.js";
 
-const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
-const oauthProviderTestEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "oauthProviderTestEndpoint");
-const isOAuthLoopbackHostname = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "isOAuthLoopbackHostname");
-const fetchBoundedOAuthJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchBoundedOAuthJson");
-const completeOpenIdOAuthCodeExchange = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeOpenIdOAuthCodeExchange");
-const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyGoogleIdentityToken");
-const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyAppleIdentityToken");
-const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
-const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
-const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
-const verifyMicrosoftIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyMicrosoftIdentityToken");
-const discoverMicrosoftOpenIdConfiguration = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "discoverMicrosoftOpenIdConfiguration");
-const fetchMicrosoftOidcJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
-const loadMicrosoftJwks = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "loadMicrosoftJwks");
-const completeMicrosoftOAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeMicrosoftOAuth");
-const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const execFileAsync = promisify(execFile);
 
 test("provider endpoint overrides require the explicit loopback-only test seam", () => {
@@ -253,8 +272,23 @@ test("Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is a
   }
 });
 
-test("provider auth exposes one internal completion and linking seam", () => {
-  const names = new Set(SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.name));
+test("provider auth exposes one internal completion and linking seam", async () => {
+  // The negatives are the point of this test: a per-provider `completeGoogleOAuth` reappearing
+  // anywhere in the runtime has to fail it. So the subject set has to include names nothing exports.
+  //
+  // This read the emitted list plus `Object.keys` of the auth module until ticket 05. The list is
+  // deleted, and `Object.keys` of a namespace sees only exports — so on its own it would have turned
+  // both negatives vacuous, passing for exactly the reason a per-provider function would be added:
+  // privately. Declarations are read out of the compiled text instead, which sees the private ones.
+  const declaredRuntimeNames = (file) => {
+    const source = readFileSync(new URL(`../dist/${file}`, import.meta.url), "utf8");
+    return [...source.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map(([, name]) => name);
+  };
+  const names = new Set([
+    ...declaredRuntimeNames("auth-runtime.js"),
+    ...declaredRuntimeNames("http-runtime.js"),
+    ...declaredRuntimeNames("server-runtime-source.js"),
+  ]);
   assert.equal(names.has("linkProviderIdentity"), true);
   assert.equal(names.has("completeOpenIdOAuthCodeExchange"), true);
   assert.equal(names.has("linkGoogleAccount"), false);
@@ -544,7 +578,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     });
     assert.equal(queryStart.ok, true);
     const queryState = new URL(queryStart.url).searchParams.get("state");
-    const stored = database.sqlite.prepare("SELECT * FROM sporades_auth_oauth_states WHERE state = ?").get(queryState);
+    const stored = database.adapter.prepare("SELECT * FROM sporades_auth_oauth_states WHERE state = ?").get(queryState);
     assert.equal(stored.provider, "query");
     assert.equal(stored.sessionToken, querySession.token);
     assert.equal(stored.returnTo, "http://127.0.0.1:4000");
@@ -564,7 +598,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     );
     assert.equal(queryResponse.statusCode, 302);
     assert.equal(queryResponse.headers.location, "http://127.0.0.1:4000");
-    assert.equal(database.sqlite.readAuthSessionWithUser(querySession.token).provider, "query");
+    assert.equal(database.adapter.readAuthSessionWithUser(querySession.token).provider, "query");
 
     const formSession = await resolveAnonymousSession(database, null);
     const formStart = await beginOAuthSignIn(database, formSession, "form", {
@@ -583,7 +617,7 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
     );
     assert.equal(formResponse.statusCode, 302, formResponse.body);
     assert.equal(formResponse.headers.location, "http://127.0.0.1:4000/after");
-    assert.equal(database.sqlite.readAuthSessionWithUser(formSession.token).provider, "form");
+    assert.equal(database.adapter.readAuthSessionWithUser(formSession.token).provider, "form");
     assert.equal(completions.length, 2);
     assert.equal(completions[0].provider, "query");
     assert.ok(completions[0].nonce);
@@ -664,7 +698,7 @@ test("provider callbacks coexist across same-email, absent-email, switching, ret
       emailVerified: true,
       displayName: "Google Owner",
     })).statusCode, 302);
-    const googleUserId = database.sqlite.readAuthSessionWithUser(googleSession.token).userId;
+    const googleUserId = database.adapter.readAuthSessionWithUser(googleSession.token).userId;
 
     const independentMicrosoft = await resolveAnonymousSession(database, null);
     assert.equal((await complete("microsoft", independentMicrosoft, {
@@ -672,7 +706,7 @@ test("provider callbacks coexist across same-email, absent-email, switching, ret
       email: "same@example.com",
       displayName: "Microsoft Independent",
     })).statusCode, 302);
-    const microsoftUserId = database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).userId;
+    const microsoftUserId = database.adapter.readAuthSessionWithUser(independentMicrosoft.token).userId;
     assert.notEqual(microsoftUserId, googleUserId, "mutable email must not bridge users across providers");
 
     assert.equal((await complete("microsoft", googleSession, {
@@ -680,16 +714,16 @@ test("provider callbacks coexist across same-email, absent-email, switching, ret
       email: "same@example.com",
       displayName: "Microsoft Owner",
     })).statusCode, 302);
-    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).provider, "microsoft");
-    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).userId, googleUserId);
+    assert.equal(database.adapter.readAuthSessionWithUser(googleSession.token).provider, "microsoft");
+    assert.equal(database.adapter.readAuthSessionWithUser(googleSession.token).userId, googleUserId);
 
     assert.equal((await complete("facebook", googleSession, {
       subject: "facebook-owner",
       email: null,
       displayName: "Facebook Owner",
     })).statusCode, 302);
-    assert.equal(database.sqlite.findAuthIdentityByProviderSubject("facebook", "facebook-owner").email, null);
-    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).provider, "facebook");
+    assert.equal(database.adapter.findAuthIdentityByProviderSubject("facebook", "facebook-owner").email, null);
+    assert.equal(database.adapter.readAuthSessionWithUser(googleSession.token).provider, "facebook");
 
     assert.equal((await complete("apple", googleSession, {
       subject: "apple-owner",
@@ -702,8 +736,8 @@ test("provider callbacks coexist across same-email, absent-email, switching, ret
       email: "relay@privaterelay.appleid.com",
       displayName: null,
     })).statusCode, 302);
-    assert.equal(database.sqlite.readAuthSessionWithUser(returningApple.token).userId, googleUserId);
-    assert.equal(database.sqlite.readAuthSessionWithUser(returningApple.token).provider, "apple");
+    assert.equal(database.adapter.readAuthSessionWithUser(returningApple.token).userId, googleUserId);
+    assert.equal(database.adapter.readAuthSessionWithUser(returningApple.token).provider, "apple");
 
     const conflict = await complete("apple", independentMicrosoft, {
       subject: "apple-owner",
@@ -712,10 +746,10 @@ test("provider callbacks coexist across same-email, absent-email, switching, ret
     });
     assert.equal(conflict.statusCode, 500);
     assert.match(conflict.body, /AUTH_IDENTITY_CONFLICT/);
-    assert.equal(database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).userId, microsoftUserId);
-    assert.equal(database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).provider, "microsoft");
+    assert.equal(database.adapter.readAuthSessionWithUser(independentMicrosoft.token).userId, microsoftUserId);
+    assert.equal(database.adapter.readAuthSessionWithUser(independentMicrosoft.token).provider, "microsoft");
 
-    const identities = database.sqlite.prepare(
+    const identities = database.adapter.prepare(
       "SELECT provider, subject, userId FROM sporades_auth_identities ORDER BY provider, subject",
     ).all();
     assert.deepEqual(
@@ -749,7 +783,7 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
       {
         provider: "alpha",
         mutate(database, state) {
-          database.sqlite.prepare("UPDATE sporades_auth_oauth_states SET expiresAt = ? WHERE state = ?")
+          database.adapter.prepare("UPDATE sporades_auth_oauth_states SET expiresAt = ? WHERE state = ?")
             .run(new Date(Date.now() - 1_000).toISOString(), state);
         },
         query: "code=expired",
@@ -789,7 +823,7 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
       assert.match(response.body, new RegExp(testCase.code));
       assert.doesNotMatch(response.body, /sensitive-provider-detail|leaked secret/);
       assert.equal(
-        database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state),
+        database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state),
         undefined,
       );
 
@@ -1000,8 +1034,7 @@ test("Microsoft discovery fetches are deadline-bound, size-bound, no-redirect, a
 test("Microsoft response-body deadlines close a real stalled loopback response without leaking its partial body", async () => {
   const script = `
     import { createServer } from "node:http";
-    import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "./dist/server-runtime-source.js";
-    const fetchJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
+    import { fetchMicrosoftOidcJson as fetchJson } from "./dist/server-runtime-source.js";
     let closedResolve;
     const closed = new Promise((resolve) => { closedResolve = resolve; });
     const server = createServer((request, response) => {
@@ -1986,7 +2019,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
       assert.equal(result.ok, false);
       assert.equal(result.error.code, "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED");
       assert.match(result.error.hint, /HTTPS.*domain|tunnel|Hosted/i);
-      assert.equal(database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_oauth_states").get().count, 0);
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_oauth_states").get().count, 0);
     }
 
     const origin = "https://capsule.example.test";
@@ -2016,7 +2049,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     assert.match(invalidCredentialResponse.body, /OAUTH_CLIENT_CREDENTIAL_INVALID/);
     assert.doesNotMatch(invalidCredentialResponse.body, /not-a-private-key|cannot-exchange/);
     assert.equal(
-      database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(authorization.searchParams.get("state")),
+      database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(authorization.searchParams.get("state")),
       undefined,
     );
 
@@ -2036,7 +2069,7 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
     assert.match(cancelledResponse.body, /OAUTH_PROVIDER_CANCELLED/);
     assert.doesNotMatch(cancelledResponse.body, /private-provider-detail/);
     assert.equal(
-      database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(cancelledState),
+      database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(cancelledState),
       undefined,
     );
   });
@@ -2108,7 +2141,7 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
     let state = await start();
     let response = await callback(`state=${state}&code=one&code=two`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
 
     for (const ambiguous of [
       "error=access_denied&error=user_cancelled",
@@ -2117,18 +2150,18 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
       state = await start();
       response = await callback(`state=${state}&${ambiguous}`);
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+      assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
     }
 
     state = await start();
     response = await callback(`state=${state}&code=one&error=access_denied`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
 
     state = await start();
     response = await callback(`state=${state}&state=other&code=one`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
 
     for (const contentType of [
       "text/plain",
@@ -2140,30 +2173,30 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
       state = await start();
       response = await callback(`state=${state}&code=one`, contentType);
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+      assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
     }
 
     state = await start();
     response = await callback(`state=${state}&code=%GG`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
 
     for (const encodedControl of ["%00", "%01", "%09", "%0D", "%7F", "%C2%80"]) {
       for (const field of ["code", "error", "user"]) {
         state = await start();
         response = await callback(`state=${state}&${field}=${encodedControl}`);
         assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-        assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+        assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
       }
       state = await start();
       response = await callback(`state=${encodedControl}&code=one`);
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+      assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
 
       state = await start();
       response = await callback(`state=${state}&co${encodedControl}de=one`);
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+      assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
     }
 
     for (const rawControl of [0x00, 0x01, 0x09, 0x0d, 0x7f]) {
@@ -2173,42 +2206,42 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
         Buffer.from([rawControl]),
       ]));
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+      assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
     }
 
     for (const invalidUtf8 of [Buffer.from([0xc3, 0x28]), Buffer.from([0xc0, 0xaf]), Buffer.from([0xed, 0xa0, 0x80])]) {
       state = await start();
       response = await callback(Buffer.concat([Buffer.from(`state=${state}&code=`), invalidUtf8]));
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+      assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
 
       state = await start();
       response = await callback(Buffer.concat([Buffer.from("state="), invalidUtf8, Buffer.from("&code=one")]));
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+      assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
     }
 
     state = await start();
     response = await callback(`state=${state}&co%00de=one`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
 
     state = await start();
     response = await callback(`state=${state}&code=%C3%28`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
 
     for (const forbiddenScalar of ["%EF%BF%BD", "%EF%B7%90", "%F0%9F%BF%BE"]) {
       state = await start();
       response = await callback(`state=${state}&code=${forbiddenScalar}`);
       assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
-      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+      assert.equal(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
     }
 
     state = await start();
     response = await callback(`state=${state}&code=${"x".repeat(17 * 1024)}`);
     assert.equal(response.statusCode, 413);
-    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    assert.ok(database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
 
     state = await start();
     response = await callback(
@@ -2428,7 +2461,7 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
         returnTo: "https://capsule.example.test/after",
       });
       const firstState = new URL(firstStart.url).searchParams.get("state");
-      expectedNonce = database.sqlite.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(firstState).nonce;
+      expectedNonce = database.adapter.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(firstState).nonce;
       const firstResponse = responseRecorder();
       await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
         state: firstState,
@@ -2447,7 +2480,7 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
       assert.ok(tokenRequestBody.get("client_secret"));
       assert.doesNotMatch(firstResponse.body, /client_secret|PRIVATE KEY|relay@/i);
 
-      const firstSession = database.sqlite.readAuthSessionWithUser(firstGuest.token);
+      const firstSession = database.adapter.readAuthSessionWithUser(firstGuest.token);
       assert.equal(firstSession.provider, "apple");
       assert.equal(firstSession.userId, firstGuest.auth.userId);
       assert.equal(firstSession.displayName, "Zoë 张");
@@ -2460,14 +2493,14 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
         returnTo: "https://capsule.example.test/account",
       });
       const returningState = new URL(returningStart.url).searchParams.get("state");
-      expectedNonce = database.sqlite.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(returningState).nonce;
+      expectedNonce = database.adapter.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(returningState).nonce;
       const returningResponse = responseRecorder();
       await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
         state: returningState,
         code: "return-code",
       }), returningResponse);
       assert.equal(returningResponse.statusCode, 302, returningResponse.body);
-      const returningSession = database.sqlite.readAuthSessionWithUser(returningGuest.token);
+      const returningSession = database.adapter.readAuthSessionWithUser(returningGuest.token);
       assert.equal(returningSession.provider, "apple");
       assert.equal(returningSession.userId, firstGuest.auth.userId);
       assert.equal(returningSession.displayName, "Zoë 张");

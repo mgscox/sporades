@@ -33,7 +33,7 @@ test("a matching static Schedule enqueues and runs one ordinary Privileged Job",
     await clock.runDueTimers();
     assert.deepEqual(seen, [{ userId: "__privileged__", payload: { source: "static" } }]);
 
-    const rows = database.sqlite.prepare("SELECT * FROM sporades_jobs").all();
+    const rows = database.adapter.prepare("SELECT * FROM sporades_jobs").all();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].scheduleName, "everyMinute");
     assert.equal(rows[0].scheduledFor, "2030-01-01T00:01:00.000Z");
@@ -68,7 +68,7 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     await database.init();
     const originalEmit = database.audit.emit.bind(database.audit);
     database.audit.emit = async (details) => { audits.push(details); return originalEmit(details); };
-    const beforeJobs = database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count;
+    const beforeJobs = database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count;
     const result = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
     assert.equal(result.ok, true);
     assert.deepEqual(result.data.all.map((entry) => entry.name), ["alpha", "zeta"]);
@@ -82,20 +82,20 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     });
     assert.equal(result.data.missing, null);
     assert.doesNotMatch(JSON.stringify(result.data), /never-return-me|definitionFingerprint|claim|idempotency/i);
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, beforeJobs);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, beforeJobs);
     assert.equal(audits.every((entry) => entry.operation === "test.inspect"), true);
 
-    database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome='payload-failed', latestErrorCode=? WHERE name='zeta'").run("2030-01-01T00:00:00.000Z", "SCHEDULE_PAYLOAD_FAILED");
+    database.adapter.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome='payload-failed', latestErrorCode=? WHERE name='zeta'").run("2030-01-01T00:00:00.000Z", "SCHEDULE_PAYLOAD_FAILED");
     const failed = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
     assert.deepEqual(failed.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:00:00.000Z", outcome: "payload-failed", errorCode: "SCHEDULE_PAYLOAD_FAILED" });
 
     const assertInvalidInspection = async (values) => {
-      database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name='zeta'").run(...values);
+      database.adapter.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name='zeta'").run(...values);
       const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
       assert.equal(invalid.ok, false);
       assert.equal(invalid.error.code, "PRIVILEGED_RUN_FAILED");
     };
-    database.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES ('unrelated', 'work', '__privileged__', '__privileged__', 'null', 'queued', ?, 0, ?, '{\"maxAttempts\":1,\"delayMs\":0}', '[]', 'other', '2030-01-01T00:00:00.000Z')").run(clock.now().toISOString(), clock.now().toISOString());
+    database.adapter.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES ('unrelated', 'work', '__privileged__', '__privileged__', 'null', 'queued', ?, 0, ?, '{\"maxAttempts\":1,\"delayMs\":0}', '[]', 'other', '2030-01-01T00:00:00.000Z')").run(clock.now().toISOString(), clock.now().toISOString());
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "enqueued", "unrelated", null]);
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "enqueued", "unrelated", "STALE_ERROR"]);
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", "unrelated", "SCHEDULE_PAYLOAD_FAILED"]);
@@ -103,15 +103,15 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     await assertInvalidInspection(["0", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
     await assertInvalidInspection(["2030-01-01", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
     for (const noncanonical of ["0", "2030-01-01"]) {
-      database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=NULL, latestOutcome=NULL, latestJobId=NULL, latestErrorCode=NULL WHERE name='zeta'").run(noncanonical);
+      database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=NULL, latestOutcome=NULL, latestJobId=NULL, latestErrorCode=NULL WHERE name='zeta'").run(noncanonical);
       const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
       assert.equal(invalid.ok, false);
     }
-    database.sqlite.prepare("DELETE FROM sporades_jobs WHERE id='unrelated'").run();
+    database.adapter.prepare("DELETE FROM sporades_jobs WHERE id='unrelated'").run();
 
     clock.advanceBy(270_000); await clock.runDueTimers();
     const latest = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
-    const jobId = database.sqlite.prepare("SELECT id FROM sporades_jobs").get().id;
+    const jobId = database.adapter.prepare("SELECT id FROM sporades_jobs").get().id;
     assert.deepEqual(latest.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:05:00.000Z", outcome: "enqueued", jobId });
     const correlated = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspectJob", [jobId]);
     assert.deepEqual(correlated.data.enqueuedBy, { mode: "schedule", scheduleName: "zeta", scheduledFor: "2030-01-01T00:05:00.000Z" });
@@ -138,7 +138,7 @@ test("a Schedule matches wall-clock fields in its explicit IANA timezone", async
     clock.advanceBy(30_000);
     await clock.runDueTimers();
     assert.deepEqual(seen, [null]);
-    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-01-01T17:00:00.000Z");
+    assert.equal(database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-01-01T17:00:00.000Z");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -157,7 +157,7 @@ test("Schedule timezone evaluation covers offsets and calendar boundaries", asyn
     }, { clock });
     try {
       await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
-      assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, expected, label);
+      assert.equal(database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, expected, label);
     } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
   }
 });
@@ -172,7 +172,7 @@ test("leap-day scheduling crosses a non-leap Gregorian century", async () => {
     await database.init();
     clock.setInstant("2104-02-29T00:00:00.000Z");
     await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2104-02-29T00:00:00.000Z");
+    assert.equal(database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2104-02-29T00:00:00.000Z");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -184,7 +184,7 @@ test("cron day-of-month and day-of-week use OR when both are restricted", async 
   }, { clock });
   try {
     await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-06-03T00:00:00.000Z");
+    assert.equal(database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-06-03T00:00:00.000Z");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -196,7 +196,7 @@ test("spring-forward nonexistent wall time is skipped", async () => {
   }, { clock });
   try {
     await database.init(); clock.advanceBy((23 * 60 + 30) * 60 * 1000 + 30_000); await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2024-03-11T06:30:00.000Z");
+    assert.equal(database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2024-03-11T06:30:00.000Z");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -209,7 +209,7 @@ test("fall-back repeated wall time produces two distinct UTC occurrences", async
   try {
     await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
     clock.advanceBy(60 * 60 * 1000); await clock.runDueTimers();
-    const occurrences = database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs ORDER BY scheduledFor").all().map((row) => row.scheduledFor);
+    const occurrences = database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs ORDER BY scheduledFor").all().map((row) => row.scheduledFor);
     assert.deepEqual(occurrences, ["2024-11-03T05:30:00.000Z", "2024-11-03T06:30:00.000Z"]);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -304,7 +304,7 @@ test("payload factory failures skip one occurrence safely and re-arm the Schedul
     clock.advanceBy(60_000);
     await clock.runDueTimers();
     assert.deepEqual(seen, [{ calls: 2 }]);
-    const logs = await database.sqlite.readRecentLogEvents(20);
+    const logs = await database.adapter.readRecentLogEvents(20);
     const failure = logs.find((entry) => entry.event === "schedule.occurrence.payload_failed");
     assert.deepEqual(failure.data, { scheduleName: "resilient", scheduledFor: "2030-01-01T00:01:00.000Z", code: "SCHEDULE_PAYLOAD_FACTORY_FAILED" });
     assert.equal(JSON.stringify(failure).includes("secret detail"), false);
@@ -324,9 +324,9 @@ test("rejected and invalid resolved factory payloads create no Job", async () =>
   }, { clock });
   try {
     await Promise.all(database.schedules.map((definition) => enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z"))));
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     assert.equal(database.schedulePayloadFactoryLanes.size, 0);
-    const failures = (await database.sqlite.readRecentLogEvents(20)).filter((entry) => entry.event === "schedule.occurrence.payload_failed");
+    const failures = (await database.adapter.readRecentLogEvents(20)).filter((entry) => entry.event === "schedule.occurrence.payload_failed");
     assert.deepEqual(failures.map((entry) => entry.data.code).sort(), ["SCHEDULE_PAYLOAD_FACTORY_FAILED", "SCHEDULE_PAYLOAD_INVALID_JOB_PAYLOAD"]);
     assert.equal(JSON.stringify(failures).includes("private rejection"), false);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
@@ -351,7 +351,7 @@ test("payload factory timeout aborts cooperatively and discards a late result", 
     assert.equal(signal.aborted, true);
     resolveFactory({ late: true });
     await Promise.resolve();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -469,9 +469,9 @@ test("Schedule restart recovery persists state and applies skip or latest withou
     try {
       await database.init();
       await clock.runDueTimers();
-      const rows = await database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='recurring' ORDER BY scheduledFor").all();
+      const rows = await database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='recurring' ORDER BY scheduledFor").all();
       assert.deepEqual(rows.map((row) => row.scheduledFor), expected);
-      const state = await database.sqlite.prepare("SELECT nextOccurrence, missedRunPolicy, enabled FROM sporades_schedules WHERE name='recurring'").get();
+      const state = await database.adapter.prepare("SELECT nextOccurrence, missedRunPolicy, enabled FROM sporades_schedules WHERE name='recurring'").get();
       assert.deepEqual({ ...state }, { nextOccurrence: "2030-01-01T00:04:00.000Z", missedRunPolicy: policy, enabled: 1 });
     } finally { await database.shutdown(); database.close(); }
   }
@@ -489,7 +489,7 @@ test("an armed Schedule timer keeps its intended occurrence identity when it fir
     await database.init();
     clock.advanceBy(150_000);
     await clock.runDueTimers();
-    const row = await database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='late'").get();
+    const row = await database.adapter.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='late'").get();
     assert.equal(row.scheduledFor, "2030-01-01T00:01:00.000Z");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -504,13 +504,13 @@ test("Schedule reconciliation treats changes and re-enabling as future-only and 
   clock.advanceBy(180_000);
   database = await open({ kept: schedule({ expression: "*/2 * * * *", job: "record", enabled: true }) });
   await database.init();
-  let state = await database.sqlite.prepare("SELECT enabled, nextOccurrence FROM sporades_schedules WHERE name='kept'").get();
+  let state = await database.adapter.prepare("SELECT enabled, nextOccurrence FROM sporades_schedules WHERE name='kept'").get();
   assert.deepEqual({ ...state }, { enabled: 1, nextOccurrence: "2030-01-01T00:04:00.000Z" });
   await database.shutdown(); database.close();
   database = await open({ renamed: schedule({ expression: "* * * * *", job: "record" }) });
   try {
     await database.init();
-    const names = await database.sqlite.prepare("SELECT name FROM sporades_schedules ORDER BY name").all();
+    const names = await database.adapter.prepare("SELECT name FROM sporades_schedules ORDER BY name").all();
     assert.deepEqual(names.map((row) => row.name), ["renamed"]);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -531,7 +531,7 @@ test("Schedule reconciliation validates the complete plan before changing durabl
   });
   try {
     await assert.rejects(database.init(), /Schedule has no future occurrence/);
-    const rows = await database.sqlite.prepare("SELECT name, expression, nextOccurrence FROM sporades_schedules ORDER BY name").all();
+    const rows = await database.adapter.prepare("SELECT name, expression, nextOccurrence FROM sporades_schedules ORDER BY name").all();
     assert.deepEqual(rows.map((row) => ({ ...row })), [
       { name: "changed", expression: "*/2 * * * *", nextOccurrence: "2030-01-01T00:02:00.000Z" },
       { name: "removed", expression: "* * * * *", nextOccurrence: "2030-01-01T00:01:00.000Z" },
@@ -559,7 +559,7 @@ test("disabling the runtime aborts an active payload factory and creates no Job"
     await database.shutdown();
     await due;
     assert.equal(signal.aborted, true);
-    assert.equal((await database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_jobs").get()).count, 0);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_jobs").get()).count, 0);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -575,7 +575,7 @@ test("libSQL persists and reconciles Schedule state through the configured adapt
     database = await openDevDatabase(path.join(dir, "unused.db"), "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "*/2 * * * *", job: "work" }) } }, options);
     try {
       await database.init();
-      const state = await database.sqlite.prepare("SELECT expression, nextOccurrence FROM sporades_schedules WHERE name=?").get("durable");
+      const state = await database.adapter.prepare("SELECT expression, nextOccurrence FROM sporades_schedules WHERE name=?").get("durable");
       assert.deepEqual(state, { expression: "*/2 * * * *", nextOccurrence: "2030-01-01T00:04:00.000Z" });
     } finally { await database.shutdown(); await database.close(); }
   });
@@ -592,7 +592,12 @@ test("Postgres persists Schedule state through the configured adapter", { skip: 
   const database = await openDevDatabase("unused.db", "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
   try {
     await database.init();
-    assert.equal((await database.sqlite.prepare("SELECT nextOccurrence FROM sporades_schedules WHERE name=?").get("durable")).nextOccurrence, "2030-01-01T00:01:00.000Z");
+    assert.equal(
+      (await database.adapter
+        .prepare(database.adapter.dialect.sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?"))
+        .get("durable")).nextOccurrence,
+      "2030-01-01T00:01:00.000Z",
+    );
   } finally { await database.shutdown(); await database.close(); }
 });
 
@@ -602,13 +607,13 @@ test("Scheduled provenance is present at the atomic enqueue boundary", async () 
   let database;
   let observed;
   database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
-    jobs: { inspect: job(() => { observed = database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs").get(); return null; }) },
+    jobs: { inspect: job(() => { observed = database.adapter.prepare(database.adapter.dialect.sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_jobs]")).get(); return null; }) },
     schedules: { atomic: schedule({ expression: "* * * * *", job: "inspect" }) },
   }, { clock });
   try {
-    const originalPrepare = database.sqlite.prepare.bind(database.sqlite);
-    database.sqlite.prepare = (sql) => {
-      if (String(sql).startsWith("UPDATE sporades_jobs SET scheduleName=")) throw new Error("post-enqueue provenance write is forbidden");
+    const originalPrepare = database.adapter.prepare.bind(database.adapter);
+    database.adapter.prepare = (sql) => {
+      if (String(sql).startsWith('UPDATE "sporades_jobs" SET "scheduleName"=')) throw new Error("post-enqueue provenance write is forbidden");
       return originalPrepare(sql);
     };
     await database.init();
@@ -631,14 +636,14 @@ test("a restart recovers a durable occurrence that crashed before enqueue", asyn
     await database.init();
     clock.advanceBy(30_000);
     await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     database.close();
 
     clock.advanceBy(31_000);
     database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
     await database.init();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
-    const occurrence = database.sqlite.prepare("SELECT status, jobId FROM sporades_schedule_occurrences").get();
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    const occurrence = database.adapter.prepare("SELECT status, jobId FROM sporades_schedule_occurrences").get();
     assert.equal(occurrence.status, "enqueued");
     assert.ok(occurrence.jobId);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
@@ -656,9 +661,9 @@ test("an immediate restart revisits a pending occurrence when its claim expires"
     await database.init(); clock.advanceBy(30_000); await clock.runDueTimers(); database.close();
     database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
     await database.init();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     clock.advanceBy(30_000); await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -673,14 +678,14 @@ test("a restart after enqueue reuses one deterministic occurrence Job", async ()
   } });
   try {
     await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
-    const firstId = database.sqlite.prepare("SELECT id FROM sporades_jobs").get().id;
+    const firstId = database.adapter.prepare("SELECT id FROM sporades_jobs").get().id;
     database.close();
     clock.advanceBy(31_000);
     database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
     await database.init();
-    const jobs = database.sqlite.prepare("SELECT id FROM sporades_jobs").all();
+    const jobs = database.adapter.prepare("SELECT id FROM sporades_jobs").all();
     assert.deepEqual(jobs.map((row) => row.id), [firstId]);
-    assert.equal(database.sqlite.prepare("SELECT jobId FROM sporades_schedule_occurrences").get().jobId, firstId);
+    assert.equal(database.adapter.prepare("SELECT jobId FROM sporades_schedule_occurrences").get().jobId, firstId);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -696,8 +701,8 @@ test("overlapping runtime starts converge on one occurrence Job identity", async
     await Promise.all([first.init(), second.init()]);
     clockA.advanceBy(30_000); clockB.advanceBy(30_000);
     await Promise.all([clockA.runDueTimers(), clockB.runDueTimers()]);
-    const jobs = first.sqlite.prepare("SELECT id FROM sporades_jobs").all();
-    const occurrences = first.sqlite.prepare("SELECT id, jobId, status FROM sporades_schedule_occurrences").all();
+    const jobs = first.adapter.prepare("SELECT id FROM sporades_jobs").all();
+    const occurrences = first.adapter.prepare("SELECT id, jobId, status FROM sporades_schedule_occurrences").all();
     assert.equal(jobs.length, 1);
     assert.deepEqual(occurrences.map(({ jobId, status }) => ({ jobId, status })), [{ jobId: jobs[0].id, status: "enqueued" }]);
   } finally { await Promise.all([first.shutdown(), second.shutdown()]); first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
@@ -718,9 +723,9 @@ test("an overlapping loser recovers after the winner crashes with an active clai
     await first.init(); await second.init();
     clockA.advanceBy(30_000); clockB.advanceBy(30_000);
     await clockA.runDueTimers(); await clockB.runDueTimers();
-    assert.equal(second.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(second.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     clockB.advanceBy(30_000); await clockB.runDueTimers();
-    assert.equal(second.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    assert.equal(second.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
   } finally { first.close(); await second.shutdown(); second.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -740,7 +745,7 @@ test("Capsule code cannot forge Schedule provenance through context properties",
   try {
     const result = await runMutation(database, { userId: "attacker", displayName: "attacker", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" }, "forge", []);
     assert.equal(result.ok, true);
-    const row = database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs WHERE id=?").get(result.data.id);
+    const row = database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs WHERE id=?").get(result.data.id);
     assert.deepEqual({ ...row }, { scheduleName: null, scheduledFor: null });
     assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker" });
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
@@ -760,9 +765,9 @@ test("Scheduled idempotent returns reject an existing Job without matching priva
     await database.init();
     clock.advanceBy(30_000);
     await clock.runDueTimers();
-    const rows = database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs").all();
+    const rows = database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs").all();
     assert.deepEqual(rows.map((row) => ({ ...row })), [{ scheduleName: null, scheduledFor: null }]);
-    const logs = await database.sqlite.readRecentLogEvents(20);
+    const logs = await database.adapter.readRecentLogEvents(20);
     assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed"), true);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -777,11 +782,11 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
     mutations: { inspect: mutation((ctx) => ctx.privileged.run({ operation: "test.inspect", targetResourceKind: "schedule-store" }, (privilegedCtx) => privilegedCtx.schedules.get("resilient"))) },
   }, { clock });
   try {
-    const originalPrepare = database.sqlite.prepare.bind(database.sqlite);
+    const originalPrepare = database.adapter.prepare.bind(database.adapter);
     let rejectOnce = true;
-    database.sqlite.prepare = (sql) => {
+    database.adapter.prepare = (sql) => {
       const statement = originalPrepare(sql);
-      if (rejectOnce && String(sql).startsWith("INSERT INTO sporades_jobs")) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
+      if (rejectOnce && String(sql).startsWith('INSERT INTO "sporades_jobs"')) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
       return statement;
     };
     await database.init();
@@ -794,7 +799,7 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
     clock.advanceBy(60_000);
     await clock.runDueTimers();
     assert.equal(runs, 1);
-    const logs = await database.sqlite.readRecentLogEvents(20);
+    const logs = await database.adapter.readRecentLogEvents(20);
     assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed"), true);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -825,7 +830,7 @@ test("shutdown stops future occurrences and awaits an active occurrence", async 
     await shutdown;
     clock.advanceBy(60_000);
     await clock.runDueTimers();
-    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

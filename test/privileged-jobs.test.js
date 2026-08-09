@@ -44,7 +44,7 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
     const leaked = await runMutation(database, auth("user-a"), "useLeak", []);
     assert.equal(leaked.ok, false);
     assert.equal(leaked.error.code, "PRIVILEGED_JOB_ACCESS_INACTIVE");
-    const audit = await database.sqlite.readRecentLogEvents(20);
+    const audit = await database.adapter.readRecentLogEvents(20);
     assert.equal(audit.some((event) => event.event === "privileged.started" && JSON.stringify(event).includes(queued.data.id)), true);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });

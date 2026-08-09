@@ -7,14 +7,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { requireAuth } from "../dist/server.js";
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+// The runtime's own `requireAuth`, which this file compares against the public one above. A named
+// import since batch 3 moved it into `auth-runtime.ts`: the `SERVER_RUNTIME_SOURCE_FUNCTIONS.find`
+// spelling it had returns `undefined` rather than failing when a domain leaves the emitted list, and
+// every comparison below would then have been against `undefined`.
+import { requireAuth as runtimeRequireAuth } from "../dist/server-runtime-source.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_PROCESS_EVENT_TIMEOUT_MS = 10000;
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
-
-const runtimeRequireAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "requireAuth");
 
 function linkedAuth() {
   return {

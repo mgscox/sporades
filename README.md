@@ -210,6 +210,15 @@ sporades create notes --template todo
 cd notes
 ```
 
+Use a reusable local Capsule template by passing its directory path. Sporades
+copies the template while honouring its `.gitignore`, excludes `.git`,
+`node_modules`, `.sporades`, and `.env.sporades.server`, rewrites the project
+name, and merges the current Sporades dependency and standard scripts:
+
+```sh
+sporades create notes --template /absolute/path/to/capsule-template
+```
+
 Run a local Dev session:
 
 ```sh

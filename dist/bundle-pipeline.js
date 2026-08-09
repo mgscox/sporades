@@ -3,7 +3,7 @@ import path from "node:path";
 import { buildClientToolchain, validateClientToolchainInput } from "./client-toolchain.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
-import { createServerBundleSource } from "./templates/server-bundle-template.js";
+import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
@@ -58,13 +58,25 @@ export async function createBundle(projectDir, config, options = {}) {
         devRefresh: options.devClientRefresh === true,
     }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
     const clientBundle = clientOutput.legacyClientBundle;
-    const serverBundle = createServerBundleSource({
+    const serverBundleInputs = {
         config,
         serverEnv: sealedEnvelope ? {} : serverEnv,
         sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
         serverSource,
         serverModuleSource: serverCapsuleModule,
-    });
+    };
+    // The server Bundle, assembled from an ordinary module graph.
+    //
+    // There was a second builder here until ticket 05, selected by `SPORADES_SERVER_BUNDLE_MODULE_GRAPH`:
+    // it assembled the same program from `fn.toString()` over a registry of every runtime function,
+    // next to a hand-written preamble that restated the runtime's module constants. That mechanism
+    // decided the runtime's shape rather than serving it — a function could not call an unregistered
+    // helper, could not close over a module constant, and a name that failed to travel was a
+    // `ReferenceError` in a deployed Capsule rather than a build error. Both builders existed at once
+    // through the migration so the new one could be shown equivalent to the old before anything
+    // depended on it; the switch, the registry and the preamble are all gone now (ADR-0041).
+    const serverBundle = await createServerBundleModuleSource(serverBundleInputs)
+        .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); });
     await mkdir(buildDir, { recursive: true });
     const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
         .catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain); });

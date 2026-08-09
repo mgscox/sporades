@@ -1,0 +1,50 @@
+# A deployed Capsule Bundle resolves nothing at runtime
+
+The generated server Bundle must be able to import Node's own builtins and
+nothing else. A Hosted Capsule runs `node /app/server.mjs` inside the Sporades
+base image, which is `node:22-alpine` with no install step and no `node_modules`
+anywhere. A release mounts `server.mjs`, `sporades.json` and the public tree into
+`/app`, plus `.env.sporades.server` or the sealed-env envelope and private key
+when those are in use — every mount read-only, and none of them a place a module
+specifier could resolve to. So a bare specifier left in the Bundle is not a slow
+path or a fallback; it is a container that does not start. This is why the
+Capsule module travels as a base64 `data:` URL rather than as a second file
+beside the Bundle.
+
+This is a self-containment requirement, not a requirement about how the Bundle
+is produced, and that distinction is the whole reason this ADR exists separately
+from ADR-0041. Assembling the Bundle from `Function.prototype.toString()` over a
+registry of every runtime function satisfied the requirement by construction,
+because concatenating source text resolves nothing — but so does bundling,
+provided the output's only external imports are builtins. Building the Bundle
+from a real module graph with esbuild is therefore compatible with the
+constraint, and `createServerBundleModuleSource` enforces it from esbuild's
+metafile at build time so that it holds by construction there too. A specifier
+that merely *resolves* is not enough: a URL import resolves and builds cleanly,
+and would still be a fetch from a read-only container.
+
+The `toString()` mechanism is gone as of ticket 05 and the module graph is the
+only builder, so the paragraph above is now history rather than a comparison
+between two live options. It is kept because the reasoning is what licensed the
+change: anyone proposing a third way to produce the Bundle has to clear the same
+bar, and "the old one satisfied this by accident of its shape" is the thing worth
+remembering about it.
+
+No second constraint of this kind was found. The Bundle is written once and
+read only as an opaque file: nothing inspects its text, no size limit applies to
+it, the Host helper checks that `server.mjs`, `sporades.json` and
+`public/index.html` are present but reads none of their contents, and
+`sporadesServerSource` is carried as data for handler-source extraction rather
+than executed as part of the graph. The one-shot inspection action (ADR-0028)
+depends on the Capsule module staying unevaluated, which is a property of
+loading it through a runtime value rather than a build-time literal, not a
+property of how the runtime itself was assembled.
+
+One consequence is easy to get wrong and does not exist under the `toString()`
+mechanism at all: building from a graph means reading a file, so the builder has
+to locate its own entry. `import.meta.url` is not a safe basis for that, because
+`scripts/build-bin.mjs` bundles the CLI into `bin/sporades.js` and esbuild
+rewrites `import.meta.url` for the entry point only — every other module in the
+graph inherits the entry's. The entry is located by walking to the package root
+instead, which is correct both when the CLI runs from `dist/` and when it runs
+as the bundled binary.

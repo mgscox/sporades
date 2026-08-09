@@ -4,16 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 }
 
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
-const runCurrentUserJobWorker = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runCurrentUserJobWorker");
 
 test("Jobs capture enqueue-time Session provider provenance across later provider switches", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-"));
@@ -38,10 +35,10 @@ test("Jobs capture enqueue-time Session provider provenance across later provide
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, capsule, { clock });
   try {
     const now = new Date().toISOString();
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run("provider-user", now, "Provider User", null, null, 1, 0, "anonymous");
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
     ).run("google-session", "provider-user", "google", now, "2999-01-01T00:00:00.000Z");
 
@@ -56,15 +53,15 @@ test("Jobs capture enqueue-time Session provider provenance across later provide
     }, "enqueue", []);
     assert.equal(enqueued.ok, true);
 
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
     ).run("microsoft-session", "provider-user", "microsoft", new Date(Date.now() + 1_000).toISOString(), "2999-01-01T00:00:00.000Z");
-    database.sqlite.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+    database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
       .run("2000-01-01T00:00:00.000Z", enqueued.data.id);
     await runCurrentUserJobWorker(database);
 
     assert.deepEqual(seen, ["google", "google"]);
-    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "google");
+    assert.equal(database.adapter.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "google");
   } finally {
     database.close();
     await rm(dir, { recursive: true, force: true });
@@ -86,7 +83,7 @@ test("durable Jobs replay captured provider provenance after runtime restart", a
   let database = await openDevDatabase(databasePath, "", {}, { name: "jobs" }, capsule, { clock });
   try {
     const now = clock.now().toISOString();
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run("restart-user", now, "Restart User", null, null, 1, 0, "anonymous");
     const enqueued = await runMutation(database, {
@@ -101,15 +98,15 @@ test("durable Jobs replay captured provider provenance after runtime restart", a
     database.close();
 
     database = await openDevDatabase(databasePath, "", {}, { name: "jobs" }, capsule, { clock });
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
     ).run("later-email-session", "restart-user", "email", new Date(clock.now().getTime() + 1_000).toISOString(), "2999-01-01T00:00:00.000Z");
-    database.sqlite.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+    database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
       .run("2000-01-01T00:00:00.000Z", enqueued.data.id);
     await runCurrentUserJobWorker(database);
 
     assert.deepEqual(seen, ["facebook"]);
-    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "facebook");
+    assert.equal(database.adapter.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "facebook");
   } finally {
     database.close();
     await rm(dir, { recursive: true, force: true });
@@ -142,12 +139,12 @@ test("legacy Jobs migrate to bounded anonymous provider provenance", async () =>
     jobs: { recordProvider: job((ctx) => seen.push(ctx.auth.provider)) },
   }, { clock });
   try {
-    database.sqlite.prepare(
+    database.adapter.prepare(
       "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run("legacy-user", now, "Legacy User", null, null, 1, 0, "google");
     await runCurrentUserJobWorker(database);
     assert.deepEqual(seen, ["anonymous"]);
-    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = 'legacy-job'").get().actorProvider, "anonymous");
+    assert.equal(database.adapter.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = 'legacy-job'").get().actorProvider, "anonymous");
   } finally {
     database.close();
     await rm(dir, { recursive: true, force: true });
@@ -183,7 +180,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
   };
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, capsule);
   try {
-    database.sqlite.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("user-a", new Date().toISOString(), "user-a", null, null, 0, 1, "anonymous");
     const first = await runMutation(database, auth("user-a"), "enqueue", [{ value: "hello" }]);
     const duplicate = await runMutation(database, auth("user-a"), "enqueue", [{ value: "ignored" }]);

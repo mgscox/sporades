@@ -62,6 +62,15 @@ export const auth = {
   setPassword(email, newPassword) {
     return connect().setPassword(email, newPassword);
   },
+  sendPasswordResetLink(email) {
+    return connect().sendPasswordResetLink(email);
+  },
+  verifyPasswordResetCode(code) {
+    return connect().verifyPasswordResetCode(code);
+  },
+  confirmPasswordReset(code, newPassword) {
+    return connect().confirmPasswordReset(code, newPassword);
+  },
 };
 
 export const files = {
@@ -980,6 +989,15 @@ function createConnection() {
     },
     setPassword(email, newPassword) {
       return request("auth.setPassword", { email, newPassword });
+    },
+    sendPasswordResetLink(email) {
+      return request("auth.sendPasswordResetLink", { email });
+    },
+    verifyPasswordResetCode(code) {
+      return request("auth.verifyPasswordResetCode", { code });
+    },
+    confirmPasswordReset(code, newPassword) {
+      return request("auth.confirmPasswordReset", { code, newPassword });
     },
     subscribeQuery(name, listener) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");

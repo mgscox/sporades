@@ -1320,6 +1320,70 @@ async function withAppleHttpsTunnel(upstreamUrl, publicPort, fn) {
   }
 }
 
+// The module-graph server bundle, driven the way a released CLI drives it.
+//
+// This ran under `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` while a second builder existed, and it was
+// the only test in this file that exercised the module graph. Ticket 05 deleted the other builder,
+// so every test here drives this path now and the variable is gone. The test is kept all the same,
+// for the reason below, which no other test in this file covers.
+//
+// It runs through `bin/sporades.js` on purpose. That file is what `scripts/build-bin.mjs` produces,
+// and esbuild rewrites `import.meta.url` for the bundle's entry point only — so a module-graph
+// builder that located its entry relative to its own `import.meta.url` would resolve next to `bin/`
+// and die with ENOENT here, while passing every test that imported it from `dist/`. Calling the
+// builder directly cannot catch that; running the CLI can.
+test("sporades dev bundles and serves a Capsule built from the runtime module graph", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "graph-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "graph-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(started.data.event, "started");
+
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      // esbuild labels each inlined module with its path. The deleted builder opened with a
+      // `// Sporades server bundle` banner and had no such labels, so this pair still distinguishes
+      // the two — worth keeping as the check that a released CLI resolved the entry under `dist/`
+      // and bundled a graph, rather than falling back to anything else.
+      assert.match(serverBundle, /\/\/ dist\/templates\/server-bundle-entry\.js/);
+      assert.doesNotMatch(serverBundle, /^\/\/ Sporades server bundle/);
+      assert.match(serverBundle, /graph-island/);
+
+      const rootResponse = await fetch(started.data.url);
+      assert.equal(rootResponse.status, 200);
+      assert.match(await rootResponse.text(), /<script type="module" src="\/client\.js"><\/script>/);
+
+      // `sporades dev` serves from an in-process runtime, so the assertions above prove the CLI
+      // *built* the module-graph bundle, not that it runs. `sporades jobs` against a live Dev
+      // session is the CLI path that executes the built artifact: it spawns
+      // `.sporades/build/server.mjs --sporades-action jobs.inspect`. A bundle that could not boot
+      // answers nothing here.
+      const jobs = await runCli(["jobs"], { cwd: projectDir });
+      assert.equal(jobs.code, 0, jobs.stderr || jobs.stdout);
+      assert.deepEqual(JSON.parse(jobs.stdout), {
+        ok: true,
+        data: { capsule: { name: "graph-island" }, jobs: [] },
+        error: null,
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev bundles and serves a scaffolded React todo capsule", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -3955,6 +4019,14 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }
       }
 
+      // The scaffolded capsule schedules `timestampPhotoNames` on `* * * * *`, and that job rewrites
+      // every photo's title and fileName with an `HH:MM ` prefix. This test is about which rows a
+      // gallery query returns, not about what the timestamp job does to them — so a run that happens
+      // to cross a minute boundary used to fail here with `'08:11 Shoreline'` against `'Shoreline'`.
+      // Reading the titles back without the prefix keeps the assertions about gallery membership and
+      // leaves the scaffold's scheduling demonstration alone.
+      const photoTitles = (rows) => rows.map((photo) => String(photo.title).replace(/^\d{2}:\d{2}\s+/, ""));
+
       async function uploadImage(socket, id, name, body) {
         socket.send(
           JSON.stringify({
@@ -4050,7 +4122,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
 
       googleSocket.send(JSON.stringify({ id: "google-public", type: "query.subscribe", query: "publicPhotos" }));
       const googleInitialGallery = await waitForPhotoMessage(googleSocket, "google gallery initial", (message) => message.id === "google-public");
-      assert.deepEqual(googleInitialGallery.data.map((photo) => photo.title), ["Shoreline"]);
+      assert.deepEqual(photoTitles(googleInitialGallery.data), ["Shoreline"]);
       googleSocket.send(JSON.stringify({ id: "google-personal", type: "query.subscribe", query: "personalPhotos" }));
       assert.deepEqual((await waitForPhotoMessage(googleSocket, "google personal initial", (message) => message.id === "google-personal")).data, []);
 
@@ -4126,7 +4198,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         "google expanded gallery refresh",
         (message) => message.id === "google-public-after-publish",
       );
-      assert.deepEqual(expandedGallery.data.map((photo) => photo.title).toSorted(), ["Hidden cove", "Shoreline"]);
+      assert.deepEqual(photoTitles(expandedGallery.data).toSorted(), ["Hidden cove", "Shoreline"]);
 
       const hiddenLibraryPromise = waitForPhotoMessage(
         googleSocket,
@@ -4150,7 +4222,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         "google reduced gallery refresh",
         (message) => message.id === "google-public-after-hide",
       );
-      assert.deepEqual(reducedGallery.data.map((photo) => photo.title), ["Shoreline"]);
+      assert.deepEqual(photoTitles(reducedGallery.data), ["Shoreline"]);
     } finally {
       anonymousSocket?.close();
       googleSocket?.close();

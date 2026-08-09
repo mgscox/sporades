@@ -9,16 +9,30 @@ import { test } from "node:test";
 import * as tls from "node:tls";
 
 import { validateMailConfig } from "../dist/cli/project-config.js";
-import { openDevDatabase, runMutation, runQuery, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+// `buildSmtpMessage`, `createMailTransport` and `connectSmtpSocket` are imported by name rather than
+// searched for in `SERVER_RUNTIME_SOURCE_FUNCTIONS` the way the three below still are. The mail
+// domain is a module now (ADR-0041), so it is no longer in that list at all and the search would
+// return `undefined` — which is the whole reason `server-runtime-source.ts` re-exports the migrated
+// modules whole. Nothing else in this file changed: these are the same three functions, resolved
+// through the bridge instead of through the list.
+import {
+  buildSmtpMessage,
+  connectSmtpSocket,
+  createMailTransport,
+  // Batch 7 moved the ACL domain out of the emitted list, so `createTableAclContext` joins the
+  // three above: it was a `.find` here and that lookup returns `undefined` the moment a name stops
+  // being an entry, which would have called `undefined(…)` in the ACL assertion below instead of
+  // failing at load.
+  createTableAclContext,
+  openDevDatabase,
+  runMutation,
+  runAppMessage,
+  runEndpoint,
+  runQuery,
+} from "../dist/server-runtime-source.js";
 import { job, mutation, query } from "../dist/server.js";
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
-const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
-const buildSmtpMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "buildSmtpMessage");
-const createMailTransport = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createMailTransport");
-const connectSmtpSocket = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "connectSmtpSocket");
 
 function readMimeHeader(message, name) {
   const lines = message.split("\r\n\r\n")[0].split("\r\n");
@@ -1279,7 +1293,7 @@ test("mail authority reaches trusted server contexts but not ACL or Schedule pay
     },
   };
   await withDatabase(smtpConfig, capsule, { mailTransportFactory: () => transport }, async (database) => {
-    database.sqlite.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(user.userId, new Date().toISOString(), user.displayName, user.email, null, 1, 0, user.provider);
     await database.init();
     database.contextMiddleware = ["async (ctx) => { if (ctx.kind === 'mutation') await ctx.mail.send({ to: 'to@example.com', subject: 'middleware', textBody: 'middleware' }); }"];
@@ -1317,7 +1331,7 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-bundle-"));
   const bundlePath = path.join(dir, "server.mjs");
   try {
-    const source = createServerBundleSource({
+    const source = await createServerBundleModuleSource({
       config: smtpConfig,
       serverEnv: { SMTP_USERNAME: "bundle-user", SMTP_PASSWORD: "bundle-password" },
       serverSource: "",

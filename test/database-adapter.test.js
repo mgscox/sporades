@@ -11,28 +11,42 @@ import {
   completePendingFileUpload,
   createPublicFileUrl,
   createLocalFileStorageAdapter,
-  createLibsqlDatabaseAdapter,
-  createPostgresDatabaseAdapter,
   createRuntimeFileStorageAdapter,
   createS3CompatibleFileStorageAdapter,
   createPendingFileUpload,
   deletePrivateFile,
   createSqliteDatabaseAdapter,
   dumpDatabase,
+  // Batch 7 moved the ACL and privileged-audit domain out of the emitted list, so this is a named
+  // import rather than the `.find` below it used to be: that lookup returns `undefined` once a name
+  // stops being an entry, and the eleven assertions that call it would have called `undefined(…)`
+  // instead of failing at load.
+  emitPrivilegedAuditEvent,
   getPrivateFileUrl,
+  linkProviderIdentity,
   listDatabaseTables,
+  createRuntimeLogSink,
+  extractEndpoints,
   openDevDatabase,
   resolveAnonymousSession,
+  runAppMessage,
+  runEndpoint,
   routeSporadesAuth,
   runMutation,
   runQuery,
   runReadOnlyQuery,
-  SERVER_RUNTIME_SOURCE_FUNCTIONS,
+  setEmailPassword,
   signInWithEmail,
   signUpWithEmail,
   simulateLocalIdentitySession,
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
+import {
+  POSTGRES_SKIP_REASON,
+  withLibsqlAdapter,
+  withPostgresAdapter,
+  withSqliteAdapter,
+} from "./support/database-adapter-engines.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
@@ -45,12 +59,11 @@ async function withTempDir(fn) {
   }
 }
 
-const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
-const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
-const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
-const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
-const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
-const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
+
+// `linkProviderIdentity` and `emitPrivilegedAuditEvent` are named imports above rather than `.find`s
+// here, since batch 5 moved the first into `auth-runtime.ts` and batch 7 the second into
+// `acl-runtime.ts`: that lookup returns `undefined` once a name leaves the emitted list, and the
+// assertions below would have called `undefined(…)` instead of failing at load.
 
 async function captureErrorCode(fn) {
   try {
@@ -99,10 +112,9 @@ test("SQLite database adapter owns setup, query execution, and close lifecycle",
 });
 
 test("database inspection SQL rejects side-effect statements with a structured hint", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "inspection.db"));
-    const database = { adapter, sqlite: adapter };
-    try {
+  await withSqliteAdapter(
+    async (adapter) => {
+      const database = { adapter };
       adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
 
@@ -152,10 +164,9 @@ test("database inspection SQL rejects side-effect statements with a structured h
 
       assert.equal(adapter.prepare("SELECT COUNT(*) AS count FROM entries").get().count, 1);
       assert.equal(adapter.prepare("PRAGMA user_version").get().user_version, 0);
-    } finally {
-      adapter.close();
-    }
-  });
+    },
+    { fileName: "inspection.db" },
+  );
 });
 
 test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle", async () => {
@@ -436,7 +447,7 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(crossOwnerACompleted.ok, false);
       assert.equal(crossOwnerACompleted.error.message, "Upload URL not found.");
       assert.equal(crossOwnerBCompleted.ok, true, crossOwnerBCompleted.error?.message);
-      assert.equal((await database.sqlite.selectLiveFileByPath("/race/cross-owner.txt")).length, 1);
+      assert.equal((await database.adapter.selectLiveFileByPath("/race/cross-owner.txt")).length, 1);
       assert.equal((await getPrivateFileUrl(database, otherAuth, "/race/cross-owner.txt")).data.file.id, crossOwnerPathB.data.file.id);
       const crossOwnerPrivate = await getPrivateFileUrl(database, auth, "/race/cross-owner.txt");
       assert.equal(crossOwnerPrivate.ok, false);
@@ -481,7 +492,7 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(secondOverlapCompleted.data.file.version, secondOverlap.data.file.version);
       assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.version, secondOverlap.data.file.version);
 
-      const overlapRows = await database.sqlite.selectLiveFileByPath("/images/avatars/profile.png");
+      const overlapRows = await database.adapter.selectLiveFileByPath("/images/avatars/profile.png");
       assert.equal(overlapRows.length, 1);
       assert.equal(overlapRows[0].id, explicit.id);
 
@@ -514,7 +525,7 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(newPathResults.filter((result) => !result.ok).length, 1);
       assert.equal(newPathResults.find((result) => result.ok).data.file.id, newPathA.data.file.id);
       assert.match(newPathResults.find((result) => !result.ok).error.message, /Upload URL (not found|was superseded)/);
-      assert.equal((await database.sqlite.selectLiveFileByPath("/race/new.txt")).length, 1);
+      assert.equal((await database.adapter.selectLiveFileByPath("/race/new.txt")).length, 1);
 
       const inFlightA = await createPendingFileUpload(database, auth, {
         file: { name: "in-flight-a.png", type: "image/png", size: 8, path: "/images/avatars/profile.png" },
@@ -578,9 +589,9 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(firstBucketB.ok, true, firstBucketB.error?.message);
       assert.equal(firstBucketA.data.file.bucket, "default");
       assert.equal(firstBucketB.data.file.bucket, "default");
-      assert.equal((await database.sqlite.findFileBucket(freshAuth.userId, "default")).name, "default");
+      assert.equal((await database.adapter.findFileBucket(freshAuth.userId, "default")).name, "default");
 
-      await database.sqlite.createFileBucket({
+      await database.adapter.createFileBucket({
         id: "bucket-media",
         ownerId: auth.userId,
         name: "media",
@@ -701,8 +712,8 @@ test("file upload completion cleans written replacement bytes when metadata comp
       assert.equal(pendingReplacement.ok, true, pendingReplacement.error?.message);
       const replacement = pendingReplacement.data.file;
       const replacementUploadId = pendingReplacement.data.uploadUrl.split("/").pop();
-      const realRevokePublicFileUrlsForFile = database.sqlite.revokePublicFileUrlsForFile.bind(database.sqlite);
-      database.sqlite.revokePublicFileUrlsForFile = async (...args) => {
+      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
+      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
         await realRevokePublicFileUrlsForFile(...args);
         throw new Error("forced public URL revocation failure");
       };
@@ -730,8 +741,8 @@ test("pending upload creation rolls back File bucket setup when upload insertion
       files: { storagePath: path.join(dir, "files") },
     });
     const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
-    const realInsertFileUpload = database.sqlite.insertFileUpload.bind(database.sqlite);
-    database.sqlite.insertFileUpload = async (...args) => {
+    const realInsertFileUpload = database.adapter.insertFileUpload.bind(database.adapter);
+    database.adapter.insertFileUpload = async (...args) => {
       await realInsertFileUpload(...args);
       throw new Error("forced pending upload insert failure");
     };
@@ -743,8 +754,8 @@ test("pending upload creation rolls back File bucket setup when upload insertion
         }),
         /forced pending upload insert failure/,
       );
-      assert.equal(await database.sqlite.findFileBucket(auth.userId, "default"), null);
-      assert.equal(await database.sqlite.selectPendingFileUploadByPath("/media/proof.txt"), null);
+      assert.equal(await database.adapter.findFileBucket(auth.userId, "default"), null);
+      assert.equal(await database.adapter.selectPendingFileUploadByPath("/media/proof.txt"), null);
     } finally {
       database.close();
     }
@@ -773,8 +784,8 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
       );
       const publicUrl = await createPublicFileUrl(database, auth, file.id, { noExpiry: true });
       assert.equal(publicUrl.ok, true, publicUrl.error?.message);
-      const realRevokePublicFileUrlsForFile = database.sqlite.revokePublicFileUrlsForFile.bind(database.sqlite);
-      database.sqlite.revokePublicFileUrlsForFile = async (...args) => {
+      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
+      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
         await realRevokePublicFileUrlsForFile(...args);
         throw new Error("forced public URL revocation failure");
       };
@@ -784,7 +795,7 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
       const live = await getPrivateFileUrl(database, auth, file.id);
       assert.equal(live.ok, true);
       assert.equal(live.data.file.version, file.version);
-      assert.equal((await database.sqlite.selectPublicFileRow(publicUrl.data.publicUrl.id)).revokedAt, null);
+      assert.equal((await database.adapter.selectPublicFileRow(publicUrl.data.publicUrl.id)).revokedAt, null);
     } finally {
       database.close();
     }
@@ -792,66 +803,58 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
 });
 
 test("libSQL database adapter owns remote connection, result normalization, and transaction sessions", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url, requests }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      try {
-        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
-        await adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
+  await withLibsqlAdapter(
+    async (adapter, { requests }) => {
+      await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      await adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
 
-        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries WHERE id = ?").get("one"), {
-          id: "one",
-          value: "hello",
-        });
-        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries ORDER BY id").all(), [
-          { id: "one", value: "hello" },
-        ]);
+      assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries WHERE id = ?").get("one"), {
+        id: "one",
+        value: "hello",
+      });
+      assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries ORDER BY id").all(), [
+        { id: "one", value: "hello" },
+      ]);
 
-        await assert.rejects(
-          adapter.withTransaction(async (transaction) => {
-            await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("two", "rolled back");
-            throw new Error("rollback please");
-          }),
-          /rollback please/,
-        );
-        assert.equal(await adapter.prepare("SELECT value FROM entries WHERE id = ?").get("two"), null);
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("two", "rolled back");
+          throw new Error("rollback please");
+        }),
+        /rollback please/,
+      );
+      assert.equal(await adapter.prepare("SELECT value FROM entries WHERE id = ?").get("two"), null);
 
-        const transactionRequests = requests.filter((request) =>
-          request.requests?.some((candidate) => candidate.stmt?.sql === "BEGIN" || candidate.stmt?.sql === "ROLLBACK"),
-        );
-        assert.equal(transactionRequests.length, 2);
-        assert.equal(transactionRequests[0].baton ?? null, null);
-        assert.equal(typeof transactionRequests[1].baton, "string");
-        assert.notEqual(transactionRequests[1].baton, "");
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
+      const transactionRequests = requests.filter((request) =>
+        request.requests?.some((candidate) => candidate.stmt?.sql === "BEGIN" || candidate.stmt?.sql === "ROLLBACK"),
+      );
+      assert.equal(transactionRequests.length, 2);
+      assert.equal(transactionRequests[0].baton ?? null, null);
+      assert.equal(typeof transactionRequests[1].baton, "string");
+      assert.notEqual(transactionRequests[1].baton, "");
+    },
+    { fileName: "libsql.db" },
+  );
 });
 
 test("libSQL database adapter does not share transaction baton with non-transaction operations", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "libsql-transaction-scope.db"), async ({ url, requests }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      try {
-        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  await withLibsqlAdapter(
+    async (adapter, { requests }) => {
+      await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
-        await adapter.withTransaction(async (transaction) => {
-          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
-          await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
-        });
+      await adapter.withTransaction(async (transaction) => {
+        await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
+        await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
+      });
 
-        const outsideSelect = requests.find((request) =>
-          request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
-        );
-        assert(outsideSelect, JSON.stringify(requests));
-        assert.equal(outsideSelect.baton, undefined);
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
+      const outsideSelect = requests.find((request) =>
+        request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
+      );
+      assert(outsideSelect, JSON.stringify(requests));
+      assert.equal(outsideSelect.baton, undefined);
+    },
+    { fileName: "libsql-transaction-scope.db" },
+  );
 });
 
 test("runtime selects libSQL only when declared services provide server-only connection env", async () => {
@@ -886,7 +889,7 @@ test("runtime selects libSQL only when declared services provide server-only con
       try {
         assert.equal(database.adapter.engine, "libsql");
         assert.deepEqual(database.serverEnv, { VISIBLE_CAPSULE_ENV: "yes" });
-        await database.sqlite.insertAppRow(database.schema.tables[0], {
+        await database.adapter.insertAppRow(database.schema.tables[0], {
           id: "note-1",
           createdAt: "2026-07-04T10:00:00.000Z",
           updatedAt: "2026-07-04T10:00:00.000Z",
@@ -924,10 +927,25 @@ test("runtime selects libSQL only when declared services provide server-only con
 });
 
 test("libSQL app schema migrations await delayed table creation failures before writing metadata", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(
-      path.join(dir, "libsql-delayed-create.db"),
-      {
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.ensureSystemTable();
+      await assert.rejects(
+        adapter.migrateAppSchema({
+          tables: [
+            {
+              name: "delayed_failure",
+              fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
+            },
+          ],
+        }),
+        /delayed create failed/,
+      );
+      assert.equal(await adapter.readSchemaMetadata(), null);
+    },
+    {
+      fileName: "libsql-delayed-create.db",
+      service: {
         async beforeStatement(sql) {
           if (/CREATE TABLE IF NOT EXISTS "delayed_failure"/.test(sql)) {
             await new Promise((resolve) => setTimeout(resolve, 25));
@@ -935,34 +953,13 @@ test("libSQL app schema migrations await delayed table creation failures before 
           }
         },
       },
-      async ({ url }) => {
-        const adapter = await createLibsqlDatabaseAdapter({ url });
-        try {
-          await adapter.ensureSystemTable();
-          await assert.rejects(
-            adapter.migrateAppSchema({
-              tables: [
-                {
-                  name: "delayed_failure",
-                  fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
-                },
-              ],
-            }),
-            /delayed create failed/,
-          );
-          assert.equal(await adapter.readSchemaMetadata(), null);
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-  });
+    },
+  );
 });
 
 test("SQLite app schema migrations roll back table changes when metadata write fails", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "schema-rollback.db"));
-    try {
+  await withSqliteAdapter(
+    async (adapter) => {
       const notesTable = {
         name: "notes",
         fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
@@ -973,7 +970,7 @@ test("SQLite app schema migrations roll back table changes when metadata write f
       };
 
       adapter.ensureSystemTable();
-      adapter.migrateAppSchema({ tables: [notesTable] });
+      await adapter.migrateAppSchema({ tables: [notesTable] });
       adapter.insertAppRow(notesTable, {
         id: "note-1",
         createdAt: "2026-07-07T10:00:00.000Z",
@@ -986,7 +983,11 @@ test("SQLite app schema migrations roll back table changes when metadata write f
         throw new Error("schema metadata write failed");
       };
 
-      assert.throws(() => adapter.migrateAppSchema({ tables: [migratedNotesTable] }), /schema metadata write failed/);
+      // The engine-agnostic rollback assertions live in the app tables conformance surface. What
+      // stays here is the SQLite mechanics of it: the failure arrives from the last step of the
+      // migration rather than from a table rebuild, and the rollback is observed through
+      // `PRAGMA table_info` rather than through the adapter's own inspection surface.
+      await assert.rejects(adapter.migrateAppSchema({ tables: [migratedNotesTable] }), /schema metadata write failed/);
 
       adapter.writeSchemaMetadata = originalWriteSchemaMetadata;
       assert.deepEqual(
@@ -997,161 +998,268 @@ test("SQLite app schema migrations roll back table changes when metadata write f
       assert.deepEqual(adapter.selectAppRows(notesTable, { columns: ["id", "text"] }).map((row) => ({ ...row })), [
         { id: "note-1", text: "before" },
       ]);
-    } finally {
-      adapter.close();
-    }
-  });
+    },
+    { fileName: "schema-rollback.db" },
+  );
 });
 
 test("libSQL database adapter supports runtime storage, migrations, health, and inspection paths", async () => {
+  await withLibsqlAdapter(
+    async (adapter) => {
+      const database = { adapter };
+      const notesTable = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+          { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+        ],
+      };
+
+      await adapter.ensureSystemTable();
+      await adapter.writeSystemMetadata("adapter", "libsql");
+      await adapter.migrateAppSchema({ tables: [notesTable] });
+      assert.equal((await adapter.readSystemMetadata("adapter")).value, "libsql");
+
+      const now = "2026-07-04T10:00:00.000Z";
+      await adapter.insertAppRow(notesTable, {
+        id: "note-1",
+        createdAt: now,
+        updatedAt: now,
+        text: "service backed",
+        ownerId: "user-1",
+        done: 0,
+      });
+      await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
+      assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [
+        { text: "service backed", done: 1 },
+      ]);
+
+      const migratedNotesTable = {
+        ...notesTable,
+        fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
+      };
+      await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
+      assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
+        { text: "service backed", summary: "draft" },
+      ]);
+
+      await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+      await adapter.insertAuthUser({
+        id: "user-1",
+        createdAt: now,
+        displayName: "LibSQL User",
+        email: "libsql@example.com",
+        picture: null,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "email",
+      });
+      await adapter.insertAuthSession({
+        token: "session-1",
+        userId: "user-1",
+        provider: "email",
+        createdAt: now,
+        expiresAt: "2026-08-03T10:00:00.000Z",
+      });
+      assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
+      await adapter.insertAuthIdentity({
+        id: "identity-1",
+        userId: "user-1",
+        provider: "google",
+        subject: "libsql-google-subject",
+        email: null,
+        displayName: "LibSQL User",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "libsql-google-subject")).userId, "user-1");
+
+      await adapter.ensureFileStorage();
+      await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+      await adapter.insertFileRow({
+        id: "file-1",
+        ownerId: "user-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/default/proof.txt",
+        name: "proof.txt",
+        type: "text/plain",
+        size: 5,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
+
+      await adapter.ensureLogStorage();
+      await adapter.insertLogIndexEvent({
+        timestamp: "2026-07-04T10:02:00.000Z",
+        category: "app",
+        event: "ctx.log",
+        level: "info",
+        message: "libsql log",
+        capsule: { name: "libsql-adapter" },
+      });
+      assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["libsql log"]);
+
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.insertAppRow(migratedNotesTable, {
+            id: "note-rolled-back",
+            createdAt: now,
+            updatedAt: now,
+            text: "rolled back",
+            ownerId: "user-1",
+            done: 0,
+            summary: "draft",
+          });
+          throw new Error("rollback path");
+        }),
+        /rollback path/,
+      );
+      assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
+
+      assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+      assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
+      assert.deepEqual(await runReadOnlyQuery(database, "SELECT text, summary FROM notes"), {
+        ok: true,
+        data: {
+          columns: ["text", "summary"],
+          rows: [{ text: "service backed", summary: "draft" }],
+        },
+        error: null,
+      });
+    },
+    { fileName: "runtime-paths.db" },
+  );
+});
+
+test("libSQL database adapter supports the runtime email auth storage paths", async () => {
   await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "runtime-paths.db"), async ({ url }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      const database = { adapter, sqlite: adapter };
-      try {
-        const notesTable = {
-          name: "notes",
-          fields: [
-            { name: "text", kind: "String", sqliteType: "TEXT" },
-            { name: "ownerId", kind: "String", sqliteType: "TEXT" },
-            { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
-          ],
-        };
-
-        await adapter.ensureSystemTable();
-        await adapter.writeSystemMetadata("adapter", "libsql");
-        await adapter.migrateAppSchema({ tables: [notesTable] });
-        assert.equal((await adapter.readSystemMetadata("adapter")).value, "libsql");
-
-        const now = "2026-07-04T10:00:00.000Z";
-        await adapter.insertAppRow(notesTable, {
-          id: "note-1",
-          createdAt: now,
-          updatedAt: now,
-          text: "service backed",
-          ownerId: "user-1",
-          done: 0,
-        });
-        await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
-        assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [
-          { text: "service backed", done: 1 },
-        ]);
-
-        const migratedNotesTable = {
-          ...notesTable,
-          fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
-        };
-        await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
-        assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
-          { text: "service backed", summary: "draft" },
-        ]);
-
-        await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
-        await adapter.insertAuthUser({
-          id: "user-1",
-          createdAt: now,
-          displayName: "LibSQL User",
-          email: "libsql@example.com",
-          picture: null,
-          isAuthenticated: 1,
-          isGuest: 0,
-          provider: "email",
-        });
-        await adapter.insertAuthSession({
-          token: "session-1",
-          userId: "user-1",
-          provider: "email",
-          createdAt: now,
-          expiresAt: "2026-08-03T10:00:00.000Z",
-        });
-        assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
-        await adapter.insertAuthIdentity({
-          id: "identity-1",
-          userId: "user-1",
-          provider: "google",
-          subject: "libsql-google-subject",
-          email: null,
-          displayName: "LibSQL User",
-          picture: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-        assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "libsql-google-subject")).userId, "user-1");
-
-        await adapter.ensureFileStorage();
-        await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
-        await adapter.insertFileRow({
-          id: "file-1",
-          ownerId: "user-1",
-          bucketId: "bucket-1",
-          bucketName: "default",
-          path: "/default/proof.txt",
-          name: "proof.txt",
-          type: "text/plain",
-          size: 5,
-          version: "version-1",
-          status: "uploaded",
-          createdAt: now,
-          updatedAt: now,
-        });
-        assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
-
-        await adapter.ensureLogStorage();
-        await adapter.insertLogIndexEvent({
-          timestamp: "2026-07-04T10:02:00.000Z",
-          category: "app",
-          event: "ctx.log",
-          level: "info",
-          message: "libsql log",
-          capsule: { name: "libsql-adapter" },
-        });
-        assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["libsql log"]);
-
-        await assert.rejects(
-          adapter.withTransaction(async (transaction) => {
-            await transaction.insertAppRow(migratedNotesTable, {
-              id: "note-rolled-back",
-              createdAt: now,
-              updatedAt: now,
-              text: "rolled back",
-              ownerId: "user-1",
-              done: 0,
-              summary: "draft",
-            });
-            throw new Error("rollback path");
-          }),
-          /rollback path/,
-        );
-        assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
-
-        assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
-        assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
-        assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
-        assert.deepEqual(await runReadOnlyQuery(database, "SELECT text, summary FROM notes"), {
-          ok: true,
-          data: {
-            columns: ["text", "summary"],
-            rows: [{ text: "service backed", summary: "draft" }],
+    await withFakeLibsqlService(path.join(dir, "email-auth.db"), async ({ url }) => {
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        "",
+        {},
+        {
+          auth: { providers: { anonymous: true, email: { enabled: true } } },
+          services: { database: { kind: "database", engine: "libsql" } },
+        },
+        null,
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+            SPORADES_SERVICE_DATABASE_URL: url,
           },
-          error: null,
+        },
+      );
+
+      try {
+        assert.equal(database.adapter.engine, "libsql");
+
+        assert.equal(await database.adapter.emailCredentialExists("ada@example.com"), false);
+
+        const signUpSession = await resolveAnonymousSession(database, null);
+        const signUp = await signUpWithEmail(database, signUpSession, "email", {
+          email: "ada@example.com",
+          password: "correct horse battery staple",
+          name: "Ada",
         });
+        assert.equal(signUp.ok, true);
+        assert.equal(signUp.auth.email, "ada@example.com");
+
+        assert.equal(await database.adapter.emailCredentialExists("ada@example.com"), true);
+
+        const duplicate = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+          email: "ada@example.com",
+          password: "another password",
+          name: "Ada Again",
+        });
+        assert.equal(duplicate.ok, false);
+        assert.equal(duplicate.error.message, "Email is already registered.");
+
+        const signIn = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "correct horse battery staple",
+        });
+        assert.equal(signIn.ok, true);
+        assert.equal(signIn.auth.userId, signUp.auth.userId);
+        assert.equal(signIn.auth.displayName, "Ada");
+        assert.equal(signIn.auth.isAuthenticated, true);
+        assert.equal(signIn.auth.isGuest, false);
+
+        const rejected = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "wrong password",
+        });
+        assert.equal(rejected.ok, false);
+        assert.equal(rejected.error.message, "Email or password is incorrect.");
+
+        assert.deepEqual(await setEmailPassword(database, signIn, "ada@example.com", "a brand new password"), { ok: true });
+
+        const afterReset = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "a brand new password",
+        });
+        assert.equal(afterReset.ok, true);
+        assert.equal(afterReset.auth.userId, signUp.auth.userId);
+
+        assert.equal((await database.adapter.readAuthSessionWithUser(afterReset.sessionToken)).email, "ada@example.com");
       } finally {
-        await adapter.close();
+        await database.close();
       }
     });
   });
 });
 
 test("libSQL OAuth state consumption has exactly one winner under concurrent callbacks", async () => {
-  await withTempDir(async (dir) => {
-    let selectCount = 0;
-    let releaseSelects;
-    const bothSelected = new Promise((resolve) => {
-      releaseSelects = resolve;
-    });
-    await withFakeLibsqlService(
-      path.join(dir, "oauth-state-race.db"),
-      {
+  let selectCount = 0;
+  let releaseSelects;
+  const bothSelected = new Promise((resolve) => {
+    releaseSelects = resolve;
+  });
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.ensureAuthStorage();
+      const createdAt = new Date().toISOString();
+      await adapter.insertOAuthState({
+        state: "one-use-state",
+        provider: "google",
+        sessionToken: "session",
+        returnTo: "http://127.0.0.1/",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        nonce: "nonce",
+        pkceVerifier: "verifier",
+      });
+      const consumed = await Promise.all([
+        adapter.consumeOAuthState("one-use-state"),
+        adapter.consumeOAuthState("one-use-state"),
+      ]);
+      assert.equal(consumed.filter(Boolean).length, 1);
+      assert.deepEqual(
+        {
+          provider: consumed.find(Boolean).provider,
+          sessionToken: consumed.find(Boolean).sessionToken,
+          returnTo: consumed.find(Boolean).returnTo,
+          pkceVerifier: consumed.find(Boolean).pkceVerifier,
+        },
+        {
+          provider: "google",
+          sessionToken: "session",
+          returnTo: "http://127.0.0.1/",
+          pkceVerifier: "verifier",
+        },
+      );
+    },
+    {
+      fileName: "oauth-state-race.db",
+      service: {
         async beforeStatement(sql) {
           if (/SELECT state, provider, sessionToken.+sporades_auth_oauth_states/s.test(sql)) {
             selectCount += 1;
@@ -1162,62 +1270,16 @@ test("libSQL OAuth state consumption has exactly one winner under concurrent cal
           }
         },
       },
-      async ({ url }) => {
-        const adapter = await createLibsqlDatabaseAdapter({ url });
-        try {
-          await adapter.ensureAuthStorage();
-          const createdAt = new Date().toISOString();
-          await adapter.insertOAuthState({
-            state: "one-use-state",
-            provider: "google",
-            sessionToken: "session",
-            returnTo: "http://127.0.0.1/",
-            redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
-            createdAt,
-            expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            nonce: "nonce",
-            pkceVerifier: "verifier",
-          });
-          const consumed = await Promise.all([
-            adapter.consumeOAuthState("one-use-state"),
-            adapter.consumeOAuthState("one-use-state"),
-          ]);
-          assert.equal(consumed.filter(Boolean).length, 1);
-          assert.deepEqual(
-            {
-              provider: consumed.find(Boolean).provider,
-              sessionToken: consumed.find(Boolean).sessionToken,
-              returnTo: consumed.find(Boolean).returnTo,
-              pkceVerifier: consumed.find(Boolean).pkceVerifier,
-            },
-            {
-              provider: "google",
-              sessionToken: "session",
-              returnTo: "http://127.0.0.1/",
-              pkceVerifier: "verifier",
-            },
-          );
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-  });
+    },
+  );
 });
 
 test(
   "Postgres database adapter supports runtime storage, migrations, health, and inspection paths",
-  { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." },
+  { skip: POSTGRES_SKIP_REASON },
   async () => {
-    const adapter = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
-    const database = { adapter, sqlite: adapter };
-    try {
-      await adapter.exec(
-        "DROP TABLE IF EXISTS notes, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_identities, sporades_auth_email_credentials, " +
-          "sporades_auth_oauth_states, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, " +
-          "sporades_log_events",
-      );
-
+    await withPostgresAdapter(async (adapter) => {
+      const database = { adapter };
       const notesTable = {
         name: "notes",
         fields: [
@@ -1284,6 +1346,21 @@ test(
         updatedAt: now,
       });
       assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "postgres-google-subject")).userId, "user-1");
+
+      // Decisions derived from query results must resolve the row first, not the pending query.
+      assert.equal(await adapter.emailCredentialExists("nobody@example.com"), false);
+      await adapter.insertEmailCredential({
+        email: "postgres@example.com",
+        userId: "user-1",
+        passwordHash: "hash",
+        passwordSalt: "salt",
+        createdAt: now,
+      });
+      assert.equal(await adapter.emailCredentialExists("postgres@example.com"), true);
+      assert.equal((await adapter.findEmailCredentialWithUser("postgres@example.com")).userId, "user-1");
+      assert.equal(await adapter.referenceExists({ targetTable: "notes" }, "note-1"), true);
+      assert.equal(await adapter.referenceExists({ targetTable: "notes" }, "missing"), false);
+
       await adapter.insertOAuthState({
         state: "postgres-one-use-state",
         provider: "google",
@@ -1372,21 +1449,14 @@ test(
         },
         error: null,
       });
-    } finally {
-      await adapter.close();
-    }
+    }, { appTableNames: ["notes"] });
   },
 );
 
 test("SQLite database adapter propagates execution failures", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      assert.throws(() => adapter.exec("CREATE TABLE broken ("), /incomplete input|syntax error/i);
-      assert.throws(() => adapter.prepare("SELECT * FROM missing_table").all(), /no such table/i);
-    } finally {
-      adapter.close();
-    }
+  await withSqliteAdapter((adapter) => {
+    assert.throws(() => adapter.exec("CREATE TABLE broken ("), /incomplete input|syntax error/i);
+    assert.throws(() => adapter.prepare("SELECT * FROM missing_table").all(), /no such table/i);
   });
 });
 
@@ -1394,319 +1464,307 @@ test("runtime opens and closes SQLite through the internal adapter boundary", as
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
 
-    assert.equal(database.adapter, database.sqlite);
-    assert.equal(typeof database.sqlite.exec, "function");
-    assert.equal(typeof database.sqlite.prepare, "function");
-    assert.equal(typeof database.sqlite.close, "function");
-    assert.deepEqual({ ...database.sqlite.prepare("SELECT value FROM sporades WHERE key = ?").get("schemaVersion") }, {
+    assert.equal(database.adapter, database.adapter);
+    assert.equal(typeof database.adapter.exec, "function");
+    assert.equal(typeof database.adapter.prepare, "function");
+    assert.equal(typeof database.adapter.close, "function");
+    assert.deepEqual({ ...database.adapter.prepare("SELECT value FROM sporades WHERE key = ?").get("schemaVersion") }, {
       value: "v1:additive-fields",
     });
 
     database.close();
-    assert.throws(() => database.sqlite.prepare("SELECT 1").get(), /database is not open/i);
+    assert.throws(() => database.adapter.prepare("SELECT 1").get(), /database is not open/i);
   });
 });
 
 test("SQLite database adapter owns app schema metadata, migrations, references, queries, and mutations", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      const usersTable = {
-        name: "users",
-        fields: [
-          { name: "name", kind: "String", sqliteType: "TEXT" },
-          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+  await withSqliteAdapter(async (adapter) => {
+    const usersTable = {
+      name: "users",
+      fields: [
+        { name: "name", kind: "String", sqliteType: "TEXT" },
+        { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+      ],
+    };
+    const postsTable = {
+      name: "posts",
+      fields: [
+        { name: "text", kind: "String", sqliteType: "TEXT" },
+        { name: "authorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users" },
+        { name: "published", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+      ],
+    };
+
+    adapter.ensureSystemTable();
+    await adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
+
+    const schemaMetadata = adapter.readSchemaMetadata();
+    assert.match(schemaMetadata.value, /"posts"/);
+    assert.deepEqual(
+      adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+      ["id", "createdAt", "updatedAt", "text", "authorId", "published"],
+    );
+
+    const now = "2026-07-04T10:00:00.000Z";
+    adapter.insertAppRow(usersTable, {
+      id: "user-1",
+      createdAt: now,
+      updatedAt: now,
+      name: "Ada",
+      ownerId: "owner-1",
+    });
+    assert.equal(adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
+    assert.equal(adapter.referenceExists({ targetTable: "users" }, "missing"), false);
+
+    adapter.insertAppRow(postsTable, {
+      id: "post-1",
+      createdAt: now,
+      updatedAt: now,
+      text: "First",
+      authorId: "user-1",
+      published: 0,
+    });
+    adapter.updateAppRow(postsTable, "post-1", {
+      text: "Updated",
+      published: 1,
+      updatedAt: "2026-07-04T11:00:00.000Z",
+    });
+
+    assert.deepEqual(
+      adapter
+        .selectAppRows(postsTable, {
+          columns: ["id", "text", "published"],
+          where: { fieldName: "authorId", value: "user-1" },
+          orderBy: { fieldName: "createdAt", direction: "desc" },
+          limit: 1,
+        })
+        .map((row) => ({ ...row })),
+      [{ id: "post-1", text: "Updated", published: 1 }],
+    );
+    assert.equal(adapter.selectAppRowById(postsTable, "post-1").text, "Updated");
+    assert.equal(adapter.deleteAppRow(postsTable, "missing").changes, 0);
+
+    const migratedPostsTable = {
+      ...postsTable,
+      fields: [
+        ...postsTable.fields,
+        { name: "editorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: "user-1" },
+        { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
+      ],
+    };
+    await adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
+
+    assert.deepEqual(
+      adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+      ["id", "createdAt", "updatedAt", "text", "authorId", "published", "editorId", "summary"],
+    );
+    assert.deepEqual(
+      adapter
+        .selectAppRows(migratedPostsTable, { columns: ["text", "editorId", "summary"] })
+        .map((row) => ({ ...row })),
+      [{ text: "Updated", editorId: "user-1", summary: "draft" }],
+    );
+    assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
+    assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
+
+    await assert.rejects(
+      adapter.migrateAppSchema({
+        tables: [
+          usersTable,
+          {
+            ...migratedPostsTable,
+            fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
+          },
         ],
-      };
-      const postsTable = {
-        name: "posts",
-        fields: [
-          { name: "text", kind: "String", sqliteType: "TEXT" },
-          { name: "authorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users" },
-          { name: "published", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
-        ],
-      };
-
-      adapter.ensureSystemTable();
-      adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
-
-      const schemaMetadata = adapter.readSchemaMetadata();
-      assert.match(schemaMetadata.value, /"posts"/);
-      assert.deepEqual(
-        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
-        ["id", "createdAt", "updatedAt", "text", "authorId", "published"],
-      );
-
-      const now = "2026-07-04T10:00:00.000Z";
-      adapter.insertAppRow(usersTable, {
-        id: "user-1",
-        createdAt: now,
-        updatedAt: now,
-        name: "Ada",
-        ownerId: "owner-1",
-      });
-      assert.equal(adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
-      assert.equal(adapter.referenceExists({ targetTable: "users" }, "missing"), false);
-
-      adapter.insertAppRow(postsTable, {
-        id: "post-1",
-        createdAt: now,
-        updatedAt: now,
-        text: "First",
-        authorId: "user-1",
-        published: 0,
-      });
-      adapter.updateAppRow(postsTable, "post-1", {
-        text: "Updated",
-        published: 1,
-        updatedAt: "2026-07-04T11:00:00.000Z",
-      });
-
-      assert.deepEqual(
-        adapter
-          .selectAppRows(postsTable, {
-            columns: ["id", "text", "published"],
-            where: { fieldName: "authorId", value: "user-1" },
-            orderBy: { fieldName: "createdAt", direction: "desc" },
-            limit: 1,
-          })
-          .map((row) => ({ ...row })),
-        [{ id: "post-1", text: "Updated", published: 1 }],
-      );
-      assert.equal(adapter.selectAppRowById(postsTable, "post-1").text, "Updated");
-      assert.equal(adapter.deleteAppRow(postsTable, "missing").changes, 0);
-
-      const migratedPostsTable = {
-        ...postsTable,
-        fields: [
-          ...postsTable.fields,
-          { name: "editorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: "user-1" },
-          { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
-        ],
-      };
-      adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
-
-      assert.deepEqual(
-        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
-        ["id", "createdAt", "updatedAt", "text", "authorId", "published", "editorId", "summary"],
-      );
-      assert.deepEqual(
-        adapter
-          .selectAppRows(migratedPostsTable, { columns: ["text", "editorId", "summary"] })
-          .map((row) => ({ ...row })),
-        [{ text: "Updated", editorId: "user-1", summary: "draft" }],
-      );
-      assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
-      assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
-
-      assert.throws(
-        () =>
-          adapter.migrateAppSchema({
-            tables: [
-              usersTable,
+      }),
+      {
+        message: "Unsupported Capsule schema change.",
+        hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+      },
+    );
+    await assert.rejects(
+      adapter.migrateAppSchema({
+        tables: [
+          usersTable,
+          {
+            ...migratedPostsTable,
+            fields: [
+              ...migratedPostsTable.fields,
               {
-                ...migratedPostsTable,
-                fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
+                name: "reviewerId",
+                kind: "Reference",
+                sqliteType: "TEXT",
+                targetTable: "users",
+                defaultValue: "missing",
               },
             ],
-          }),
-        {
-          message: "Unsupported Capsule schema change.",
-          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
-        },
-      );
-      assert.throws(
-        () =>
-          adapter.migrateAppSchema({
-            tables: [
-              usersTable,
-              {
-                ...migratedPostsTable,
-                fields: [
-                  ...migratedPostsTable.fields,
-                  {
-                    name: "reviewerId",
-                    kind: "Reference",
-                    sqliteType: "TEXT",
-                    targetTable: "users",
-                    defaultValue: "missing",
-                  },
-                ],
-              },
-            ],
-          }),
-        {
-          message: "Invalid reference for field: reviewerId",
-          hint: "Pass the id of an existing users row.",
-        },
-      );
-    } finally {
-      adapter.close();
-    }
+          },
+        ],
+      }),
+      {
+        message: "Invalid reference for field: reviewerId",
+        hint: "Pass the id of an existing users row.",
+      },
+    );
   });
 });
 
 test("SQLite database adapter owns runtime storage for auth, files, logs, and system metadata", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      adapter.ensureSystemTable();
-      adapter.writeSystemMetadata("runtimeKey", "runtime-value");
-      assert.deepEqual({ ...adapter.readSystemMetadata("runtimeKey") }, { value: "runtime-value" });
+  await withSqliteAdapter(async (adapter) => {
+    adapter.ensureSystemTable();
+    adapter.writeSystemMetadata("runtimeKey", "runtime-value");
+    assert.deepEqual({ ...adapter.readSystemMetadata("runtimeKey") }, { value: "runtime-value" });
 
-      adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
-      const now = "2026-07-04T10:00:00.000Z";
-      adapter.insertAuthUser({
-        id: "user-1",
-        createdAt: now,
-        displayName: "Anonymous",
-        email: null,
-        picture: null,
-        isAuthenticated: 0,
-        isGuest: 1,
-        provider: "anonymous",
-      });
-      adapter.insertAuthSession({
-        token: "session-1",
-        userId: "user-1",
-        provider: "anonymous",
-        createdAt: now,
-        expiresAt: "2026-08-03T10:00:00.000Z",
-      });
-      assert.equal(adapter.readAuthSessionWithUser("session-1").provider, "anonymous");
+    adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+    const now = "2026-07-04T10:00:00.000Z";
+    adapter.insertAuthUser({
+      id: "user-1",
+      createdAt: now,
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: 0,
+      isGuest: 1,
+      provider: "anonymous",
+    });
+    adapter.insertAuthSession({
+      token: "session-1",
+      userId: "user-1",
+      provider: "anonymous",
+      createdAt: now,
+      expiresAt: "2026-08-03T10:00:00.000Z",
+    });
+    assert.equal(adapter.readAuthSessionWithUser("session-1").provider, "anonymous");
 
-      adapter.insertEmailCredential({
-        email: "mira@example.com",
-        userId: "user-1",
-        passwordHash: "hash",
-        passwordSalt: "salt",
-        createdAt: now,
-      });
-      assert.equal(adapter.emailCredentialExists("mira@example.com"), true);
-      adapter.linkAuthUser({
-        id: "user-1",
-        displayName: "Mira",
-        email: "mira@example.com",
-        picture: null,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "email",
-      });
-      assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
-      adapter.insertAuthIdentity({
-        id: "identity-1",
-        userId: "user-1",
-        provider: "google",
-        subject: "sqlite-google-subject",
-        email: null,
-        displayName: "Mira",
-        picture: null,
-        createdAt: now,
-        updatedAt: now,
-      });
-      assert.equal(adapter.findAuthIdentityByProviderSubject("google", "sqlite-google-subject").userId, "user-1");
-      adapter.rotateAuthSession("session-1", {
-        token: "session-2",
-        userId: "user-1",
-        provider: "email",
-        createdAt: "2026-07-04T11:00:00.000Z",
-        expiresAt: "2026-08-03T11:00:00.000Z",
-      });
-      assert.equal(adapter.readAuthSessionWithUser("session-1"), null);
-      assert.equal(adapter.readAuthSessionWithUser("session-2").token, "session-2");
-      adapter.insertOAuthState({
-        state: "oauth-state",
-        sessionToken: "session-2",
-        returnTo: "http://127.0.0.1:4000/after",
-        redirectUri: "http://127.0.0.1:4000/__sporades/auth/google/callback",
-        createdAt: now,
-      });
-      assert.equal(adapter.consumeOAuthState("oauth-state").sessionToken, "session-2");
-      assert.equal(adapter.consumeOAuthState("oauth-state"), null);
+    adapter.insertEmailCredential({
+      email: "mira@example.com",
+      userId: "user-1",
+      passwordHash: "hash",
+      passwordSalt: "salt",
+      createdAt: now,
+    });
+    assert.equal(adapter.emailCredentialExists("mira@example.com"), true);
+    adapter.linkAuthUser({
+      id: "user-1",
+      displayName: "Mira",
+      email: "mira@example.com",
+      picture: null,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email",
+    });
+    assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
+    adapter.insertAuthIdentity({
+      id: "identity-1",
+      userId: "user-1",
+      provider: "google",
+      subject: "sqlite-google-subject",
+      email: null,
+      displayName: "Mira",
+      picture: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    assert.equal(adapter.findAuthIdentityByProviderSubject("google", "sqlite-google-subject").userId, "user-1");
+    adapter.rotateAuthSession("session-1", {
+      token: "session-2",
+      userId: "user-1",
+      provider: "email",
+      createdAt: "2026-07-04T11:00:00.000Z",
+      expiresAt: "2026-08-03T11:00:00.000Z",
+    });
+    assert.equal(adapter.readAuthSessionWithUser("session-1"), null);
+    assert.equal(adapter.readAuthSessionWithUser("session-2").token, "session-2");
+    adapter.insertOAuthState({
+      state: "oauth-state",
+      sessionToken: "session-2",
+      returnTo: "http://127.0.0.1:4000/after",
+      redirectUri: "http://127.0.0.1:4000/__sporades/auth/google/callback",
+      createdAt: now,
+    });
+    assert.equal(adapter.consumeOAuthState("oauth-state").sessionToken, "session-2");
+    assert.equal(adapter.consumeOAuthState("oauth-state"), null);
 
-      adapter.ensureFileStorage();
-      adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
-      assert.equal(adapter.findFileBucket("user-1", "default").id, "bucket-1");
-      adapter.insertFileRow({
-        id: "file-1",
-        ownerId: "user-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/hello.txt",
-        name: "hello.txt",
-        type: "text/plain",
-        size: 5,
-        version: "version-1",
-        status: "pending",
-        createdAt: now,
-        updatedAt: now,
-      });
-      adapter.insertFileUpload({
-        id: "upload-1",
-        fileId: "file-1",
-        ownerId: "user-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/hello.txt",
-        name: "hello.txt",
-        type: "text/plain",
-        version: "version-1",
-        expectedSize: 5,
-        createdAt: now,
-      });
-      assert.equal(adapter.selectFileUpload("upload-1").fileId, "file-1");
-      adapter.completeFileUpload(adapter.selectFileUpload("upload-1"), 5, "2026-07-04T10:01:00.000Z");
-      adapter.deleteFileUpload("upload-1");
-      assert.equal(adapter.selectFileUpload("upload-1"), null);
-      assert.equal(adapter.fileRowForOwner("file-1", "user-1").status, "uploaded");
-      adapter.insertPublicFileUrl({
-        id: "public-1",
-        fileId: "file-1",
-        ownerId: "user-1",
-        version: "version-1",
-        expiresAt: null,
-        createdAt: now,
-      });
-      assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
-      adapter.updatePendingFileRow({
-        id: "file-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/goodbye.txt",
-        name: "goodbye.txt",
-        type: "text/plain",
-        size: 7,
-        version: "version-2",
-        status: "pending",
-        updatedAt: "2026-07-04T10:02:00.000Z",
-      });
-      adapter.revokePublicFileUrlsForFile("file-1", "2026-07-04T10:02:00.000Z");
-      assert.equal(adapter.selectPublicFileRow("public-1").revokedAt, "2026-07-04T10:02:00.000Z");
-      adapter.markFileDeleted("file-1", "2026-07-04T10:03:00.000Z");
-      assert.equal(adapter.fileRowForOwner("file-1", "user-1"), null);
+    adapter.ensureFileStorage();
+    adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+    assert.equal(adapter.findFileBucket("user-1", "default").id, "bucket-1");
+    adapter.insertFileRow({
+      id: "file-1",
+      ownerId: "user-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/hello.txt",
+      name: "hello.txt",
+      type: "text/plain",
+      size: 5,
+      version: "version-1",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    adapter.insertFileUpload({
+      id: "upload-1",
+      fileId: "file-1",
+      ownerId: "user-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/hello.txt",
+      name: "hello.txt",
+      type: "text/plain",
+      version: "version-1",
+      expectedSize: 5,
+      createdAt: now,
+    });
+    assert.equal(adapter.selectFileUpload("upload-1").fileId, "file-1");
+    adapter.completeFileUpload(adapter.selectFileUpload("upload-1"), 5, "2026-07-04T10:01:00.000Z");
+    adapter.deleteFileUpload("upload-1");
+    assert.equal(adapter.selectFileUpload("upload-1"), null);
+    assert.equal(adapter.fileRowForOwner("file-1", "user-1").status, "uploaded");
+    adapter.insertPublicFileUrl({
+      id: "public-1",
+      fileId: "file-1",
+      ownerId: "user-1",
+      version: "version-1",
+      expiresAt: null,
+      createdAt: now,
+    });
+    assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
+    adapter.updatePendingFileRow({
+      id: "file-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/goodbye.txt",
+      name: "goodbye.txt",
+      type: "text/plain",
+      size: 7,
+      version: "version-2",
+      status: "pending",
+      updatedAt: "2026-07-04T10:02:00.000Z",
+    });
+    adapter.revokePublicFileUrlsForFile("file-1", "2026-07-04T10:02:00.000Z");
+    assert.equal(adapter.selectPublicFileRow("public-1").revokedAt, "2026-07-04T10:02:00.000Z");
+    adapter.markFileDeleted("file-1", "2026-07-04T10:03:00.000Z");
+    assert.equal(adapter.fileRowForOwner("file-1", "user-1"), null);
 
-      adapter.ensureLogStorage();
-      for (const index of [1, 2, 3]) {
-        adapter.insertLogIndexEvent({
-          timestamp: `2026-07-04T10:00:0${index}.000Z`,
-          category: "app",
-          event: "ctx.log",
-          level: "info",
-          message: `log-${index}`,
-          capsule: { name: "adapter-island" },
-          release: null,
-          request: null,
-          correlation: null,
-        });
-      }
-      adapter.pruneLogIndex(2);
-      assert.deepEqual(
-        adapter.readRecentLogEvents(10).map((entry) => entry.message),
-        ["log-2", "log-3"],
-      );
-    } finally {
-      adapter.close();
+    adapter.ensureLogStorage();
+    for (const index of [1, 2, 3]) {
+      adapter.insertLogIndexEvent({
+        timestamp: `2026-07-04T10:00:0${index}.000Z`,
+        category: "app",
+        event: "ctx.log",
+        level: "info",
+        message: `log-${index}`,
+        capsule: { name: "adapter-island" },
+        release: null,
+        request: null,
+        correlation: null,
+      });
     }
+    adapter.pruneLogIndex(2);
+    assert.deepEqual(
+      adapter.readRecentLogEvents(10).map((entry) => entry.message),
+      ["log-2", "log-3"],
+    );
   });
 });
 
@@ -2023,7 +2081,7 @@ test("privileged table writes only use sentinel ownership when Capsule code supp
         ],
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.queries = [
         {
           name: "writePrivilegedNotes",
@@ -2043,7 +2101,7 @@ test("privileged table writes only use sentinel ownership when Capsule code supp
 
       assert.deepEqual(result, { data: { ok: true }, error: null });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, {
             columns: ["text", "ownerId"],
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -2091,8 +2149,8 @@ test("privileged table API bypasses normal ACL gates while normal ctx.db remains
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
-      database.sqlite.insertAppRow(table, {
+      await database.adapter.migrateAppSchema(database.schema);
+      database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "blocked seed",
         ownerId: "user-2",
@@ -2181,8 +2239,8 @@ test("privileged DB writes in failing mutations roll back while audit evidence r
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
-      database.sqlite.insertAppRow(table, {
+      await database.adapter.migrateAppSchema(database.schema);
+      database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "seed",
         ownerId: "user-2",
@@ -2218,7 +2276,7 @@ test("privileged DB writes in failing mutations roll back while audit evidence r
         },
       });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, {
             columns: ["text", "ownerId"],
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -2262,7 +2320,7 @@ test("privileged DB work outside existing transactions does not add callback-wid
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.queries = [
         {
           name: "privilegedRepairThenFail",
@@ -2289,7 +2347,7 @@ test("privileged DB work outside existing transactions does not add callback-wid
         },
       });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, {
             columns: ["text", "ownerId"],
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -2318,7 +2376,7 @@ test("privileged audit rollback recovery does not duplicate already durable audi
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       name: "privileged-db-durable-audit-island",
     });
-    const baseAdapter = database.sqlite;
+    const baseAdapter = database.adapter;
 
     try {
       const table = {
@@ -2334,7 +2392,7 @@ test("privileged audit rollback recovery does not duplicate already durable audi
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter = createDurableAuditTransactionAdapter(baseAdapter);
       database.mutations = [
         {
@@ -2400,8 +2458,8 @@ test("normal handler contexts cannot forge privileged DB ACL bypass", async () =
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
-      database.sqlite.insertAppRow(table, {
+      await database.adapter.migrateAppSchema(database.schema);
+      database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "forgery seed",
         ownerId: "user-2",
@@ -2454,7 +2512,7 @@ test("normal handler contexts cannot forge privileged DB ACL bypass", async () =
         },
       });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, {
             columns: ["text", "ownerId"],
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -2488,8 +2546,8 @@ test("leaked privileged table APIs cannot bypass ACL after privileged run finish
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
-      database.sqlite.insertAppRow(table, {
+      await database.adapter.migrateAppSchema(database.schema);
+      database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "leak seed",
         ownerId: "user-2",
@@ -2549,7 +2607,7 @@ test("leaked privileged table APIs cannot bypass ACL after privileged run finish
         error: null,
       });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, {
             columns: ["text", "ownerId"],
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -3190,7 +3248,7 @@ test("privileged runs are available across trusted server surfaces without leaki
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       const fileOwnerAuth = { userId: "file-owner", displayName: "File Owner", isAuthenticated: true, isGuest: false, provider: "email" };
       const pendingFile = await createPendingFileUpload(database, fileOwnerAuth, {
         file: { name: "leak.txt", type: "text/plain", size: 11, path: "/leaks/private.txt" },
@@ -3384,7 +3442,7 @@ test("privileged runs are available across trusted server surfaces without leaki
         error: null,
       });
 
-      const rows = await database.sqlite.selectAppRows(table, { columns: ["text", "ownerId"], orderBy: { fieldName: "createdAt", direction: "asc" } });
+      const rows = await database.adapter.selectAppRows(table, { columns: ["text", "ownerId"], orderBy: { fieldName: "createdAt", direction: "asc" } });
       assert.deepEqual(
         rows.map((row) => ({ ...row })),
         [
@@ -3442,7 +3500,7 @@ test("supported lifecycle hooks emit privileged audit events for each actual hoo
         },
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.mutations = [
         {
           name: "writeNormalNote",
@@ -3486,7 +3544,7 @@ test("supported lifecycle hooks emit privileged audit events for each actual hoo
       });
 
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, { columns: ["text", "ownerId"], orderBy: { fieldName: "createdAt", direction: "asc" } })
           .map((row) => ({ ...row })),
         [
@@ -3768,11 +3826,11 @@ test("SQLite database adapter owns transactions for successful and failing mutat
         },
       ];
       database.mutationHooks = { beforeMutation: [], afterMutation: [] };
-      database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
 
       const committed = await runMutation(database, { userId: "user-1" }, "addTodo", ["committed"]);
       assert.equal(committed.ok, true);
-      assert.equal(database.sqlite.selectAppRows(table).length, 1);
+      assert.equal(database.adapter.selectAppRows(table).length, 1);
 
       const failed = await runMutation(database, { userId: "user-1" }, "addThenFail", []);
       assert.deepEqual(failed, {
@@ -3783,7 +3841,7 @@ test("SQLite database adapter owns transactions for successful and failing mutat
         },
       });
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .selectAppRows(table, { columns: ["text"], orderBy: { fieldName: "createdAt", direction: "asc" } })
           .map((row) => ({ ...row })),
         [{ text: "committed" }],
@@ -3808,8 +3866,8 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
         ],
       };
       database.schema = { tables: [table] };
-      database.sqlite.migrateAppSchema(database.schema);
-      database.sqlite.insertAppRow(table, {
+      await database.adapter.migrateAppSchema(database.schema);
+      database.adapter.insertAppRow(table, {
         id: "todo-1",
         createdAt: "2026-07-04T10:00:00.000Z",
         updatedAt: "2026-07-04T10:00:00.000Z",
@@ -3817,11 +3875,11 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
         ownerId: "user-1",
       });
 
-      assert.equal(typeof database.sqlite.listInspectableTables, "function");
-      assert.equal(typeof database.sqlite.dumpInspectableDatabase, "function");
-      assert.equal(typeof database.sqlite.runReadOnlyInspectionQuery, "function");
-      assert.equal(typeof database.sqlite.checkHealth, "function");
-      assert.equal(database.adapter, database.sqlite);
+      assert.equal(typeof database.adapter.listInspectableTables, "function");
+      assert.equal(typeof database.adapter.dumpInspectableDatabase, "function");
+      assert.equal(typeof database.adapter.runReadOnlyInspectionQuery, "function");
+      assert.equal(typeof database.adapter.checkHealth, "function");
+      assert.equal(database.adapter, database.adapter);
       assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "todos"), ["todos"]);
       const dumpedTodos = (await dumpDatabase(database)).find((dumpedTable) => dumpedTable.name === "todos");
       assert.deepEqual({ ...dumpedTodos, rows: dumpedTodos.rows.map((row) => ({ ...row })) }, {
@@ -3868,10 +3926,10 @@ test("runtime database paths await promise-returning adapter operations", async 
       auth: { providers: { anonymous: true, email: { enabled: true } } },
       files: { storagePath: path.join(dir, "files") },
     });
-    const syncAdapter = database.sqlite;
+    const syncAdapter = database.adapter;
     const asyncAdapter = wrapAsyncRuntimeAdapter(syncAdapter);
     database.adapter = asyncAdapter;
-    database.sqlite = asyncAdapter;
+    database.adapter = asyncAdapter;
     database.close = () => syncAdapter.close();
 
     try {
@@ -3883,13 +3941,13 @@ test("runtime database paths await promise-returning adapter operations", async 
         ],
       };
       database.schema = { tables: [table] };
-      await database.sqlite.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
 
       const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
       const inserted = await runMutation(database, auth, "addNote", ["await me"]);
       assert.equal(inserted.ok, true);
       assert.deepEqual(
-        (await database.sqlite.selectAppRows(table, { columns: ["text"] })).map((row) => ({ ...row })),
+        (await database.adapter.selectAppRows(table, { columns: ["text"] })).map((row) => ({ ...row })),
         [{ text: "await me" }],
       );
 
@@ -3923,7 +3981,7 @@ test("runtime database paths await promise-returning adapter operations", async 
       assert.equal(failed.ok, false);
       assert.deepEqual(
         (
-          await database.sqlite.selectAppRows(table, {
+          await database.adapter.selectAppRows(table, {
             columns: ["text"],
             where: { fieldName: "ownerId", value: auth.userId },
             orderBy: { fieldName: "createdAt", direction: "asc" },
@@ -3989,9 +4047,9 @@ test("anonymous session creation rolls back the auth user when session insertion
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true } },
     });
-    const baseAdapter = database.sqlite;
-    database.sqlite = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert session exploded"));
-    database.adapter = database.sqlite;
+    const baseAdapter = database.adapter;
+    database.adapter = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert session exploded"));
+    database.adapter = database.adapter;
     database.close = () => baseAdapter.close();
 
     try {
@@ -4019,7 +4077,7 @@ test("runtime auth storage rejects the privileged sentinel as a real user", asyn
     try {
       assert.throws(
         () =>
-          database.sqlite.insertAuthUser({
+          database.adapter.insertAuthUser({
             id: "__privileged__",
             createdAt: new Date().toISOString(),
             displayName: "Pretend Privileged",
@@ -4032,7 +4090,7 @@ test("runtime auth storage rejects the privileged sentinel as a real user", asyn
         /reserved/i,
       );
       assert.equal(
-        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
+        database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
         0,
       );
     } finally {
@@ -4049,11 +4107,11 @@ test("sessions and local identity simulation cannot resolve the privileged senti
 
     try {
       const now = new Date().toISOString();
-      database.sqlite.prepare(
+      database.adapter.prepare(
         "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       ).run("__privileged__", now, "Forged Privileged", "privileged@example.com", null, 1, 0, "email");
-      database.sqlite.prepare(
+      database.adapter.prepare(
         "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
       ).run("forged-token", "__privileged__", "email", now, new Date(Date.parse(now) + 60_000).toISOString());
 
@@ -4070,15 +4128,15 @@ test("sessions and local identity simulation cannot resolve the privileged senti
       assert.equal(simulated.ok, true);
       assert.notEqual(simulated.data.auth.userId, "__privileged__");
       assert.equal(
-        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(simulated.data.auth.userId).provider,
+        database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(simulated.data.auth.userId).provider,
         "anonymous",
       );
       assert.equal(
-        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
+        database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
         1,
       );
       assert.equal(
-        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE userId = ?").get("__privileged__").count,
+        database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE userId = ?").get("__privileged__").count,
         1,
       );
     } finally {
@@ -4092,12 +4150,12 @@ test("email sign-up rolls back credentials and linked auth state when linking fa
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true, email: { enabled: true } } },
     });
-    const baseAdapter = database.sqlite;
+    const baseAdapter = database.adapter;
 
     try {
       const session = await resolveAnonymousSession(database, null);
-      database.sqlite = failRuntimeWriteAfter(baseAdapter, "linkAuthUser", new Error("link user exploded"));
-      database.adapter = database.sqlite;
+      database.adapter = failRuntimeWriteAfter(baseAdapter, "linkAuthUser", new Error("link user exploded"));
+      database.adapter = database.adapter;
 
       await assert.rejects(
         () =>
@@ -4124,7 +4182,7 @@ test("failed email sign-in rotation keeps the old Anonymous session token valid"
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true, email: { enabled: true } } },
     });
-    const baseAdapter = database.sqlite;
+    const baseAdapter = database.adapter;
 
     try {
       const signUpSession = await resolveAnonymousSession(database, null);
@@ -4136,8 +4194,8 @@ test("failed email sign-in rotation keeps the old Anonymous session token valid"
       assert.equal(signUp.ok, true);
 
       const anonymousSession = await resolveAnonymousSession(database, null);
-      database.sqlite = failRuntimeWriteAfter(baseAdapter, "rotateAuthSession", new Error("rotate session exploded"));
-      database.adapter = database.sqlite;
+      database.adapter = failRuntimeWriteAfter(baseAdapter, "rotateAuthSession", new Error("rotate session exploded"));
+      database.adapter = database.adapter;
 
       await assert.rejects(
         () =>
@@ -4464,7 +4522,7 @@ test("provider-neutral OAuth linking rolls back non-Google auth state when sessi
         },
       },
     );
-    const baseAdapter = database.sqlite;
+    const baseAdapter = database.adapter;
 
     try {
       const session = await resolveAnonymousSession(database, null);
@@ -4493,8 +4551,8 @@ test("provider-neutral OAuth linking rolls back non-Google auth state when sessi
           },
         },
       };
-      database.sqlite = failRuntimeWriteAfter(baseAdapter, "refreshAuthSession", new Error("refresh session exploded"));
-      database.adapter = database.sqlite;
+      database.adapter = failRuntimeWriteAfter(baseAdapter, "refreshAuthSession", new Error("refresh session exploded"));
+      database.adapter = database.adapter;
 
       const response = createResponseRecorder();
       await routeSporadesAuth(
@@ -4537,9 +4595,9 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       });
       assert.equal(first.ok, true);
       assert.equal(first.auth.userId, firstSession.auth.userId);
-      assert.equal(database.sqlite.readAuthSessionWithUser(firstSession.token).provider, "google");
+      assert.equal(database.adapter.readAuthSessionWithUser(firstSession.token).provider, "google");
       assert.equal(
-        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(first.auth.userId).provider,
+        database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(first.auth.userId).provider,
         "anonymous",
         "linking an identity must not rewrite the legacy user provider marker",
       );
@@ -4554,14 +4612,14 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       });
       assert.equal(second.ok, true);
       assert.equal(second.auth.userId, first.auth.userId);
-      assert.equal(database.sqlite.readAuthSessionWithUser(secondSession.token).provider, "google");
-      assert.deepEqual(JSON.parse(database.sqlite.readUserPreferences(first.auth.userId).value), {
+      assert.equal(database.adapter.readAuthSessionWithUser(secondSession.token).provider, "google");
+      assert.deepEqual(JSON.parse(database.adapter.readUserPreferences(first.auth.userId).value), {
         theme: "dark",
         density: "compact",
         locale: "en-GB",
       });
 
-      const identity = database.sqlite.findAuthIdentityByProviderSubject("google", "google-subject-1");
+      const identity = database.adapter.findAuthIdentityByProviderSubject("google", "google-subject-1");
       assert.deepEqual(
         {
           userId: identity.userId,
@@ -4584,9 +4642,9 @@ test("Provider identities use stable subjects and Sessions retain their own auth
         name: "Grace",
       });
       assert.equal(email.ok, true);
-      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).provider, "email");
+      assert.equal(database.adapter.readAuthSessionWithUser(email.sessionToken).provider, "email");
       assert.equal(
-        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(email.auth.userId).provider,
+        database.adapter.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(email.auth.userId).provider,
         "anonymous",
         "email registration must not make the legacy user provider marker authoritative",
       );
@@ -4605,8 +4663,8 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       });
       assert.equal(linkedSecondProvider.ok, true);
       assert.equal(linkedSecondProvider.auth.userId, email.auth.userId);
-      assert.equal(database.sqlite.readAuthSessionWithUser(secondEmail.sessionToken).provider, "google");
-      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).provider, "email");
+      assert.equal(database.adapter.readAuthSessionWithUser(secondEmail.sessionToken).provider, "google");
+      assert.equal(database.adapter.readAuthSessionWithUser(email.sessionToken).provider, "email");
 
       const thirdEmailAnonymous = await resolveAnonymousSession(database, null);
       const thirdEmail = await signInWithEmail(database, thirdEmailAnonymous, {
@@ -4614,7 +4672,7 @@ test("Provider identities use stable subjects and Sessions retain their own auth
         password: "correct horse battery staple",
       });
       assert.equal(thirdEmail.auth.provider, "email");
-      assert.equal(database.sqlite.readAuthSessionWithUser(thirdEmail.sessionToken).provider, "email");
+      assert.equal(database.adapter.readAuthSessionWithUser(thirdEmail.sessionToken).provider, "email");
 
       const conflictSession = await resolveAnonymousSession(database, email.sessionToken);
       const conflict = await linkProviderIdentity(database, conflictSession, "google", {
@@ -4631,8 +4689,8 @@ test("Provider identities use stable subjects and Sessions retain their own auth
           hint: "Sign out before using this Google identity, or sign in with the account it is already linked to.",
         },
       });
-      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).userId, email.auth.userId);
-      const preservedIdentity = database.sqlite.findAuthIdentityByProviderSubject("google", "google-subject-1");
+      assert.equal(database.adapter.readAuthSessionWithUser(email.sessionToken).userId, email.auth.userId);
+      const preservedIdentity = database.adapter.findAuthIdentityByProviderSubject("google", "google-subject-1");
       assert.equal(preservedIdentity.userId, first.auth.userId);
       assert.equal(preservedIdentity.email, "ada.changed@example.com");
     } finally {
@@ -4649,7 +4707,7 @@ test("one Sporades user can own multiple Provider identities while reserved and 
     try {
       const session = await resolveAnonymousSession(database, null);
       const now = new Date().toISOString();
-      database.sqlite.insertAuthIdentity({
+      database.adapter.insertAuthIdentity({
         id: "identity-google",
         userId: session.auth.userId,
         provider: "google",
@@ -4660,7 +4718,7 @@ test("one Sporades user can own multiple Provider identities while reserved and 
         createdAt: now,
         updatedAt: now,
       });
-      database.sqlite.insertAuthIdentity({
+      database.adapter.insertAuthIdentity({
         id: "identity-microsoft",
         userId: session.auth.userId,
         provider: "microsoft",
@@ -4672,12 +4730,12 @@ test("one Sporades user can own multiple Provider identities while reserved and 
         updatedAt: now,
       });
       assert.equal(
-        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get(session.auth.userId).count,
+        database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get(session.auth.userId).count,
         2,
       );
       assert.throws(
         () =>
-          database.sqlite.insertAuthIdentity({
+          database.adapter.insertAuthIdentity({
             id: "identity-google-duplicate",
             userId: session.auth.userId,
             provider: "google",
@@ -4692,7 +4750,7 @@ test("one Sporades user can own multiple Provider identities while reserved and 
       );
       assert.throws(
         () =>
-          database.sqlite.insertAuthIdentity({
+          database.adapter.insertAuthIdentity({
             id: "identity-reserved",
             userId: "__privileged__",
             provider: "google",
@@ -4705,7 +4763,7 @@ test("one Sporades user can own multiple Provider identities while reserved and 
           }),
         /reserved/i,
       );
-      database.sqlite.prepare(
+      database.adapter.prepare(
         "INSERT INTO sporades_auth_identities " +
         "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
@@ -4719,7 +4777,7 @@ test("one Sporades user can own multiple Provider identities while reserved and 
         now,
         now,
       );
-      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "reserved-subject"), null);
+      assert.equal(database.adapter.findAuthIdentityByProviderSubject("google", "reserved-subject"), null);
     } finally {
       database.close();
     }
@@ -4771,13 +4829,13 @@ test("legacy Google auth storage migrates without changing existing Session toke
       });
       assert.equal(linked.ok, true);
       assert.equal(linked.auth.userId, "legacy-user");
-      assert.equal(database.sqlite.readAuthSessionWithUser("legacy-token").userId, "legacy-user");
+      assert.equal(database.adapter.readAuthSessionWithUser("legacy-token").userId, "legacy-user");
       assert.equal(
-        database.sqlite.findAuthIdentityByProviderSubject("google", "verified-google-subject").userId,
+        database.adapter.findAuthIdentityByProviderSubject("google", "verified-google-subject").userId,
         "legacy-user",
       );
       assert.equal(
-        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get("legacy-user").count,
+        database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get("legacy-user").count,
         1,
       );
 
@@ -4792,7 +4850,7 @@ test("legacy Google auth storage migrates without changing existing Session toke
       assert.equal(subjectOnly.ok, true);
       assert.equal(subjectOnly.auth.userId, "legacy-user");
       assert.equal(
-        database.sqlite.findAuthIdentityByProviderSubject("google", "verified-google-subject").email,
+        database.adapter.findAuthIdentityByProviderSubject("google", "verified-google-subject").email,
         "changed-unverified@example.com",
       );
     } finally {
@@ -4809,7 +4867,7 @@ test("legacy Google identity claiming fails closed for unverified or ambiguous m
     try {
       const now = new Date().toISOString();
       for (const suffix of ["one", "two"]) {
-        database.sqlite.insertAuthUser({
+        database.adapter.insertAuthUser({
           id: `legacy-user-${suffix}`,
           createdAt: now,
           displayName: `Legacy ${suffix}`,
@@ -4819,7 +4877,7 @@ test("legacy Google identity claiming fails closed for unverified or ambiguous m
           isGuest: 0,
           provider: "google",
         });
-        database.sqlite.insertAuthIdentity({
+        database.adapter.insertAuthIdentity({
           id: `legacy-identity-${suffix}`,
           userId: `legacy-user-${suffix}`,
           provider: "google",
@@ -4854,16 +4912,16 @@ test("legacy Google identity claiming fails closed for unverified or ambiguous m
       assert.equal(ambiguous.ok, false);
       assert.equal(ambiguous.error.code, "AUTH_LEGACY_IDENTITY_AMBIGUOUS");
 
-      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "new-google-subject"), null);
+      assert.equal(database.adapter.findAuthIdentityByProviderSubject("google", "new-google-subject"), null);
       assert.deepEqual(
-        database.sqlite
+        database.adapter
           .prepare("SELECT subject FROM sporades_auth_identities WHERE email = ? ORDER BY subject")
           .all("shared@example.com")
           .map((row) => row.subject),
         ["legacy:legacy-user-one", "legacy:legacy-user-two"],
       );
-      assert.equal(database.sqlite.readAuthSessionWithUser(unverifiedSession.token).provider, "anonymous");
-      assert.equal(database.sqlite.readAuthSessionWithUser(verifiedSession.token).provider, "anonymous");
+      assert.equal(database.adapter.readAuthSessionWithUser(unverifiedSession.token).provider, "anonymous");
+      assert.equal(database.adapter.readAuthSessionWithUser(verifiedSession.token).provider, "anonymous");
     } finally {
       database.close();
     }
@@ -4908,7 +4966,7 @@ test("Google OAuth callback preserves structured Provider identity conflicts", a
         password: "correct horse battery staple",
         name: "Other",
       });
-      await database.sqlite.insertOAuthState({
+      await database.adapter.insertOAuthState({
         state: "conflict-state",
         sessionToken: other.sessionToken,
         returnTo: "http://127.0.0.1/app",
@@ -4943,8 +5001,8 @@ test("Google OAuth callback preserves structured Provider identity conflicts", a
         message: "Google identity is already linked to another account.",
         hint: "Sign out before using this Google identity, or sign in with the account it is already linked to.",
       });
-      assert.equal(database.sqlite.readAuthSessionWithUser(other.sessionToken).userId, other.auth.userId);
-      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "owned-google-subject").userId, owner.auth.userId);
+      assert.equal(database.adapter.readAuthSessionWithUser(other.sessionToken).userId, other.auth.userId);
+      assert.equal(database.adapter.findAuthIdentityByProviderSubject("google", "owned-google-subject").userId, owner.auth.userId);
     } finally {
       globalThis.fetch = originalFetch;
       database.close();
@@ -4957,9 +5015,9 @@ test("local identity simulation rolls back the auth user when session insertion 
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true, email: { enabled: true } } },
     });
-    const baseAdapter = database.sqlite;
-    database.sqlite = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert simulated session exploded"));
-    database.adapter = database.sqlite;
+    const baseAdapter = database.adapter;
+    database.adapter = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert simulated session exploded"));
+    database.adapter = database.adapter;
     database.close = () => baseAdapter.close();
 
     try {
@@ -5005,7 +5063,7 @@ test("OAuth callback spends state when downstream code exchange fails", async ()
 
     try {
       const session = await resolveAnonymousSession(database, null);
-      await database.sqlite.insertOAuthState({
+      await database.adapter.insertOAuthState({
         state: "oauth-state",
         sessionToken: session.token,
         returnTo: "http://127.0.0.1/app",
@@ -5027,7 +5085,7 @@ test("OAuth callback spends state when downstream code exchange fails", async ()
 
       assert.equal(handled, true);
       assert.equal(
-        database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("oauth-state"),
+        database.adapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("oauth-state"),
         undefined,
       );
       assert.equal(response.statusCode, 500);
@@ -5043,7 +5101,7 @@ test("current-user preference updates roll back failed saves", async () => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true } },
     });
-    const baseAdapter = database.sqlite;
+    const baseAdapter = database.adapter;
 
     try {
       const session = await resolveAnonymousSession(database, null);
@@ -5054,8 +5112,8 @@ test("current-user preference updates roll back failed saves", async () => {
         error: null,
       });
 
-      database.sqlite = failRuntimeWriteAfter(baseAdapter, "saveUserPreferences", new Error("save preferences exploded"));
-      database.adapter = database.sqlite;
+      database.adapter = failRuntimeWriteAfter(baseAdapter, "saveUserPreferences", new Error("save preferences exploded"));
+      database.adapter = database.adapter;
       const failed = await updateCurrentUserPreferences(database, session.auth, { density: "compact" });
       assert.equal(failed.ok, false);
       assert.equal(failed.error.code, "PREFERENCES_UPDATE_FAILED");

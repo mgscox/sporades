@@ -1,2005 +1,412 @@
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
-import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
+// `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
+// consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
+// now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
+// tsc elides an unused import, so the generated `dist/` has carried only what is actually called.
+import { createHash, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 import { validateMailConfig } from "./mail-config.js";
+import { createMailRuntime } from "./mail-runtime.js";
+import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
+import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
+import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
+import {
+  PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_MAIL_JOB,
+  PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
+  PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
+  authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
+  confirmPasswordReset, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
+  emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword, hashPasswordResetVerifier,
+  invalidEmailCredentialsError, isReservedAuthUserId, issuePasswordResetCode, mailNotConfiguredError,
+  normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
+  oauthProviderAdapter, parseOAuthFormBody, passwordResetMailBody, privilegedAuthUserId,
+  readEndpointSessionToken, recordFailedEmailSignInAttempt, refreshSessionOnAdapter, requireAuth,
+  resetEmailSignInAttempts, resolveAnonymousSession, serverAuthError, sessionExpiresAt, setEmailPassword,
+  setOwnEmailPassword, validateConsumedOAuthCallbackParameters, verifyEmailPassword,
+  verifyPasswordResetCode, writeRedirect,
+  // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
+  // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
+  // preferences stopped holding them.
+  linkProviderIdentity, signInWithEmail, signUpWithEmail,
+  // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
+  // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
+  // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
+  beginOAuthSignIn, resolvePasswordResetConfig,
+  // Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
+  // method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
+  // resolves it here for as long as that method set is still below.
+  createAnonymousAuthTables,
+} from "./auth-runtime.js";
+import {
+  createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
+} from "./user-preferences-runtime.js";
+// Batch 8. Eight names, which is what the one function of that domain still in this file
+// (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
+// `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
+// `openDevDatabase` the body limit and the security policy; and `createWebSocketHub` the security
+// policy, the WebSocket origin check and the request-origin resolver.
+import {
+  emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin,
+  resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult,
+} from "./http-runtime.js";
+import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
+import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+// Batch 9. The four names the shared Database adapter method set resolves in the Log index's
+// storage module — `ensureLogStorage()` and the three statements that write, prune and read the
+// index. The log sink in this file needs none of them: it reaches the same three through
+// `database.*`, which is an adapter method rather than a module binding.
+import {
+  createLogIndexTables, insertLogIndexEvent, pruneLogIndex, readRecentLogEvents,
+} from "./log-index-storage.js";
+// Batch 9. One name, which is what is left of this file's relationship with the Database engines:
+// `openDevDatabase` builds the Capsule's adapter with it. It was fifty-nine declarations in this
+// file, and every domain above reached the engines through them.
+import { createRuntimeDatabaseAdapter } from "./database-runtime.js";
+import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFieldValue } from "./stored-value-coding.js";
+// Twenty-one names, which is what the three functions of that domain still in this file plus
+// `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
+// runners resolve. `ACL_HELPER_STATE` and `createTableAclContext` are deliberately not among them:
+// both are exported from `acl-runtime.js` for consumers outside this file — the constant probe and
+// `test/mail.test.js` — and reach them through the `export *` below rather than through a binding
+// here, so importing them would declare a name nothing in this file reads.
+import {
+  applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter,
+  createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError,
+  createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
+  drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
+  filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError,
+  normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
+  revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode,
+} from "./acl-runtime.js";
+import {
+  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
+  createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
+  createStructuredFileError, deletePrivateFile, fileMetadataFromRow, fileRowForOwner,
+  getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
+  revokePublicFileUrl,
+} from "./file-storage-runtime.js";
+import {
+  abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
+  createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
+  finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition,
+  jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload,
+  resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
+} from "./jobs-runtime.js";
+
+// The read-only inspection gate is a module now, and these are the two names the rest of this file
+// reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
+// and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
+// wraps the same stripped text. That is the gate's whole interface to this file.
+//
+// It used to be four. `skipSqlTrivia` and `readSqlQuotedIdentifier` were the other two, imported
+// here because the internal log-index table guard lexes a table reference with the gate's
+// tokenizer — a coupling the single file was hiding, which ADR-0041 recorded and left in place. The
+// guard is `./log-index-guard.js` now, so those two names have one consumer and it is a module
+// whose job is lexing SQL on this path, rather than being reachable from 13,700 lines of unrelated
+// domains.
+//
+// Both modules are re-exported whole, rather than only the names above, because this module is
+// still the address the rest of the repository knows: the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from this module's own
+// SCREAMING_CASE exports, the walker census and the terminator-spelling guards in
+// `test/database-adapter-engine-seam.test.js` resolve the gate's functions through here, and
+// `scripts/inspection-lexing-differential.mjs` compares a build against the pre-work base through
+// here too — including `targetsInternalLogIndexTable` and `readSqlTableReference`, which would
+// otherwise have gone quietly "not comparable" there when the guard moved. A narrower re-export
+// would move those guards' subjects out of reach and buy nothing: this is a name-resolution
+// convenience, not a second definition.
+export * from "./inspection-sql.js";
+export * from "./log-index-guard.js";
+
+// The mail domain left this file the same way, as batch 2 (ADR-0041). `createMailRuntime` is the one
+// name the rest of this file reaches into it for — `openDevDatabase` builds the Capsule's mail
+// runtime with it — where before there were twenty-six, because every helper of the domain had to be
+// registered in the emitted function list to survive into a deployed Capsule. Twenty-one of them are
+// private to that module now.
+//
+// Re-exported whole for the same reason as the two above: this module is still the address the rest
+// of the repository knows, and `test/mail.test.js` resolves `buildSmtpMessage`, `createMailTransport`
+// and `connectSmtpSocket` through here. Those three used to be found by searching the emitted
+// function list by name, which answered `undefined` the moment a domain stopped being entries in it
+// — the silent shape this re-export exists to prevent.
+//
+// `mail-config.js` is re-exported here too, and it is the same domain arriving from the other side.
+// `validateMailConfig` has always lived outside this file and was carried into the bundle by being
+// listed in the emitted list anyway — the "cheapest thing that works" ADR-0041 opens by describing.
+// It travels as carried module text now, with the rest of mail, so the domain has one carrier rather
+// than two. The file stays separate from `mail-runtime.ts` because `cli/project-config.ts` validates
+// a `sporades.json` with it at build time and must not import an SMTP transport to do so.
+export * from "./mail-config.js";
+export * from "./mail-runtime.js";
+
+// The auth domain left this file as batch 3 — sessions, the four OAuth providers, password reset,
+// the email sign-in throttles and the credential hashing. Forty-seven of its names are imported
+// above, which is what the fourteen auth functions still standing in this file need from it; see
+// `auth-runtime.ts` for why those fourteen did not travel and which domain blocks each.
+//
+// Re-exported whole for the reason the four above are, and this batch is the one where that stops
+// being a convenience. **Twelve of the domain's names are SCREAMING_CASE constants**, and the
+// constant probe in `test/server-bundle-module-graph.test.js` derives what it compares from *this*
+// module's SCREAMING_CASE exports — so a narrower re-export would not fail, it would quietly stop
+// comparing the email sign-in failure limit, the throttle window, the password-reset TTL bounds and
+// the outstanding-code cap between the two bundles. `scripts/inspection-lexing-differential.mjs`
+// resolves through here the same way, falling back from the emitted list to this module's exports,
+// and goes silently "not comparable" rather than red when a name it wants is missing.
+//
+// `runtime-errors.js` is not a domain and is re-exported for the same name-resolution reason. It
+// holds `commandError`, which every domain calls and none owns; auth is simply the first batch that
+// could not move without it.
+export * from "./auth-runtime.js";
+export * from "./runtime-errors.js";
+
+// The jobs and schedules domain left this file as batch 4 — the Job Queue's storage, cursors, retry
+// normalization and inspection, and the Schedule machinery: cron parsing, timezone resolution,
+// occurrence calculation and the payload-factory lanes. One module and not two, because they share
+// the queue and the occurrence machinery.
+//
+// **Fifteen of the domain's fifty-one declarations are still in this file.** It was seventeen until
+// batch 7, and the reference graph says why for both numbers: `runCurrentUserJobWorker` and
+// `enqueueScheduledOccurrence` build a handler context with `createMutationContext`, which is the
+// composition point this file retains, and `assertActivePrivilegedJobAccess` reached
+// `hasPrivilegedDbAccess`, which is the ACL domain — batch *7*, which this note called batch 6
+// before that batch ran. Batch 7 cleared it and `createPrivilegedScheduleApi` with it;
+// `createPrivilegedJobApi` did not follow them, because it reaches `createCurrentUserJobApi`, which
+// is one of the fifteen. The names imported below are what those fifteen call. See
+// `jobs-runtime.ts` for the per-function account.
+//
+// **`enqueueRuntimeJob` is one of the seventeen, so batch 3's `sendEmailPasswordResetLink` is still
+// blocked.** Auth's blocker moved one link down the chain rather than away: `enqueueRuntimeJob`
+// reaches `scheduleCurrentUserJobWorker`, which reaches `runCurrentUserJobWorker`, which needs
+// `createMutationContext`. Both leave together or neither does.
+//
+// Re-exported whole for the reason the six above are. `RESERVED_JOB_NAME_PREFIX` makes that
+// load-bearing rather than convenient: it is a SCREAMING_CASE export and the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from *this* module's
+// SCREAMING_CASE exports, so a narrower re-export would not fail — it would quietly stop comparing
+// the reserved job-name prefix between the two bundles. Four more names
+// (`createControllableRuntimeClock`, `ensureJobStorage`, `ensureScheduleStorage`,
+// `parseScheduleExpression`) are resolved through here by the job, schedule, clock, password-reset
+// and Postgres suites.
+export * from "./jobs-runtime.js";
+
+// The user-preferences domain left this file as batch 5 — the preference table's schema, the read
+// and update path, and the anonymous-to-account merge. Six declarations: three imported above, one
+// by `auth-runtime.js`, and two private — one of which was exported for the two-bundle skew probe
+// until ticket 05 deleted it. See `user-preferences-runtime.ts` for why the domain is exactly six
+// and not the fifteen identifiers a name sweep for `preference` turns up.
+//
+// **This is the batch that let auth finish.** `migrateAnonymousPreferences` was the only thing
+// keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them
+// `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`, `rotateSession` and
+// `moveSessionToUser` — in this file after batch 3. All seven moved to `auth-runtime.js`, so the
+// three names imported from it above are the only part of that region this file still resolves.
+// (`rotateSession` and `moveSessionToUser` no longer exist anywhere: batch 3 found nothing in the
+// repository named them, and ticket 05 deleted the declarations.)
+//
+// Re-exported whole for the reason the seven above are, and one consumer makes it load-bearing
+// rather than convenient: `test/database-adapter.test.js` imports `updateCurrentUserPreferences`
+// through this module by name. This domain declares no SCREAMING_CASE constant, so unlike auth and
+// jobs it adds nothing to the constant probe — `INVALID_PREFERENCES_PATCH` and
+// `PREFERENCES_UPDATE_FAILED` read like constants and are string literals inside two function
+// bodies, so no preamble entry left with this batch.
+export * from "./user-preferences-runtime.js";
+
+// The file and object storage domain left this file as batch 6 — the local and S3-compatible
+// engines, the AWS SigV4 signature that reaches the second of them, the upload lifecycle, the
+// private and public File URLs, and the File metadata table's bootstrap and migrations. Fifty-one
+// declarations and one type alias; sixteen of the names are imported above, which is what the two
+// storage functions still in this file plus the WebSocket hub, the privileged File API, the ACL
+// storage helper, the runtime health route and the shared adapter method set need from it.
+//
+// **Two of the domain's fifty-three declarations are still here**, and the reference graph says
+// why: `handleFileHttpRoute` and `sendFileHttpResponse` reach `writeNotFound` and
+// `writeJsonHttpResponse`, whose other consumer is `routeRuntimeHealth`. Those are generic HTTP
+// response writers owned by the HTTP layer, which is batch 8 — a domain that has not run yet
+// rather than the composition core, so batch 8 lifts those two along with the writers. See
+// `file-storage-runtime.ts` for the per-function account, including the three functions a name
+// sweep collects that turned out to belong to the dialect and the log index instead.
+//
+// **`maybe-promise.js` is not a domain**, and it is here for the reason `runtime-errors.js` is. It
+// holds `isPromiseLike`, `thenIfPromise` and `chainMaybePromise` — the sync/async bridge the
+// adapters, the ACL paths, the log index, schema migration, the auth tables and storage all use and
+// none owns. Batch 6 is the batch that could not move without them: they were the only thing
+// keeping `singleLiveFileRowByPath` and `createFileStorageTables` in this file, and through the
+// first, the whole upload lifecycle and both URL paths.
+//
+// Both are re-exported whole for the reason the eight above are. Neither declares a SCREAMING_CASE
+// constant, so unlike auth and jobs this batch adds nothing to the constant probe and removed
+// nothing from the bundle preamble — the four that remained there were the privileged-audit trio
+// and `ACL_HELPER_STATE`, which batch 7 took with the ACL domain, leaving that preamble empty. What
+// makes the re-export load-bearing here is
+// `test/database-adapter.test.js`, which imports ten of this domain's names through this module,
+// and `test/dev.test.js`, which asserts the generated bundle still declares `localFileStoragePath`
+// and `localFileVersionPath` — both of which are private to `file-storage-runtime.js` now and reach
+// the bundle as carried module text rather than as emitted-list entries.
+export * from "./file-storage-runtime.js";
+export * from "./maybe-promise.js";
+
+// Two more modules that are not domains, extracted by batch 7 for the reason `runtime-errors.js`
+// and `maybe-promise.js` were extracted: they hold what the ACL and privileged-audit domain's
+// reference graph left outside it and no batch on ticket 04's list owns.
+//
+// `runtime-log-policy.js` holds `isSensitiveLogKey` and `logIndexLimit` — which field names the
+// platform log must never write down, and how many events the log index keeps. Both are read by the
+// log sink still in this file *and* by the ACL and audit paths that left it: the first held the
+// entire ACL denial record and through it all three enforcement entry points, the second held the
+// privileged-audit reindex after a rollback.
+//
+// `stored-value-coding.js` — `stored-row-decoding.js` until batch 9 — holds the Boolean, Json,
+// Number and Date columns converted in both directions. It arrived in batch 7 holding only the
+// reading half, `deserializeRow` and `deserializeFieldValue`, because `ctx.acl.db.get()` answers
+// with the first. Batch 9 brought the writing half to sit beside it: `toSqlLiteral` in
+// `database-runtime.ts` renders a Date default through `normalizeDateValue`, so that function had to
+// leave this file or the whole adapter domain stayed in it — and taking it without
+// `serializeFieldValue`, whose Date branch it *is*, would have split one rule across a module
+// boundary. The file was renamed rather than left describing half of what it holds.
+//
+// Four of its six names are resolved here: the endpoint table API and both mutation paths call the
+// two decoders, `createEndpointTableApi` and `fieldValueForWrite` call `serializeFieldValue`, and
+// the schema extractor's two date defaults call `normalizeDateValue`.
+//
+// Both are re-exported whole for the reason the ten above are. Neither declares a SCREAMING_CASE
+// constant, so neither adds anything to the constant probe.
+export * from "./runtime-log-policy.js";
+export * from "./stored-value-coding.js";
+
+// The Log index's storage left this file as part of batch 9 — the `sporades_log_events` table, its
+// additive migration, ADR-0036's runtime ordering sequence, and the three statements that write,
+// prune and read it. Nine declarations, of which five are private now.
+//
+// **It is a domain ticket 04's nine batches never named**, and it is worth saying so here rather
+// than only in the module. Batch 1 was the log-index *guard* — the four functions that conceal this
+// table from `sporades db query` — and nothing in the sequence was ever scoped to the index itself.
+// It surfaced as batch 9's blocker instead, because the only thing in the repository that calls it
+// is the shared Database adapter method set, which is what batch 9 moves. Extracted rather than
+// shrugged at, on the rule batch 6 established for `maybe-promise.ts`: a blocker owned by no batch
+// on the list is not a later batch's and never will be. Left here it would have held
+// `createSharedDatabaseAdapterMethods`, and through it every engine and every dialect.
+//
+// The platform log did not go with it, and the seam is the adapter. `createRuntimeLogSink` and
+// `createRuntimeLogger` are still in this file and reach the index through
+// `database.insertLogIndexEvent(…)`, `database.pruneLogIndex(…)` and `database.readRecentLogEvents(…)`
+// — adapter methods resolved at run time, not module bindings — so that half of the logging domain
+// cost this batch nothing and remains for ticket 05 to place.
+//
+// Re-exported whole for the reason the twelve above are. It declares no SCREAMING_CASE constant, so
+// it adds nothing to the constant probe.
+export * from "./log-index-storage.js";
+
+// The Database adapters and dialect left this file as batch 9, the last domain of ticket 04's nine
+// and the one deliberately sequenced last: every other domain reaches an engine through it, so
+// moving it earlier would have put a module boundary under every batch before it. Fifty-nine
+// declarations — the three engines, ADR-0037's dialect and normalization seam, the one shared method
+// set every behavioural call goes through, and the app-schema DDL that method set emits — of which
+// thirty-eight are private now.
+//
+// **All fifty-nine moved.** Closing this domain's reference graph left nine names outside it and not
+// one of them reaches the composition core, which is the first time that has been true since batch 4.
+// One name is imported above, which is the whole of what this file still resolves in it.
+//
+// Re-exported whole for the reason the thirteen above are, and this batch has the widest set of
+// consumers that makes it load-bearing rather than convenient: `src/cli/sporades.ts` resolves
+// `createSqliteDatabaseAdapter`, `createPostgresConnection` and the three `sporades db` delegates
+// through here; the generated bundle's boot program resolves `createRuntimeInspectionAdapter`; and
+// `test/database-adapter-engine-seam.test.js` — the file that verifies ADR-0037's seam holds —
+// resolves the two dialects, the three normalizations, both factories, the shared method set and two
+// SQL walkers through here. This domain declares no SCREAMING_CASE constant, so it adds nothing to
+// the constant probe.
+export * from "./database-runtime.js";
+
+// The ACL and privileged-audit domain left this file as batch 7 — table ACL declaration and
+// resolution, the read and write enforcement paths, the frozen `ctx.acl` helpers and their bounded
+// read state, the ACL denial record, the privileged server role's `ctx.privileged` File and
+// Schedule surfaces, and the whole privileged audit event contract. Fifty-nine declarations, of
+// which thirty-one are private to that module now; twenty-one of its names are imported above,
+// which is what the three functions of the domain still in this file, plus `openDevDatabase`, the
+// endpoint table API, the schema extractor and the four mutation and message runners, need from it.
+//
+// **Three of the domain's sixty-two declarations are still here**, and the reference graph says
+// why: `createPrivilegedHandlerContext` reaches `createContextHolder` and `createEndpointDatabaseApi`,
+// `createContextPrivilegedApi` is mutually recursive with it, and `createPrivilegedJobApi` reaches
+// `createCurrentUserJobApi`. That is the composition core this file retains until ticket 05 — a
+// privileged handler context *is* the point where every domain's API is assembled onto one object —
+// so these three are batch 4's case rather than batch 5's: no later batch on ticket 04's list
+// clears them. See `acl-runtime.ts` for the per-function account, including the one function a name
+// sweep collects that turned out to belong to the mutation layer instead.
+//
+// **All four remaining preamble constants left with this batch.** `PRIVILEGED_AUDIT_SCHEMA`,
+// `PRIVILEGED_AUDIT_ACTOR_KINDS`, `PRIVILEGED_AUDIT_OUTCOMES` and `ACL_HELPER_STATE` are
+// declarations inside `acl-runtime.js` now, and they had to leave `runtimeConstants` in the same
+// commit or each name would be declared twice at the top level of the emitted ES module. The
+// bundle preamble serializes nothing at all as of this batch.
+//
+// Re-exported whole for the reason the ten above are, and this batch has three consumers that make
+// it load-bearing rather than convenient: the constant probe in
+// `test/server-bundle-module-graph.test.js` derives what it compares from *this* module's
+// SCREAMING_CASE exports, so a narrower re-export would quietly stop comparing the audit schema,
+// the actor kinds, the outcomes and the helper-state Symbol between the two bundles;
+// `src/cli/sporades.ts` and `src/cli/sporades-host-helper.ts` build a privileged audit event with
+// `createPrivilegedAuditLogInput` through here; and `test/database-adapter.test.js` and
+// `test/mail.test.js` resolve `emitPrivilegedAuditEvent` and `createTableAclContext` through here.
+export * from "./acl-runtime.js";
+
+// The HTTP and security policy domain left this file as batch 8 — the CORS and CSP posture every
+// response carries, the origin and host-header validation behind it, the request body reader and
+// its size limit, the generic response writers, and the health and File routes. Thirty-two
+// declarations and two type aliases, of which fifteen are private to that module now; the eight
+// names imported above are what `routeEndpoint`, `readEndpointBody`, `openDevDatabase` and
+// `createWebSocketHub` still need from it.
+//
+// **One of the domain's thirty-three declarations is still here.** `routeEndpoint` reaches
+// `runEndpoint`, and `runEndpoint` reaches `createMutationContext`, `createContextHolder` and
+// `createEndpointDatabaseApi` — the composition core this file retains until ticket 05. That is
+// batch 4's case rather than batch 5's, so batch 9 does not clear it. The three response writers it
+// calls (`writeEndpointResult`, `writeEndpointError`, `emitHttpFailureLog`) moved anyway and are
+// imported back, which is the same trade batch 6 made in the other direction when `writeNotFound`
+// kept `handleFileHttpRoute` here.
+//
+// **The six auth functions batch 3 left behind are freed by this batch**, which makes them batch
+// 5's case rather than batch 4's: a blocker that named a later batch, and that batch cleared it.
+// Five are riders in `auth-runtime.ts` now and `resolveOAuthRequestOrigin` is in `http-runtime.ts`,
+// because its body validates a request origin against the CORS policy and reaches no auth name.
+// `sendEmailPasswordResetLink` is still here and is still not waiting on a batch: it reaches
+// `enqueueRuntimeJob`, which needs the composition core.
+//
+// Re-exported whole for the reason the thirteen above are. Two consumers make it load-bearing:
+// `src/cli/sporades.ts` and the generated bundle's boot program resolve `prepareHttpSecurity`,
+// `readJsonRequest`, `writeUnhandledHttpError`, `injectPageConnectionToken`, `routeRuntimeHealth`
+// and `handleFileHttpRoute` through here, and `test/host.test.js`, `test/database-adapter.test.js`
+// and `test/oauth-provider.test.js` resolve `prepareHttpSecurity`, `routeRuntimeHealth`,
+// `checkRuntimeSqlite` and `resolveOAuthRequestOrigin` through here.
+export * from "./http-runtime.js";
 
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
-type RuntimeSecurityPolicy = {
-  cors: {
-    sameOrigin: boolean;
-    publicDev: boolean;
-    allowedOrigins: string[];
-    allowedOriginPatterns: string[];
-    requireExplicitCrossOrigin: boolean;
-    publicOrigin: string | null;
-  };
-  csp: {
-    mode: string;
-    header: string;
-    directives: Record<string, string[] | string>;
-  };
-};
-type RuntimeRequestLike = {
-  headers: IncomingHttpHeaders | LooseRecord;
-  socket?: any;
-};
-type S3RequestResult = {
-  statusCode: number;
-  headers: IncomingHttpHeaders | LooseRecord;
-  body: Buffer;
-};
-type HelperError = Error & {
-  code?: string;
-  hint?: string;
-  sporadesAclDenialLogData?: any;
-  sporadesAuthDenialLogData?: any;
-  sporadesEndpointResponse?: boolean;
-};
+// The emitted function list stood here: 537 entries at its largest, 107 at the end, each one a
+// runtime function the generated Capsule bundle carried as `fn.toString()`. Ticket 05 deleted it
+// along with the builder that read it.
+//
+// It is worth being precise about what it cost, because the cost was structural rather than untidy.
+// A function reached the bundle as detached source text, so it could not call a helper that was not
+// itself registered, could not close over a module constant, and a name that failed to travel was a
+// `ReferenceError` in a deployed Capsule rather than a build error — invisible to a green suite,
+// because tests import from `dist/` where every name resolves. Four bindings shipped that way. The
+// list was also a global registry every one of those functions was implicitly coupled to, so adding
+// or removing a function was a cross-cutting edit, and the runtime could not be split into files.
+//
+// ADR-0038 is the bill: the read-only inspection gate's lexing rules existed in five copies, because
+// factoring them into a shared helper was the one thing this mechanism forbade, and each fix landed
+// in one copy and left the siblings.
+//
+// Everything in this file now reaches a deployed Capsule the ordinary way — `server-bundle-entry.ts`
+// imports what it calls, and esbuild follows the graph.
 
-const PRIVILEGED_AUTH_USER_ID = "__privileged__";
-const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
-const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
-
-export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
-  validateMailConfig,
-  createMailRuntime,
-  createMailDeliveryLogData,
-  createMailTransport,
-  connectSmtpSocket,
-  createSmtpResponseReader,
-  smtpCommand,
-  smtpRecipientCommand,
-  buildSmtpMessage,
-  encodeMimeHeaderValue,
-  foldMimeHeader,
-  foldMailgunJsonHeader,
-  encodeMimeBase64,
-  normalizeMailMessage,
-  normalizeGenericProvider,
-  captureGenericHeaderValues,
-  normalizePostmarkProvider,
-  normalizeMailgunProvider,
-  serializeMailgunJson,
-  captureMailProviderDataObject,
-  captureMailProviderDataArray,
-  unsupportedMailProviderField,
-  normalizeMailAddresses,
-  normalizeMailAddress,
-  mailError,
-  normalizeMailTransportError,
-  mailJsonSize,
-  normalizeJourneyPolicy,
-  normalizeJourneyState,
-  validateJourneyJson,
-  journeyError,
-  readJsonRequest,
-  readLimitedRequestBody,
-  resolveHttpMaxBodyBytes,
-  createPayloadTooLargeError,
-  isPayloadTooLargeError,
-  writeUnhandledHttpError,
-  emitHttpFailureLog,
-  prepareHttpSecurity,
-  resolveRuntimeSecurityPolicy,
-  defaultRuntimeCspDirectives,
-  serializeCspDirectives,
-  injectPageConnectionToken,
-  requestOriginAllowed,
-  websocketOriginAllowed,
-  isSameOriginRequest,
-  isLocalDevOrigin,
-  normalizeOrigin,
-  resolveOAuthRequestOrigin,
-  singleHttpHeader,
-  validatedRequestHost,
-  appendVaryHeader,
-  sanitizeResponseHeaders,
-  createSqliteDatabaseAdapter,
-  createLibsqlDatabaseAdapter,
-  createPostgresDatabaseAdapter,
-  createRuntimeDatabaseAdapter,
-  createRuntimeClock,
-  resolveSchedulePayloadFactoryTimeoutMs,
-  resolveJourneySessionInactivityMinutes,
-  scheduleDefinitionsFromCapsule,
-  resolveScheduleTimezone,
-  parseScheduleExpression,
-  scheduleWallClockParts,
-  nextScheduleOccurrence,
-  ensureScheduleStorage,
-  scheduledOccurrenceIdentity,
-  claimScheduledOccurrence,
-  recoverPendingScheduleOccurrences,
-  schedulePendingOccurrenceRecovery,
-  reconcileSchedules,
-  startStaticSchedules,
-  finishFailedScheduledOccurrence,
-  recordScheduledOccurrence,
-  acquireSchedulePayloadFactoryLane,
-  acquireSchedulePayloadFactorySlot,
-  resolveSchedulePayload,
-  abortSchedulePayloadFactories,
-  enqueueScheduledOccurrence,
-  createRuntimeInspectionAdapter,
-  inspectRuntimeJobs,
-  inspectRuntimeSchedules,
-  scheduleSummary,
-  jobError,
-  boundedJobJson,
-  jobState,
-  jobActorProvider,
-  normalizeJobRetry,
-  cancelJob,
-  jobSummary,
-  createCurrentUserJobApi,
-  createPrivilegedJobApi,
-  assertJobScheduleProvenance,
-  assertActivePrivilegedJobAccess,
-  encodeJobCursor,
-  decodeJobCursor,
-  flushPendingJobEnqueues,
-  scheduleCurrentUserJobWorker,
-  scheduleNextDelayedJob,
-  runCurrentUserJobWorker,
-  safeJobFailure,
-  postgresPlaceholders,
-  postgresInterpolate,
-  createPostgresConnection,
-  postgresUrlOptions,
-  postgresPasswordMessage,
-  createPostgresScramSession,
-  postgresStartupMessage,
-  postgresQueryMessage,
-  postgresInt32,
-  waitForPostgresData,
-  wakePostgresWaiters,
-  postgresParseRowDescription,
-  postgresParseDataRow,
-  postgresValueFromText,
-  postgresRowCountFromCommand,
-  postgresErrorFromBody,
-  postgresRowsFromResult,
-  postgresRuntimeColumnName,
-  postgresAppTableColumnDefinitions,
-  libsqlPipelineUrl,
-  assertLibsqlOpen,
-  libsqlHasMultipleStatements,
-  libsqlExecute,
-  libsqlDescribe,
-  libsqlPipeline,
-  libsqlRowsFromResult,
-  libsqlValueFromJs,
-  libsqlValueToJs,
-  ensureLibsqlSessionLifecycleColumns,
-  migrateLibsqlAppSchema,
-  migrateExistingLibsqlAppTable,
-  splitSqlStatements,
-  openDevDatabase,
-  recoverExpiredJobLeases,
-  jobHandlersFromCapsuleDefinition,
-  ensureJobStorage,
-  createRuntimeLogSink,
-  requirePathModule,
-  createRuntimeLogger,
-  createPrivilegedAuditEmitter,
-  emitPrivilegedAuditEvent,
-  createContextPrivilegedApi,
-  emitPrivilegedRunAudit,
-  recordPrivilegedAuditEventForTransaction,
-  reindexPrivilegedAuditEventsAfterRollback,
-  privilegedAuditEventAlreadyIndexed,
-  samePrivilegedAuditLogEvent,
-  normalizePrivilegedRunSignal,
-  createPrivilegedRunAbortError,
-  createPrivilegedRunAuditDetails,
-  validatedPrivilegedOperation,
-  validatedPrivilegedMetadata,
-  isPlainPrivilegedMetadata,
-  invalidPrivilegedRunMetadata,
-  createPrivilegedRunPublicError,
-  createPrivilegedAuditEmissionPublicError,
-  isPrivilegedAuditEmissionPublicError,
-  createPrivilegedHandlerContext,
-  createPrivilegedScheduleApi,
-  createPrivilegedFileApi,
-  activePrivilegedFileAccess,
-  privilegedAuthUserId,
-  isReservedAuthUserId,
-  authIdentityRowUnlessReserved,
-  authIdentityRowsUnlessReserved,
-  assertNotReservedAuthUserId,
-  createPrivilegedAuditLogInput,
-  normalizePrivilegedAuditActorKind,
-  normalizePrivilegedAuditOutcome,
-  privilegedAuditLevelForOutcome,
-  normalizePrivilegedAuditCorrelation,
-  safePrivilegedAuditErrorCode,
-  auditString,
-  createLogEnvelope,
-  sanitizeLogData,
-  redactLogData,
-  logDataContainsServerEnvValue,
-  isSensitiveLogString,
-  isSensitiveLogKey,
-  capLogEnvelope,
-  createLogIndexTables,
-  insertLogIndexEvent,
-  pruneLogIndex,
-  readRecentLogEvents,
-  readJsonlLogEvents,
-  logIndexLimit,
-  logPayloadMaxBytes,
-  logRedactedValue,
-  targetsInternalLogIndexTable,
-  readSqlTableReference,
-  skipSqlTrivia,
-  readSqlIdentifier,
-  isInternalLogIndexMetadataRow,
-  extractSchema,
-  schemaFromCapsuleDefinition,
-  schemaTableFromCapsuleTable,
-  normalizeTableAcl,
-  resolveEffectiveAclRule,
-  schemaFieldFromCapsuleField,
-  sqliteTypeForFieldKind,
-  extractEndpoints,
-  endpointHandlersFromCapsuleDefinition,
-  extractQueryHandlers,
-  extractQueryHandlersFromCapsule,
-  extractMutationHandlers,
-  handlersFromCapsuleDefinition,
-  mutationHandlersFromCapsuleDefinition,
-  shouldUseBundledMutationHandler,
-  isInlineHandlerSource,
-  isGeneratedScaffoldMutationHandler,
-  extractMessageHandlers,
-  extractContextMiddleware,
-  extractMutationHooks,
-  extractHookList,
-  extractFields,
-  extractFieldDefaultSource,
-  parseFieldDefault,
-  parseDateFieldDefault,
-  parseJsonFieldDefault,
-  extractObjectPropertySource,
-  findMatchingDelimiter,
-  splitTopLevelList,
-  migrateAppSchema,
-  normalizeSchema,
-  hashSchema,
-  assertValidReferenceTargets,
-  assertAdditiveSchemaMigration,
-  migrateExistingAppTable,
-  columnSelectExpressionForMigration,
-  addedFieldsForTable,
-  createAppTable,
-  appTableColumnDefinitions,
-  appFieldColumnDefinition,
-  fieldDefaultIsSqlNull,
-  fieldColumnDefaultSql,
-  commandError,
-  toSqlLiteral,
-  findMatchingParen,
-  createTransactionDatabase,
-  readEndpointRequest,
-  createEndpointContext,
-  createContextHolder,
-  createTableAclContext,
-  applyContextMiddleware,
-  runContextMiddleware,
-  readEndpointSessionToken,
-  endpointQueryFromUrl,
-  privilegedDbAccessContextSet,
-  grantPrivilegedDbAccess,
-  revokePrivilegedDbAccess,
-  hasPrivilegedDbAccess,
-  createEndpointDatabaseApi,
-  createEndpointTableApi,
-  runTableWriteWithAcl,
-  isPromiseLike,
-  thenIfPromise,
-  chainMaybePromise,
-  applyReadAcl,
-  filterRowsByReadAcl,
-  createAclHelpers,
-  aclRuleTouchedAsyncHelperRead,
-  createAclDbHelpers,
-  createAclStorageHelpers,
-  assertAclHelperReadAllowed,
-  resolveAclAppTable,
-  resolveAclStorageResource,
-  aclStorageMetadataFromFileRow,
-  emitAclDeniedLog,
-  createAclDenialLogData,
-  aclRuleDeclaredOperation,
-  aclRowLogSnapshot,
-  aclVisibleFieldNames,
-  createAclDeniedError,
-  requireAuth,
-  createUnauthenticatedError,
-  createAuthDenialLogData,
-  emitAuthDeniedLog,
-  fieldValueForWrite,
-  invalidReferenceError,
-  referenceExists,
-  serializeFieldValue,
-  deserializeFieldValue,
-  normalizeDateValue,
-  dateValueError,
-  assertJsonCompatible,
-  invalidJsonFieldValueError,
-  deserializeRow,
-  readEndpointBody,
-  createEndpointLogger,
-  authStatus,
-  normalizeAuthConfig,
-  readProviderConfig,
-  readFacebookProviderConfig,
-  emptyProviderConfig,
-  createFileStorageTables,
-  createRuntimeFileStorageAdapter,
-  createLocalFileStorageAdapter,
-  localFileStoragePath,
-  localFileVersionPath,
-  createS3CompatibleFileStorageAdapter,
-  s3ObjectKey,
-  s3Request,
-  s3RequestBodyBuffer,
-  s3SignedHeaders,
-  s3Signature,
-  s3SigningKey,
-  s3CanonicalPath,
-  s3EncodedPathSegment,
-  s3StorageNamespace,
-  s3AmzDate,
-  s3Hmac,
-  s3Sha256Hex,
-  s3ObjectNotFoundError,
-  routeRuntimeHealth,
-  createRuntimeHealthResult,
-  checkRuntimeSqlite,
-  checkRuntimeFileStorage,
-  handleFileHttpRoute,
-  readRequestBytes,
-  writeJsonHttpResponse,
-  writeNotFound,
-  sendFileHttpResponse,
-  createPendingFileUpload,
-  completePendingFileUpload,
-  getPrivateFileUrl,
-  createPublicFileUrl,
-  revokePublicFileUrl,
-  deletePrivateFile,
-  fileMetadataFromRow,
-  fileMetadataFromUpload,
-  runFileMetadataTransaction,
-  resolveFileWriteTarget,
-  normalizeAbsoluteFilePath,
-  normalizeFileName,
-  isAbsoluteFilePath,
-  resolveLiveFileReference,
-  resolvePrivilegedLiveFileReference,
-  singleActiveFileRowByPath,
-  singleLiveFileRowByPath,
-  ambiguousFileReferenceError,
-  structuredFileException,
-  ensureFileBucket,
-  isDuplicateColumnError,
-  isUniqueConstraintError,
-  filePathBackfillSql,
-  activeFilePathDedupeSql,
-  ensureFileUploadTargetColumns,
-  runSchemaExecIgnoringDuplicateColumn,
-  chainSchemaOperation,
-  withFileUploadPathLock,
-  createStructuredFileError,
-  validatePublicUrlExpiry,
-  fileRowForOwner,
-  removeFileVersionBestEffort,
-  contentTypeForFile,
-  createAnonymousAuthTables,
-  createProviderIdentityTables,
-  createLibsqlProviderIdentityTables,
-  ensureOAuthStateColumns,
-  ensureLibsqlOAuthStateColumns,
-  createUserPreferencesTables,
-  ensureSessionLifecycleColumns,
-  ensureSessionProvenanceColumn,
-  ensureLibsqlSessionProvenanceColumn,
-  sessionExpiresAt,
-  isExpiredSession,
-  createSessionToken,
-  refreshSession,
-  refreshSessionOnAdapter,
-  rotateSession,
-  rotateSessionOnAdapter,
-  moveSessionToUser,
-  moveSessionToUserOnAdapter,
-  migrateAnonymousPreferences,
-  resolveAnonymousSession,
-  sessionFromRow,
-  readCurrentUserPreferences,
-  updateCurrentUserPreferences,
-  normalizePreferencesPatch,
-  createPreferencesError,
-  normalizeSimulatedEmail,
-  normalizeSimulatedText,
-  authProvidersForClient,
-  routeSporadesAuth,
-  signUpWithEmail,
-  signInWithEmail,
-  createEmailSignInThrottleState,
-  emailSignInThrottleKeys,
-  currentEmailSignInThrottleState,
-  recordFailedEmailSignInAttempt,
-  resetEmailSignInAttempts,
-  pruneEmailSignInThrottleState,
-  boundEmailSignInThrottleState,
-  emailSignInThrottleEvictionPriority,
-  callerContextKey,
-  invalidEmailCredentialsError,
-  normalizeEmailCredentials,
-  hashEmailPassword,
-  verifyEmailPassword,
-  emailAuthDisabledError,
-  beginOAuthSignIn,
-  oauthProviderAdapter,
-  isOAuthLoopbackHostname,
-  oauthProviderTestEndpoint,
-  fetchBoundedOAuthJson,
-  completeOpenIdOAuthCodeExchange,
-  createGoogleOAuthProviderAdapter,
-  createAppleOAuthProviderAdapter,
-  createFacebookOAuthProviderAdapter,
-  facebookOAuthCallbackError,
-  facebookOAuthEndpoint,
-  facebookOAuthTimeoutSignal,
-  cancelFacebookOAuthResponse,
-  readFacebookOAuthJson,
-  completeFacebookOAuth,
-  completeAppleOAuth,
-  createAppleClientSecret,
-  verifyGoogleIdentityToken,
-  verifyAppleIdentityToken,
-  parseBoundedJwtObject,
-  readBoundedJsonResponse,
-  isPlainJsonObject,
-  appleOAuthOriginEligible,
-  parseAppleAuthorizationUser,
-  sanitizeAppleNamePart,
-  createMicrosoftOAuthProviderAdapter,
-  completeMicrosoftOAuth,
-  discoverMicrosoftOpenIdConfiguration,
-  fetchMicrosoftOidcJson,
-  readBoundedJsonBody,
-  microsoftOidcCache,
-  microsoftOidcNow,
-  microsoftOidcCacheKey,
-  pruneMicrosoftOidcCacheMap,
-  loadMicrosoftJwks,
-  selectMicrosoftJwk,
-  isPlainRecord,
-  parseMicrosoftJwtPart,
-  verifyMicrosoftIdentityToken,
-  microsoftTenantAllowsClaims,
-  validMicrosoftTenant,
-  decodeJwtPart,
-  readOAuthCallbackParameters,
-  oauthFormContentTypeValid,
-  parseOAuthFormBody,
-  decodeOAuthFormComponent,
-  validateOAuthCallbackScalar,
-  validateConsumedOAuthCallbackParameters,
-  normalizeReturnTo,
-  linkProviderIdentity,
-  writeRedirect,
-  createWebSocketAccept,
-  createWebSocketHub,
-  drainWebSocketFrames,
-  closeWebSocketClient,
-  encodeWebSocketJson,
-  sendJson,
-  sendJsonWithCompletion,
-  routeEndpoint,
-  runEndpoint,
-  writeEndpointResult,
-  writeEndpointError,
-  endpointResponseError,
-  runQuery,
-  runCustomQuery,
-  runMutation,
-  runCustomMutation,
-  runAppMessage,
-  validateAppMessageType,
-  isAllAppMessageScope,
-  runMutationHook,
-  runMutationHookAndDrainPendingAclWrites,
-  createMutationContext,
-  drainPendingAclWrites,
-  createMessageContext,
-  createHookErrorResult,
-  runInsertMutation,
-  runUpdateMutation,
-  formatMutationResult,
-  resolveTableForQuery,
-  resolveTableForAddMutation,
-  resolveTableForUpdateMutation,
-  tableNameForSingular,
-  rowToApiValue,
-  toSqlNumber,
-  quoteIdentifier,
-];
-
-export async function readJsonRequest(request: IncomingMessage, limitSource: LooseRecord | number | null = null): Promise<LooseRecord> {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
-}
-
-async function readLimitedRequestBody(request: any, limitSource: LooseRecord | number | null = null) {
-  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > maxBytes) {
-      throw createPayloadTooLargeError(maxBytes);
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-function resolveHttpMaxBodyBytes(source: LooseRecord | number | null = null) {
-  const configured = typeof source === "number"
-    ? source
-    : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
-  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
-}
-
-function createPayloadTooLargeError(maxBytes: number) {
-  const error: HelperError = new Error("Request body is too large.");
-  error.code = "PAYLOAD_TOO_LARGE";
-  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
-  return error;
-}
-
-function isPayloadTooLargeError(error: any) {
-  return error?.code === "PAYLOAD_TOO_LARGE";
-}
-
-export function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any) {
-  emitHttpFailureLog(database, request, error);
-  if (isPayloadTooLargeError(error)) {
-    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
-    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}\n`);
-    return;
-  }
-  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify({
-    ok: false,
-    data: null,
-    error: {
-      message: "Internal server error.",
-      hint: "Check server logs and retry the request.",
-    },
-  })}\n`);
-}
-
-function emitHttpFailureLog(database: LooseRecord, request: IncomingMessage | LooseRecord, error: any, context: LooseRecord = {}) {
-  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
-  database.log?.emit?.({
-    category: "platform",
-    event: "http.request.failed",
-    level: "error",
-    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
-    request: {
-      method: request.method ?? context.method ?? null,
-      path: requestUrl.pathname,
-    },
-    data: {
-      code: error?.code ?? null,
-      message: error?.message ?? String(error),
-      hint: error?.hint ?? null,
-      stack: error?.stack ?? null,
-    },
-  });
-}
-
-export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
-  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
-  const originalWriteHead = response.writeHead.bind(response);
-  response.writeHead = ((statusCode: number, statusMessageOrHeaders?: string | OutgoingHttpHeaders, maybeHeaders?: OutgoingHttpHeaders) => {
-    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
-    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
-    const headers: OutgoingHttpHeaders = {
-      ...sanitizeResponseHeaders(inputHeaders ?? {}),
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "x-frame-options": "DENY",
-      "permissions-policy": "camera=(), microphone=(), geolocation=()",
-      "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
-    };
-    const origin = request.headers.origin;
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
-      if (!policy.cors.publicDev) {
-        headers.vary = appendVaryHeader(headers.vary, "Origin");
-      }
-    }
-    if (statusMessage) {
-      return originalWriteHead(statusCode, statusMessage, headers);
-    }
-    return originalWriteHead(statusCode, headers);
-  }) as typeof response.writeHead;
-
-  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
-    const headers: OutgoingHttpHeaders = {
-      "content-length": "0",
-    };
-    if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
-      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-      headers["access-control-allow-headers"] = String(
-        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token",
-      );
-      headers["access-control-max-age"] = "600";
-      if (!policy.cors.publicDev) {
-        headers.vary = "Origin";
-      }
-    }
-    response.writeHead(204, headers);
-    response.end();
-    return true;
-  }
-
-  return false;
-}
-
-function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): RuntimeSecurityPolicy {
-  const security = config.security ?? {};
-  const cors = security.cors ?? {};
-  const csp = security.csp ?? {};
-  const session = config.__sporadesSession ?? "container";
-  const publicDev = session === "public-dev";
-  const dev = session === "dev" || publicDev;
-  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin: any) => typeof origin === "string") : [];
-  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
-  const directives = {
-    ...defaultRuntimeCspDirectives(),
-    ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
-  };
-  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
-
-  return {
-    cors: {
-      sameOrigin: !publicDev,
-      publicDev,
-      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
-      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
-      publicOrigin,
-    },
-    csp: {
-      mode,
-      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives,
-    },
-  };
-}
-
-function defaultRuntimeCspDirectives(): Record<string, string[]> {
-  return {
-    "default-src": ["'self'"],
-    "script-src": ["'self'", "'unsafe-inline'"],
-    "style-src": ["'self'", "'unsafe-inline'"],
-    "img-src": ["'self'", "data:", "blob:"],
-    "connect-src": ["'self'", "ws:", "wss:"],
-    "font-src": ["'self'", "data:"],
-    "object-src": ["'none'"],
-    "base-uri": ["'self'"],
-    "frame-ancestors": ["'none'"],
-  };
-}
-
-function serializeCspDirectives(directives: Record<string, unknown>) {
-  return Object.entries(directives)
-    .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
-    .join("; ");
-}
-
-export function injectPageConnectionToken(html: string, token: string) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
-  }
-  return `${script}\n${html}`;
-}
-
-function requestOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
-  const origin = request.headers.origin;
-  if (!origin) {
-    return false;
-  }
-  if (policy.cors.publicDev) {
-    return true;
-  }
-  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
-    return true;
-  }
-  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
-    return true;
-  }
-  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
-    return true;
-  }
-  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
-}
-
-function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
-  if (!request.headers.origin) {
-    return !policy.cors.publicOrigin;
-  }
-  return requestOriginAllowed(policy, request);
-}
-
-function isSameOriginRequest(request: RuntimeRequestLike, origin: string) {
-  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  if (!host) {
-    return false;
-  }
-  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
-  return origin === `${protocol}://${host}`;
-}
-
-function normalizeOrigin(value: any) {
-  if (typeof value !== "string" || value.trim() === "") {
-    return null;
-  }
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeRequestLike) {
-  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
-  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
-  const hostHeader = singleHttpHeader(request.headers.host);
-  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
-  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
-  if (
-    (request.headers.host !== undefined && !hostHeader) ||
-    (request.headers.origin !== undefined && !singleHttpHeader(request.headers.origin)) ||
-    (request.headers["x-forwarded-host"] !== undefined && !forwardedHost) ||
-    (request.headers["x-forwarded-proto"] !== undefined && !forwardedProto)
-  ) return null;
-
-  if (configuredOrigin) {
-    const configured = new URL(configuredOrigin);
-    if (originHeader && originHeader !== configuredOrigin) return null;
-    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
-    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
-    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
-    return configuredOrigin;
-  }
-
-  if (forwardedHost || forwardedProto) return null;
-  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
-  const host = validatedRequestHost(hostHeader, protocol);
-  if (!host) return null;
-  const actualOrigin = `${protocol}//${host}`;
-  if (originHeader && originHeader !== actualOrigin) return null;
-  return actualOrigin;
-}
-
-function singleHttpHeader(value: any) {
-  if (Array.isArray(value)) {
-    if (value.length !== 1) return null;
-    value = value[0];
-  }
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.includes(",")) return null;
-  return trimmed;
-}
-
-function validatedRequestHost(value: any, protocol: string) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
-  try {
-    const url = new URL(`${protocol}//${value}`);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    return url.host.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function isLocalDevOrigin(origin: string | URL) {
-  try {
-    const parsed = new URL(origin);
-    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-  } catch {
-    return false;
-  }
-}
-
-function appendVaryHeader(existing: unknown, value: string) {
-  if (!existing) {
-    return value;
-  }
-  const parts = String(existing)
-    .split(",")
-    .map((part) => part.trim().toLowerCase());
-  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
-}
-
-function sanitizeResponseHeaders(headers: OutgoingHttpHeaders | LooseRecord) {
-  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
-  return Object.fromEntries(
-    [...entries].filter(([name]) => {
-      const normalized = String(name).toLowerCase();
-      return normalized !== "x-powered-by" && normalized !== "server";
-    }),
-  );
-}
-
-function mailError(code: string, message: string, hint: string) {
-  const error: any = new Error(message);
-  error.code = code;
-  error.hint = hint;
-  return error;
-}
-
-function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: LooseRecord = {}) {
-  const smtp = mailConfig?.smtp;
-  if (!smtp) {
-    return {
-      async send() {
-        throw mailError(
-          "MAIL_DISABLED",
-          "Mail delivery is disabled.",
-          "Configure `mail.smtp` in sporades.json and restart the Capsule runtime.",
-        );
-      },
-      close() {},
-    };
-  }
-
-  let auth;
-  if (smtp.auth.method === "none") {
-    auth = { method: "none" };
-  } else {
-    const username = serverEnv[smtp.auth.usernameEnv];
-    const password = serverEnv[smtp.auth.passwordEnv];
-    if (typeof username !== "string" || typeof password !== "string") {
-      throw mailError(
-        "MAIL_CREDENTIAL_MISSING",
-        "SMTP credentials are unavailable.",
-        "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime.",
-      );
-    }
-    auth = { method: smtp.auth.method, username, password };
-  }
-  const resolvedSmtp = {
-    vendor: smtp.vendor,
-    host: smtp.host,
-    port: smtp.port,
-    tls: {
-      mode: smtp.tls.mode,
-      rejectUnauthorized: smtp.tls.rejectUnauthorized !== false,
-      servername: smtp.tls.servername,
-    },
-    auth,
-    defaultFrom: smtp.defaultFrom,
-    connectionTimeoutMs: smtp.connectionTimeoutMs ?? 10_000,
-    socketTimeoutMs: smtp.socketTimeoutMs ?? 30_000,
-  };
-  const factory = options.mailTransportFactory ?? createMailTransport;
-  const ownedTransportBoundary = factory === createMailTransport;
-  const trustedTestTransportBoundary = options.mailTransportFactoryTrusted === true;
-  const transport = factory(resolvedSmtp);
-  if (!transport || typeof transport.send !== "function") {
-    throw mailError("MAIL_CONNECTION_FAILED", "SMTP transport could not be created.", "Check the SMTP configuration and restart the Capsule runtime.");
-  }
-  let closeStarted = false;
-  let closeResult: any;
-  return {
-    async send(input: any) {
-      const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
-      const messageIdentity = `mail_${randomUUID()}`;
-      const startedAt = Date.now();
-      try {
-        const result = await transport.send(message);
-        const normalizedResult = {
-          messageId: String(result?.messageId ?? ""),
-          accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
-          rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
-        };
-        const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
-        try {
-          await options.mailLog?.({
-            category: "mail",
-            event: "mail.delivery",
-            level: "info",
-            message: "SMTP delivery completed.",
-            data: createMailDeliveryLogData(
-              resolvedSmtp.vendor,
-              message,
-              messageIdentity,
-              Date.now() - startedAt,
-              resultCategory,
-              normalizedResult,
-            ),
-            request: null,
-            release: null,
-            correlation: { mail: messageIdentity },
-          });
-        } catch {
-          // Diagnostics must never turn a completed external side effect into
-          // an apparent delivery failure that callers may retry.
-        }
-        return normalizedResult;
-      } catch (error) {
-        // Only Sporades-owned transport failures, or explicitly trusted
-        // internal test doubles, may be inspected for classification. An
-        // arbitrary injected value remains completely opaque.
-        const normalizedError = ownedTransportBoundary
-          ? error
-          : trustedTestTransportBoundary
-            ? normalizeMailTransportError(error)
-            : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
-        try {
-          await options.mailLog?.({
-            category: "mail",
-            event: "mail.delivery",
-            level: "error",
-            message: "SMTP delivery failed.",
-            data: createMailDeliveryLogData(
-              resolvedSmtp.vendor,
-              message,
-              messageIdentity,
-              Date.now() - startedAt,
-              normalizedError.code,
-            ),
-            request: null,
-            release: null,
-            correlation: { mail: messageIdentity },
-          });
-        } catch {
-          // Preserve the stable mail failure even if diagnostics are unavailable.
-        }
-        throw normalizedError;
-      }
-    },
-    close() {
-      if (closeStarted) return closeResult;
-      closeStarted = true;
-      closeResult = transport.close?.();
-      return closeResult;
-    },
-  };
-}
-
-function createMailDeliveryLogData(
-  vendor: string,
-  message: any,
-  messageIdentity: string,
-  latencyMs: number,
-  result: string,
-  delivery: any = undefined,
-) {
-  const to = Array.isArray(message?.to) ? message.to.length : 0;
-  const cc = Array.isArray(message?.cc) ? message.cc.length : 0;
-  const bcc = Array.isArray(message?.bcc) ? message.bcc.length : 0;
-  return {
-    vendor,
-    messageIdentity,
-    recipients: {
-      to,
-      cc,
-      bcc,
-      total: to + cc + bcc,
-      accepted: Array.isArray(delivery?.accepted) ? delivery.accepted.length : 0,
-      rejected: Array.isArray(delivery?.rejected) ? delivery.rejected.length : 0,
-    },
-    latencyMs: Math.max(0, Math.floor(Number(latencyMs) || 0)),
-    result,
-  };
-}
-
-function normalizeMailMessage(input: any, defaultFrom: any, vendor = "generic") {
-  const invalid = (hint: string) => {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", hint);
-  };
-  if (!input || typeof input !== "object" || Array.isArray(input)) invalid("Pass one mail message object.");
-  const allowed = new Set(["to", "cc", "bcc", "from", "replyTo", "subject", "textBody", "htmlBody", "provider"]);
-  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) invalid(`Remove unsupported mail fields: ${unknown.sort().join(", ")}.`);
-  const from = normalizeMailAddresses(input.from ?? defaultFrom, "from", false);
-  if (from.length !== 1) invalid("Pass exactly one sender in `from`, or configure `mail.smtp.defaultFrom`.");
-  const to = normalizeMailAddresses(input.to, "to", true);
-  const cc = normalizeMailAddresses(input.cc, "cc", false);
-  const bcc = normalizeMailAddresses(input.bcc, "bcc", false);
-  if (to.length + cc.length + bcc.length === 0) invalid("Pass at least one recipient in `to`, `cc`, or `bcc`.");
-  if (to.length + cc.length + bcc.length > 100) invalid("Use at most 100 recipients in one mail message.");
-  const replyTo = normalizeMailAddresses(input.replyTo, "replyTo", false);
-  if (replyTo.length > 1) invalid("Pass at most one `replyTo` address.");
-  if (typeof input.subject !== "string" || input.subject.length < 1 || input.subject.length > 998 || /[\x00-\x1f\x7f]/.test(input.subject)) {
-    invalid("Pass a non-empty subject of at most 998 characters without prohibited control characters.");
-  }
-  if (input.textBody === undefined && input.htmlBody === undefined) invalid("Pass at least one of `textBody` or `htmlBody`.");
-  for (const field of ["textBody", "htmlBody"]) {
-    const value = input[field];
-    if (value !== undefined && (typeof value !== "string" || value.length > 1024 * 1024 || /\0/.test(value))) {
-      invalid(`Pass \`${field}\` as a string of at most 1 MiB without null characters.`);
-    }
-  }
-  let provider = input.provider;
-  let providerHeaders: { name: string; value: string }[] | undefined;
-  if (provider !== undefined) {
-    if (!provider || typeof provider !== "object" || Array.isArray(provider)) invalid("Pass `provider` as a JSON object.");
-    if (vendor === "postmark") {
-      providerHeaders = normalizePostmarkProvider(provider);
-      provider = undefined;
-    } else if (vendor === "mailgun") {
-      providerHeaders = normalizeMailgunProvider(provider);
-      provider = undefined;
-    } else {
-      providerHeaders = normalizeGenericProvider(provider);
-      provider = undefined;
-    }
-  }
-  return {
-    from: from[0],
-    to,
-    cc,
-    bcc,
-    ...(replyTo[0] ? { replyTo: replyTo[0] } : {}),
-    subject: input.subject,
-    ...(input.textBody !== undefined ? { textBody: input.textBody } : {}),
-    ...(input.htmlBody !== undefined ? { htmlBody: input.htmlBody } : {}),
-    ...(providerHeaders?.length ? { providerHeaders } : {}),
-    ...(provider !== undefined ? { provider } : {}),
-  };
-}
-
-function normalizeGenericProvider(provider: any) {
-  const providerEntries = captureMailProviderDataObject(provider, "provider", "generic SMTP");
-  const unsupported = providerEntries.map(([field]) => field).filter((field) => field !== "headers").sort();
-  if (unsupported.length > 0) {
-    throw mailError(
-      "UNSUPPORTED_MAIL_PROVIDER_FIELD",
-      `Unsupported generic SMTP provider field: ${unsupported[0]}.`,
-      "Use only `headers` in the generic SMTP provider object; addressing, MIME, authentication, and transport settings are not message-level provider fields.",
-    );
-  }
-  if (providerEntries.length === 0) return [];
-  const providerData = new Map(providerEntries);
-  const headerEntries = captureMailProviderDataObject(providerData.get("headers"), "provider.headers", "generic SMTP")
-    .map(([name, value]) => ({ name, normalizedName: name.toLowerCase(), value }))
-    .sort((left, right) => {
-      if (left.normalizedName < right.normalizedName) return -1;
-      if (left.normalizedName > right.normalizedName) return 1;
-      return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
-    });
-  if (headerEntries.length > 50) {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid generic SMTP provider data.", "Pass at most 50 `provider.headers` names.");
-  }
-  const seen = new Set<string>();
-  const protectedNames = new Set([
-    "x-from",
-    "x-to",
-    "x-cc",
-    "x-bcc",
-    "x-sender",
-    "x-reply-to",
-    "x-return-path",
-    "x-subject",
-    "x-content-type",
-    "x-content-transfer-encoding",
-    "x-mime-version",
-    "x-message-id",
-    "x-date",
-    // SendGrid's legacy X-SMTPAPI header can replace envelope recipients.
-    "x-smtpapi",
-  ]);
-  const protectedPrefixes = [
-    "x-envelope-",
-    "x-original-",
-    "x-delivered-",
-    "x-auth",
-    "x-smtp-",
-    "x-starttls",
-    "x-tls",
-  ];
-  const headers: { name: string; value: string; verbatim: boolean }[] = [];
-  for (const entry of headerEntries) {
-    if (!/^[Xx]-[A-Za-z0-9](?:[A-Za-z0-9-]{0,125})$/.test(entry.name)) {
-      throw mailError(
-        "INVALID_MAIL_MESSAGE",
-        "Invalid generic SMTP provider data.",
-        `Pass \`provider.headers.${entry.name}\` as a custom X-* header name containing only ASCII letters, numbers, and hyphens.`,
-      );
-    }
-    if (protectedNames.has(entry.normalizedName) || protectedPrefixes.some((prefix) => entry.normalizedName.startsWith(prefix))) {
-      throw mailError(
-        "INVALID_MAIL_MESSAGE",
-        "Invalid generic SMTP provider data.",
-        `Provider header \`${entry.name}\` is protected because it may alter addressing, MIME, authentication, or transport behavior.`,
-      );
-    }
-    if (seen.has(entry.normalizedName)) {
-      throw mailError("INVALID_MAIL_MESSAGE", "Invalid generic SMTP provider data.", `Provider header names collide case-insensitively at \`${entry.name}\`.`);
-    }
-    seen.add(entry.normalizedName);
-    for (const value of captureGenericHeaderValues(entry.value, `provider.headers.${entry.name}`)) {
-      if (
-        !/^[\x20-\x7e]+$/.test(value)
-        || value.trim() !== value
-        || entry.name.length + 2 + value.length > 998
-      ) {
-        throw mailError(
-          "INVALID_MAIL_MESSAGE",
-          "Invalid generic SMTP provider data.",
-          `Pass \`provider.headers.${entry.name}\` values as non-empty printable ASCII strings without leading or trailing whitespace that fit one SMTP header line of at most 998 characters.`,
-        );
-      }
-      headers.push({ name: entry.name, value, verbatim: true });
-    }
-  }
-  return headers;
-}
-
-function captureGenericHeaderValues(value: any, label: string) {
-  if (typeof value === "string") return [value];
-  const invalid = (detail: string): never => {
-    throw mailError(
-      "INVALID_MAIL_MESSAGE",
-      "Invalid generic SMTP provider data.",
-      `Pass \`${label}\` as a string or complete ordinary array of strings; ${detail}.`,
-    );
-  };
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    invalid("custom prototypes and non-array values are not supported");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") invalid("symbol fields are not supported");
-    const stringKey = key as string;
-    if (stringKey === "length") continue;
-    if (!/^(?:0|[1-9]\d*)$/.test(stringKey) || Number(stringKey) >= value.length) invalid(`field \`${stringKey}\` is not an array index`);
-    const descriptor = descriptors[stringKey];
-    if (!descriptor.enumerable) invalid(`field \`${stringKey}\` must be enumerable`);
-    if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) invalid(`field \`${stringKey}\` must not be an accessor`);
-  }
-  if (value.length < 1 || value.length > 50) invalid("arrays must contain one to 50 values");
-  const result = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = descriptors[String(index)];
-    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) invalid(`index ${index} must be an own data property`);
-    if (typeof descriptor.value !== "string") invalid(`index ${index} must be a string`);
-    result.push(descriptor.value);
-  }
-  return result;
-}
-
-function unsupportedMailProviderField(field: string) {
-  return mailError(
-    "UNSUPPORTED_MAIL_PROVIDER_FIELD",
-    `Unsupported Postmark provider field: ${field}.`,
-    "Use only `tag`, `metadata`, and `messageStream` in the Postmark provider object.",
-  );
-}
-
-function captureMailProviderDataObject(value: any, label: string, vendor = "Postmark") {
-  const invalid = (detail: string): never => {
-    throw mailError(
-      "INVALID_MAIL_MESSAGE",
-      `Invalid ${vendor} provider data.`,
-      `Pass \`${label}\` as a plain data object; ${detail}.`,
-    );
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    invalid("arrays and non-object values are not supported");
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    invalid("custom prototypes and inherited fields are not supported");
-  }
-  const entries: [string, any][] = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") invalid("symbol fields are not supported");
-    const stringKey = key as string;
-    const descriptor = Object.getOwnPropertyDescriptor(value, stringKey);
-    if (!descriptor) invalid(`field \`${stringKey}\` must have an own property descriptor`);
-    const ownDescriptor = descriptor as PropertyDescriptor;
-    if (!ownDescriptor.enumerable) invalid(`field \`${stringKey}\` must be enumerable`);
-    if (!Object.prototype.hasOwnProperty.call(ownDescriptor, "value")) {
-      invalid(`field \`${stringKey}\` must not be an accessor`);
-    }
-    entries.push([stringKey, ownDescriptor.value]);
-  }
-  return entries;
-}
-
-function captureMailProviderDataArray(value: any, label: string) {
-  const invalid = (detail: string): never => {
-    throw mailError(
-      "INVALID_MAIL_MESSAGE",
-      "Invalid Mailgun provider data.",
-      `Pass \`${label}\` as an ordinary data array; ${detail}.`,
-    );
-  };
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    invalid("custom prototypes and non-array values are not supported");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") invalid("symbol fields are not supported");
-    const stringKey = key as string;
-    if (stringKey === "length") continue;
-    if (!/^(?:0|[1-9]\d*)$/.test(stringKey) || Number(stringKey) >= value.length) {
-      invalid(`field \`${stringKey}\` is not an array index`);
-    }
-    const descriptor = descriptors[stringKey];
-    if (!descriptor.enumerable) invalid(`field \`${stringKey}\` must be enumerable`);
-    if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) invalid(`field \`${stringKey}\` must not be an accessor`);
-  }
-  const entries = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = descriptors[String(index)];
-    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
-      invalid(`index ${index} must be an own data property`);
-    }
-    entries.push(descriptor.value);
-  }
-  return entries;
-}
-
-function normalizePostmarkProvider(provider: any) {
-  const allowed = new Set(["tag", "metadata", "messageStream"]);
-  const providerEntries = captureMailProviderDataObject(provider, "provider");
-  const unsupported = providerEntries.map(([field]) => field).filter((field) => !allowed.has(field)).sort();
-  if (unsupported.length > 0) throw unsupportedMailProviderField(unsupported[0]);
-  const providerData = new Map(providerEntries);
-  const invalid = (hint: string): never => {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid Postmark provider data.", hint);
-  };
-  const headers: { name: string; value: string }[] = [];
-  const tag = providerData.get("tag");
-  if (providerData.has("tag")) {
-    if (typeof tag !== "string" || tag.length < 1 || tag.length > 1000 || /[\x00-\x1f\x7f]/.test(tag)) {
-      invalid("Pass `provider.tag` as one non-empty value of at most 1000 characters without control characters.");
-    }
-    headers.push({ name: "X-PM-Tag", value: encodeMimeHeaderValue(tag) });
-  }
-  const metadataValue = providerData.get("metadata");
-  if (providerData.has("metadata")) {
-    const metadata = captureMailProviderDataObject(metadataValue, "provider.metadata")
-      .map(([key, value]) => ({ originalKey: key, key: key.toLowerCase(), value }))
-      .sort((left, right) => {
-        if (left.key < right.key) return -1;
-        if (left.key > right.key) return 1;
-        if (left.originalKey < right.originalKey) return -1;
-        if (left.originalKey > right.originalKey) return 1;
-        return 0;
-      });
-    if (metadata.length > 10) invalid("Pass at most 10 Postmark metadata fields.");
-    const seen = new Set<string>();
-    for (const entry of metadata) {
-      if (!/^[a-z0-9][a-z0-9_-]{0,19}$/.test(entry.key)) {
-        invalid(`Postmark metadata key \`${entry.originalKey}\` must be 1 to 20 ASCII letters, numbers, hyphens, or underscores.`);
-      }
-      if (seen.has(entry.key)) {
-        invalid(`Postmark metadata keys collide case-insensitively at \`${entry.key}\`.`);
-      }
-      seen.add(entry.key);
-      const metadataValue = entry.value;
-      if (typeof metadataValue !== "string" || metadataValue.length > 80 || /[\x00-\x1f\x7f]/.test(metadataValue)) {
-        invalid(`Postmark metadata value \`${entry.originalKey}\` must be a string of at most 80 characters without control characters.`);
-      }
-      headers.push({
-        name: `X-PM-Metadata-${entry.key}`,
-        value: encodeMimeHeaderValue(metadataValue as string),
-      });
-    }
-  }
-  const messageStream = providerData.get("messageStream");
-  if (providerData.has("messageStream")) {
-    if (
-      typeof messageStream !== "string"
-      || !/^[a-z][a-z0-9_-]{0,29}$/.test(messageStream)
-      || messageStream.startsWith("pm-")
-    ) {
-      invalid("Pass `provider.messageStream` as a Postmark stream ID: 1 to 30 lowercase letters, numbers, hyphens, or underscores, beginning with a letter and not `pm-`.");
-    }
-    headers.push({ name: "X-PM-Message-Stream", value: messageStream });
-  }
-  return headers;
-}
-
-function normalizeMailgunProvider(provider: any) {
-  const allowed = new Set([
-    "tags",
-    "variables",
-    "recipientVariables",
-    "templateName",
-    "templateVersion",
-    "templateVariables",
-    "tracking",
-    "testMode",
-    "deliveryTime",
-    "deliverWithin",
-    "deliveryTimeOptimizePeriod",
-    "timeZoneLocalize",
-  ]);
-  const providerEntries = captureMailProviderDataObject(provider, "provider", "Mailgun");
-  const unsupported = (field: string): never => {
-    throw mailError(
-      "UNSUPPORTED_MAIL_PROVIDER_FIELD",
-      `Unsupported Mailgun provider field: ${field}.`,
-      `Use only ${[...allowed].map((allowedField) => `\`${allowedField}\``).join(", ")} in the Mailgun provider object.`,
-    );
-  };
-  const unsupportedFields = providerEntries.map(([field]) => field).filter((field) => !allowed.has(field)).sort();
-  if (unsupportedFields.length > 0) unsupported(unsupportedFields[0]);
-  const providerData = new Map(providerEntries);
-  const invalid = (hint: string): never => {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", hint);
-  };
-  const headers: { name: string; value: string; json?: boolean }[] = [];
-  const controlFreeString = (field: string, value: any, maximum = 128) => {
-    if (typeof value !== "string" || value.length < 1 || value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) {
-      invalid(`Pass \`provider.${field}\` as a non-empty string of at most ${maximum} characters without control characters.`);
-    }
-    return value as string;
-  };
-  const booleanHeader = (field: string, name: string) => {
-    if (!providerData.has(field)) return;
-    const value = providerData.get(field);
-    if (typeof value !== "boolean") invalid(`Pass \`provider.${field}\` as a boolean.`);
-    headers.push({ name, value: value ? "yes" : "no" });
-  };
-
-  if (providerData.has("tags")) {
-    const tags = providerData.get("tags");
-    if (!Array.isArray(tags) || tags.length < 1 || tags.length > 3) {
-      invalid("Pass `provider.tags` as an array containing one to three Mailgun tags.");
-    }
-    for (const tag of captureMailProviderDataArray(tags, "provider.tags")) {
-      if (typeof tag !== "string" || tag.length < 1 || tag.length > 128 || /[^\x20-\x7e]/.test(tag)) {
-        invalid("Pass each Mailgun tag as 1 to 128 printable ASCII characters.");
-      }
-      if (tag.trim() !== tag || /\s{2,}/.test(tag)) {
-        invalid("Pass Mailgun tags without leading, trailing, or repeated whitespace.");
-      }
-      headers.push({ name: "X-Mailgun-Tag", value: tag });
-    }
-  }
-
-  for (const [field, name, maximum] of [
-    ["variables", "X-Mailgun-Variables", 4096],
-    ["recipientVariables", "X-Mailgun-Recipient-Variables", 32 * 1024],
-  ] as const) {
-    if (!providerData.has(field)) continue;
-    const value = providerData.get(field);
-    if (field === "variables") {
-      try {
-        captureMailProviderDataObject(value, "provider.variables", "Mailgun");
-      } catch {
-        invalid("Pass `provider.variables` as a plain JSON dictionary.");
-      }
-    }
-    const json = serializeMailgunJson(value, `provider.${field}`, maximum);
-    if (field === "recipientVariables") {
-      const entries = captureMailProviderDataObject(value, "provider.recipientVariables", "Mailgun");
-      if (entries.length < 1 || entries.length > 1000) {
-        invalid("Pass `provider.recipientVariables` for one to 1000 recipients.");
-      }
-      for (const [recipient, variables] of entries) {
-        try {
-          const address = normalizeMailAddress(recipient, "provider.recipientVariables");
-          if (address.email !== recipient || address.name !== undefined) throw new Error("not plain");
-          captureMailProviderDataObject(variables, `provider.recipientVariables.${recipient}`, "Mailgun");
-        } catch {
-          invalid("Use plain ASCII recipient email addresses mapped to variable objects in `provider.recipientVariables`.");
-        }
-      }
-    }
-    foldMailgunJsonHeader(name, json);
-    headers.push({ name, value: json, json: true });
-  }
-
-  for (const [field, name] of [
-    ["templateName", "X-Mailgun-Template-Name"],
-    ["templateVersion", "X-Mailgun-Template-Version"],
-  ] as const) {
-    if (providerData.has(field)) {
-      const value = controlFreeString(field, providerData.get(field));
-      if (!/^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/.test(value) || / {2,}/.test(value)) {
-        invalid(`Pass \`provider.${field}\` as printable ASCII with only single internal spaces.`);
-      }
-      headers.push({ name, value });
-    }
-  }
-  if (providerData.has("templateVariables")) {
-    try {
-      captureMailProviderDataObject(providerData.get("templateVariables"), "provider.templateVariables", "Mailgun");
-    } catch {
-      invalid("Pass `provider.templateVariables` as a plain JSON dictionary.");
-    }
-    const templateVariables = serializeMailgunJson(providerData.get("templateVariables"), "provider.templateVariables", 32 * 1024);
-    foldMailgunJsonHeader("X-Mailgun-Template-Variables", templateVariables);
-    headers.push({
-      name: "X-Mailgun-Template-Variables",
-      value: templateVariables,
-      json: true,
-    });
-  }
-
-  if (providerData.has("tracking")) {
-    const tracking = providerData.get("tracking");
-    if (typeof tracking === "boolean") {
-      headers.push({ name: "X-Mailgun-Track", value: tracking ? "yes" : "no" });
-    } else {
-      const entries = captureMailProviderDataObject(tracking, "provider.tracking", "Mailgun");
-      const trackingAllowed = new Set(["enabled", "clicks", "opens", "pixelLocationTop"]);
-      const unknown = entries.map(([field]) => field).filter((field) => !trackingAllowed.has(field)).sort();
-      if (unknown.length > 0) unsupported(`tracking.${unknown[0]}`);
-      const data = new Map(entries);
-      for (const [field, name] of [
-        ["enabled", "X-Mailgun-Track"],
-        ["clicks", "X-Mailgun-Track-Clicks"],
-        ["opens", "X-Mailgun-Track-Opens"],
-        ["pixelLocationTop", "X-Mailgun-Track-Pixel-Location-Top"],
-      ] as const) {
-        if (!data.has(field)) continue;
-        const value = data.get(field);
-        if (field === "clicks") {
-          if (typeof value !== "boolean" && value !== "htmlonly") {
-            invalid("Pass `provider.tracking.clicks` as a boolean or `htmlonly`.");
-          }
-          headers.push({ name, value: value === "htmlonly" ? value : value ? "yes" : "no" });
-        } else {
-          if (typeof value !== "boolean") invalid(`Pass \`provider.tracking.${field}\` as a boolean.`);
-          headers.push({ name, value: value ? "yes" : "no" });
-        }
-      }
-    }
-  }
-
-  booleanHeader("testMode", "X-Mailgun-Drop-Message");
-
-  if (providerData.has("deliveryTime")) {
-    const deliveryTime = controlFreeString("deliveryTime", providerData.get("deliveryTime"));
-    if (
-      !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d [+-](?:[01]\d|2[0-3])[0-5]\d$/.test(deliveryTime)
-      || !Number.isFinite(Date.parse(deliveryTime))
-    ) {
-      invalid("Pass `provider.deliveryTime` in RFC 2822 format, for example `Fri, 14 Oct 2011 12:00:00 +0000`.");
-    }
-    headers.push({ name: "X-Mailgun-Deliver-By", value: deliveryTime });
-  }
-  if (providerData.has("deliverWithin")) {
-    const deliverWithin = controlFreeString("deliverWithin", providerData.get("deliverWithin"), 6);
-    const match = deliverWithin.match(/^(?:(\d{1,2})h)?(?:(\d{1,2})m)?$/);
-    const minutes = match ? Number(match[1] ?? 0) * 60 + Number(match[2] ?? 0) : 0;
-    if (!match || minutes < 5 || minutes > 24 * 60) {
-      invalid("Pass `provider.deliverWithin` in Mailgun's `1h30m` format, from 5m through 24h.");
-    }
-    headers.push({ name: "X-Mailgun-Deliver-Within", value: deliverWithin });
-  }
-  if (providerData.has("deliveryTimeOptimizePeriod")) {
-    const period = controlFreeString("deliveryTimeOptimizePeriod", providerData.get("deliveryTimeOptimizePeriod"), 5);
-    const hours = period.match(/^(\d{2})h$/)?.[1];
-    if (hours === undefined || Number(hours) < 24 || Number(hours) > 72) {
-      invalid("Pass `provider.deliveryTimeOptimizePeriod` from `24h` through `72h`.");
-    }
-    headers.push({ name: "X-Mailgun-Delivery-Time-Optimize-Period", value: period });
-  }
-  if (providerData.has("timeZoneLocalize")) {
-    const localize = controlFreeString("timeZoneLocalize", providerData.get("timeZoneLocalize"), 7);
-    const valid24Hour = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(localize);
-    const valid12Hour = /^(?:0[1-9]|1[0-2]):[0-5]\d(?:am|pm)$/.test(localize);
-    if (!valid24Hour && !valid12Hour) invalid("Pass `provider.timeZoneLocalize` as `HH:mm` or `hh:mmaa`.");
-    headers.push({ name: "X-Mailgun-Time-Zone-Localize", value: localize });
-  }
-  return headers;
-}
-
-function serializeMailgunJson(value: any, label: string, maximumBytes: number) {
-  const seen = new Set<any>();
-  const normalize = (candidate: any, path: string): any => {
-    if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
-    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
-    if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path} is cyclic`);
-      seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path)
-        .map((entry, index) => normalize(entry, `${path}[${index}]`));
-      seen.delete(candidate);
-      return result;
-    }
-    if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path} is cyclic`);
-      seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
-      const result = Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path}.${key}`);
-      seen.delete(candidate);
-      return result;
-    }
-    throw new Error(`${path} is not JSON-compatible`);
-  };
-  let json;
-  try {
-    json = JSON.stringify(normalize(value, label));
-  } catch {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Pass \`${label}\` as JSON-compatible plain data without accessors, symbols, hidden fields, custom prototypes, cycles, or non-finite numbers.`);
-  }
-  const asciiJson = json?.replace(/[^\x20-\x7e]/g, (character: string) => {
-    const code = character.charCodeAt(0);
-    return `\\u${code.toString(16).padStart(4, "0")}`;
-  });
-  if (asciiJson === undefined || Buffer.byteLength(asciiJson) > maximumBytes) {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Keep \`${label}\` within ${maximumBytes} UTF-8 bytes.`);
-  }
-  return asciiJson;
-}
-
-function mailJsonSize(value: any) {
-  const seen = new Set();
-  const json = JSON.stringify(value, (_key, candidate) => {
-    if (typeof candidate === "bigint" || typeof candidate === "function" || typeof candidate === "symbol" || candidate === undefined) {
-      throw new Error("not JSON");
-    }
-    if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error("cyclic");
-      seen.add(candidate);
-    }
-    return candidate;
-  });
-  if (typeof json !== "string") throw new Error("not JSON");
-  return Buffer.byteLength(json);
-}
-
-function normalizeMailAddresses(value: any, field: string, required: boolean) {
-  if (value === undefined || value === null) {
-    if (required) return [];
-    return [];
-  }
-  const values = Array.isArray(value) ? value : [value];
-  if (values.length === 0 && required) return [];
-  return values.map((entry) => normalizeMailAddress(entry, field));
-}
-
-function normalizeMailAddress(value: any, field: string) {
-  let email;
-  let name;
-  if (typeof value === "string") {
-    if (/[\x00-\x1f\x7f]/.test(value) || value.length > 320) {
-      throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} addresses without control characters.`);
-    }
-    const match = value.match(/^\s*(?:(.*?)\s*)?<([^<>]+)>\s*$/);
-    email = match ? match[2] : value.trim();
-    name = match?.[1]?.trim().replace(/^"(.*)"$/, "$1") || undefined;
-  } else if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every((key) => key === "email" || key === "name")) {
-    email = value.email;
-    name = value.name;
-  }
-  if (typeof email !== "string" || email.length < 3 || email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[^\x21-\x7e]/.test(email)) {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ASCII ${field} email addresses; internationalized envelopes are not supported.`);
-  }
-  if (name !== undefined && (typeof name !== "string" || name.length > 200 || /[\x00-\x1f\x7f]/.test(name))) {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} display names without control characters.`);
-  }
-  return { email, ...(name ? { name } : {}) };
-}
-
-function normalizeMailTransportError(error: any) {
-  const code = String(error?.code ?? "");
-  if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-    return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
-  }
-  if (code === "MAIL_TIMEOUT") return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
-  if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
-    return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
-  }
-  if (
-    code === "ETLS"
-    || code.startsWith("CERT_")
-    || code.startsWith("ERR_TLS_")
-    || code.startsWith("ERR_SSL_")
-    || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code)
-    || code === "MAIL_TLS_FAILED"
-  ) return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
-  if (code === "EREJECTED" || code === "MAIL_REJECTED") {
-    return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
-  }
-  return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
-}
-
-function createMailTransport(smtp: any) {
-  const sockets = new Set<any>();
-  let closed = false;
-  return {
-    async send(message: any) {
-      let socket: any;
-      let reader: any;
-      try {
-        if (closed) {
-          const error: any = new Error("closed");
-          error.code = "ECONNECTION";
-          throw error;
-        }
-        socket = await connectSmtpSocket(smtp);
-        sockets.add(socket);
-        reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
-        let encrypted = smtp.tls.mode === "implicit";
-        await reader.expect([220]);
-        const ehlo = await smtpCommand(socket, reader, `EHLO sporades.local`, [250]);
-        if (smtp.tls.mode === "required-starttls" || smtp.tls.mode === "opportunistic") {
-          if (/\bSTARTTLS\b/i.test(ehlo.text)) {
-            await smtpCommand(socket, reader, "STARTTLS", [220]);
-            const tls = await import("node:tls");
-            const upgraded = tls.connect({
-              socket,
-              servername: smtp.tls.servername ?? smtp.host,
-              rejectUnauthorized: smtp.tls.rejectUnauthorized,
-            });
-            sockets.delete(socket);
-            sockets.add(upgraded);
-            reader.replaceSocket(upgraded);
-            await new Promise((resolve, reject) => {
-              upgraded.once("secureConnect", resolve);
-              upgraded.once("error", reject);
-            }).catch((cause) => {
-              const error: any = new Error("TLS negotiation failed");
-              error.code = "ETLS";
-              error.cause = cause;
-              throw error;
-            });
-            await smtpCommand(upgraded, reader, "EHLO sporades.local", [250]);
-            encrypted = true;
-          } else if (smtp.tls.mode === "required-starttls") {
-            const error: any = new Error("STARTTLS unavailable");
-            error.code = "ETLS";
-            throw error;
-          }
-        }
-        const activeSocket = reader.socket();
-        if (smtp.auth.method !== "none" && !encrypted) {
-          const error: any = new Error("refusing SMTP authentication over plaintext");
-          error.code = "ETLS";
-          throw error;
-        }
-        if (smtp.auth.method === "PLAIN") {
-          const credential = Buffer.from(`\0${smtp.auth.username}\0${smtp.auth.password}`).toString("base64");
-          await smtpCommand(activeSocket, reader, `AUTH PLAIN ${credential}`, [235], "EAUTH");
-        } else if (smtp.auth.method === "LOGIN") {
-          await smtpCommand(activeSocket, reader, "AUTH LOGIN", [334], "EAUTH");
-          await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.username).toString("base64"), [334], "EAUTH");
-          await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.password).toString("base64"), [235], "EAUTH");
-        }
-        await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
-        const accepted = [];
-        const rejected = [];
-        for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
-          if (await smtpRecipientCommand(activeSocket, reader, recipient.email)) accepted.push(recipient.email);
-          else rejected.push(recipient.email);
-        }
-        if (accepted.length === 0) {
-          const error: any = new Error("all recipients rejected");
-          error.code = "EREJECTED";
-          throw error;
-        }
-        await smtpCommand(activeSocket, reader, "DATA", [354]);
-        const messageId = `<${randomUUID()}@sporades.local>`;
-        const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
-        activeSocket.write(`${raw}\r\n.\r\n`);
-        const delivered = await reader.expect([250], "EREJECTED");
-        activeSocket.write("QUIT\r\n");
-        return {
-          messageId: delivered.messageId ?? messageId,
-          accepted,
-          rejected,
-        };
-      } catch (error) {
-        // This is the trusted Sporades-owned SMTP boundary. Classify Node
-        // socket/TLS and runtime command errors here, then expose only a fresh
-        // stable mail Error to the outer runtime.
-        throw normalizeMailTransportError(error);
-      } finally {
-        reader?.close();
-        for (const candidate of [...sockets]) {
-          if (candidate === socket || candidate === reader?.socket()) {
-            sockets.delete(candidate);
-            candidate.destroy();
-          }
-        }
-      }
-    },
-    close() {
-      closed = true;
-      for (const socket of sockets) socket.destroy();
-      sockets.clear();
-    },
-  };
-}
-
-async function connectSmtpSocket(smtp: any) {
-  let socket: any;
-  if (smtp.tls.mode === "implicit") {
-    const tls = await import("node:tls");
-    socket = tls.connect({
-      host: smtp.host,
-      port: smtp.port,
-      servername: smtp.tls.servername ?? smtp.host,
-      rejectUnauthorized: smtp.tls.rejectUnauthorized,
-    });
-  } else {
-    const net = await import("node:net");
-    socket = net.connect({ host: smtp.host, port: smtp.port });
-  }
-  socket.setTimeout(smtp.socketTimeoutMs, () => {
-    const error: any = new Error("socket timeout");
-    error.code = "ESOCKETTIMEDOUT";
-    socket.destroy(error);
-  });
-  const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const error: any = new Error("connection timeout");
-      error.code = "ETIMEDOUT";
-      socket.destroy(error);
-    }, smtp.connectionTimeoutMs);
-    socket.once(event, () => {
-      clearTimeout(timer);
-      resolve(undefined);
-    });
-    socket.once("error", (error: any) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
-  return socket;
-}
-
-function createSmtpResponseReader(initialSocket: any, timeoutMs: number) {
-  let activeSocket = initialSocket;
-  let buffer = "";
-  let pending: any = null;
-  const onData = (chunk: any) => {
-    buffer += chunk.toString("utf8");
-    pending?.();
-  };
-  activeSocket.on("data", onData);
-  const replaceSocket = (next: any) => {
-    activeSocket.off("data", onData);
-    activeSocket = next;
-    activeSocket.on("data", onData);
-  };
-  return {
-    socket: () => activeSocket,
-    replaceSocket,
-    async expect(expected: number[], failureCode = "ECONNECTION") {
-      const deadline = Date.now() + timeoutMs;
-      while (true) {
-        const lines = buffer.split("\r\n");
-        let consumed = 0;
-        let complete = null;
-        for (const line of lines.slice(0, -1)) {
-          consumed += line.length + 2;
-          if (/^\d{3} /.test(line)) {
-            const code = Number(line.slice(0, 3));
-            const responseLines = buffer.slice(0, consumed).trimEnd();
-            complete = { code, text: responseLines, messageId: responseLines.match(/<[^<>\r\n]+>/)?.[0] };
-            break;
-          }
-        }
-        if (complete) {
-          buffer = buffer.slice(consumed);
-          if (!expected.includes(complete.code)) {
-            const error: any = new Error("unexpected SMTP response");
-            error.code = failureCode;
-            error.smtpCode = complete.code;
-            throw error;
-          }
-          return complete;
-        }
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          const error: any = new Error("SMTP response timeout");
-          error.code = "ESOCKETTIMEDOUT";
-          throw error;
-        }
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            cleanup();
-            const error: any = new Error("SMTP response timeout");
-            error.code = "ESOCKETTIMEDOUT";
-            reject(error);
-          }, remaining);
-          const onError = (error: any) => { cleanup(); reject(error); };
-          const onClose = () => {
-            cleanup();
-            const error: any = new Error("SMTP connection closed");
-            error.code = "ECONNECTION";
-            reject(error);
-          };
-          const cleanup = () => {
-            clearTimeout(timer);
-            activeSocket.off("error", onError);
-            activeSocket.off("close", onClose);
-            pending = null;
-          };
-          pending = () => { cleanup(); resolve(); };
-          activeSocket.once("error", onError);
-          activeSocket.once("close", onClose);
-        });
-      }
-    },
-    close() {
-      activeSocket.off("data", onData);
-      pending = null;
-    },
-  };
-}
-
-async function smtpCommand(socket: any, reader: any, command: string, expected: number[], failureCode = "ECONNECTION") {
-  socket.write(`${command}\r\n`);
-  return reader.expect(expected, failureCode);
-}
-
-async function smtpRecipientCommand(socket: any, reader: any, email: string) {
-  socket.write(`RCPT TO:<${email}>\r\n`);
-  try {
-    await reader.expect([250, 251], "EREJECTED");
-    return true;
-  } catch (error: any) {
-    if (error?.code === "EREJECTED" && error?.smtpCode >= 400 && error?.smtpCode <= 599) return false;
-    throw error;
-  }
-}
-
-function buildSmtpMessage(message: any) {
-  const formatAddress = (address: any) => address.name
-    ? `${encodeMimeHeaderValue(address.name, true)} <${address.email}>`
-    : address.email;
-  const headers = [
-    foldMimeHeader("From", formatAddress(message.from)),
-    foldMimeHeader("To", message.to.map(formatAddress).join(", ")),
-    ...(message.cc.length ? [foldMimeHeader("Cc", message.cc.map(formatAddress).join(", "))] : []),
-    ...(message.replyTo ? [foldMimeHeader("Reply-To", formatAddress(message.replyTo))] : []),
-    foldMimeHeader("Subject", encodeMimeHeaderValue(message.subject)),
-    `Date: ${new Date().toUTCString()}`,
-    `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
-    "MIME-Version: 1.0",
-    ...(message.providerHeaders ?? []).map((header: any) => header.json
-      ? foldMailgunJsonHeader(header.name, header.value)
-      : header.verbatim
-        ? `${header.name}: ${header.value}`
-        : foldMimeHeader(header.name, header.value)),
-  ];
-  if (message.textBody !== undefined && message.htmlBody !== undefined) {
-    const boundary = `sporades-${randomUUID()}`;
-    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
-    return `${headers.join("\r\n")}\r\n\r\n--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodeMimeBase64(message.textBody)}\r\n--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodeMimeBase64(message.htmlBody)}\r\n--${boundary}--`;
-  }
-  const html = message.htmlBody !== undefined;
-  headers.push(`Content-Type: ${html ? "text/html" : "text/plain"}; charset=utf-8`, "Content-Transfer-Encoding: base64");
-  return `${headers.join("\r\n")}\r\n\r\n${encodeMimeBase64(html ? message.htmlBody : message.textBody)}`;
-}
-
-function encodeMimeHeaderValue(value: string, quoteAscii = false) {
-  const text = String(value);
-  if (/^[\x20-\x7e]*$/.test(text) && Buffer.byteLength(text) <= 70) {
-    return quoteAscii ? `"${text.replace(/(["\\])/g, "\\$1")}"` : text;
-  }
-  const chunks = [];
-  let current = "";
-  for (const character of text) {
-    // 39 UTF-8 bytes encode to at most 64 encoded-word characters. That leaves
-    // room for the longest emitted field prefix (`Reply-To: `) while keeping
-    // every encoded-word header line within RFC 2047's 76-character limit.
-    if (current && Buffer.byteLength(current + character) > 39) {
-      chunks.push(current);
-      current = "";
-    }
-    current += character;
-  }
-  if (current) chunks.push(current);
-  return chunks.map((chunk) => `=?UTF-8?B?${Buffer.from(chunk).toString("base64")}?=`).join(" ");
-}
-
-function foldMimeHeader(name: string, value: string) {
-  const prefix = `${name}: `;
-  const tokens = String(value).split(/(?<=,)\s+|\s+/);
-  const lines = [];
-  let line = prefix;
-  for (const token of tokens) {
-    if (!token) continue;
-    const separator = line === prefix || line === " " ? "" : " ";
-    const candidate = `${line}${separator}${token}`;
-    const lineLimit = candidate.includes("=?UTF-8?B?") ? 76 : 78;
-    if (candidate.length <= lineLimit) {
-      line = candidate;
-    } else {
-      lines.push(line === prefix ? line.trimEnd() : line);
-      line = ` ${token}`;
-    }
-  }
-  if (line !== prefix) lines.push(line);
-  if (lines.some((candidate) => candidate.length > 998)) {
-    throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `${name} cannot be encoded within SMTP header line limits.`);
-  }
-  return lines.join("\r\n");
-}
-
-function foldMailgunJsonHeader(name: string, value: string) {
-  const text = String(value);
-  const tokens = [];
-  for (let index = 0; index < text.length;) {
-    const character = text[index];
-    if ("{}[],:".includes(character)) {
-      tokens.push(character);
-      index += 1;
-      continue;
-    }
-    const start = index;
-    if (character === "\"") {
-      index += 1;
-      let escaped = false;
-      while (index < text.length) {
-        const next = text[index];
-        index += 1;
-        if (escaped) escaped = false;
-        else if (next === "\\") escaped = true;
-        else if (next === "\"") break;
-      }
-    } else {
-      while (index < text.length && !"{}[],:\"".includes(text[index])) index += 1;
-    }
-    tokens.push(text.slice(start, index));
-  }
-  const prefix = `${name}: `;
-  const lines = [];
-  let line = prefix;
-  for (const token of tokens) {
-    if (token.length > 997) {
-      throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} JSON keys and values must each encode within 997 characters so Sporades can fold them before SMTP delivery.`);
-    }
-    if (`${line}${token}`.length <= 78) {
-      line += token;
-      continue;
-    }
-    if (line !== prefix && line !== " ") {
-      lines.push(line);
-      line = ` ${token}`;
-    } else {
-      line += token;
-    }
-    if (line.length > 998) {
-      throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} contains a JSON token that cannot be folded within SMTP's 998-character line limit.`);
-    }
-  }
-  if (line !== prefix) lines.push(line);
-  return lines.join("\r\n");
-}
-
-function encodeMimeBase64(value: string) {
-  return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
-}
 
 export async function openDevDatabase(
   databasePath: string,
@@ -2038,7 +445,7 @@ export async function openDevDatabase(
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
     : extractMutationHandlers(serverSource)) as any[];
   const messages = extractMessageHandlers(serverSource);
-  const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
@@ -2047,7 +454,6 @@ export async function openDevDatabase(
   const rowCache = new Map();
   const database: LooseRecord = {
     adapter: sqlite,
-    sqlite,
     schema,
     endpoints,
     queries,
@@ -2074,6 +480,7 @@ export async function openDevDatabase(
     serverEnv,
     mail,
     authConfig: authStatus(config, serverEnv),
+    passwordResetConfig: resolvePasswordResetConfig(config),
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -2085,7 +492,7 @@ export async function openDevDatabase(
       database.__scheduleTimers?.clear?.();
       if (database.__jobWakeTimer) { database.clock.clearTimer(database.__jobWakeTimer); database.__jobWakeTimer = null; }
       const mailResult = database.mail.close();
-      const sqliteResult = database.sqlite.close();
+      const sqliteResult = database.adapter.close();
       const storageResult = database.fileStorage.close();
       const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
       return pending.length > 0 ? Promise.all(pending) : undefined;
@@ -2156,111 +563,11 @@ function resolveJourneySessionInactivityMinutes(config: RuntimeConfig = {}) {
   return Math.min(1_440, Math.max(1, Math.round(value)));
 }
 
-function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
-  const schedules: any[] = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {}) as [string, any][]) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
-    const expression = parseScheduleExpression(definition.expression);
-    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
-    const payload = definition.payload === undefined ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    const retry = normalizeJobRetry(definition.retry);
-    const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
-    const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
-  }
-  return schedules;
-}
-
-function resolveSchedulePayloadFactoryTimeoutMs(config: RuntimeConfig = {}) {
-  const scheduling = config.scheduling;
-  if (scheduling === undefined) return 30_000;
-  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  return seconds * 1000;
-}
-
-function parseScheduleExpression(value: any) {
-  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
-  const ranges = [[0,59],[0,23],[1,31],[1,12],[0,7]];
-  const fields: any = parts.map((part, index) => {
-    const values = new Set<number>();
-    for (const item of part.split(",")) {
-      const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || (stepText !== undefined && (!/^\d+$/.test(stepText) || Number(stepText) < 1))) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
-      const step = stepText === undefined ? 1 : Number(stepText);
-      let start: number, end: number;
-      if (base === "*") [start,end] = ranges[index];
-      else if (/^\d+$/.test(base)) start = end = Number(base);
-      else { const match = /^(\d+)-(\d+)$/.exec(base); if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps."); start=Number(match[1]); end=Number(match[2]); }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current=start; current<=end; current+=step) values.add(index === 4 && current === 7 ? 0 : current);
-    }
-    return values;
-  });
-  fields.restricted = parts.map((part) => part !== "*");
-  return fields;
-}
-
-function resolveScheduleTimezone(value: any) {
-  if (value !== undefined && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
-  const requested = value === undefined ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
-  } catch {
-    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
-  }
-}
-
-function scheduleWallClockParts(formatter: Intl.DateTimeFormat, instant: Date) {
-  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
-}
-
-function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone: timezone, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  });
-  const candidate = new Date(after.getTime());
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  // Eight years covers the longest gap between valid annual Gregorian dates:
-  // leap day immediately before a non-leap century (for example 2096 to 2104).
-  for (let count=0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes()+1)) {
-    const local = scheduleWallClockParts(formatter, candidate);
-    const dom = fields[2].has(local.day); const dow = fields[4].has(local.weekday);
-    const domRestricted = (fields as any).restricted?.[2] ?? fields[2].size !== 31; const dowRestricted = (fields as any).restricted?.[4] ?? fields[4].size !== 7;
-    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
-  }
-  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
-}
-
-async function ensureScheduleStorage(sqlite: LooseRecord) {
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT)");
-  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)");
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor)");
-}
-
 async function reconcileSchedules(database: LooseRecord) {
   const now = database.clock.now();
+  const sql = database.adapter.dialect.sql;
   const declaredNames = new Set(database.schedules.map((definition: any) => definition.name));
-  const persisted = await database.sqlite.prepare("SELECT * FROM sporades_schedules").all();
+  const persisted = await database.adapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
   const plans = [];
   for (const definition of database.schedules) {
     const row = persisted.find((candidate: any) => candidate.name === definition.name);
@@ -2286,17 +593,21 @@ async function reconcileSchedules(database: LooseRecord) {
   // Every declaration, including calendars with no possible future instant,
   // has now been evaluated without mutating durable state.
   for (const row of persisted) {
-    if (!declaredNames.has(String(row.name))) await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
+    if (!declaredNames.has(String(row.name))) await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
   }
+  const updateScheduleSql = sql(
+    "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [expression]=?, [effectiveTimezone]=?, " +
+    "[missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?",
+  );
   for (const { definition, row, nextOccurrence } of plans) {
-    if (row) await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+    if (row) await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
     else {
       try {
-        await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+        await database.adapter.prepare(sql("INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?)")).run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
       } catch (error) {
-        const concurrent = await database.sqlite.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
+        const concurrent = await database.adapter.prepare(sql("SELECT [name] FROM [sporades_schedules] WHERE [name]=?")).get(definition.name);
         if (!concurrent) throw error;
-        await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+        await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
       }
     }
     definition.nextOccurrence = nextOccurrence;
@@ -2334,18 +645,8 @@ async function startStaticSchedules(database: LooseRecord) {
   }
 }
 
-async function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any) {
-  const scheduledFor = occurrence.toISOString();
-  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const completedAt = database.clock.now().toISOString();
-  const code = "SCHEDULE_ENQUEUE_FAILED";
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
-}
-
 async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
+  const sql = database.adapter.dialect.sql;
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
   if (!claim) {
     // Another runtime owns this exact occurrence. Advance only this runtime's
@@ -2357,16 +658,12 @@ async function recordScheduledOccurrence(database: LooseRecord, definition: any,
   const state = await enqueueScheduledOccurrence(database, definition, occurrence);
   if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
   const completedAt = database.clock.now().toISOString();
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [claimToken]=?")).run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
   if (database.__scheduleStopped) return state;
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
   return state;
-}
-
-function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string) {
-  return createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
 }
 
 async function claimScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
@@ -2376,29 +673,31 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + 30_000).toISOString();
+  const sql = database.adapter.dialect.sql;
   try {
-    await database.sqlite.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
+    await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
     return { id, token };
   } catch (error) {
-    const existing = await database.sqlite.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
+    const existing = await database.adapter.prepare(sql("SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
     if (!existing) throw error;
     if (existing.status !== "pending") return null;
     if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
       schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
       return null;
     }
-    const result = await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
+    const result = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, nowIso);
     return Number(result.changes) === 1 ? { id, token } : null;
   }
 }
 
 async function recoverPendingScheduleOccurrences(database: LooseRecord) {
-  const rows = await database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?) ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all(database.clock.now().toISOString());
   for (const row of rows) {
     const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
     if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
   }
-  const next = await database.sqlite.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
+  const next = await database.adapter.prepare(sql("SELECT [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [claimExpiresAt] IS NOT NULL ORDER BY [claimExpiresAt] ASC LIMIT 1")).get();
   if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
 }
 
@@ -2439,2459 +738,12 @@ export async function enqueueScheduledOccurrence(database: LooseRecord, definiti
   return state;
 }
 
-async function acquireSchedulePayloadFactorySlot(database: LooseRecord) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise<void>((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
-  };
-}
-
-async function acquireSchedulePayloadFactoryLane(database: LooseRecord, scheduleName: string) {
-  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
-  let unlock: () => void = () => {};
-  const current = new Promise<void>((resolve) => { unlock = resolve; });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current);
-  if (previous) await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
-  };
-}
-
-async function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord) {
-  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
-  let releaseSlot: (() => void) | undefined;
-  const controller = new AbortController();
-  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? new Set();
-  controllers.add(controller);
-  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
-  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
-  let timeout: any;
-  try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
-    const timeoutFailure = new Promise((_resolve, reject) => {
-      timeout = database.clock.setTimer(() => {
-        controller.abort();
-        const error: any = new Error("Schedule payload factory timed out.");
-        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
-        reject(error);
-      }, database.schedulePayloadFactoryTimeoutMs);
-    });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error: any = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
-    database.clock.clearTimer(timeout);
-    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    return { ok: true, value };
-  } catch (error: any) {
-    database.clock.clearTimer(timeout);
-    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code
-      : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}`
-      : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
-    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
-    return { ok: false };
-  } finally {
-    controllers.delete(controller);
-    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
-    releaseSlot?.();
-    releaseLane();
-  }
-}
-
-function abortSchedulePayloadFactories(database: LooseRecord) {
-  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
-}
-
 async function recoverExpiredJobLeases(database: LooseRecord) {
   const recoveredAt = database.clock.now(); const recoveredIso = recoveredAt.toISOString();
-  const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
-  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
+  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
   if(rows.some((row: any) => Number(row.attempts) < JSON.parse(row.retryJson||'{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
-}
-
-function createRuntimeClock(clock: LooseRecord | undefined) {
-  if (clock) return clock;
-  return {
-    now: () => new Date(),
-    setTimer: (callback: () => any, delayMs: number) => setTimeout(callback, delayMs),
-    clearTimer: (timer: any) => clearTimeout(timer),
-  };
-}
-
-/** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
-export function createControllableRuntimeClock(initialInstant: string | number | Date) {
-  let nowMs = new Date(initialInstant).getTime();
-  if (!Number.isFinite(nowMs)) throw new TypeError("Invalid initial runtime clock instant.");
-  let nextId = 1;
-  const timers = new Map<number, { id: number; dueAt: number; callback: () => any }>();
-  return {
-    now: () => new Date(nowMs),
-    setInstant(instant: string | number | Date) {
-      const next = new Date(instant).getTime();
-      if (!Number.isFinite(next)) throw new TypeError("Invalid runtime clock instant.");
-      nowMs = next;
-    },
-    advanceBy(delayMs: number) {
-      if (!Number.isFinite(delayMs) || delayMs < 0) throw new TypeError("Runtime clock advance must be non-negative.");
-      nowMs += delayMs;
-    },
-    setTimer(callback: () => any, delayMs: number) {
-      const id = nextId++;
-      timers.set(id, { id, dueAt: nowMs + Math.max(0, delayMs), callback });
-      return id;
-    },
-    clearTimer(id: number) { timers.delete(id); },
-    async runDueTimers() {
-      while (true) {
-        const due = [...timers.values()].filter((timer) => timer.dueAt <= nowMs)
-          .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
-        if (!due) return;
-        timers.delete(due.id);
-        await due.callback();
-      }
-    },
-  };
-}
-
-function jobHandlersFromCapsuleDefinition(capsuleDefinition: any) {
-  const handlers: any[] = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {}) as [string, any][]) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
-    }
-    if (handlers.some((handler) => handler.name === name)) {
-      throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
-    }
-    handlers.push({ name, handler: definition.handler });
-  }
-  return handlers;
-}
-
-async function ensureJobStorage(sqlite: LooseRecord) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_jobs (" +
-      "id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, actorProvider TEXT, " +
-      "payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, " +
-      "idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)"
-  );
-  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
-  await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) if (!columns.some((column: any) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
-  await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
-}
-
-async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
-  if (
-    config.services?.database?.engine === "libsql" &&
-    serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
-    serverEnv.SPORADES_SERVICE_DATABASE_URL
-  ) {
-    return await createLibsqlDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
-      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN,
-    });
-  }
-  if (
-    config.services?.database?.engine === "postgres" &&
-    serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" &&
-    serverEnv.SPORADES_SERVICE_DATABASE_URL
-  ) {
-    return await createPostgresDatabaseAdapter({
-      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
-    });
-  }
-  return await createSqliteDatabaseAdapter(databasePath);
-}
-
-export async function createRuntimeInspectionAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord | null> {
-  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
-  }
-  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
-    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
-  }
-  if (!existsSync(String(databasePath))) return null;
-  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
-}
-
-export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }: { config?: RuntimeConfig; databasePath: string; serviceEnv?: RuntimeEnv }) {
-  const path = await import("node:path");
-  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
-    return createS3CompatibleFileStorageAdapter({
-      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
-      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
-      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
-      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
-      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule",
-    });
-  }
-  return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path.join(path.dirname(databasePath), "files"),
-  });
-}
-
-export function createLocalFileStorageAdapter({ storagePath }: { storagePath: string }) {
-  if (typeof storagePath !== "string" || storagePath.length === 0) {
-    throw new Error("Local file storage requires a storagePath.");
-  }
-
-  return {
-    engine: "local",
-    storagePath,
-    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
-      const { mkdir, writeFile } = await import("node:fs/promises");
-      await mkdir(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile(localFileVersionPath(storagePath, fileId, version), bytes);
-    },
-    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const { readFile } = await import("node:fs/promises");
-      return await readFile(localFileVersionPath(storagePath, fileId, version));
-    },
-    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const { rm } = await import("node:fs/promises");
-      await rm(localFileVersionPath(storagePath, fileId, version), { force: true });
-    },
-    async checkHealth() {
-      const { mkdir, rm, writeFile } = await import("node:fs/promises");
-      const path = await import("node:path");
-      const probeDirectory = path.join(storagePath, ".sporades-health");
-      const probeFile = path.join(probeDirectory, `${randomUUID()}.tmp`);
-      try {
-        await mkdir(probeDirectory, { recursive: true });
-        await writeFile(probeFile, "");
-        await rm(probeFile, { force: true });
-        return { ok: true };
-      } catch {
-        await rm(probeFile, { force: true }).catch(() => { });
-        return { ok: false };
-      }
-    },
-    close() { },
-  };
-}
-
-function localFileStoragePath(storagePath: string, fileId: string) {
-  return `${storagePath}/${fileId}`;
-}
-
-function localFileVersionPath(storagePath: string, fileId: string, version: string | number) {
-  return `${localFileStoragePath(storagePath, fileId)}/${version}`;
-}
-
-export function createS3CompatibleFileStorageAdapter({
-  endpoint,
-  bucket,
-  region,
-  accessKey,
-  secretKey,
-  namespace,
-}: {
-  endpoint: string;
-  bucket: string;
-  region: string;
-  accessKey: string;
-  secretKey: string;
-  namespace: string;
-}) {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    throw new Error("S3-compatible file storage requires an endpoint.");
-  }
-  if (typeof bucket !== "string" || bucket.length === 0) {
-    throw new Error("S3-compatible file storage requires a bucket.");
-  }
-  if (typeof region !== "string" || region.length === 0) {
-    throw new Error("S3-compatible file storage requires a region.");
-  }
-  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
-    throw new Error("S3-compatible file storage requires access credentials.");
-  }
-  const isolatedNamespace = s3StorageNamespace(namespace);
-
-  const config = { endpoint, bucket, region, accessKey, secretKey };
-  let bucketReady = false;
-  const ensureBucket = async () => {
-    if (bucketReady) {
-      return;
-    }
-    const head = await s3Request(config, { method: "HEAD", key: null });
-    if (head.statusCode === 404) {
-      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
-      if (created.statusCode < 200 || created.statusCode >= 300) {
-        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
-      }
-    } else if (head.statusCode < 200 || head.statusCode >= 300) {
-      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
-    }
-    bucketReady = true;
-  };
-
-  return {
-    engine: "s3-compatible",
-    endpoint,
-    bucket,
-    region,
-    namespace: isolatedNamespace,
-    objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
-      await ensureBucket();
-      const result = await s3Request(config, {
-        method: "PUT",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-        body: bytes,
-      });
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const result = await s3Request(config, {
-        method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-      });
-      if (result.statusCode === 404) {
-        throw s3ObjectNotFoundError();
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
-      }
-      return result.body;
-    },
-    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
-      const result = await s3Request(config, {
-        method: "DELETE",
-        key: s3ObjectKey(isolatedNamespace, fileId, version),
-      });
-      if (result.statusCode === 404) {
-        return;
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async checkHealth() {
-      try {
-        await ensureBucket();
-        return { ok: true, adapter: "s3-compatible" };
-      } catch {
-        return { ok: false, adapter: "s3-compatible" };
-      }
-    },
-    close() { },
-  };
-}
-
-function s3ObjectKey(namespace: string, fileId: string, version: string | number) {
-  return `${namespace}/files/${fileId}/${version}`;
-}
-
-async function s3Request(
-  config: { endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string },
-  { method, key = null, body = null }: { method: string; key: string | null; body?: any },
-): Promise<S3RequestResult> {
-  const endpoint = new URL(config.endpoint);
-  const isHttps = endpoint.protocol === "https:";
-  const transport = await import(isHttps ? "node:https" : "node:http");
-  const payload = s3RequestBodyBuffer(body);
-  const amzDate = s3AmzDate(new Date());
-  const date = amzDate.slice(0, 8);
-  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
-  const payloadHash = s3Sha256Hex(payload);
-  const headers = s3SignedHeaders({
-    "host": endpoint.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-  });
-  headers.authorization = s3Signature({
-    method,
-    pathname,
-    query: "",
-    headers,
-    payloadHash,
-    accessKey: config.accessKey,
-    secretKey: config.secretKey,
-    region: config.region,
-    date,
-    amzDate,
-  });
-
-  return await new Promise<S3RequestResult>((resolve, reject) => {
-    const request = transport.request(
-      {
-        protocol: endpoint.protocol,
-        hostname: endpoint.hostname,
-        port: endpoint.port || undefined,
-        method,
-        path: `${pathname}${endpoint.search}`,
-        headers: {
-          ...headers,
-          "content-length": payload.length,
-        },
-      },
-      (response: IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: any) => chunks.push(Buffer.from(chunk)));
-        response.on("end", () => {
-          resolve({
-            statusCode: response.statusCode ?? 0,
-            headers: response.headers,
-            body: Buffer.concat(chunks),
-          });
-        });
-      },
-    );
-    request.on("error", reject);
-    if (payload.length > 0) {
-      request.write(payload);
-    }
-    request.end();
-  });
-}
-
-function s3RequestBodyBuffer(body: WithImplicitCoercion<ArrayLike<number>> | null | undefined) {
-  if (body === null || body === undefined) {
-    return Buffer.alloc(0);
-  }
-  if (Buffer.isBuffer(body)) {
-    return body;
-  }
-  if (body instanceof Uint8Array) {
-    return Buffer.from(body);
-  }
-  return Buffer.from(String(body));
-}
-
-function s3SignedHeaders(headers: Record<string, unknown>) {
-  return Object.fromEntries(
-    Object.entries(headers)
-      .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
-      .sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
-
-function s3Signature({
-  method,
-  pathname,
-  query,
-  headers,
-  payloadHash,
-  accessKey,
-  secretKey,
-  region,
-  date,
-  amzDate,
-}: {
-  method: string;
-  pathname: string;
-  query: string;
-  headers: Record<string, string>;
-  payloadHash: string;
-  accessKey: string;
-  secretKey: string;
-  region: string;
-  date: string;
-  amzDate: string;
-}) {
-  const signedHeaders = Object.keys(headers).join(";");
-  const canonicalHeaders = Object.entries(headers)
-    .map(([name, value]) => `${name}:${value}\n`)
-    .join("");
-  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
-  const credentialScope = `${date}/${region}/s3/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
-  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
-  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
-
-function s3SigningKey(secretKey: any, date: any, region: any) {
-  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
-  const dateRegionKey = s3Hmac(dateKey, region);
-  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
-  return s3Hmac(dateRegionServiceKey, "aws4_request");
-}
-
-function s3CanonicalPath(basePath: string, bucket: string, key: string | null) {
-  const base = String(basePath ?? "")
-    .split("/")
-    .filter(Boolean);
-  const parts = [...base, bucket, ...(key ? String(key).split("/") : [])].map(s3EncodedPathSegment);
-  return `/${parts.join("/")}`;
-}
-
-function s3EncodedPathSegment(segment: string | number | boolean) {
-  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function s3StorageNamespace(namespace: string) {
-  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
-    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
-  }
-  return `capsules/${namespace}`;
-}
-
-function s3AmzDate(date: Date) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-
-function s3Hmac(key: BinaryLike | NonSharedBuffer | KeyObject, data: BinaryLike) {
-  return createHmac("sha256", key).update(data).digest();
-}
-
-function s3Sha256Hex(data: BinaryLike | Buffer<ArrayBufferLike>) {
-  return createHash("sha256").update(data).digest("hex");
-}
-
-function s3ObjectNotFoundError() {
-  const error: HelperError = new Error("S3-compatible file object not found.");
-  error.code = "ENOENT";
-  return error;
-}
-
-export async function createSqliteDatabaseAdapter(databasePath: PathLike, options: LooseRecord = {}) {
-  const { DatabaseSync } = await import("node:sqlite");
-  const path = await import("node:path");
-  if (!options.readOnly) mkdirSync(path.dirname(String(databasePath)), { recursive: true });
-  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
-
-  const adapter = {
-    engine: "sqlite",
-    exec(sql: string) {
-      return connection.exec(sql);
-    },
-    prepare(sql: string) {
-      const statement = connection.prepare(sql);
-      return {
-        all(...params: any[]) {
-          return statement.all(...params);
-        },
-        get(...params: any[]) {
-          return statement.get(...params);
-        },
-        run(...params: string[]) {
-          return statement.run(...params);
-        },
-        columns() {
-          return statement.columns();
-        },
-      };
-    },
-    ensureSystemTable() {
-      return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    },
-    readSystemMetadata(key: string) {
-      return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
-    },
-    writeSystemMetadata(key: string, value: any) {
-      return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
-    },
-    readSchemaMetadata() {
-      return this.readSystemMetadata("schema");
-    },
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      this.writeSystemMetadata("schemaVersion", schemaVersion);
-      this.writeSystemMetadata("schemaHash", schemaHash);
-      this.writeSystemMetadata("schema", schemaJson);
-    },
-    ensureLogStorage() {
-      return createLogIndexTables(this);
-    },
-    insertLogIndexEvent(event: any) {
-      return insertLogIndexEvent(this, event);
-    },
-    pruneLogIndex(limit: any) {
-      return pruneLogIndex(this, limit);
-    },
-    readRecentLogEvents(limit: number | undefined) {
-      return readRecentLogEvents(this, limit);
-    },
-    ensureFileStorage() {
-      return createFileStorageTables(this);
-    },
-    findFileBucket(ownerId: any, name: any) {
-      return this.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(ownerId, name) ?? null;
-    },
-    createFileBucket(row: { id: any; ownerId: any; name: any; createdAt: any; }) {
-      return this.prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)").run(
-        row.id,
-        row.ownerId,
-        row.name,
-        row.createdAt,
-      );
-    },
-    insertFileRow(row: { id: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; createdAt: any; updatedAt: any; }) {
-      return this.prepare(
-        "INSERT INTO sporades_files " +
-        "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
-      ).run(
-        row.id,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.size,
-        row.version,
-        row.status,
-        row.createdAt,
-        row.updatedAt,
-      );
-    },
-    updatePendingFileRow(row: { bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; updatedAt: any; id: any; }) {
-      return this.prepare(
-        "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
-      ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
-    },
-    insertFileUpload(row: { id: any; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; version: any; expectedSize: any; createdAt: any; }) {
-      return this.prepare(
-        "INSERT INTO sporades_file_uploads " +
-        "(id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        row.id,
-        row.fileId,
-        row.ownerId,
-        row.bucketId,
-        row.bucketName,
-        row.path,
-        row.name,
-        row.type,
-        row.version,
-        row.expectedSize,
-        row.createdAt,
-      );
-    },
-    selectFileById(fileId: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
-    },
-    selectLiveFileByPath(path: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path, "uploaded");
-    },
-    selectActiveFileByPath(path: any) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
-        path,
-        "pending",
-        "uploaded",
-      );
-    },
-    selectPendingFileUploadByPath(path: any) {
-      return (
-        this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path) ?? null
-      );
-    },
-    selectFileUpload(uploadId: any) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
-    },
-    completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
-      const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
-        upload.id,
-        upload.fileId,
-        upload.version,
-      );
-      if (consumed.changes === 0) {
-        return consumed;
-      }
-      const existing = this.selectFileById(upload.fileId);
-      if (existing) {
-        if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
-          return { changes: 0 };
-        }
-        return this.prepare(
-          "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL",
-        ).run(
-          upload.bucketId,
-          upload.bucketName,
-          upload.path,
-          upload.name,
-          upload.type,
-          size,
-          upload.version,
-          "uploaded",
-          updatedAt,
-          upload.fileId,
-        );
-      }
-      return this.insertFileRow({
-        id: upload.fileId,
-        ownerId: upload.ownerId,
-        bucketId: upload.bucketId,
-        bucketName: upload.bucketName,
-        path: upload.path,
-        name: upload.name,
-        type: upload.type,
-        size,
-        version: upload.version,
-        status: "uploaded",
-        createdAt: upload.createdAt,
-        updatedAt,
-      });
-    },
-    deleteFileUploadsForPath(path: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path);
-    },
-    deleteFileUploadsForFile(ownerId: any, fileId: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
-    },
-    deleteFileUpload(uploadId: any) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
-    },
-    selectPublicFileRow(publicUrlId: any) {
-      return (
-        this.prepare(
-          "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
-          "f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
-          "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
-          "WHERE p.id = ?",
-        ).get(publicUrlId) ?? null
-      );
-    },
-    insertPublicFileUrl(row: { id: any; fileId: any; ownerId: any; version: any; expiresAt: any; createdAt: any; }) {
-      return this.prepare(
-        "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
-      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
-    },
-    revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL").run(
-        revokedAt,
-        publicUrlId,
-        ownerId,
-      );
-    },
-    revokePublicFileUrlsForFile(fileId: any, revokedAt: any) {
-      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL").run(
-        revokedAt,
-        fileId,
-      );
-    },
-    markFileDeleted(fileId: any, deletedAt: any) {
-      return this.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(deletedAt, deletedAt, fileId);
-    },
-    fileRowForOwner(fileId: any, ownerId: any) {
-      return (
-        this.prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?").get(
-          fileId,
-          ownerId,
-          "uploaded",
-        ) ?? null
-      );
-    },
-    ensureAuthStorage(authConfig: any = null) {
-      return createAnonymousAuthTables(this, authConfig);
-    },
-    ensureUserPreferencesStorage() {
-      return createUserPreferencesTables(this);
-    },
-    readUserPreferences(userId: any) {
-      return this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
-    },
-    saveUserPreferences(row: { userId: any; value: any; updatedAt: any; }) {
-      return this.prepare(
-        "INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)",
-      ).run(row.userId, row.value, row.updatedAt);
-    },
-    findAuthIdentityByProviderSubject(provider: any, subject: any) {
-      const row = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
-        "FROM sporades_auth_identities WHERE provider = ? AND subject = ?",
-      ).get(provider, subject) ?? null;
-      return authIdentityRowUnlessReserved(row);
-    },
-    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any) {
-      const rows = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
-        "FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id",
-      ).all(provider, email);
-      return authIdentityRowsUnlessReserved(rows);
-    },
-    insertAuthIdentity(row: { id: any; userId: any; provider: any; subject: any; email: any; displayName: any; picture: any; createdAt: any; updatedAt: any; }) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        "INSERT INTO sporades_auth_identities " +
-        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
-    },
-    updateAuthIdentity(row: { id: any; subject: any; email: any; displayName: any; picture: any; updatedAt: any; }) {
-      return this.prepare(
-        "UPDATE sporades_auth_identities SET subject = ?, email = ?, displayName = ?, picture = ?, updatedAt = ? WHERE id = ?",
-      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
-    },
-    insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "INSERT INTO sporades_auth_users " +
-        "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
-    },
-    updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
-      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    linkAuthUser(row: { displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; id: any; }) {
-      assertNotReservedAuthUserId(row.id);
-      return this.prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
-      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
-    },
-    insertAuthSession(row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)").run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt,
-      );
-    },
-    deleteAuthSession(token: any) {
-      return this.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(token);
-    },
-    refreshAuthSession(token: any, expiresAt: any) {
-      return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
-    },
-    setAuthSessionProvider(token: any, provider: any) {
-      return this.prepare("UPDATE sporades_auth_sessions SET provider = ? WHERE token = ?").run(provider, token);
-    },
-    rotateAuthSession(previousToken: any, row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, provider = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
-        row.token,
-        row.userId,
-        row.provider,
-        row.createdAt,
-        row.expiresAt,
-        previousToken,
-      );
-    },
-    readAuthSessionWithUser(token: any) {
-      const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
-        "s.provider AS provider " +
-        "FROM sporades_auth_sessions s " +
-        "JOIN sporades_auth_users u ON u.id = s.userId " +
-        "WHERE s.token = ?",
-      ).get(token) ?? null;
-      if (isReservedAuthUserId(row?.userId)) {
-        return null;
-      }
-      return row;
-    },
-    insertOAuthState(row: LooseRecord) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-      return this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    consumeOAuthState(state: any) {
-      const row =
-        this.prepare(
-          "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier " +
-          "FROM sporades_auth_oauth_states WHERE state = ?",
-        ).get(state) ??
-        null;
-      this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
-      return row;
-    },
-    emailCredentialExists(email: any) {
-      return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
-    },
-    insertEmailCredential(row: { email: any; userId: any; passwordHash: any; passwordSalt: any; createdAt: any; }) {
-      assertNotReservedAuthUserId(row.userId);
-      return this.prepare(
-        "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
-      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
-    },
-    updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any) {
-      return this.prepare(
-        "UPDATE sporades_auth_email_credentials SET passwordHash = ?, passwordSalt = ? WHERE email = ?",
-      ).run(passwordHash, passwordSalt, email);
-    },
-    findEmailCredentialWithUser(email: any) {
-      const row = (
-        this.prepare(
-          "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest " +
-          "FROM sporades_auth_email_credentials c " +
-          "JOIN sporades_auth_users u ON u.id = c.userId " +
-          "WHERE c.email = ?",
-        ).get(email) ?? null
-      );
-      return isReservedAuthUserId(row?.userId) ? null : row;
-    },
-    migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      this.exec("BEGIN");
-      try {
-        const result = migrateAppSchema(this, schema);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    createAppTable(table: { name: any; }, tableName = table.name) {
-      return createAppTable(this, table, tableName);
-    },
-    migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return migrateExistingAppTable(this, existingTable, nextTable);
-    },
-    referenceExists(field: { targetTable: any; }, value: any) {
-      return Boolean(
-        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
-      );
-    },
-    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): void; prepare(sql: any): { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; writeSystemMetadata(key: any, value: any): StatementResultingChanges; readSchemaMetadata(): Record<string, SQLOutputValue> | null; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): void; ensureLogStorage(): void; insertLogIndexEvent(event: any): void; pruneLogIndex(limit: any): void; readRecentLogEvents(limit: any): any; ensureFileStorage(): void; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; ensureAuthStorage(authConfig?: null): void; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; migrateAppSchema(schema: any): any; createAppTable(table: any, tableName?: any): any; migrateExistingAppTable(existingTable: any, nextTable: any): any; referenceExists(field: any, value: any): boolean; withTransaction(fn: any): Promise<any>; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; listInspectableTables(): SQLOutputValue[]; dumpInspectableDatabase(): { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery(sql: any): { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth(): { ok: boolean; }; close(): void; }) => any) {
-      this.exec("BEGIN");
-      try {
-        const result = await fn(this as any);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      this.exec("BEGIN"); this.exec("PRAGMA query_only = ON");
-      try { const result = await fn(this); this.exec("COMMIT"); return result; }
-      catch (error) { this.exec("ROLLBACK"); throw error; }
-      finally { if (!options.readOnly) this.exec("PRAGMA query_only = OFF"); }
-    },
-    insertAppRow(table: { name: any; }, row: { [x: string]: any; }) {
-      const columns = Object.keys(row);
-      return this.prepare(
-        `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
-          .map(() => "?")
-          .join(", ")})`,
-      ).run(...columns.map((column) => row[column]));
-    },
-    selectAppRowById(table: { name: any; }, id: any) {
-      return this.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
-    },
-    updateAppRow(table: { name: any; }, id: any, values: { [x: string]: any; }, options: LooseRecord = {}) {
-      const columns = Object.keys(values);
-      if (columns.length === 0) {
-        return { changes: 0 };
-      }
-      return this.prepare(
-        `UPDATE ${quoteIdentifier(table.name)} SET ${columns.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
-        (options.ownerId === undefined ? "" : " AND ownerId = ?"),
-      ).run(
-        ...columns.map((column) => values[column]),
-        String(id),
-        ...(options.ownerId === undefined ? [] : [options.ownerId]),
-      );
-    },
-    deleteAppRow(table: { name: any; }, id: any) {
-      return this.prepare(`DELETE FROM ${quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
-    },
-    selectAppRows(table: { name: any; }, query: LooseRecord = {}) {
-      const columns = query.columns ?? ["*"];
-      const whereClauses = [];
-      const params = [];
-      if (query.ownerId !== undefined) {
-        whereClauses.push(`${quoteIdentifier("ownerId")} = ?`);
-        params.push(query.ownerId);
-      }
-      if (query.where) {
-        whereClauses.push(`${quoteIdentifier(query.where.fieldName)} = ?`);
-        params.push(query.where.value);
-      }
-      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
-      const orderSql = query.orderBy
-        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
-        }`
-        : "";
-      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const limitSql = limit === null ? "" : " LIMIT ?";
-      return this.prepare(
-        `SELECT ${columns.map((column: string) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(
-          table.name,
-        )}${whereSql}${orderSql}${limitSql}`,
-      ).all(...(limit === null ? params : [...params, limit]));
-    },
-    listInspectableTables() {
-      return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        .all()
-        .map((row: any) => row.name)
-        .filter((name: any) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    dumpInspectableDatabase() {
-      return this.listInspectableTables().map((tableName: any) => ({
-        name: tableName,
-        columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
-          .all()
-          .map((column: any) => column.name),
-        rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
-      }));
-    },
-    runReadOnlyInspectionQuery(sql: string | undefined) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-            },
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = statement.columns().map((column: any) => column.name);
-        const rows = statement.all().filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
-        return {
-          ok: true,
-          data: {
-            columns,
-            rows,
-          },
-          error: null as any,
-        };
-      } catch (error: any) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query.",
-          },
-        };
-      }
-    },
-    checkHealth() {
-      try {
-        this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
-    close() {
-      return connection.close();
-    },
-  };
-
-  if (!options.readOnly) {
-    adapter.exec("PRAGMA journal_mode = WAL");
-  }
-  return adapter;
-}
-
-export async function createPostgresDatabaseAdapter(options: { url: any; }) {
-  const url = typeof options === "string" ? options : options?.url;
-  if (!url) {
-    throw commandError(
-      "Missing Postgres database service URL.",
-      "Start a Dev session or local Container session with services.database.engine set to postgres.",
-    );
-  }
-
-  const client = await createPostgresConnection(url);
-  let closed = false;
-
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
-
-  const assertOpen = () => {
-    if (closed) {
-      throw new Error("database is not open");
-    }
-  };
-
-  const query = async (sql: string, params: any[] = []) => {
-    assertOpen();
-    return await client.query(postgresInterpolate(sql, params));
-  };
-
-  const adapter = {
-    ...shape,
-    engine: "postgres",
-    exec(sql: string) {
-      return query(sql).then((): undefined => undefined);
-    },
-    prepare(sql: string) {
-      assertOpen();
-      return {
-        all(...params: (number | undefined)[]) {
-          return query(sql, params).then((result: any) => postgresRowsFromResult(result));
-        },
-        get(...params: undefined[]) {
-          return this.all(...params).then((rows: any[]) => rows[0] ?? null);
-        },
-        run(...params: string[]) {
-          return query(sql, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: undefined as any,
-          }));
-        },
-        columns() {
-          return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) =>
-            result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) })),
-          );
-        },
-      };
-    },
-    async writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any) {
-      if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
-        return await this.writeSchemaMetadata(keyOrMetadata);
-      }
-      return await this.prepare(
-        "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-      ).run(keyOrMetadata ?? "", maybeValue);
-    },
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
-    async ensureAuthStorage(authConfig: any = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-        "id TEXT PRIMARY KEY, " +
-        "createdAt TEXT NOT NULL, " +
-        "displayName TEXT NOT NULL, " +
-        "email TEXT, " +
-        "picture TEXT, " +
-        "isAuthenticated INTEGER NOT NULL, " +
-        "isGuest INTEGER NOT NULL, " +
-        "provider TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-        "token TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec(
-        "UPDATE sporades_auth_sessions SET provider = " +
-        "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-        "WHERE provider IS NULL",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-        "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
-        "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
-      );
-      await this.exec(
-        "INSERT INTO sporades_auth_identities " +
-        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-        "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-        "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-        "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-      );
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-          "email TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "passwordHash TEXT NOT NULL, " +
-          "passwordSalt TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-        "state TEXT PRIMARY KEY, " +
-        "provider TEXT NOT NULL, " +
-        "sessionToken TEXT NOT NULL, " +
-        "returnTo TEXT NOT NULL, " +
-        "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL, " +
-        "nonce TEXT, " +
-        "pkceVerifier TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS expiresAt TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
-      await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-      await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-    },
-    async insertOAuthState(row: LooseRecord) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    async consumeOAuthState(state: string) {
-      const row = await (this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
-        "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier",
-      ) as any).get(state);
-      return row ?? null;
-    },
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-        "id TEXT PRIMARY KEY, " +
-        "timestamp TEXT NOT NULL, " +
-        "category TEXT NOT NULL, " +
-        "event TEXT NOT NULL, " +
-        "level TEXT NOT NULL, " +
-        "message TEXT NOT NULL, " +
-        "capsuleName TEXT, " +
-        "capsuleId TEXT, " +
-        "releaseId TEXT, " +
-        "requestId TEXT, " +
-        "correlationId TEXT, " +
-        "payload TEXT NOT NULL" +
-        ")",
-      );
-    },
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "UNIQUE(ownerId, name)" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "size INTEGER NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "status TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "deletedAt TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expectedSize INTEGER NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expiresAt TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "revokedAt TEXT" +
-        ")",
-      );
-    },
-    async ensureUserPreferencesStorage() {
-      await createUserPreferencesTables(this);
-    },
-    async readUserPreferences(userId: any) {
-      return (await this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId)) ?? null;
-    },
-    async saveUserPreferences(row: { userId: any; value: any; updatedAt: any; }) {
-      return await this.prepare(
-        "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) " +
-        "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt",
-      ).run(row.userId, row.value, row.updatedAt);
-    },
-    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event),
-      );
-    },
-    async pruneLogIndex(limit: any) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (" +
-        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
-        ")",
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
-    },
-    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
-    },
-    async createAppTable(table: { name: any; }, tableName = table.name) {
-      await this.exec(
-        `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-        postgresAppTableColumnDefinitions(table).join(", ") +
-        ")",
-      );
-    },
-    async migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare(
-        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
-      ).all();
-      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (
-          await this.prepare(
-            "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position",
-          ).all(tableName)
-        ).map((column: { name: any; }) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql: string | undefined) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-            },
-          };
-        }
-        const result = await query(String(sql ?? ""));
-        return {
-          ok: true,
-          data: {
-            columns: result.fields.map((field) => postgresRuntimeColumnName(field.name)),
-            rows: postgresRowsFromResult(result).filter((row: any) => !isInternalLogIndexMetadataRow(row, sql)),
-          },
-          error: null as any,
-        };
-      } catch (error: any) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query.",
-          },
-        };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
-    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): Promise<undefined>; prepare(sql: any): { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }; writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<void | { changes: number; lastInsertRowid: undefined; }>; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): Promise<void>; ensureAuthStorage(authConfig?: null): Promise<void>; ensureLogStorage(): Promise<void>; ensureFileStorage(): Promise<void>; insertLogIndexEvent(event: any): Promise<void>; pruneLogIndex(limit: any): Promise<void>; readRecentLogEvents(limit?: number): Promise<any>; migrateAppSchema(schema: any): Promise<void>; createAppTable(table: any, tableName?: any): Promise<void>; migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>; listInspectableTables(): Promise<any>; dumpInspectableDatabase(): Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery(sql: any): Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth(): Promise<{ ok: boolean; }>; withTransaction(fn: any): Promise<any>; close(): Promise<void>; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; readSchemaMetadata(): Record<string, SQLOutputValue> | null; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; referenceExists(field: any, value: any): boolean; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; }) => any) {
-      await this.exec("BEGIN");
-      try {
-        const result = await fn(this as any);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try {
-          await this.exec("ROLLBACK");
-        } catch { }
-        throw error;
-      }
-    },
-    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      await this.exec("BEGIN TRANSACTION READ ONLY");
-      try { const result = await fn(this); await this.exec("COMMIT"); return result; }
-      catch (error) { try { await this.exec("ROLLBACK"); } catch {} throw error; }
-    },
-    async close() {
-      closed = true;
-      await client.close();
-    },
-  };
-
-  return adapter;
-}
-
-export async function createPostgresConnection(url: any) {
-  const net = await import("node:net");
-  const crypto = await import("node:crypto");
-  const options = postgresUrlOptions(url);
-  const socket = net.createConnection({ host: options.host, port: options.port });
-  socket.setNoDelay(true);
-
-  let buffer = Buffer.alloc(0);
-  let ready = false;
-  let closed = false;
-  let backendKeyData = null;
-  let queryQueue: Promise<any> = Promise.resolve();
-  const waiters: any[] = [];
-
-  socket.on("data", (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    wakePostgresWaiters(waiters);
-  });
-  socket.on("error", (error) => {
-    for (const waiter of waiters.splice(0)) {
-      waiter.reject(error);
-    }
-  });
-  socket.on("close", () => {
-    closed = true;
-    for (const waiter of waiters.splice(0)) {
-      waiter.reject(new Error("database is not open"));
-    }
-  });
-
-  await new Promise((resolve, reject) => {
-    socket.once("connect", resolve);
-    socket.once("error", reject);
-  });
-
-  let scram = null;
-  socket.write(postgresStartupMessage(options));
-  while (!ready) {
-    const message = await readPostgresMessage();
-    if (message.type === "R") {
-      const authType = message.body.readInt32BE(0);
-      if (authType === 0) {
-        continue;
-      }
-      if (authType === 3) {
-        socket.write(postgresPasswordMessage(Buffer.from(`${options.password}\0`, "utf8")));
-        continue;
-      }
-      if (authType === 10) {
-        const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
-        if (!mechanisms.includes("SCRAM-SHA-256")) {
-          throw commandError(
-            "Unsupported Postgres SASL mechanism.",
-            "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256.",
-          );
-        }
-        scram = createPostgresScramSession(crypto, options.password);
-        const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
-        socket.write(
-          postgresPasswordMessage(
-            Buffer.concat([Buffer.from("SCRAM-SHA-256\0", "utf8"), postgresInt32(clientFirst.length), clientFirst]),
-          ),
-        );
-        continue;
-      }
-      if (authType === 11 && scram) {
-        const clientFinal = scram.continue(message.body.subarray(4).toString("utf8"));
-        socket.write(postgresPasswordMessage(Buffer.from(clientFinal, "utf8")));
-        continue;
-      }
-      if (authType === 12 && scram) {
-        scram.verify(message.body.subarray(4).toString("utf8"));
-        continue;
-      }
-      throw commandError(
-        "Unsupported Postgres authentication method.",
-        "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials.",
-      );
-    }
-    if (message.type === "K") {
-      backendKeyData = message.body;
-      continue;
-    }
-    if (message.type === "E") {
-      throw postgresErrorFromBody(message.body);
-    }
-    if (message.type === "Z") {
-      ready = true;
-    }
-  }
-
-  return {
-    get backendKeyData() {
-      return backendKeyData;
-    },
-    query(sql: string) {
-      if (closed) {
-        throw new Error("database is not open");
-      }
-      const pending = queryQueue.then(
-        () => executePostgresQuery(sql),
-        () => executePostgresQuery(sql),
-      );
-      queryQueue = pending.catch(() => { });
-      return pending;
-    },
-    async close() {
-      await queryQueue.catch(() => { });
-      if (closed) {
-        return;
-      }
-      closed = true;
-      socket.write(Buffer.from([0x58, 0, 0, 0, 4]));
-      socket.end();
-    },
-  };
-
-  async function executePostgresQuery(sql: any) {
-    if (closed) {
-      throw new Error("database is not open");
-    }
-    socket.write(postgresQueryMessage(sql));
-    const fields: any[] = [];
-    const rows = [];
-    let rowCount = 0;
-    let queryError = null;
-    while (true) {
-      const message = await readPostgresMessage();
-      if (message.type === "T") {
-        fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
-        continue;
-      }
-      if (message.type === "D") {
-        rows.push(postgresParseDataRow(message.body, fields));
-        continue;
-      }
-      if (message.type === "C") {
-        rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
-        continue;
-      }
-      if (message.type === "E") {
-        // Keep reading to the ReadyForQuery message so the next queued query
-        // does not consume this query's remaining response messages.
-        queryError = postgresErrorFromBody(message.body);
-        continue;
-      }
-      if (message.type === "Z") {
-        if (queryError) {
-          throw queryError;
-        }
-        return { fields, rows, rowCount };
-      }
-    }
-  }
-
-  async function readPostgresMessage() {
-    while (buffer.length < 5) {
-      await waitForPostgresData(waiters);
-    }
-    const type = String.fromCharCode(buffer[0]);
-    const length = buffer.readInt32BE(1);
-    while (buffer.length < 1 + length) {
-      await waitForPostgresData(waiters);
-    }
-    const body = buffer.subarray(5, 1 + length);
-    buffer = buffer.subarray(1 + length);
-    return { type, body };
-  }
-}
-
-function postgresUrlOptions(url: any) {
-  const parsed = new URL(String(url));
-  return {
-    host: parsed.hostname || "127.0.0.1",
-    port: parsed.port ? Number(parsed.port) : 5432,
-    user: decodeURIComponent(parsed.username || "sporades"),
-    password: decodeURIComponent(parsed.password || ""),
-    database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades"),
-  };
-}
-
-function postgresPasswordMessage(body: string | Uint8Array | Buffer) {
-  const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
-  return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
-}
-
-function createPostgresScramSession(crypto: typeof import("node:crypto"), password: string) {
-  const clientNonce = crypto.randomBytes(18).toString("base64");
-  const clientFirstBare = `n=,r=${clientNonce}`;
-  let serverSignature: string | null = null;
-  return {
-    clientFirstMessage: `n,,${clientFirstBare}`,
-    continue(serverFirstMessage: string) {
-      const attributes = new Map(serverFirstMessage.split(",").map((part: string) => [part.slice(0, 1), part.slice(2)]));
-      const serverNonce = attributes.get("r") ?? "";
-      const salt = Buffer.from(attributes.get("s") ?? "", "base64");
-      const iterations = Number(attributes.get("i") ?? "0");
-      if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
-        throw new Error("Invalid Postgres SCRAM server-first message.");
-      }
-      const saltedPassword = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
-      const clientKey = crypto.createHmac("sha256", saltedPassword).update("Client Key").digest();
-      const storedKey = crypto.createHash("sha256").update(clientKey).digest();
-      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
-      const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
-      const clientSignature = crypto.createHmac("sha256", storedKey).update(authMessage).digest();
-      const clientProof = Buffer.from(clientKey.map((byte: number, index: number) => byte ^ clientSignature[index]));
-      const serverKey = crypto.createHmac("sha256", saltedPassword).update("Server Key").digest();
-      serverSignature = crypto.createHmac("sha256", serverKey).update(authMessage).digest("base64");
-      return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
-    },
-    verify(serverFinalMessage: string) {
-      if (serverFinalMessage !== `v=${serverSignature}`) {
-        throw new Error("Postgres SCRAM server signature verification failed.");
-      }
-    },
-  };
-}
-
-function postgresStartupMessage(options: { host?: string; port?: number; user: any; password?: string; database: any; }) {
-  const params = [
-    ["user", options.user],
-    ["database", options.database],
-    ["client_encoding", "UTF8"],
-  ];
-  const bodyParts = [postgresInt32(196608)];
-  for (const [key, value] of params) {
-    bodyParts.push(Buffer.from(`${key}\0${value}\0`, "utf8"));
-  }
-  bodyParts.push(Buffer.from([0]));
-  const body = Buffer.concat(bodyParts);
-  return Buffer.concat([postgresInt32(body.length + 4), body]);
-}
-
-function postgresQueryMessage(sql: any) {
-  const body = Buffer.from(`${sql}\0`, "utf8");
-  return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
-}
-
-function postgresInt32(value: number) {
-  const buffer = Buffer.alloc(4);
-  buffer.writeInt32BE(value, 0);
-  return buffer;
-}
-
-function waitForPostgresData(waiters: any[]) {
-  return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
-}
-
-function wakePostgresWaiters(waiters: any[]) {
-  for (const waiter of waiters.splice(0)) {
-    waiter.resolve();
-  }
-}
-
-function postgresParseRowDescription(body: Buffer<ArrayBuffer>) {
-  const fields = [];
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
-  for (let index = 0; index < count; index += 1) {
-    const nameEnd = body.indexOf(0, offset);
-    const name = body.subarray(offset, nameEnd).toString("utf8");
-    offset = nameEnd + 1;
-    offset += 6;
-    const dataTypeID = body.readInt32BE(offset);
-    offset += 4;
-    offset += 8;
-    fields.push({ name, dataTypeID });
-  }
-  return fields;
-}
-
-function postgresParseDataRow(body: Buffer<ArrayBuffer>, fields: any[]) {
-  const row: LooseRecord = {};
-  let offset = 0;
-  const count = body.readInt16BE(offset);
-  offset += 2;
-  for (let index = 0; index < count; index += 1) {
-    const field = fields[index];
-    if (!field) {
-      throw new Error("Postgres protocol error: data row did not match row description.");
-    }
-    const length = body.readInt32BE(offset);
-    offset += 4;
-    if (length === -1) {
-      row[field.name] = null;
-      continue;
-    }
-    const raw = body.subarray(offset, offset + length).toString("utf8");
-    offset += length;
-    row[field.name] = postgresValueFromText(raw, field.dataTypeID);
-  }
-  return row;
-}
-
-function postgresValueFromText(value: string, dataTypeID: number) {
-  if ([20, 21, 23].includes(dataTypeID)) {
-    return Number(value);
-  }
-  if ([700, 701, 1700].includes(dataTypeID)) {
-    return Number(value);
-  }
-  if (dataTypeID === 16) {
-    return value === "t";
-  }
-  return value;
-}
-
-function postgresRowCountFromCommand(tag: string) {
-  const match = tag.match(/\s(\d+)$/);
-  return match ? Number(match[1]) : 0;
-}
-
-function postgresErrorFromBody(body: Buffer) {
-  const fields: LooseRecord = {};
-  let offset = 0;
-  while (offset < body.length && body[offset] !== 0) {
-    const type = String.fromCharCode(body[offset]);
-    offset += 1;
-    const end = body.indexOf(0, offset);
-    fields[type] = body.subarray(offset, end).toString("utf8");
-    offset = end + 1;
-  }
-  return new Error(fields.M ?? "Postgres query failed.");
-}
-
-function postgresInterpolate(sql: any, params: any[] = []) {
-  let index = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let result = "";
-  const text = String(sql ?? "");
-
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
-    if (lineComment) {
-      result += char;
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      result += char;
-      if (char === "*" && next === "/") {
-        result += next;
-        position += 1;
-        blockComment = false;
-      }
-      continue;
-    }
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      result += char + next;
-      position += 1;
-      lineComment = true;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      result += char + next;
-      position += 1;
-      blockComment = true;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (char === "?") {
-      if (index >= params.length) {
-        throw new Error("Missing Postgres query parameter.");
-      }
-      result += toSqlLiteral(params[index]);
-      index += 1;
-      continue;
-    }
-    result += char;
-  }
-
-  if (index < params.length) {
-    throw new Error("Too many Postgres query parameters.");
-  }
-  return result;
-}
-
-function postgresPlaceholders(sql: any) {
-  let index = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let result = "";
-  const text = String(sql ?? "");
-
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
-
-    if (lineComment) {
-      result += char;
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      result += char;
-      if (char === "*" && next === "/") {
-        result += next;
-        position += 1;
-        blockComment = false;
-      }
-      continue;
-    }
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      result += char + next;
-      position += 1;
-      lineComment = true;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      result += char + next;
-      position += 1;
-      blockComment = true;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (char === "?") {
-      index += 1;
-      result += `$${index}`;
-      continue;
-    }
-    result += char;
-  }
-
-  return result;
-}
-
-function postgresRowsFromResult(result: { fields?: any[]; rows: any; rowCount?: number; }) {
-  return result.rows.map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
-    const normalized: LooseRecord = {};
-    for (const [key, value] of Object.entries(row)) {
-      normalized[postgresRuntimeColumnName(key)] = value;
-    }
-    return normalized;
-  });
-}
-
-function postgresRuntimeColumnName(name: string) {
-  return (
-    {
-      ownerid: "ownerId",
-      bucketid: "bucketId",
-      bucketname: "bucketName",
-      createdat: "createdAt",
-      updatedat: "updatedAt",
-      deletedat: "deletedAt",
-      fileid: "fileId",
-      expectedsize: "expectedSize",
-      publicurlid: "publicUrlId",
-      publicversion: "publicVersion",
-      expiresat: "expiresAt",
-      revokedat: "revokedAt",
-      userid: "userId",
-      displayname: "displayName",
-      isauthenticated: "isAuthenticated",
-      isguest: "isGuest",
-      passwordhash: "passwordHash",
-      passwordsalt: "passwordSalt",
-      sessiontoken: "sessionToken",
-      returnto: "returnTo",
-      redirecturi: "redirectUri",
-      pkceverifier: "pkceVerifier",
-      capsulename: "capsuleName",
-      capsuleid: "capsuleId",
-      releaseid: "releaseId",
-      requestid: "requestId",
-      correlationid: "correlationId",
-    }[name] ?? name
-  );
-}
-
-function postgresAppTableColumnDefinitions(table: any) {
-  return [
-    `${quoteIdentifier("id")} TEXT PRIMARY KEY`,
-    `${quoteIdentifier("createdAt")} TEXT NOT NULL`,
-    `${quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
-  ];
-}
-
-export async function createLibsqlDatabaseAdapter(options: { url: any; authToken: any; }) {
-  const url = typeof options === "string" ? options : options?.url;
-  if (!url) {
-    throw commandError(
-      "Missing libSQL database service URL.",
-      "Start a Dev session or local Container session with services.database.engine set to libsql.",
-    );
-  }
-
-  const endpoint = libsqlPipelineUrl(url);
-  const authToken = typeof options === "object" ? options.authToken : null;
-  let closed = false;
-  const activeTransactions = new Set<any>();
-
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
-
-  const createOperations = (transaction: any = null) => ({
-    exec(sql: string) {
-      assertLibsqlOpen(closed);
-      const request = libsqlHasMultipleStatements(sql)
-        ? { type: "sequence", sql }
-        : { type: "execute", stmt: { sql } };
-      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
-    },
-    prepare(sql: string) {
-      assertLibsqlOpen(closed);
-      return {
-        all(...params: (number | undefined)[]) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
-            libsqlRowsFromResult(result),
-          );
-        },
-        get(...params: undefined[]) {
-          return this.all(...params).then((rows: any[]) => rows[0] ?? null);
-        },
-        run(...params: string[]) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-            lastInsertRowid:
-              result.last_insert_rowid === null || result.last_insert_rowid === undefined
-                ? undefined
-                : BigInt(result.last_insert_rowid),
-          }));
-        },
-        columns() {
-          return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
-        },
-      };
-    },
-  });
-
-  const adapter = {
-    ...shape,
-    ...createOperations(),
-    engine: "libsql",
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-        "id TEXT PRIMARY KEY, " +
-        "timestamp TEXT NOT NULL, " +
-        "category TEXT NOT NULL, " +
-        "event TEXT NOT NULL, " +
-        "level TEXT NOT NULL, " +
-        "message TEXT NOT NULL, " +
-        "capsuleName TEXT, " +
-        "capsuleId TEXT, " +
-        "releaseId TEXT, " +
-        "requestId TEXT, " +
-        "correlationId TEXT, " +
-        "payload TEXT NOT NULL" +
-        ")",
-      );
-    },
-    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event),
-      );
-    },
-    async pruneLogIndex(limit: any) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (" +
-        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-        ")",
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
-    },
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "UNIQUE(ownerId, name)" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "size INTEGER NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "status TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "deletedAt TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expectedSize INTEGER NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expiresAt TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "revokedAt TEXT" +
-        ")",
-      );
-    },
-    async ensureAuthStorage(authConfig: any = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-        "id TEXT PRIMARY KEY, " +
-        "createdAt TEXT NOT NULL, " +
-        "displayName TEXT NOT NULL, " +
-        "email TEXT, " +
-        "picture TEXT, " +
-        "isAuthenticated INTEGER NOT NULL, " +
-        "isGuest INTEGER NOT NULL, " +
-        "provider TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-        "token TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureLibsqlSessionLifecycleColumns(this as any);
-      await ensureLibsqlSessionProvenanceColumn(this as any);
-      await createLibsqlProviderIdentityTables(this as any);
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-          "email TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "passwordHash TEXT NOT NULL, " +
-          "passwordSalt TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-        "state TEXT PRIMARY KEY, " +
-        "provider TEXT NOT NULL, " +
-        "sessionToken TEXT NOT NULL, " +
-        "returnTo TEXT NOT NULL, " +
-        "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL, " +
-        "nonce TEXT, " +
-        "pkceVerifier TEXT" +
-        ")",
-      );
-      await ensureLibsqlOAuthStateColumns(this);
-    },
-    async insertOAuthState(row: LooseRecord) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
-    async consumeOAuthState(state: any) {
-      return (await this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
-        "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier",
-      ).get(state)) ?? null;
-    },
-    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
-    },
-    async migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column: { name: any; }) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql: string | undefined) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-            },
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = (await statement.columns()).map((column: { name: any; }) => column.name);
-        const rows = (await statement.all()).filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
-        return { ok: true, data: { columns, rows }, error: null as any };
-      } catch (error: any) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query.",
-          },
-        };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
-    },
-    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      const transaction = { baton: null as any, baseUrl: endpoint };
-      const transactionAdapter = {
-        ...adapter,
-        ...createOperations(transaction),
-        async withTransaction() {
-          throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
-        },
-      };
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        const result = await fn(transactionAdapter);
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) {
-        try {
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
-        } catch { }
-        throw error;
-      } finally {
-        activeTransactions.delete(transaction);
-      }
-    },
-    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      const transaction = { baton: null as any, baseUrl: endpoint };
-      const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
-        const result = await fn(snapshotAdapter);
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) { try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true }); } catch {} throw error; }
-      finally { activeTransactions.delete(transaction); }
-    },
-    async close() {
-      closed = true;
-      for (const transaction of activeTransactions as Set<any>) {
-        if (transaction.baton) {
-          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => { });
-        }
-      }
-      activeTransactions.clear();
-    },
-  };
-
-  return adapter;
-}
-
-function libsqlPipelineUrl(url: any) {
-  const parsed = new URL(String(url));
-  parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/v2/pipeline`;
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString();
-}
-
-function assertLibsqlOpen(closed: boolean) {
-  if (closed) {
-    throw new Error("database is not open");
-  }
-}
-
-function libsqlHasMultipleStatements(sql: any) {
-  return splitSqlStatements(sql).length > 1;
-}
-
-async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }: LooseRecord) {
-  const [result] = await libsqlPipeline({
-    endpoint,
-    authToken,
-    transaction,
-    requests: [{ type: "execute", stmt: { sql, args: params.map(libsqlValueFromJs) } }],
-    close,
-  });
-  return result.result;
-}
-
-async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }: LooseRecord) {
-  const [result] = await libsqlPipeline({
-    endpoint,
-    authToken,
-    transaction,
-    requests: [{ type: "describe", sql }],
-    close,
-  });
-  return (result.result?.cols ?? []).map((column: { name: any; }) => ({ name: column.name }));
-}
-
-async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }: LooseRecord) {
-  const requestUrl = transaction?.baseUrl ?? endpoint;
-  const payload = {
-    ...(transaction ? { baton: transaction.baton } : {}),
-    requests: close ? [...requests, { type: "close" }] : requests,
-  };
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
-    },
-    body: JSON.stringify(payload),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body?.error?.message ?? `libSQL request failed with HTTP ${response.status}.`);
-  }
-  if (transaction) {
-    transaction.baton = body.baton ?? null;
-    transaction.baseUrl = body.base_url ? new URL("/v2/pipeline", body.base_url).toString() : requestUrl;
-  }
-  const results = body.results ?? [];
-  const errorResult = results.find((result: { type: string; }) => result.type === "error");
-  if (errorResult) {
-    throw new Error(errorResult.error?.message ?? "libSQL statement failed.");
-  }
-  return results.filter((result: { response: { type: string; }; }) => result.response?.type !== "close").map((result: { response: any; }) => result.response);
-}
-
-function libsqlRowsFromResult(result: { cols: any; rows: any; }) {
-  const columns = (result.cols ?? []).map((column: { name: any; }) => column.name);
-  return (result.rows ?? []).map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
-    if (!Array.isArray(row)) {
-      return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
-    }
-    return Object.fromEntries(columns.map((column: any, index: number) => [column, libsqlValueToJs(row[index])]));
-  });
-}
-
-function libsqlValueFromJs(value: unknown) {
-  if (value === null || value === undefined) {
-    return { type: "null" };
-  }
-  if (typeof value === "boolean") {
-    return { type: "integer", value: value ? "1" : "0" };
-  }
-  if (typeof value === "bigint") {
-    return { type: "integer", value: String(value) };
-  }
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return { type: "integer", value: String(value) };
-  }
-  if (typeof value === "number") {
-    return { type: "float", value };
-  }
-  if (value instanceof Uint8Array) {
-    return { type: "blob", base64: Buffer.from(value).toString("base64") };
-  }
-  return { type: "text", value: String(value) };
-}
-
-function libsqlValueToJs(value: any) {
-  if (value === null || value === undefined || value.type === "null") {
-    return null;
-  }
-  if (value.type === "integer") {
-    const number = Number(value.value);
-    return Number.isSafeInteger(number) ? number : String(value.value);
-  }
-  if (value.type === "float") {
-    return Number(value.value);
-  }
-  if (value.type === "blob") {
-    return Buffer.from(value.base64 ?? "", "base64");
-  }
-  if (Object.hasOwn(value, "value")) {
-    return value.value;
-  }
-  return value;
-}
-
-function logIndexLimit(config: LooseRecord = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
 }
 
 function logPayloadMaxBytes(config: LooseRecord = {}) {
@@ -4903,7 +755,7 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 
-function createRuntimeLogSink(options: { database: any; config: any; serverEnv: any; dataDir: any; }) {
+export function createRuntimeLogSink(options: { database: any; config: any; serverEnv: any; dataDir: any; }) {
   const path = requirePathModule();
   const logPath =
     options.config.logs?.jsonlPath ??
@@ -4977,27 +829,6 @@ function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; ev
     error: (...args: any) => write("error", args),
   };
 }
-
-const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
-
-function createPrivilegedAuditEmitter(log: { emit: (input: LooseRecord) => any; }) {
-  return {
-    emit(details: LooseRecord) {
-      return emitPrivilegedAuditEvent(log, details);
-    },
-  };
-}
-
-function emitPrivilegedAuditEvent(target: LooseRecord, details: LooseRecord = {}) {
-  const log = target?.log?.emit ? target.log : target;
-  if (!log?.emit) {
-    throw new Error("Privileged audit events require a runtime log sink.");
-  }
-  return log.emit(createPrivilegedAuditLogInput(details));
-}
-
 function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return {
     async run(options: LooseRecord, callback: any) {
@@ -5083,166 +914,6 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
     },
   };
 }
-
-async function emitPrivilegedRunAudit(database: LooseRecord, context: LooseRecord, details: LooseRecord) {
-  const event = await database.audit.emit(details);
-  recordPrivilegedAuditEventForTransaction(context, event);
-  return event;
-}
-
-function recordPrivilegedAuditEventForTransaction(context: LooseRecord, event: LooseRecord) {
-  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
-    return;
-  }
-  if (!Array.isArray(context.__privilegedAuditEvents)) {
-    Object.defineProperty(context, "__privilegedAuditEvents", {
-      value: [],
-      enumerable: false,
-      configurable: true,
-    });
-  }
-  context.__privilegedAuditEvents.push(event);
-}
-
-async function reindexPrivilegedAuditEventsAfterRollback(database: LooseRecord, context: LooseRecord | undefined) {
-  const events = context?.__privilegedAuditEvents;
-  if (!Array.isArray(events) || events.length === 0) {
-    return;
-  }
-  for (const event of events) {
-    try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
-        continue;
-      }
-      await database.sqlite.insertLogIndexEvent(event);
-    } catch {
-      return;
-    }
-  }
-  try {
-    await database.sqlite.pruneLogIndex(logIndexLimit(database.config ?? {}));
-  } catch {
-  }
-}
-
-async function privilegedAuditEventAlreadyIndexed(database: LooseRecord, event: LooseRecord) {
-  const recent = await database.sqlite.readRecentLogEvents(logIndexLimit(database.config ?? {}));
-  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
-}
-
-function samePrivilegedAuditLogEvent(left: LooseRecord, right: LooseRecord) {
-  return (
-    left?.category === right?.category &&
-    left?.event === right?.event &&
-    left?.timestamp === right?.timestamp &&
-    left?.data?.schema === right?.data?.schema &&
-    left?.data?.operation === right?.data?.operation &&
-    left?.data?.outcome === right?.data?.outcome &&
-    left?.data?.actorKind === right?.data?.actorKind &&
-    (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null)
-  );
-}
-
-function normalizePrivilegedRunSignal(value: any) {
-  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
-    return value;
-  }
-  return new AbortController().signal;
-}
-
-function createPrivilegedRunAbortError() {
-  return commandError(
-    "Privileged run aborted.",
-    "Retry the privileged operation if cancellation was not intended.",
-    "ABORTED",
-  );
-}
-
-function createPrivilegedRunAuditDetails(context: LooseRecord, options: LooseRecord) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
-  }
-  const operation = validatedPrivilegedOperation(options.operation);
-  const metadata = validatedPrivilegedMetadata(options.metadata);
-  return {
-    actorKind: "privileged-server-role",
-    operation,
-    surface: auditString(options.surface ?? context?.kind, "server-handler"),
-    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
-    correlation: options.correlation ?? null,
-    request: options.request ?? null,
-    source: "runtime",
-    metadata,
-  };
-}
-
-function validatedPrivilegedOperation(value: any) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
-  }
-  const operation = value.trim();
-  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
-    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
-  }
-  return operation;
-}
-
-function validatedPrivilegedMetadata(value: any) {
-  if (value === undefined) {
-    return {};
-  }
-  if (!isPlainPrivilegedMetadata(value)) {
-    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
-  }
-  return { ...value };
-}
-
-function isPlainPrivilegedMetadata(value: any) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  if (typeof value.then === "function") {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function invalidPrivilegedRunMetadata(message: string) {
-  return commandError(
-    message,
-    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
-    "INVALID_PRIVILEGED_RUN_METADATA",
-  );
-}
-
-function createPrivilegedRunPublicError(cause: any) {
-  const error = commandError(
-    "Privileged run failed.",
-    "Check the privileged audit events and server logs before exposing a safe response.",
-    "PRIVILEGED_RUN_FAILED",
-  );
-  error.cause = cause;
-  return error;
-}
-
-function createPrivilegedAuditEmissionPublicError(cause: any, context: LooseRecord | undefined = undefined) {
-  const error = commandError(
-    "Privileged audit emission failed.",
-    "Check the server audit log configuration before retrying the privileged operation.",
-    "PRIVILEGED_AUDIT_EMISSION_FAILED",
-  );
-  error.cause = cause;
-  if (context) {
-    (error as any).privilegedAuditContext = context;
-  }
-  return error;
-}
-
-function isPrivilegedAuditEmissionPublicError(error: any) {
-  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
-}
-
 function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRecord, signal: any) {
   const privilegedContext: LooseRecord = {
     ...context,
@@ -5273,269 +944,6 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.mail = database.mail;
   return privilegedContext;
 }
-
-function createPrivilegedScheduleApi(database: LooseRecord, contextGetter: () => LooseRecord) {
-  const sqlite = () => (database.__rootDatabase ?? database).sqlite;
-  return {
-    async get(name: any) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare("SELECT * FROM sporades_schedules WHERE name=?").get(name);
-      return row ? await scheduleSummary(sqlite(), row) : null;
-    },
-    async list() {
-      assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
-      const summaries = [];
-      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
-      return summaries;
-    },
-  };
-}
-
-async function scheduleSummary(sqlite: LooseRecord, row: any) {
-  const invalid = (field: string) => {
-    const error: any = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
-    error.scheduleName = typeof row?.name === "string" ? row.name : null; error.field = field; return error;
-  };
-  if (typeof row.name !== "string" || !row.name) throw invalid("name");
-  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
-  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
-  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
-  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
-  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
-  let latestOccurrence = null;
-  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
-  if (latestOutcome === "enqueued") {
-    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
-    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
-    const job = await sqlite.prepare("SELECT id FROM sporades_jobs WHERE id=? AND scheduleName=? AND scheduledFor=?").get(row.latestJobId, row.name, row.latestScheduledFor);
-    if (!job) throw invalid("latestOccurrence.jobId");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
-  } else if (latestOutcome === "payload-failed") {
-    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
-    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
-    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
-  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
-  return {
-    name: String(row.name), expression: String(row.expression), timezone: String(row.effectiveTimezone),
-    missedRun: String(row.missedRunPolicy), enabled: Boolean(row.enabled), nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence), latestOccurrence,
-  };
-}
-
-function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => LooseRecord) {
-  return Object.freeze({
-    async url(fileReference: any) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      const row = resolved.row;
-      if (!row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: {
-            ...fileMetadataFromRow(row),
-            ownerId: row.ownerId,
-          },
-        },
-        error: null as any,
-      };
-    },
-    async createPublicUrl(fileReference: any, options: LooseRecord = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
-    },
-    async delete(fileReference: any) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
-        };
-      }
-      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
-    },
-    unsupported() {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        throw commandError(
-          active.error?.message ?? "Privileged file access is no longer active.",
-          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
-          "PRIVILEGED_FILE_ACCESS_INACTIVE",
-        );
-      }
-      throw commandError(
-        "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
-        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION",
-      );
-    },
-  });
-}
-
-function activePrivilegedFileAccess(contextGetter: () => LooseRecord) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "Privileged file access is no longer active.",
-      "Start a new ctx.privileged.run callback before using privileged file operations.",
-    ),
-  };
-}
-
-function privilegedAuthUserId() {
-  return "__privileged__";
-}
-
-function isReservedAuthUserId(userId: any) {
-  return userId === privilegedAuthUserId();
-}
-
-function authIdentityRowUnlessReserved(rowOrPromise: any) {
-  if (rowOrPromise && typeof rowOrPromise.then === "function") {
-    return rowOrPromise.then((row: any) => (isReservedAuthUserId(row?.userId) ? null : row));
-  }
-  return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
-}
-
-function authIdentityRowsUnlessReserved(rowsOrPromise: any) {
-  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
-    return rowsOrPromise.then((rows: any[]) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
-  }
-  return rowsOrPromise.filter((row: any) => !isReservedAuthUserId(row?.userId));
-}
-
-function assertNotReservedAuthUserId(userId: any) {
-  if (!isReservedAuthUserId(userId)) {
-    return;
-  }
-  throw commandError(
-    "Reserved auth user ID cannot be used for a real Sporades user.",
-    "Use runtime-generated user IDs for sessions and auth provider links.",
-    "RESERVED_AUTH_USER_ID",
-  );
-}
-
-export function createPrivilegedAuditLogInput(details: LooseRecord = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata)
-      ? details.metadata
-      : {},
-  };
-
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
-    data,
-    request: details.request ?? null,
-    release,
-    correlation,
-  };
-}
-
-function normalizePrivilegedAuditActorKind(value: any) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-
-function normalizePrivilegedAuditOutcome(value: any) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-
-function privilegedAuditLevelForOutcome(outcome: string) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-
-function safePrivilegedAuditErrorCode(value: any, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
-  if (source === null || source === undefined || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source)
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_.-]+/g, "_")
-    .slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-
-function normalizePrivilegedAuditCorrelation(value: any) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-
-function auditString(value: any, fallback: string) {
-  const text = value === null || value === undefined ? "" : String(value);
-  return text.trim() ? text : fallback;
-}
-
 export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();
   const config = input.config ?? {};
@@ -5612,13 +1020,6 @@ function logDataContainsServerEnvValue(value: unknown, serverEnv: any) {
   return values.some((secret) => serialized.includes(String(secret)));
 }
 
-function isSensitiveLogKey(key: string) {
-  return (
-    /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
-    /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key))
-  );
-}
-
 function isSensitiveLogString(value: string) {
   return (
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) ||
@@ -5661,66 +1062,21 @@ function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
   return capped;
 }
 
-function createLogIndexTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-    "id TEXT PRIMARY KEY, " +
-    "timestamp TEXT NOT NULL, " +
-    "category TEXT NOT NULL, " +
-    "event TEXT NOT NULL, " +
-    "level TEXT NOT NULL, " +
-    "message TEXT NOT NULL, " +
-    "capsuleName TEXT, " +
-    "capsuleId TEXT, " +
-    "releaseId TEXT, " +
-    "requestId TEXT, " +
-    "correlationId TEXT, " +
-    "payload TEXT NOT NULL" +
-    ")",
-  );
-}
-
-function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-  sqlite
-    .prepare(
-      "INSERT INTO sporades_log_events " +
-      "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .run(
-      randomUUID(),
-      event.timestamp,
-      event.category,
-      event.event,
-      event.level,
-      event.message,
-      event.capsule?.name ?? null,
-      event.capsule?.id ?? null,
-      event.release?.id ?? event.release ?? null,
-      event.request?.id ?? null,
-      event.correlation?.id ?? event.correlation ?? null,
-      JSON.stringify(event),
-    );
-}
-
-function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit: any) {
-  sqlite
-    .prepare(
-      "DELETE FROM sporades_log_events WHERE id IN (" +
-      "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-      ")",
-    )
-    .run(limit);
-}
-
-function readRecentLogEvents(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit = 200) {
-  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-  return sqlite
-    .prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?")
-    .all(safeLimit)
-    .reverse()
-    .map((row: { payload: string; }) => JSON.parse(row.payload));
-}
+// The Log index's internal ordering field (ADR-0036). It is assigned by the runtime when an event
+// is indexed, it is the only thing `readRecentLogEvents` and `pruneLogIndex` order by, and it never
+// appears in the log envelope or the JSONL log stream.
+//
+// The column name is written out at each use rather than lifted into a shared constant, and the
+// generator's state hangs off the generator instead of living at module scope. That was not style
+// but necessity: the generated server bundle was assembled from the source text of individually
+// registered functions, so a module-level binding one of them closed over did not travel with it and
+// became a `ReferenceError` the first time a deployed Capsule booted.
+//
+// **Ticket 05 lifted that constraint** — this file reaches a deployed Capsule as a module now, and a
+// module-scope constant travels with it like any other binding. The shape here is left as it stands
+// because ticket 05 is a deletion and changing it would be a behavioural risk taken for tidiness;
+// but nothing prevents the obvious edit any more, and a reader who wants the shared constant should
+// take this comment as permission rather than as the prohibition it used to be.
 
 export function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
   let raw = "";
@@ -5767,58 +1123,6 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
   };
 }
-
-function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined) {
-  const supportedOperations = new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === undefined) {
-    return {
-      allowByDefault: true,
-      resolve(operation: any) {
-        return resolveEffectiveAclRule(this, operation);
-      },
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete.",
-    );
-  }
-
-  const normalized: LooseRecord = {
-    allowByDefault: true,
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete.",
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete.",
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve(operation: any) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-
-function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: boolean; resolve?: (operation: any) => any; write?: any; }, operation: string) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return undefined;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
-}
-
 function schemaFieldFromCapsuleField(name: string, field: any) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
     throw commandError(
@@ -5865,107 +1169,6 @@ function sqliteTypeForFieldKind(kind: string) {
   return "TEXT";
 }
 
-function migrateAppSchema(sqlite: { engine?: string; exec?: (sql: any) => void; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata: any; writeSchemaMetadata: any; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable: any; migrateExistingAppTable: any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, schema: { tables: any[]; }) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
-      );
-    }
-
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
-  return chainMaybePromise([
-    ...schema.tables.map((table: { name: unknown; }) => () => {
-      const existingTable = existingTables.get(table.name);
-      return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
-    }),
-    () =>
-      sqlite.writeSchemaMetadata({
-        schemaVersion: "v1:additive-fields",
-        schemaHash: nextSchemaHash,
-        schemaJson: nextSchemaJson,
-      }),
-  ]);
-}
-
-async function migrateLibsqlAppSchema(sqlite: { engine?: string; exec?: ((sql: any) => Promise<undefined>) | ((sql: any) => Promise<undefined>); prepare?: ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: bigint | undefined; }>; columns(): Promise<any>; }) | ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }); writeSystemMetadata?: ((key: any, value: any) => StatementResultingChanges) | ((keyOrMetadata: any, maybeValue: any) => Promise<void | { changes: number; lastInsertRowid: undefined; }>); writeSchemaMetadata: any; ensureAuthStorage?: ((authConfig?: null) => Promise<void>) | ((authConfig?: null) => Promise<void>); ensureLogStorage?: (() => Promise<void>) | (() => Promise<void>); ensureFileStorage?: (() => Promise<void>) | (() => Promise<void>); insertLogIndexEvent?: ((event: any) => Promise<void>) | ((event: any) => Promise<void>); pruneLogIndex?: ((limit: any) => Promise<void>) | ((limit: any) => Promise<void>); readRecentLogEvents?: ((limit?: number) => Promise<any>) | ((limit?: number) => Promise<any>); migrateAppSchema?: ((schema: any) => Promise<void>) | ((schema: any) => Promise<void>); createAppTable: any; migrateExistingAppTable: any; listInspectableTables?: (() => Promise<any>) | (() => Promise<any>); dumpInspectableDatabase?: (() => Promise<{ name: any; columns: any; rows: any; }[]>) | (() => Promise<{ name: any; columns: any; rows: any; }[]>); runReadOnlyInspectionQuery?: ((sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>) | ((sql: any) => Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>); checkHealth?: (() => Promise<{ ok: boolean; }>) | (() => Promise<{ ok: boolean; }>); withTransaction?: ((fn: any) => Promise<any>) | ((fn: any) => Promise<any>); close?: (() => Promise<void>) | (() => Promise<void>); ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; readSchemaMetadata: any; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: ((state: any) => Record<string, SQLOutputValue> | null) | ((state: any) => Promise<any>); emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }, schema: { tables: any; }) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = await sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
-      );
-    }
-
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
-  for (const table of schema.tables) {
-    const existingTable = existingTables.get(table.name);
-    if (schemaChanged && existingTable) {
-      await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
-    } else {
-      await sqlite.createAppTable(table);
-    }
-  }
-
-  await sqlite.writeSchemaMetadata({
-    schemaVersion: "v1:additive-fields",
-    schemaHash: nextSchemaHash,
-    schemaJson: nextSchemaJson,
-  });
-}
-
-function normalizeSchema(schema: { tables: any[]; }) {
-  return {
-    tables: schema.tables
-      .map((table: { name: any; fields: any[]; }) => ({
-        name: table.name,
-        fields: table.fields.map((field: { name: any; kind: any; sqliteType: any; targetTable: any; defaultValue: any; }) => ({
-          name: field.name,
-          kind: field.kind,
-          sqliteType: field.sqliteType,
-          targetTable: field.targetTable,
-          defaultValue: field.defaultValue,
-        })),
-      }))
-      .sort((left: { name: string; }, right: { name: any; }) => left.name.localeCompare(right.name)),
-  };
-}
-
-function hashSchema(schemaJson: BinaryLike) {
-  return createHash("sha256").update(schemaJson).digest("hex");
-}
-
 function assertValidReferenceTargets(schema: LooseRecord) {
   const tableNames = new Set(schema.tables.map((table: { name: any; }) => table.name));
   for (const table of schema.tables) {
@@ -5978,144 +1181,6 @@ function assertValidReferenceTargets(schema: LooseRecord) {
       }
     }
   }
-}
-
-function assertAdditiveSchemaMigration(existingSchema: LooseRecord, nextSchema: LooseRecord) {
-  const nextTables = new Map<any, any>(nextSchema.tables.map((table: { name: any; }) => [table.name, table]));
-
-  for (const existingTable of existingSchema.tables ?? []) {
-    const nextTable = nextTables.get(existingTable.name);
-    if (!nextTable) {
-      throw commandError(
-        "Unsupported Capsule schema change.",
-        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
-      );
-    }
-
-    const nextFields = new Map(nextTable.fields.map((field: { name: any; }) => [field.name, field]));
-    for (const existingField of existingTable.fields ?? []) {
-      const nextField = nextFields.get(existingField.name);
-      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
-        throw commandError(
-          "Unsupported Capsule schema change.",
-          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
-        );
-      }
-    }
-  }
-}
-
-function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
-  return chainMaybePromise([
-    ...addedFieldsForTable(existingTable, nextTable)
-      .filter((field: { kind: string; defaultValue: null | undefined; }) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
-      .map((field: { defaultValue: any; }) => () =>
-        thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists: any) => {
-          if (!exists) {
-            throw invalidReferenceError(field);
-          }
-        }),
-      ),
-    () => sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`),
-    () => sqlite.createAppTable(nextTable, tempTableName),
-    () =>
-      sqlite.exec(
-        `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-        `FROM ${quoteIdentifier(nextTable.name)}`,
-      ),
-    () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
-    () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`),
-  ]);
-}
-
-async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
-  await sqlite.withTransaction(async (transaction: LooseRecord) => {
-    await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
-  });
-}
-
-async function migrateExistingLibsqlAppTableInTransaction(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
-  for (const field of addedFieldsForTable(existingTable, nextTable)) {
-    if (
-      field.kind === "Reference" &&
-      field.defaultValue !== undefined &&
-      field.defaultValue !== null &&
-      !(await sqlite.referenceExists(field, field.defaultValue))
-    ) {
-      throw invalidReferenceError(field);
-    }
-  }
-
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
-  await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  await sqlite.createAppTable(nextTable, tempTableName);
-  await sqlite.exec(
-    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-    `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-    `FROM ${quoteIdentifier(nextTable.name)}`,
-  );
-  await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-  await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
-}
-
-function columnSelectExpressionForMigration(existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {
-  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
-    return quoteIdentifier(columnName);
-  }
-  if ((existingTable.fields ?? []).some((field: { name: any; }) => field.name === columnName)) {
-    return quoteIdentifier(columnName);
-  }
-  const field = nextTable.fields.find((candidate: { name: any; }) => candidate.name === columnName);
-  return field?.defaultValue === undefined ? "NULL" : toSqlLiteral(field.defaultValue, field);
-}
-
-function addedFieldsForTable(existingTable: LooseRecord, nextTable: LooseRecord) {
-  const existingFields = new Set((existingTable.fields ?? []).map((field: { name: any; }) => field.name));
-  return (nextTable.fields ?? []).filter((field: { name: unknown; }) => !existingFields.has(field.name));
-}
-
-function createAppTable(sqlite: LooseRecord, table: LooseRecord, tableName = table.name) {
-  return sqlite.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-    appTableColumnDefinitions(table).join(", ") +
-    ")",
-  );
-}
-
-function appTableColumnDefinitions(table: LooseRecord) {
-  return [
-    "id TEXT PRIMARY KEY",
-    "createdAt TEXT NOT NULL",
-    "updatedAt TEXT NOT NULL",
-    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
-  ];
-}
-
-function appFieldColumnDefinition(field: LooseRecord) {
-  const defaultSql = fieldColumnDefaultSql(field);
-  const notNullSql = field.defaultValue !== undefined && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
-  return `${quoteIdentifier(field.name)} ${field.sqliteType}${notNullSql}${defaultSql}`;
-}
-
-function fieldDefaultIsSqlNull(field: LooseRecord) {
-  return field.defaultValue === null && field.kind !== "Json";
-}
-
-function fieldColumnDefaultSql(field: LooseRecord) {
-  return field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
-}
-
-function commandError(message: string | undefined, hint: string, code: string | null = null) {
-  const error: HelperError = new Error(message);
-  error.hint = hint;
-  if (code) {
-    error.code = code;
-  }
-  return error;
 }
 
 function extractSchema(serverSource: string) {
@@ -6181,7 +1246,7 @@ function findMatchingParen(source: string, openIndex: number) {
   return -1;
 }
 
-function extractEndpoints(serverSource: string) {
+export function extractEndpoints(serverSource: string) {
   const endpoints = [];
   const endpointPattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*endpoint\s*\(/g;
   let match;
@@ -6655,847 +1720,32 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   return true;
 }
 
-export async function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, websocketHub: any = null) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
-  if (uploadMatch && request.method === "PUT") {
-    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
-    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
-    return true;
-  }
 
-  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
-  if (privateMatch && request.method === "GET") {
-    const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, row);
-    return true;
-  }
 
-  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
-  if (publicMatch && request.method === "GET") {
-    const publicRow = await database.sqlite.selectPublicFileRow(publicMatch[1]);
-    if (
-      !publicRow ||
-      publicRow.revokedAt ||
-      publicRow.deletedAt ||
-      (publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now()) ||
-      publicRow.publicVersion !== requestUrl.searchParams.get("v") ||
-      publicRow.publicVersion !== publicRow.version
-    ) {
-      writeNotFound(response);
-      return true;
-    }
-    await sendFileHttpResponse(database, response, publicRow);
-    return true;
-  }
 
-  return false;
-}
 
-export async function routeRuntimeHealth(database: any, request: { url: string | URL; method: string; headers: { [x: string]: any; }; }, response: any) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
-    return false;
-  }
 
-  const probe = request.headers["x-sporades-host-probe"];
-  if (typeof probe !== "string" || probe.length === 0) {
-    writeNotFound(response);
-    return true;
-  }
 
-  const result = await createRuntimeHealthResult(database);
-  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
-  return true;
-}
 
-async function createRuntimeHealthResult(database: any) {
-  const checks = {
-    sqlite: await checkRuntimeSqlite(database),
-    fileStorage: await checkRuntimeFileStorage(database),
-  };
-  const ready = checks.sqlite.ok && checks.fileStorage.ok;
-  return {
-    ok: ready,
-    data: {
-      runtime: { ready },
-      checks,
-    },
-    error: ready
-      ? null
-      : {
-        message: "Sporades runtime is not ready.",
-        hint: "Check Hosted Capsule logs and data volume permissions.",
-      },
-  };
-}
 
-export async function checkRuntimeSqlite(database: LooseRecord) {
-  return await (database.adapter ?? database.sqlite).checkHealth();
-}
 
-export async function checkRuntimeFileStorage(database: LooseRecord) {
-  return await database.fileStorage.checkHealth();
-}
 
-function createFileStorageTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-    "id TEXT PRIMARY KEY, " +
-    "ownerId TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "UNIQUE(ownerId, name)" +
-    ")",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_files (" +
-    "id TEXT PRIMARY KEY, " +
-    "ownerId TEXT NOT NULL, " +
-    "bucketId TEXT NOT NULL, " +
-    "bucketName TEXT NOT NULL, " +
-    "path TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "type TEXT NOT NULL, " +
-    "size INTEGER NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "status TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL, " +
-    "deletedAt TEXT" +
-    ")",
-  );
-  try {
-    sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
-  } catch (error: any) {
-    if (!isDuplicateColumnError(error)) throw error;
-  }
-  sqlite.exec(filePathBackfillSql());
-  sqlite.exec(activeFilePathDedupeSql());
-  sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-  sqlite.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-    "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-    "id TEXT PRIMARY KEY, " +
-    "fileId TEXT NOT NULL, " +
-    "ownerId TEXT NOT NULL, " +
-    "bucketId TEXT NOT NULL, " +
-    "bucketName TEXT NOT NULL, " +
-    "path TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "type TEXT NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "expectedSize INTEGER NOT NULL, " +
-    "createdAt TEXT NOT NULL" +
-    ")",
-  );
-  ensureFileUploadTargetColumns(sqlite);
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-    "id TEXT PRIMARY KEY, " +
-    "fileId TEXT NOT NULL, " +
-    "ownerId TEXT NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "expiresAt TEXT, " +
-    "createdAt TEXT NOT NULL, " +
-    "revokedAt TEXT" +
-    ")",
-  );
-}
 
-async function readRequestBytes(request: any, maxBytes: number) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
-      );
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
 
-function writeJsonHttpResponse(response: any, status: number, result: any) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(result)}\n`);
-}
 
-function writeNotFound(response: { writeHead: (arg0: number, arg1: { "content-type": string; }) => void; end: (arg0: string) => void; }) {
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("Not found");
-}
 
-async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord) {
-  try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
-    response.writeHead(200, {
-      "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable",
-    });
-    response.end(bytes);
-  } catch {
-    writeNotFound(response);
-  }
-}
 
-function contentTypeForFile(type: any) {
-  if (typeof type !== "string") {
-    return "application/octet-stream";
-  }
-  const normalized = type.split(";")[0].trim().toLowerCase();
-  const safeInlineTypes = new Set([
-    "text/plain",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/bmp",
-  ]);
-  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
-}
 
-export async function createPendingFileUpload(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
-  const input = message.file ?? {};
-  const size = Number(input.size ?? 0);
-  if (!Number.isFinite(size) || size < 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size."),
-    };
-  }
-  if (size > database.fileMaxSizeBytes) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
-      ),
-    };
-  }
 
-  return await withFileUploadPathLock("capsule", async () => {
-    const now = new Date().toISOString();
-    const replacing = message.replace === true;
-    const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement: any = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-    if (!resolvedReplacement.ok) {
-      return resolvedReplacement;
-    }
-    const existingByReference = resolvedReplacement.row;
-    if (replacing && !existingByReference) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    return await database.sqlite.withTransaction(async (sqlite: { selectPendingFileUploadByPath: (arg0: any) => any; deleteFileUploadsForPath: (arg0: any) => any; insertFileUpload: (arg0: { id: `${string}-${string}-${string}-${string}-${string}`; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: string; version: `${string}-${string}-${string}-${string}-${string}`; expectedSize: number; createdAt: string; }) => any; }) => {
-      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-      let target;
-      try {
-        target =
-          replacing && existingByReference && (input.path === undefined || input.path === null)
-            ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
-            : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
-      } catch (error: any) {
-        return {
-          ok: false,
-          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
-        };
-      }
-      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
-      if (existingByPath?.ambiguous) {
-        return ambiguousFileReferenceError(target.path);
-      }
-      if (existingByPath && existingByPath.ownerId !== auth.userId) {
-        return {
-          ok: false,
-          error: createStructuredFileError(
-            "File path already exists.",
-            "Choose another absolute File path or ask the owning user to delete the existing file first.",
-          ),
-        };
-      }
-      const pendingByPath =
-        !existingByReference && !existingByPath && target.path
-          ? await sqlite.selectPendingFileUploadByPath(target.path)
-          : null;
-      const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? randomUUID();
 
-      const uploadId = randomUUID();
-      const version = randomUUID();
-      const name = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
-      await sqlite.deleteFileUploadsForPath(target.path);
-      try {
-        await sqlite.insertFileUpload({
-          id: uploadId,
-          fileId,
-          ownerId: auth.userId,
-          bucketId: target.bucket.id,
-          bucketName: target.bucket.name,
-          path: target.path,
-          name,
-          type,
-          version,
-          expectedSize: size,
-          createdAt: now,
-        });
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        const current = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current) throw error;
-        return {
-          ok: true,
-          data: {
-            uploadUrl: `/__sporades/uploads/${current.id}`,
-            method: "PUT",
-            headers: {},
-            file: fileMetadataFromUpload(current),
-          },
-          error: null as any,
-        };
-      }
 
-      return {
-        ok: true,
-        data: {
-          uploadUrl: `/__sporades/uploads/${uploadId}`,
-          method: "PUT",
-          headers: {},
-          file: fileMetadataFromUpload({
-            fileId,
-            bucketName: target.bucket.name,
-            path: target.path,
-            name,
-            type,
-            expectedSize: size,
-            version,
-          }),
-        },
-        error: null,
-      };
-    });
-  });
-}
 
-export async function completePendingFileUpload(database: LooseRecord, uploadId: string, request: any, websocketHub: any = null) {
-  const upload = await database.sqlite.selectFileUpload(uploadId);
-  if (!upload) {
-    return {
-      ok: false,
-      data: null,
-      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK."),
-    };
-  }
 
-  let wroteFileVersion = false;
-  const previousFile = await database.sqlite.selectFileById(upload.fileId);
-  try {
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.progress",
-      fileId: upload.fileId,
-      loaded: 0,
-      total: upload.expectedSize,
-    });
-    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-    wroteFileVersion = true;
-    const now = new Date().toISOString();
-    const completion = await database.sqlite.withTransaction(async (sqlite: LooseRecord) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
-      if (completed?.changes === 0) {
-        return { ok: false, superseded: true };
-      }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
-      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
-    });
-    if (!completion.ok && completion.superseded) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-      return {
-        ok: false,
-        data: null,
-        error: createStructuredFileError(
-          "Upload URL was superseded.",
-          "Request a fresh upload URL before retrying this file upload.",
-        ),
-      };
-    }
-    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
-      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
-    }
-    const file = fileMetadataFromRow(completion.row);
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.complete",
-      file,
-    });
-    return { ok: true, data: { file }, error: null as any };
-  } catch (error: any) {
-    if (wroteFileVersion) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-    }
-    const structuredError = isUniqueConstraintError(error)
-      ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.")
-      : {
-        message: error.message,
-        hint: error.hint ?? "Request a fresh upload URL and retry.",
-      };
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.failed",
-      fileId: upload.fileId,
-      error: structuredError,
-    });
-    return {
-      ok: false,
-      data: null,
-      error: structuredError,
-    };
-  }
-}
 
-export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any) {
-  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-    };
-  }
-  return {
-    ok: true,
-    data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-      file: fileMetadataFromRow(row),
-    },
-    error: null as any,
-  };
-}
 
-export async function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
-  const expiry = validatePublicUrlExpiry(options);
-  if (!expiry.ok) {
-    return expiry;
-  }
-  return await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    await sqlite.insertPublicFileUrl({
-      id,
-      fileId: row.id,
-      ownerId: auth.userId,
-      version: row.version,
-      expiresAt: expiry.expiresAt,
-      createdAt: now,
-    });
-    return {
-      ok: true,
-      data: {
-        publicUrl: {
-          id,
-          fileId: row.id,
-          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-          expiresAt: expiry.expiresAt,
-          revokedAt: null,
-        },
-      },
-      error: null as any,
-    };
-  });
-}
 
-async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
-  const now = new Date().toISOString();
-  const result = await database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
-  if (result.changes === 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user."),
-    };
-  }
-  return {
-    ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
-    error: null as any,
-  };
-}
 
-export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any) {
-  const now = new Date().toISOString();
-  const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-      };
-    }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-    await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now);
-    return {
-      ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
-      error: null,
-      deletedFile: row,
-    };
-  });
-  if (!result.ok) {
-    return result;
-  }
-  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
-  return {
-    ok: true,
-    data: result.data,
-    error: null as any,
-  };
-}
-
-async function runFileMetadataTransaction(database: LooseRecord, fn: (sqlite: LooseRecord) => any) {
-  if (database.__transactionActive) {
-    return await fn(database.sqlite);
-  }
-  return await database.sqlite.withTransaction(fn);
-}
-
-function validatePublicUrlExpiry(options: LooseRecord) {
-  const choices = [options.ttlSeconds !== undefined, options.expires !== undefined, options.noExpiry === true].filter(Boolean);
-  if (choices.length !== 1) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "Public file URLs require exactly one expiry choice.",
-        "Pass exactly one of ttlSeconds, expires, or noExpiry: true.",
-      ),
-    };
-  }
-  if (options.noExpiry === true) {
-    return { ok: true, expiresAt: null };
-  }
-  if (options.ttlSeconds !== undefined) {
-    const ttlSeconds = Number(options.ttlSeconds);
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-      return {
-        ok: false,
-        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number."),
-      };
-    }
-    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString() };
-  }
-  const expiresAt = new Date(options.expires);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string."),
-    };
-  }
-  return { ok: true, expiresAt: expiresAt.toISOString() };
-}
-
-async function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any) {
-  const reference = String(fileId ?? "");
-  if (isAbsoluteFilePath(reference)) {
-    const resolved: any = await resolveLiveFileReference(database, ownerId, reference);
-    return resolved.ok ? resolved.row : null;
-  }
-  return await database.sqlite.fileRowForOwner(reference, ownerId);
-}
-
-function fileMetadataFromRow(row: LooseRecord) {
-  return {
-    id: row.id,
-    bucket: row.bucketName,
-    size: Number(row.size),
-    type: row.type,
-    name: row.name,
-    path: row.path,
-    version: row.version,
-  };
-}
-
-function fileMetadataFromUpload(upload: LooseRecord) {
-  return {
-    id: upload.fileId,
-    bucket: upload.bucketName,
-    size: Number(upload.expectedSize),
-    type: upload.type,
-    name: upload.name,
-    path: upload.path,
-    version: upload.version,
-  };
-}
-
-async function withFileUploadPathLock(path: string, fn: () => any) {
-  const fileUploadPathLocks = ((globalThis as any).__sporadesFileUploadPathLocks ??= new Map());
-  const key = String(path);
-  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release: (() => void) | undefined;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.then(() => current, () => current);
-  fileUploadPathLocks.set(key, next);
-  try {
-    await previous.catch(() => { });
-    return await fn();
-  } finally {
-    release?.();
-    if (fileUploadPathLocks.get(key) === next) {
-      fileUploadPathLocks.delete(key);
-    }
-  }
-}
-
-async function resolveFileWriteTarget(database: LooseRecord, ownerId: any, input: LooseRecord, now: string) {
-  const explicitPath = input.path === undefined || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? (await ensureFileBucket(database, ownerId, "default", now));
-  return { bucket, path };
-}
-
-async function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any) {
-  const existing = await database.sqlite.findFileBucket(ownerId, name);
-  if (existing) return existing;
-  const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
-  try {
-    await database.sqlite.createFileBucket(bucket);
-    return bucket;
-  } catch (error: any) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.sqlite.findFileBucket(ownerId, name);
-    if (raced) return raced;
-    throw error;
-  }
-}
-
-function normalizeAbsoluteFilePath(value: string) {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/")) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
-  }
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
-  }
-  return `/${segments.join("/")}`;
-}
-
-function normalizeFileName(name: any, filePath: string | null) {
-  const candidate = String(name ?? "").trim();
-  if (candidate) return candidate;
-  const pathName = filePath?.split("/").filter(Boolean).at(-1);
-  return pathName || "upload";
-}
-
-function isAbsoluteFilePath(value: string) {
-  return typeof value === "string" && value.startsWith("/");
-}
-
-async function resolveLiveFileReference(database: LooseRecord, ownerId: any, reference: string) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
-  }
-  return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
-}
-
-async function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved };
-  }
-  const row = await database.sqlite.selectFileById(value);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  return { ok: true, row };
-}
-
-function singleLiveFileRowByPath(database: LooseRecord, path: string) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path), (rows: any[]) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-
-function singleActiveFileRowByPath(database: LooseRecord, path: any) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path), (rows: any[]) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-
-function ambiguousFileReferenceError(reference: string) {
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "File reference is ambiguous.",
-      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`,
-    ),
-  };
-}
-
-function structuredFileException(message: string | undefined, hint: string) {
-  const error: HelperError = new Error(message);
-  error.hint = hint;
-  return error;
-}
-
-function isDuplicateColumnError(error: any) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /duplicate column|already exists/i.test(text);
-}
-
-function isUniqueConstraintError(error: any) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
-}
-
-function filePathBackfillSql() {
-  return (
-    "UPDATE sporades_files SET path = CASE " +
-    "WHEN (SELECT COUNT(*) FROM sporades_files AS matching " +
-    "WHERE matching.ownerId = sporades_files.ownerId " +
-    "AND matching.bucketName = sporades_files.bucketName " +
-    "AND matching.name = sporades_files.name " +
-    "AND matching.deletedAt IS NULL " +
-    "AND matching.status IN ('pending', 'uploaded')) = 1 " +
-    "THEN '/' || bucketName || '/' || name " +
-    "ELSE '/' || bucketName || '/' || id || '/' || name END " +
-    "WHERE path IS NULL OR path = ''"
-  );
-}
-
-function activeFilePathDedupeSql() {
-  return (
-    "UPDATE sporades_files SET deletedAt = COALESCE(deletedAt, updatedAt), updatedAt = updatedAt " +
-    "WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') AND id NOT IN (" +
-    "SELECT MAX(id) FROM sporades_files " +
-    "WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded') " +
-    "GROUP BY path" +
-    ")"
-  );
-}
-
-function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
-  const statements = [
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketId TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketName TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN path TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN name TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN type TEXT",
-    "UPDATE sporades_file_uploads SET " +
-    "bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-    "type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) " +
-    "WHERE path IS NULL OR path = ''",
-    "DELETE FROM sporades_file_uploads WHERE id NOT IN (" +
-    "SELECT MAX(id) FROM sporades_file_uploads GROUP BY path" +
-    ")",
-    "CREATE INDEX IF NOT EXISTS sporades_file_uploads_path ON sporades_file_uploads (path)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_path_unique ON sporades_file_uploads (path)",
-  ];
-  let chain = undefined;
-  for (const statement of statements) {
-    const operation = () =>
-      statement.startsWith("ALTER TABLE")
-        ? runSchemaExecIgnoringDuplicateColumn(sqlite, statement)
-        : sqlite.exec(statement);
-    chain = chainSchemaOperation(chain, operation);
-  }
-  return chain;
-}
-
-function runSchemaExecIgnoringDuplicateColumn(sqlite: LooseRecord, sql: string) {
-  try {
-    const result = sqlite.exec(sql);
-    if (isPromiseLike(result)) {
-      return result.catch((error: any) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-    }
-    return result;
-  } catch (error: any) {
-    if (!isDuplicateColumnError(error)) throw error;
-    return undefined;
-  }
-}
-
-function chainSchemaOperation(previous: any, operation: () => any) {
-  if (isPromiseLike(previous)) {
-    return previous.then(operation);
-  }
-  return operation();
-}
-
-function createStructuredFileError(message: string, hint: string) {
-  return { message, hint };
-}
-
-async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, version: any) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
-}
-
-async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
+export async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
   const handler =
     typeof endpoint.handler === "function"
       ? endpoint.handler
@@ -7504,7 +1754,7 @@ async function runEndpoint(database: any, endpoint: { handler?: Function; handle
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context: LooseRecord | undefined;
   try {
-    const result = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
       transactionDatabase,
@@ -7578,6 +1828,24 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
     },
+    async sendEmailPasswordResetLink(email: string, options: LooseRecord = {}) {
+      const result: any = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email: string) {
+      const result: any = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code: string) {
+      const result: any = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code: string, newPassword: string) {
+      const result: any = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
+    },
   };
   return context;
 }
@@ -7591,15 +1859,6 @@ function createContextHolder(context: LooseRecord) {
   });
   return holder;
 }
-
-function createTableAclContext(context: any, database: any) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
-  return {
-    ...aclContext,
-    acl: createAclHelpers(database),
-  };
-}
-
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
   let context: LooseRecord = {
     ...baseContext,
@@ -7638,10 +1897,6 @@ function runContextMiddleware(middlewareSource: any, context: any) {
   return middleware(context);
 }
 
-function readEndpointSessionToken(headers: { [x: string]: any; }, query: { [x: string]: any; sessionToken?: any; }) {
-  return headers["x-sporades-session-token"] ?? null;
-}
-
 function endpointQueryFromUrl(requestUrl: URL) {
   const query: Record<string, string> = {};
   for (const [name, value] of requestUrl.searchParams.entries()) {
@@ -7652,38 +1907,7 @@ function endpointQueryFromUrl(requestUrl: URL) {
   }
   return query;
 }
-
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet as LooseRecord;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: new WeakSet(),
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  return holder.contexts;
-}
-
-function grantPrivilegedDbAccess(context: any) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().add(context);
-  }
-  return context;
-}
-
-function revokePrivilegedDbAccess(context: any) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().delete(context);
-  }
-  return context;
-}
-
-function hasPrivilegedDbAccess(context: any) {
-  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
-}
-
-function createEndpointDatabaseApi(database: LooseRecord, contextGetter: any = null) {
+export function createEndpointDatabaseApi(database: LooseRecord, contextGetter: any = null) {
   return Object.fromEntries(
     database.schema.tables.map((table: { name: any; }) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]),
   );
@@ -7712,7 +1936,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
         const columns = Object.keys(row);
         const next = deserializeRow(table, row);
         return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
-          const result = database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
+          const result = database.adapter.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
           database.rowCache.clear();
           return thenIfPromise(result, () => next);
         });
@@ -7747,7 +1971,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
             ...Object.fromEntries(fieldsToUpdate.map((field: { name: string | number; }) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
           };
           return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
-            const result = database.sqlite.updateAppRow(table, id, serializedValues);
+            const result = database.adapter.updateAppRow(table, id, serializedValues);
             database.rowCache.clear();
             return thenIfPromise(result, (writeResult: { changes: number; }) => {
               if (writeResult.changes === 0) {
@@ -7759,7 +1983,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
         };
         return fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finishValues) : finishValues(fieldValues);
       };
-      const selected = database.sqlite.selectAppRowById(table, id);
+      const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
@@ -7773,12 +1997,12 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
         }
         const previous = deserializeRow(table, existing);
         return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
-          const result = database.sqlite.deleteAppRow(table, id);
+          const result = database.adapter.deleteAppRow(table, id);
           database.rowCache.clear();
           return thenIfPromise(result, (writeResult: { changes: number; }) => writeResult.changes > 0);
         });
       };
-      const operation = thenIfPromise(database.sqlite.selectAppRowById(table, id), finish);
+      const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
       }
@@ -7794,7 +2018,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where
           ? {
             fieldName: query.where.fieldName,
@@ -7819,7 +2043,7 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
     },
     all() {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where
           ? {
             fieldName: query.where.fieldName,
@@ -7839,365 +2063,6 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
     },
   };
 }
-
-function runTableWriteWithAcl(database: any, table: LooseRecord, operation: string, previous: any, next: any, contextGetter: any, write: () => any) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context,
-    table,
-    operation,
-    previous,
-    next,
-  });
-  const deny = () => {
-    if (!context?.__pendingAclWrites) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next,
-  });
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  });
-  context?.__pendingAclWrites?.push(pending);
-  return pending;
-}
-
-function isPromiseLike(value: any) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
-
-function thenIfPromise(value: any, onResolved: (value: any) => any) {
-  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
-}
-
-function chainMaybePromise(steps: any[]) {
-  let pending = null;
-  for (const step of steps) {
-    if (pending) {
-      pending = pending.then(step);
-      continue;
-    }
-    const result = step();
-    if (isPromiseLike(result)) {
-      pending = result;
-    }
-  }
-  return pending ?? undefined;
-}
-
-function applyReadAcl(database: any, table: LooseRecord, row: any, context: any) {
-  if (hasPrivilegedDbAccess(context)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row,
-  });
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context,
-      table,
-      operation: "read",
-      row,
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
-  }
-  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
-}
-
-function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any) {
-  const decisions = rows.map((row: any) => applyReadAcl(database, table, row, context));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved: any[]) => rows.filter((_: any, index: number) => resolved[index]));
-  }
-  return rows.filter((_: any, index: number) => decisions[index]);
-}
-
-const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-
-function createAclHelpers(database: any) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state),
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false,
-  });
-  return Object.freeze(helpers);
-}
-
-function aclRuleTouchedAsyncHelperRead(aclContext: any) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
-}
-
-function markAsyncAclHelperRead(state: LooseRecord, result: any) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => { });
-    return true;
-  }
-  return false;
-}
-
-function createAclDbHelpers(database: LooseRecord, state: LooseRecord) {
-  return Object.freeze({
-    get(tableName: any, id: any) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
-    },
-    exists(tableName: any, id: any) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
-    },
-  });
-}
-
-function createAclStorageHelpers(database: any, state: LooseRecord) {
-  return Object.freeze({
-    get(resourceName: any, reference: any) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
-      }
-      return null;
-    },
-    exists(resourceName: any, reference: any) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
-      }
-      return false;
-    },
-  });
-}
-
-function resolveAclStorageFileReference(database: LooseRecord, state: any, reference: any) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path;
-    try {
-      path = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected = database.sqlite.selectLiveFileByPath(path);
-    if (markAsyncAclHelperRead(state, selected)) {
-      return null;
-    }
-    const resolved = selected.length > 1 ? { ambiguous: true } : (selected[0] ?? null);
-    return resolved?.ambiguous ? null : resolved;
-  }
-  const selected = database.sqlite.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
-}
-
-function assertAclHelperReadAllowed(state: LooseRecord) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-
-function resolveAclAppTable(database: LooseRecord, tableName: any) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate: { name: string; }) => candidate.name === normalized);
-  if (!table) {
-    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-
-function resolveAclStorageResource(resourceName: any) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-
-function aclStorageMetadataFromFileRow(row: LooseRecord) {
-  const metadata = fileMetadataFromRow(row);
-  return {
-    ...metadata,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null,
-  };
-}
-
-function emitAclDeniedLog(database: LooseRecord, details: LooseRecord) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details),
-  });
-}
-
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }: LooseRecord) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name,
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation),
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null,
-    },
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
-  };
-}
-
-function aclRuleDeclaredOperation(table: LooseRecord, operation: string) {
-  if (operation !== "read" && table.acl?.[operation] === undefined && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-
-function aclRowLogSnapshot(input: any) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next),
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input),
-  };
-}
-
-function aclVisibleFieldNames(row: any) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName),
-  );
-}
-
-function createAclDeniedError(logData: any = null) {
-  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
-
-function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
-  const linked = options?.linked === true;
-  const auth = context?.auth;
-  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
-    return auth;
-  }
-  throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
-}
-
-function createUnauthenticatedError(logData: any = null) {
-  const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-  if (logData) {
-    error.sporadesAuthDenialLogData = logData;
-  }
-  return error;
-}
-
-function createAuthDenialLogData(context: LooseRecord, requirement: string) {
-  return {
-    requirement,
-    handler: {
-      kind: context?.kind ?? null,
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null,
-    },
-  };
-}
-
-function emitAuthDeniedLog(database: LooseRecord, details: LooseRecord) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "auth.denied",
-    level: "warn",
-    message: "requireAuth denied an unauthenticated handler request.",
-    data: details.data ?? null,
-  });
-}
-
 function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   if (field.kind === "Reference" && value !== undefined && value !== null) {
     return thenIfPromise(referenceExists(database, field, value), (exists: any) => {
@@ -8210,114 +2075,14 @@ function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   return serializeFieldValue(field, value);
 }
 
-function invalidReferenceError(field: LooseRecord) {
-  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
-}
-
 function referenceExists(database: LooseRecord, field: any, value: any) {
-  return database.sqlite.referenceExists(field, value);
+  return database.adapter.referenceExists(field, value);
 }
 
-function serializeFieldValue(field: LooseRecord, value: any) {
-  if (value === undefined) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-
-function deserializeFieldValue(field: LooseRecord, value: any) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
-
-function normalizeDateValue(value: string | number | Date, fieldName: string) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-
-function dateValueError(fieldName: any) {
-  return commandError(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value.",
-  );
-}
-
-function assertJsonCompatible(value: any) {
-  let context: LooseRecord | undefined;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) {
-      throw invalidJsonFieldValueError();
-    }
-    JSON.parse(serialized);
-  } catch (error: any) {
-    if ((error as any)?.hint) {
-      throw error;
-    }
-    throw invalidJsonFieldValueError();
-  }
-}
-
-function invalidJsonFieldValueError() {
-  return commandError(
-    "Invalid JSON field value.",
-    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null.",
-  );
-}
-
-function deserializeRow(table: LooseRecord, row: LooseRecord) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
-}
+// `serializeFieldValue`, `normalizeDateValue`, `toSqlNumber` and `dateValueError` stood here until
+// batch 9 moved them to `stored-value-coding.ts`, beside the reading half they mirror.
+// `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
+// first two are imported back at the top of this file; the other three have no consumer here.
 
 async function readEndpointBody(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
@@ -8338,74 +2103,6 @@ function createEndpointLogger(database: any, context = {}) {
   });
 }
 
-function writeEndpointResult(response: any, result: any) {
-  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
-    const status = result.status ?? 200;
-    if (!Number.isInteger(status) || status < 100 || status > 599) {
-      throw endpointResponseError();
-    }
-    if (
-      result.headers !== undefined &&
-      (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))
-    ) {
-      throw endpointResponseError();
-    }
-    const headers = { ...(result.headers ?? {}) };
-    const body = result.body ?? null;
-    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
-      headers["content-type"] ??= "application/json; charset=utf-8";
-      let payload;
-      try {
-        payload = JSON.stringify(body);
-      } catch {
-        throw endpointResponseError();
-      }
-      response.writeHead(status, headers);
-      response.end(payload);
-      return;
-    }
-    headers["content-type"] ??= "text/plain; charset=utf-8";
-    response.writeHead(status, headers);
-    response.end(String(body ?? ""));
-    return;
-  }
-
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  response.end(String(result ?? ""));
-}
-
-function writeEndpointError(response: any, error: any) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
-  response.end(
-    `${JSON.stringify({
-      ok: false,
-      data: null as any,
-      error: {
-        ...(error?.code ? { code: error.code } : {}),
-        message: isPayloadTooLargeError(error)
-          ? error.message
-          : error?.hint
-          ? error.message
-          : error?.sporadesEndpointResponse
-            ? "Invalid endpoint response."
-            : "Endpoint handler failed.",
-        hint: error?.sporadesEndpointResponse
-          ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
-          : isPayloadTooLargeError(error)
-            ? error.hint
-          : error?.hint
-            ? error.hint
-            : "Check the endpoint handler and retry the request.",
-      },
-    })}\n`,
-  );
-}
-
-function endpointResponseError() {
-  const error: HelperError = new Error("Invalid endpoint response.");
-  error.sporadesEndpointResponse = true;
-  return error;
-}
 
 function parseFieldDefault(kind: string, rawDefault: string | undefined) {
   if (rawDefault === undefined) {
@@ -8457,485 +2154,13 @@ function parseDateFieldDefault(rawDefault: any) {
   }
 }
 
-function toSqlLiteral(value: any, field: any = null) {
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
-  }
-  if (value === null) {
-    return "NULL";
-  }
-  if (field?.kind === "Date") {
-    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
-  }
-  if (typeof value === "boolean") {
-    return value ? "1" : "0";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
+// The internal log-index guard used to be four functions here — `targetsInternalLogIndexTable`,
+// `readSqlTableReference`, `readSqlIdentifier` and `isInternalLogIndexMetadataRow`. It is
+// `./log-index-guard.js` now, and `runReadOnlyInspectionQuery` above calls it through the import at
+// the top of this file. ADR-0038 is why it is a module beside the inspection gate rather than part
+// of it, and that module's header states the reasoning.
 
-export async function listDatabaseTables(database: { adapter: any; sqlite: any; }) {
-  return await (database.adapter ?? database.sqlite).listInspectableTables();
-}
-
-export async function dumpDatabase(database: { adapter: any; sqlite: any; }) {
-  return await (database.adapter ?? database.sqlite).dumpInspectableDatabase();
-}
-
-export async function runReadOnlyQuery(database: { adapter: any; sqlite: any; }, sql: any) {
-  return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
-}
-
-export function validateReadOnlyInspectionSql(sql: any) {
-  const text = String(sql ?? "");
-  const firstToken = readFirstSqlToken(text);
-  if (!firstToken || hasMultipleSqlStatements(text)) {
-    return readOnlyInspectionSqlError();
-  }
-
-  const keyword = firstToken.toLowerCase();
-  if (keyword === "pragma") {
-    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true as const } : readOnlyInspectionSqlError();
-  }
-
-  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
-    return { ok: true as const };
-  }
-
-  return readOnlyInspectionSqlError();
-}
-
-function readOnlyInspectionSqlError() {
-  return {
-    ok: false as const,
-    data: null as any,
-    error: {
-      message: "Only read-only SQL is allowed.",
-      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
-    },
-  };
-}
-
-function readFirstSqlToken(sql: string) {
-  const index = skipSqlTrivia(sql, 0);
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match?.[0] ?? null;
-}
-
-function hasMultipleSqlStatements(sql: string) {
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === ";") {
-      return skipSqlTrivia(sql, index + 1) < sql.length;
-    }
-    index += 1;
-  }
-  return false;
-}
-
-function isSafeInspectionPragma(sql: string, pragmaTokenLength: number) {
-  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0) + pragmaTokenLength);
-  let identifier = readBareSqlIdentifier(sql, index);
-  if (!identifier) {
-    return false;
-  }
-
-  let pragmaName = identifier.value.toLowerCase();
-  index = skipSqlTrivia(sql, identifier.nextIndex);
-  if (sql[index] === ".") {
-    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1));
-    if (!identifier) {
-      return false;
-    }
-    pragmaName = identifier.value.toLowerCase();
-    index = skipSqlTrivia(sql, identifier.nextIndex);
-  }
-
-  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
-    return false;
-  }
-
-  while (index < sql.length) {
-    const skipped = skipSqlStringOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    if (sql[index] === "=") {
-      return false;
-    }
-    index += 1;
-  }
-  return true;
-}
-
-const SAFE_INSPECTION_PRAGMAS = new Set([
-  "database_list",
-  "foreign_key_list",
-  "index_info",
-  "index_list",
-  "index_xinfo",
-  "table_info",
-  "table_list",
-  "table_xinfo",
-]);
-
-function containsSideEffectSqlToken(sql: string) {
-  for (const token of readSqlTokens(sql)) {
-    const value = token.value.toLowerCase();
-    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
-      return true;
-    }
-    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
-      return true;
-    }
-  }
-  return false;
-}
-
-const SIDE_EFFECT_SQL_KEYWORDS = new Set([
-  "alter",
-  "analyze",
-  "attach",
-  "create",
-  "delete",
-  "detach",
-  "drop",
-  "insert",
-  "reindex",
-  "replace",
-  "update",
-  "vacuum",
-]);
-
-const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
-  "load_extension",
-  "nextval",
-  "set_config",
-  "setval",
-]);
-
-function readSqlTokens(sql: string) {
-  const tokens = [];
-  let index = 0;
-  while (index < sql.length) {
-    const skipped = skipSqlLiteralOrComment(sql, index);
-    if (skipped > index) {
-      index = skipped;
-      continue;
-    }
-    const identifier = readSqlTokenIdentifier(sql, index);
-    if (identifier) {
-      tokens.push(identifier);
-      index = identifier.nextIndex;
-      continue;
-    }
-    index += 1;
-  }
-  return tokens;
-}
-
-function readBareSqlIdentifier(sql: string, index: number) {
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
-}
-
-function readSqlTokenIdentifier(sql: string, index: number) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-  return readBareSqlIdentifier(sql, index);
-}
-
-function skipSqlLiteralOrComment(sql: string, index: number) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
-  }
-  if (sql[index] !== "'") {
-    return index;
-  }
-
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === "'") {
-      if (sql[cursor + 1] === "'") {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return sql.length;
-}
-
-function skipSqlStringOrComment(sql: string, index: number) {
-  if (sql[index] === "/" && sql[index + 1] === "*") {
-    const end = sql.indexOf("*/", index + 2);
-    return end === -1 ? sql.length : end + 2;
-  }
-  if (sql[index] === "-" && sql[index + 1] === "-") {
-    const end = sql.indexOf("\n", index + 2);
-    return end === -1 ? sql.length : end + 1;
-  }
-
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
-    return index;
-  }
-
-  let cursor = index + 1;
-  while (cursor < sql.length) {
-    if (sql[cursor] === closingQuote) {
-      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
-        cursor += 2;
-        continue;
-      }
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return sql.length;
-}
-
-function targetsInternalLogIndexTable(sql: any) {
-  const text = String(sql);
-  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
-  let match;
-  while ((match = targetKeywords.exec(text))) {
-    const reference = readSqlTableReference(text, match.index + match[0].length);
-    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function readSqlTableReference(sql: string, startIndex: number) {
-  let index = skipSqlTrivia(sql, startIndex);
-  while (sql[index] === "(") {
-    index += 1;
-    index = skipSqlTrivia(sql, index);
-  }
-
-  const parts = [];
-  while (index < sql.length) {
-    const identifier = readSqlIdentifier(sql, index);
-    if (!identifier) {
-      break;
-    }
-    parts.push(identifier.value);
-    index = skipSqlTrivia(sql, identifier.nextIndex);
-    if (sql[index] !== ".") {
-      break;
-    }
-    index = skipSqlTrivia(sql, index + 1);
-  }
-  return parts;
-}
-
-function skipSqlTrivia(sql: string, startIndex: any) {
-  let index = startIndex;
-  let advanced = true;
-  while (advanced) {
-    advanced = false;
-    while (/\s/.test(sql[index] ?? "")) {
-      index += 1;
-      advanced = true;
-    }
-    if (sql[index] === "/" && sql[index + 1] === "*") {
-      const end = sql.indexOf("*/", index + 2);
-      index = end === -1 ? sql.length : end + 2;
-      advanced = true;
-      continue;
-    }
-    if (sql[index] === "-" && sql[index + 1] === "-") {
-      const end = sql.indexOf("\n", index + 2);
-      index = end === -1 ? sql.length : end + 1;
-      advanced = true;
-    }
-  }
-  return index;
-}
-
-function readSqlIdentifier(sql: string, index: number) {
-  const quote = sql[index];
-  const closingQuote = quote === "[" ? "]" : quote;
-  if (quote === '"' || quote === "'" || quote === "`" || quote === "[") {
-    let value = "";
-    let cursor = index + 1;
-    while (cursor < sql.length) {
-      if (sql[cursor] === closingQuote) {
-        if (sql[cursor + 1] === closingQuote && quote !== "[") {
-          value += closingQuote;
-          cursor += 2;
-          continue;
-        }
-        return { value, nextIndex: cursor + 1 };
-      }
-      value += sql[cursor];
-      cursor += 1;
-    }
-    return null;
-  }
-
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
-  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
-}
-
-function isInternalLogIndexMetadataRow(row: Record<string, SQLOutputValue>, sql = "") {
-  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
-  return (
-    ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") ||
-    Object.values(row ?? {}).some(
-      (value) =>
-        typeof value === "string" &&
-        (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) ||
-          (queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))),
-    )
-  );
-}
-
-export async function simulateLocalIdentitySession(database: LooseRecord, options: LooseRecord = {}) {
-  const provider = String(options.provider ?? "").trim().toLowerCase();
-  if (!["email", "google"].includes(provider)) {
-    return {
-      ok: false,
-      data: null as any,
-      error: {
-        message: `Unsupported simulated auth provider: ${provider || ""}`.trim(),
-        hint: "Use `sporades auth as email` for local identity simulation. Google simulation is reserved for provider-shaped browser tests.",
-      },
-    };
-  }
-
-  const email = normalizeSimulatedEmail(options.email);
-  if (!email) {
-    return {
-      ok: false,
-      data: null as any,
-      error: {
-        message: "Simulated identity requires an email address.",
-        hint: "Pass `--email <address>` to `sporades auth as email`.",
-      },
-    };
-  }
-
-  const displayName = normalizeSimulatedText(options.displayName) ?? email;
-  const picture = normalizeSimulatedText(options.picture);
-  const now = new Date().toISOString();
-  const token = createSessionToken();
-
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-    const subject = `local:${email}`;
-    const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const userId = identity?.userId ?? randomUUID();
-
-    if (identity) {
-      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName,
-        picture,
-        updatedAt: now,
-      });
-    } else {
-      await tx.insertAuthUser({
-        id: userId,
-        createdAt: now,
-        displayName,
-        email,
-        picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "anonymous",
-      });
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId,
-        provider,
-        subject,
-        email,
-        displayName,
-        picture,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-
-    const auth = {
-      userId,
-      displayName,
-      email,
-      picture,
-      isAuthenticated: true,
-      isGuest: false,
-      provider,
-    };
-    return {
-      ok: true,
-      data: {
-        localStorage: {
-          key: "sporades.sessionToken",
-          value: token,
-        },
-        auth,
-      },
-      error: null,
-    };
-  });
-}
-
-function normalizeSimulatedEmail(value: any) {
-  const email = normalizeSimulatedText(value)?.toLowerCase();
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    return null;
-  }
-  return email;
-}
-
-function normalizeSimulatedText(value: null | undefined) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  const text = String(value).trim();
-  return text ? text : null;
-}
-
-function normalizeJourneyPolicy(value: any) {
+export function normalizeJourneyPolicy(value: any) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
   const ttlSeconds = value.ttlSeconds ?? 30;
@@ -8950,7 +2175,7 @@ function normalizeJourneyPolicy(value: any) {
   return { ttlSeconds, capture };
 }
 
-function normalizeJourneyState(value: any, defaultTtlSeconds: number) {
+export function normalizeJourneyState(value: any, defaultTtlSeconds: number) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw { code: "INVALID_JOURNEY_STATE", message: "Journey state must be an object.", hint: "Pass status, optional metadata, and optional ttlSeconds to journey.set()." };
   const status = typeof value.status === "string" ? value.status.trim() : "";
   if (!status || Buffer.byteLength(status, "utf8") > 256 || status === "inactive") throw { code: "INVALID_JOURNEY_STATUS", message: "Journey status is invalid.", hint: "Use a trimmed status from 1 through 256 UTF-8 characters other than inactive." };
@@ -9305,10 +2530,61 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (message.type === "auth.setPassword") {
-      const result: any = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result: any = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
+    // The browser sends intent and relays an opaque Reset code. Runtime auth
+    // internals, and the code's stored form, never leave the server.
+    if (message.type === "auth.sendPasswordResetLink") {
+      const result: any = await sendEmailPasswordResetLink(database, client.session, message.email ?? "");
+      // Undeliverable mail is a Capsule misconfiguration, not something the
+      // browser can act on, and reporting it would leak Capsule configuration
+      // state to an unauthenticated caller. Tell the operator, not the client.
+      const misconfigured = result.error?.code === "MAIL_NOT_CONFIGURED";
+      if (misconfigured) {
+        database.log?.emit?.({
+          category: "platform",
+          event: "auth.password_reset.undeliverable",
+          level: "error",
+          message: result.error.message,
+          data: { code: result.error.code, hint: result.error.hint },
+        });
+      }
+      const ok = result.ok || misconfigured;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: ok ? "auth.sendPasswordResetLink.result" : "error",
+        data: ok ? { ok: true } : null,
+        error: ok ? null : result.error ?? null,
+      });
+      return;
+    }
+
+    if (message.type === "auth.verifyPasswordResetCode") {
+      const result: any = await verifyPasswordResetCode(database, client.session, message.code ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.verifyPasswordResetCode.result" : "error",
+        data: result.ok ? { email: result.email } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
+    // Completing a reset deliberately does not mint a Session: mailbox access
+    // alone must not be enough without demonstrating the new credential.
+    if (message.type === "auth.confirmPasswordReset") {
+      const result: any = await confirmPasswordReset(database, client.session, message.code ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.confirmPasswordReset.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null,
       });
@@ -9679,7 +2955,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
   async function signOutSession(database: LooseRecord, client: LooseRecord) {
     try {
-      await database.sqlite.deleteAuthSession(client.session.token);
+      await database.adapter.deleteAuthSession(client.session.token);
       client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {
@@ -9733,2707 +3009,82 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
   }
 }
 
-export async function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
-  if (!match) {
-    return false;
-  }
-  const provider = match[1];
-  let callbackParameters;
-  try {
-    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
-  } catch (error) {
-    writeEndpointError(response, error);
-    return true;
-  }
-  const parameters = callbackParameters.parameters;
-  const states = parameters.getAll("state");
-  const state = states.length === 1 ? states[0] : null;
-  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
-    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
-    return true;
-  }
-  const stateRow = await database.sqlite.consumeOAuthState(state);
-  if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
-    return true;
-  }
-  try {
-    if (callbackParameters.error) {
-      throw callbackParameters.error;
-    }
-    validateConsumedOAuthCallbackParameters(parameters);
-    if (stateRow.provider !== provider) {
-      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
-    }
-    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
-      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
-    }
-    const adapter = oauthProviderAdapter(database, provider);
-    if (!adapter?.enabled) {
-      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
-    }
-    if ((adapter.responseMode === "form_post" && request.method !== "POST") ||
-        (adapter.responseMode !== "form_post" && request.method !== "GET")) {
-      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
-    }
-    const providerError = parameters.get("error");
-    if (providerError) {
-      const mappedError = adapter.callbackError?.(parameters);
-      if (mappedError) {
-        throw mappedError;
-      }
-      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
-      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
-      throw commandError(
-        actionRequired
-          ? "OAuth provider requires additional user action."
-          : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
-        actionRequired
-          ? "Retry sign-in and complete the provider's consent or account prompt."
-          : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
-        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED",
-      );
-    }
-    const code = parameters.get("code");
-    if (!code) {
-      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-    const profile = await adapter.complete({
-      provider,
-      code,
-      redirectUri: stateRow.redirectUri,
-      nonce: stateRow.nonce,
-      pkceVerifier: stateRow.pkceVerifier,
-      parameters,
-    });
-    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    let result;
-    try {
-      result = await linkProviderIdentity(database, session, provider, profile);
-    } catch {
-      throw commandError(
-        "OAuth account linking failed.",
-        "Retry sign-in. If the problem persists, check the database connection.",
-        "AUTH_TRANSACTION_FAILED",
-      );
-    }
-    if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
-    }
-    writeRedirect(response, stateRow.returnTo);
-  } catch (error: any) {
-    writeEndpointError(response, error);
-  }
-  return true;
-}
 
-async function readOAuthCallbackParameters(request: IncomingMessage, requestUrl: URL) {
-  if (request.method === "GET") {
-    return {
-      parameters: requestUrl.searchParams,
-      error: null,
-      stateTrustworthy: true,
-    };
-  }
-  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
-    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  const body = await readLimitedRequestBody(request, 16 * 1024);
-  return parseOAuthFormBody(body);
-}
 
-function oauthFormContentTypeValid(value: any) {
-  const raw = singleHttpHeader(value);
-  if (!raw) return false;
-  const parts = raw.split(";").map((part) => part.trim());
-  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
-  if (parts.length === 0) return true;
-  if (parts.length !== 1) return false;
-  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
-  return Boolean(match);
-}
-
-function parseOAuthFormBody(body: Buffer) {
-  const parameters = new URLSearchParams();
-  let error: any = null;
-  let stateTrustworthy = true;
-  const invalidCallback = () => commandError(
-    "Invalid OAuth callback.",
-    "Retry sign-in from the app.",
-    "OAUTH_INVALID_CALLBACK"
+// Enqueues a runtime-owned Job under the reserved privileged actor. This writes
+// the queue row directly rather than going through the current-user Job API:
+// that API batches enqueues onto the calling Capsule context when a transaction
+// is active, and runtime code has no such context, so the row would be dropped.
+// A direct insert joins whatever transaction is already open, so a rolled-back
+// caller discards the Job with it.
+async function enqueueRuntimeJob(database: LooseRecord, handlerName: string, payload: LooseRecord, idempotencyKey: string) {
+  const queueDatabase = database.__rootDatabase ?? database;
+  const now = queueDatabase.clock.now().toISOString();
+  const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
+  await queueDatabase.adapter.prepare(
+    queueDatabase.adapter.dialect.sql(
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
+      "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)",
+    ),
+  ).run(
+    randomUUID(),
+    handlerName,
+    PRIVILEGED_AUTH_USER_ID,
+    PRIVILEGED_AUTH_USER_ID,
+    "privileged",
+    payloadJson,
+    now,
+    idempotencyKey,
+    now,
+    JSON.stringify(normalizeJobRetry(undefined)),
   );
-
-  for (let start = 0; start <= body.length;) {
-    let end = body.indexOf(0x26, start);
-    if (end === -1) end = body.length;
-    const separator = body.indexOf(0x3d, start);
-    const hasSeparator = separator !== -1 && separator < end;
-    const rawName = body.subarray(start, hasSeparator ? separator : end);
-    const rawValue = body.subarray(hasSeparator ? separator + 1 : end, end);
-    let name: string | null = null;
-    let value: string | null = null;
-
-    try {
-      name = decodeOAuthFormComponent(rawName);
-    } catch {
-      stateTrustworthy = false;
-      error ??= invalidCallback();
-    }
-
-    if (name !== null) {
-      try {
-        value = decodeOAuthFormComponent(rawValue);
-      } catch {
-        if (name === "state") stateTrustworthy = false;
-        error ??= invalidCallback();
-      }
-    }
-
-    if (name !== null && value !== null) {
-      parameters.append(name, value);
-    }
-    if (end === body.length) break;
-    start = end + 1;
-  }
-
-  return { parameters, error, stateTrustworthy };
+  scheduleCurrentUserJobWorker(queueDatabase);
 }
 
-function decodeOAuthFormComponent(raw: Buffer) {
-  const bytes: number[] = [];
-  for (let index = 0; index < raw.length; index += 1) {
-    const byte = raw[index];
-    if (byte === 0x2b) {
-      bytes.push(0x20);
-      continue;
-    }
-    if (byte === 0x25) {
-      if (index + 2 >= raw.length) throw new Error("Malformed percent escape.");
-      const pair = raw.subarray(index + 1, index + 3).toString("ascii");
-      if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("Malformed percent escape.");
-      bytes.push(Number.parseInt(pair, 16));
-      index += 2;
-      continue;
-    }
-    bytes.push(byte);
-  }
-  const value = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
-  validateOAuthCallbackScalar(value);
-  return value;
-}
-
-function validateOAuthCallbackScalar(value: string) {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (
-      codePoint <= 0x1f
-      || (codePoint >= 0x7f && codePoint <= 0x9f)
-      || codePoint === 0xfffd
-      || (codePoint >= 0xfdd0 && codePoint <= 0xfdef)
-      || (codePoint & 0xffff) === 0xfffe
-      || (codePoint & 0xffff) === 0xffff
-    ) {
-      throw new Error("Invalid callback character.");
-    }
-  }
-}
-
-function validateConsumedOAuthCallbackParameters(parameters: URLSearchParams) {
-  for (const name of ["code", "error", "user"]) {
-    if (parameters.getAll(name).length > 1) {
-      throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-    }
-  }
-  if (parameters.has("code") && parameters.has("error")) {
-    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-  if (parameters.has("error") && parameters.has("user")) {
-    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
-  }
-}
-
-async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, provider: string, options: LooseRecord) {
-  const adapter = oauthProviderAdapter(database, provider);
-  if (!adapter?.enabled) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
-        message: `${provider || "OAuth"} provider is not configured.`,
-        hint: provider === "google"
-          ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
-          : "Configure this OAuth provider before retrying sign-in.",
-      },
-    };
-  }
-  const origin = options.origin;
-  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_ORIGIN_INVALID",
-        message: "OAuth sign-in requires a trusted request origin.",
-        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy.",
-      },
-    };
-  }
-  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
-        message: "Apple sign-in requires an HTTPS domain origin.",
-        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL.",
-      },
-    };
-  }
-  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
-  const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = randomBytes(32).toString("base64url");
-  const nonce = randomBytes(32).toString("base64url");
-  const pkceVerifier = randomBytes(48).toString("base64url");
-  const pkceChallenge = createHash("sha256").update(pkceVerifier).digest("base64url");
-  const now = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  let started;
-  try {
-    started = await adapter.begin({
-      provider,
-      state,
-      nonce,
-      redirectUri,
-      pkceChallenge,
-      pkceChallengeMethod: "S256",
-    });
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth sign-in could not be started.",
-        hint: "Check the provider configuration and retry sign-in.",
-      },
-    };
-  }
-  if (!started?.url) {
-    return {
-      ok: false,
-      error: {
-        code: "OAUTH_PROVIDER_START_FAILED",
-        message: "OAuth provider did not return an authorization URL.",
-        hint: "Check the provider configuration and retry sign-in.",
-      },
-    };
-  }
-  await database.sqlite.insertOAuthState({
-    state,
-    provider,
-    sessionToken: session.token,
-    returnTo,
-    redirectUri,
-    createdAt: now,
-    expiresAt,
-    nonce,
-    pkceVerifier,
-  });
-  return { ok: true, url: started.url };
-}
-
-function normalizeReturnTo(returnTo: string | URL, origin: string | URL | undefined) {
-  if (!returnTo) {
-    return origin;
-  }
-  try {
-    const url = new URL(returnTo, origin);
-    if (url.origin !== origin) {
-      return origin;
-    }
-    return url.toString();
-  } catch {
-    return origin;
-  }
-}
-
-function oauthProviderAdapter(database: LooseRecord, provider: string) {
-  if (database.__oauthProviderAdapters?.[provider]) {
-    return database.__oauthProviderAdapters[provider];
-  }
-  const factories: LooseRecord = {
-    google: createGoogleOAuthProviderAdapter,
-    facebook: createFacebookOAuthProviderAdapter,
-    apple: createAppleOAuthProviderAdapter,
-    microsoft: createMicrosoftOAuthProviderAdapter,
-  };
-  return factories[provider]?.(database) ?? null;
-}
-
-function isOAuthLoopbackHostname(hostname: any) {
-  if (typeof hostname !== "string") return false;
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return normalized === "127.0.0.1" || normalized === "::1";
-}
-
-function oauthProviderTestEndpoint(override: any, productionUrl: string) {
-  if (typeof override !== "string" || process.env.SPORADES_OAUTH_TEST_ENDPOINTS !== "1") {
-    return productionUrl;
-  }
-  try {
-    const url = new URL(override);
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      !isOAuthLoopbackHostname(url.hostname) ||
-      url.username ||
-      url.password ||
-      url.hash
-    ) {
-      return productionUrl;
-    }
-    return url.toString();
-  } catch {
-    return productionUrl;
-  }
-}
-
-async function fetchBoundedOAuthJson(
+// Resolves identically whether or not the email is registered: no error, count,
+// or send distinguishes the two, so this cannot be used to enumerate accounts.
+export async function sendEmailPasswordResetLink(
   database: LooseRecord,
-  url: string,
-  request: LooseRecord,
-  policy: LooseRecord,
+  session: LooseRecord,
+  email: string,
+  options: LooseRecord = {},
 ) {
-  const configuredTimeout = Number(database?.[policy.timeoutProperty]);
-  const defaultTimeoutMs = Number.isFinite(policy.defaultTimeoutMs)
-    ? Math.min(Math.max(Math.floor(policy.defaultTimeoutMs), 1), 10_000)
-    : 5_000;
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 10_000
-    ? Math.floor(configuredTimeout)
-    : defaultTimeoutMs;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const signal = controller.signal;
-  try {
-    const response = await fetch(url, {
-      ...request,
-      redirect: "error",
-      signal,
-    });
-    if (!response?.ok) {
-      try { await response?.body?.cancel?.(); } catch { /* response disposal is best effort */ }
-      throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-    }
-    try {
-      return await readBoundedJsonBody(response, policy.maxBytes);
-    } catch (error: any) {
-      if (error?.name === "AbortError" || signal.aborted) {
-        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-      }
-      throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
-    }
-  } catch (error: any) {
-    if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode) throw error;
-    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function completeOpenIdOAuthCodeExchange(database: LooseRecord, context: LooseRecord, contract: LooseRecord) {
-  const timeoutMs = Number.isInteger(database?.__oauthExchangeTimeoutMs)
-    ? Math.min(Math.max(database.__oauthExchangeTimeoutMs, 10), 30_000)
-    : 10_000;
-  const signal = AbortSignal.timeout(timeoutMs);
-  const exchangeCode = contract.exchangeCode ?? "OAUTH_EXCHANGE_FAILED";
-  const timeoutCode = contract.timeoutCode ?? "OAUTH_EXCHANGE_TIMEOUT";
-  let tokenResponse;
-  try {
-    tokenResponse = await fetch(contract.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(contract.parameters),
-      redirect: "error",
-      signal,
-    });
-  } catch (error: any) {
-    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError(
-      timedOut ? (contract.timeoutMessage ?? contract.exchangeMessage) : contract.exchangeMessage,
-      contract.exchangeHint,
-      timedOut ? timeoutCode : exchangeCode,
-    );
-  }
-  if (!tokenResponse.ok) {
-    await tokenResponse.body?.cancel?.().catch?.(() => {});
-    throw commandError(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
-  }
-  let token;
-  try {
-    token = await readBoundedJsonResponse(tokenResponse, 64 * 1024);
-  } catch (error: any) {
-    const timedOut = signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError(
-      timedOut ? (contract.timeoutMessage ?? contract.exchangeMessage) : contract.responseMessage,
-      contract.exchangeHint,
-      timedOut ? timeoutCode : exchangeCode,
-    );
-  }
-  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
-  }
-  return await contract.verify(database, token.id_token, context.nonce);
-}
-
-function createGoogleOAuthProviderAdapter(database: LooseRecord) {
-  const google = database.authConfig.providers.google;
-  const configured = Boolean(google.enabled && google.configured);
-  return {
-    provider: "google",
-    responseMode: "query",
-    enabled: configured,
-    begin(context: LooseRecord) {
-      const clientId = database.serverEnv[google.clientIdEnv];
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        scope: "openid email profile",
-        state: context.state,
-        nonce: context.nonce,
-        code_challenge: context.pkceChallenge,
-        code_challenge_method: "S256",
-      });
-      return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
-    },
-    complete(context: LooseRecord) {
-      const clientId = database.serverEnv[google.clientIdEnv];
-      const clientSecret = database.serverEnv[google.clientSecretEnv];
-      return completeOpenIdOAuthCodeExchange(database, context, {
-        tokenUrl: oauthProviderTestEndpoint(
-          process.env.SPORADES_GOOGLE_TOKEN_URL,
-          "https://oauth2.googleapis.com/token",
-        ),
-        parameters: {
-          code: context.code,
-          client_id: clientId,
-          client_secret: clientSecret,
-          redirect_uri: context.redirectUri,
-          grant_type: "authorization_code",
-          code_verifier: context.pkceVerifier,
-        },
-        exchangeMessage: "Google OAuth code exchange failed.",
-        exchangeHint: "Check the Google OAuth client configuration and retry sign-in.",
-        responseMessage: "Google OAuth response was invalid.",
-        tokenMessage: "Google OAuth response did not include a valid identity token.",
-        tokenHint: "Check the Google OAuth client configuration and retry sign-in.",
-        verify: verifyGoogleIdentityToken,
-      });
-    },
-  };
-}
-
-function createAppleOAuthProviderAdapter(database: LooseRecord) {
-  const apple = database.authConfig.providers.apple;
-  const configured = Boolean(apple.enabled && apple.configured);
-  return {
-    provider: "apple",
-    responseMode: "form_post",
-    enabled: configured,
-    begin(context: LooseRecord) {
-      if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
-        throw commandError(
-          "Apple sign-in requires an HTTPS domain origin.",
-          "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.",
-          "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
-        );
-      }
-      const params = new URLSearchParams({
-        client_id: apple.clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        response_mode: "form_post",
-        scope: "name email",
-        state: context.state,
-        nonce: context.nonce,
-      });
-      return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
-    },
-    complete(context: LooseRecord) {
-      return completeAppleOAuth(database, context);
-    },
-  };
-}
-
-function appleOAuthOriginEligible(origin: any) {
-  try {
-    const url = new URL(String(origin));
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (url.protocol !== "https:" || url.username || url.password || !hostname) return false;
-    if (hostname === "localhost" || hostname.endsWith(".localhost")) return false;
-    if (hostname.includes(":")) return false;
-    if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
-    const labels = hostname.split(".");
-    return hostname.length <= 253 &&
-      labels.length >= 2 &&
-      labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
-  } catch {
-    return false;
-  }
-}
-
-async function completeAppleOAuth(database: LooseRecord, context: LooseRecord) {
-  const apple = database.authConfig.providers.apple;
-  const tokenUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_APPLE_TOKEN_URL,
-    "https://appleid.apple.com/auth/token",
-  );
-  let clientSecret;
-  try {
-    clientSecret = createAppleClientSecret(database);
-  } catch {
-    throw commandError(
-      "Apple client credential could not be generated.",
-      "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID",
-    );
-  }
-  const identity = await completeOpenIdOAuthCodeExchange(database, context, {
-    tokenUrl,
-    parameters: {
-      code: context.code,
-      client_id: apple.clientId,
-      client_secret: clientSecret,
-      redirect_uri: context.redirectUri,
-      grant_type: "authorization_code",
-    },
-    exchangeMessage: "Apple OAuth code exchange failed.",
-    exchangeHint: "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.",
-    responseMessage: "Apple OAuth response was invalid.",
-    tokenMessage: "Apple OAuth response did not include a valid identity token.",
-    tokenHint: "Retry Apple sign-in.",
-    verify: verifyAppleIdentityToken,
-  });
-  const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
-  return {
-    ...identity,
-    displayName: authorizationUser?.displayName ?? null,
-  };
-}
-
-function createAppleClientSecret(database: LooseRecord, nowSeconds = Math.floor(Date.now() / 1000)) {
-  const apple = database.authConfig.providers.apple;
-  const privateKey = database.serverEnv[apple.privateKeyEnv];
-  if (
-    !privateKey ||
-    ![apple.clientId, apple.teamId, apple.keyId].every((value) =>
-      typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))
-  ) {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID",
-    );
-  }
-  let signingKey;
-  try {
-    signingKey = createPrivateKey(privateKey);
-  } catch {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID",
-    );
-  }
-  if (
-    signingKey.type !== "private" ||
-    signingKey.asymmetricKeyType !== "ec" ||
-    signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1"
-  ) {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID",
-    );
-  }
-  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
-  const claims = Buffer.from(JSON.stringify({
-    iss: apple.teamId,
-    iat: nowSeconds,
-    exp: nowSeconds + 300,
-    aud: "https://appleid.apple.com",
-    sub: apple.clientId,
-  })).toString("base64url");
-  const signatureBytes = sign(
-    "sha256",
-    Buffer.from(`${header}.${claims}`),
-    { key: signingKey, dsaEncoding: "ieee-p1363" },
-  );
-  if (signatureBytes.length !== 64) {
-    throw commandError(
-      "Apple client credential is invalid.",
-      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
-      "OAUTH_CLIENT_CREDENTIAL_INVALID",
-    );
-  }
-  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
-}
-
-function createFacebookOAuthProviderAdapter(database: LooseRecord) {
-  const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion;
-  const configured = Boolean(
-    facebook.enabled &&
-    facebook.configured &&
-    facebook.runtimeAvailable &&
-    graphVersion === "v23.0",
-  );
-  return {
-    provider: "facebook",
-    responseMode: "query",
-    enabled: configured,
-    begin(context: LooseRecord) {
-      const clientId = database.serverEnv[facebook.clientIdEnv];
-      if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
-        throw commandError(
-          "Facebook App ID is invalid.",
-          "Configure a valid Facebook App ID and retry sign-in.",
-          "FACEBOOK_CONFIGURATION_INVALID",
-        );
-      }
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        scope: "public_profile,email",
-        state: context.state,
-      });
-      const authorizationUrl = facebookOAuthEndpoint(
-        process.env.SPORADES_FACEBOOK_AUTH_URL,
-        `https://www.facebook.com/${graphVersion}/dialog/oauth`,
-      );
-      authorizationUrl.search = params.toString();
-      if (authorizationUrl.toString().length > 8192) {
-        throw commandError(
-          "Facebook authorization URL is too large.",
-          "Check the Facebook App ID and callback configuration.",
-          "FACEBOOK_CONFIGURATION_INVALID",
-        );
-      }
-      return { url: authorizationUrl.toString() };
-    },
-    callbackError(parameters: URLSearchParams) {
-      return facebookOAuthCallbackError(parameters);
-    },
-    complete(context: LooseRecord) {
-      return completeFacebookOAuth(database, context);
-    },
-  };
-}
-
-function facebookOAuthCallbackError(parameters: URLSearchParams) {
-  const reason = parameters.get("error_reason");
-  const code = parameters.get("error_code");
-  const description = parameters.get("error_description")?.toLowerCase() ?? "";
-  if (reason === "user_denied" || code === "200") {
-    return commandError(
-      "Facebook permissions were declined or are unavailable.",
-      "Allow the requested public profile and email permissions, then retry sign-in.",
-      "FACEBOOK_PERMISSION_DENIED",
-    );
-  }
-  if (code === "191") {
-    return commandError(
-      "Facebook rejected the OAuth redirect URI.",
-      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
-      "FACEBOOK_REDIRECT_MISMATCH",
-    );
-  }
-  if (
-    description.includes("development mode") ||
-    description.includes("app is not set up") ||
-    description.includes("app not set up") ||
-    description.includes("app is not available")
-  ) {
-    return commandError(
-      "Facebook sign-in is unavailable for this account.",
-      "Check the Facebook app mode and tester access, then retry sign-in.",
-      "FACEBOOK_APP_RESTRICTED",
-    );
-  }
-  return null;
-}
-
-function facebookOAuthEndpoint(configured: unknown, fallback: string) {
-  const value = configured === undefined ? fallback : configured;
-  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
-    throw commandError(
-      "Facebook OAuth endpoint is invalid.",
-      "Use the built-in HTTPS Meta endpoint.",
-      "FACEBOOK_ENDPOINT_UNSAFE",
-    );
-  }
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw commandError(
-      "Facebook OAuth endpoint is invalid.",
-      "Use the built-in HTTPS Meta endpoint.",
-      "FACEBOOK_ENDPOINT_UNSAFE",
-    );
-  }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" &&
-    url.protocol === "http:" &&
-    loopback;
-  if (
-    (url.protocol !== "https:" && !insecureTestEndpoint) ||
-    url.username ||
-    url.password ||
-    url.hash
-  ) {
-    throw commandError(
-      "Facebook OAuth endpoint is unsafe.",
-      "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
-      "FACEBOOK_ENDPOINT_UNSAFE",
-    );
-  }
-  return url;
-}
-
-function facebookOAuthTimeoutSignal() {
-  const testTimeout = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1"
-    ? Number(process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS)
-    : NaN;
-  const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 10_000
-    ? testTimeout
-    : 10_000;
-  return AbortSignal.timeout(timeoutMs);
-}
-
-async function cancelFacebookOAuthResponse(response: Response) {
-  try {
-    await response.body?.cancel();
-  } catch {
-    // Preserve the bounded protocol error rather than exposing cleanup details.
-  }
-}
-
-async function readFacebookOAuthJson(
-  response: Response,
-  signal: AbortSignal,
-  failureCode: string,
-  failureMessage: string,
-  failureHint: string,
-  timeoutCode: string,
-  timeoutMessage: string,
-) {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw commandError(failureMessage, failureHint, failureCode);
-  }
-  const chunks = [];
-  let length = 0;
-  const aborted = {};
-  let onAbort: (() => void) | null = null;
-  const abort = signal.aborted
-    ? Promise.resolve(aborted)
-    : new Promise((resolve) => {
-        onAbort = () => resolve(aborted);
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-  try {
-    while (true) {
-      const next: any = await Promise.race([reader.read(), abort]);
-      if (next === aborted) throw aborted;
-      if (next.done) break;
-      if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
-      length += next.value.byteLength;
-      if (length > 64 * 1024) {
-        throw new Error("response too large");
-      }
-      chunks.push(next.value);
-    }
-    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-  } catch (error) {
-    try {
-      await reader.cancel();
-    } catch {
-      // Preserve the bounded protocol error rather than exposing cleanup details.
-    }
-    if (error === aborted || signal.aborted) {
-      throw commandError(timeoutMessage, failureHint, timeoutCode);
-    }
-    throw commandError(failureMessage, failureHint, failureCode);
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-    try {
-      reader.releaseLock();
-    } catch {
-      // Reader cleanup must not replace the bounded protocol outcome.
-    }
-  }
-}
-
-async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord) {
-  const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion;
-  if (graphVersion !== "v23.0") {
-    throw commandError(
-      "Facebook Graph API version is unsupported.",
-      "Configure Facebook Graph API version v23.0 and retry sign-in.",
-      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED",
-    );
-  }
-  const clientId = database.serverEnv[facebook.clientIdEnv];
-  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
-  if (
-    typeof context.code !== "string" ||
-    context.code.length < 1 ||
-    context.code.length > 16 * 1024 ||
-    typeof context.redirectUri !== "string" ||
-    context.redirectUri.length < 1 ||
-    context.redirectUri.length > 2048 ||
-    typeof clientId !== "string" ||
-    clientId.length < 1 ||
-    clientId.length > 4096 ||
-    typeof clientSecret !== "string" ||
-    clientSecret.length < 1 ||
-    clientSecret.length > 16 * 1024
-  ) {
-    throw commandError(
-      "Facebook OAuth callback or configuration is invalid.",
-      "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
-      "FACEBOOK_CALLBACK_INVALID",
-    );
-  }
-  const tokenUrl = facebookOAuthEndpoint(
-    process.env.SPORADES_FACEBOOK_TOKEN_URL,
-    `https://graph.facebook.com/${graphVersion}/oauth/access_token`,
-  );
-  let tokenResponse;
-  const tokenSignal = facebookOAuthTimeoutSignal();
-  try {
-    tokenResponse = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: context.code,
-        client_id: clientId,
-        client_secret: clientSecret,
-          redirect_uri: context.redirectUri,
-        }),
-      redirect: "error",
-      signal: tokenSignal,
-    });
-  } catch (error: any) {
-    throw commandError(
-      error?.name === "TimeoutError" || error?.name === "AbortError"
-        ? "Facebook OAuth code exchange timed out."
-        : "Facebook OAuth code exchange failed.",
-      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
-      error?.name === "TimeoutError" || error?.name === "AbortError"
-        ? "FACEBOOK_EXCHANGE_TIMEOUT"
-        : "FACEBOOK_EXCHANGE_FAILED",
-    );
-  }
-  if (!tokenResponse.ok) {
-    await cancelFacebookOAuthResponse(tokenResponse);
-    throw commandError(
-      "Facebook OAuth code exchange failed.",
-      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED",
-    );
-  }
-  const token = await readFacebookOAuthJson(
-    tokenResponse,
-    tokenSignal,
-    "FACEBOOK_EXCHANGE_FAILED",
-    "Facebook OAuth response was invalid.",
-    "Check the Facebook app configuration and retry sign-in.",
-    "FACEBOOK_EXCHANGE_TIMEOUT",
-    "Facebook OAuth response timed out.",
-  );
-  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
-    throw commandError(
-      "Facebook OAuth response did not include a valid access token.",
-      "Check the Facebook app configuration and retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED",
-    );
-  }
-
-  const graphUrl = facebookOAuthEndpoint(
-    process.env.SPORADES_FACEBOOK_GRAPH_URL,
-    `https://graph.facebook.com/${graphVersion}/me`,
-  );
-  graphUrl.searchParams.set("fields", "id,name,email,picture");
-  let graphResponse;
-  const graphSignal = facebookOAuthTimeoutSignal();
-  try {
-    graphResponse = await fetch(graphUrl, {
-      headers: { authorization: `Bearer ${token.access_token}` },
-      redirect: "error",
-      signal: graphSignal,
-    });
-  } catch (error: any) {
-    throw commandError(
-      error?.name === "TimeoutError" || error?.name === "AbortError"
-        ? "Facebook profile request timed out."
-        : "Facebook profile could not be loaded.",
-      "Check Facebook Graph API access and retry sign-in.",
-      error?.name === "TimeoutError" || error?.name === "AbortError"
-        ? "FACEBOOK_GRAPH_TIMEOUT"
-        : "FACEBOOK_GRAPH_FAILED",
-    );
-  }
-  if (!graphResponse.ok) {
-    await cancelFacebookOAuthResponse(graphResponse);
-    throw commandError(
-      "Facebook profile could not be loaded.",
-      "Check Facebook Graph API access and retry sign-in.",
-      "FACEBOOK_GRAPH_FAILED",
-    );
-  }
-  const profile = await readFacebookOAuthJson(
-    graphResponse,
-    graphSignal,
-    "FACEBOOK_GRAPH_FAILED",
-    "Facebook profile response was invalid.",
-    "Check Facebook Graph API access and retry sign-in.",
-    "FACEBOOK_GRAPH_TIMEOUT",
-    "Facebook profile response timed out.",
-  );
-  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
-    throw commandError(
-      "Facebook profile is missing a stable identifier.",
-      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
-      "FACEBOOK_PROFILE_ID_MISSING",
-    );
-  }
-  const email = typeof profile.email === "string" && profile.email.length <= 320
-    ? profile.email.trim().toLowerCase() || null
-    : null;
-  const displayName = typeof profile.name === "string" && profile.name.length <= 512
-    ? profile.name.trim() || null
-    : null;
-  const pictureCandidate = profile.picture?.data?.url;
-  let picture = null;
-  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
-    try {
-      const pictureUrl = new URL(pictureCandidate);
-      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
-        picture = pictureUrl.toString();
-      }
-    } catch {
-      picture = null;
-    }
-  }
-  return {
-    subject: profile.id,
-    email,
-    emailVerified: null,
-    displayName,
-    picture,
-  };
-}
-
-async function verifyGoogleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  try {
-    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
-    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
-  } catch {
-    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  if (header.alg !== "RS256" || typeof header.kid !== "string") {
-    throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwksUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_GOOGLE_JWKS_URL,
-    "https://www.googleapis.com/oauth2/v3/certs",
-  );
-  let jwks;
-  try {
-    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
-      maxBytes: 64 * 1024,
-      timeoutProperty: "__oauthJwksTimeoutMs",
-      defaultTimeoutMs: 5_000,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Google signing keys could not be loaded.",
-      unavailableHint: "Retry Google sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Google signing keys were invalid.",
-      invalidHint: "Retry Google sign-in.",
-    });
-  } catch (error: any) {
-    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
-  }
-  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
-  if (!keys) {
-    throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  const jwk = keys.find((candidate: LooseRecord) =>
-    isPlainJsonObject(candidate) &&
-    candidate.kid === header.kid &&
-    candidate.kty === "RSA" &&
-    typeof candidate.n === "string" &&
-    typeof candidate.e === "string");
-  if (!jwk) {
-    throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      decodeJwtPart(parts[2]),
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const clientId = database.serverEnv[database.authConfig.providers.google.clientIdEnv];
-  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
-  const validSubject = typeof claims.sub === "string" &&
-    claims.sub.length <= 255 &&
-    /^[\x21-\x7e]+$/.test(claims.sub);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
-    : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
-    : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
-    : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
-    : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
-    : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
-    : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
-    : null;
-  if (invalidCode) {
-    throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
-  }
-  return {
-    subject: claims.sub,
-    email: normalizeSimulatedText(claims.email)?.toLowerCase() ?? null,
-    emailVerified: claims.email_verified === true,
-    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
-    picture: normalizeSimulatedText(claims.picture),
-  };
-}
-
-function createMicrosoftOAuthProviderAdapter(database: LooseRecord) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const configured = Boolean(microsoft.enabled && microsoft.configured);
-  return {
-    provider: "microsoft",
-    responseMode: "query",
-    enabled: configured,
-    async begin(context: LooseRecord) {
-      const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
-      const clientId = database.serverEnv[microsoft.clientIdEnv];
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: context.redirectUri,
-        response_type: "code",
-        response_mode: "query",
-        scope: "openid profile email",
-        state: context.state,
-        nonce: context.nonce,
-        code_challenge: context.pkceChallenge,
-        code_challenge_method: "S256",
-      });
-      return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
-    },
-    complete(context: LooseRecord) {
-      return completeMicrosoftOAuth(database, context);
-    },
-  };
-}
-
-async function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenant: string) {
-  const selectedTenant = validMicrosoftTenant(tenant) ? tenant : null;
-  if (!selectedTenant) {
-    throw commandError(
-      "Microsoft tenant configuration is invalid.",
-      "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
-      "OAUTH_TENANT_INVALID",
-    );
-  }
-  const productionDiscoveryUrl =
-    `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
-  const discoveryUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_MICROSOFT_DISCOVERY_URL,
-    productionDiscoveryUrl,
-  );
-  const discoveryOverride = discoveryUrl !== productionDiscoveryUrl;
-  let discoveryOrigin;
-  try {
-    const parsedDiscoveryUrl = new URL(discoveryUrl);
-    const loopbackOverride = discoveryOverride &&
-      parsedDiscoveryUrl.protocol === "http:" &&
-      isOAuthLoopbackHostname(parsedDiscoveryUrl.hostname) &&
-      !parsedDiscoveryUrl.username &&
-      !parsedDiscoveryUrl.password &&
-      !parsedDiscoveryUrl.hash;
-    const microsoftDiscovery = !discoveryOverride &&
-      parsedDiscoveryUrl.protocol === "https:" &&
-      parsedDiscoveryUrl.hostname === "login.microsoftonline.com";
-    if (!loopbackOverride && !microsoftDiscovery) throw new Error("untrusted discovery");
-    discoveryOrigin = parsedDiscoveryUrl.origin;
-  } catch {
-    throw commandError(
-      "Microsoft OpenID discovery URL was invalid.",
-      "Use the Microsoft identity platform discovery endpoint.",
-      "OAUTH_DISCOVERY_INVALID",
-    );
-  }
-  const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = microsoftOidcCacheKey([
-    selectedTenant,
-    discoveryUrl,
-    microsoft.clientIdEnv ?? "",
-    microsoft.clientSecretEnv ?? "",
-  ]);
-  const cacheRoot = microsoftOidcCache(database);
-  const cache = cacheRoot.discovery;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
-  let state = cache.get(cacheKey);
-  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
-    state = {
-      value: null,
-      expiresAt: 0,
-      generation: 0,
-      nextGeneration: 1,
-      inflight: null,
-      lastAccess: cacheRoot.nextAccess++,
-    };
-    if (cache.size >= 32) {
-      throw commandError(
-        "Microsoft OpenID configuration could not be loaded.",
-        "Retry Microsoft sign-in after other provider requests complete.",
-        "OAUTH_DISCOVERY_UNAVAILABLE",
-      );
-    }
-    cache.set(cacheKey, state);
-  }
-  state.lastAccess = cacheRoot.nextAccess++;
-  if (state.value && state.expiresAt > now) return state.value;
-  if (state.inflight) return await state.inflight;
-  const requestGeneration = state.nextGeneration++;
-  const inflight = (async () => {
-    const discovery = await fetchMicrosoftOidcJson(database, discoveryUrl, {}, {
-      maxBytes: 64 * 1024,
-      unavailableCode: "OAUTH_DISCOVERY_UNAVAILABLE",
-      unavailableMessage: "Microsoft OpenID configuration could not be loaded.",
-      unavailableHint: "Check Microsoft tenant selection and network access, then retry sign-in.",
-      invalidCode: "OAUTH_DISCOVERY_INVALID",
-      invalidMessage: "Microsoft OpenID configuration was invalid.",
-      invalidHint: "Check Microsoft tenant selection and retry sign-in.",
-    });
-    const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
-    if (!isPlainRecord(discovery) ||
-        !required.every((key) =>
-          typeof discovery[key] === "string" &&
-          discovery[key].length > 0 &&
-          discovery[key].length <= 2048
-        )) {
-      throw commandError(
-        "Microsoft OpenID configuration was invalid.",
-        "Check Microsoft tenant selection and retry sign-in.",
-        "OAUTH_DISCOVERY_INVALID",
-      );
-    }
-    try {
-      const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
-      const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
-      const endpointsTrusted = discoveryOverride
-        ? endpointUrls.every((url) => url.origin === discoveryOrigin)
-        : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
-      const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
-      if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
-    } catch {
-      throw commandError(
-        "Microsoft OpenID configuration contained invalid endpoints.",
-        "Check Microsoft tenant selection and retry sign-in.",
-        "OAUTH_DISCOVERY_INVALID",
-      );
-    }
-    if (requestGeneration >= state.generation) {
-      state.value = discovery;
-      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1000;
-      state.generation = requestGeneration;
-    }
-    return state.value;
-  })();
-  state.inflight = inflight;
-  try {
-    return await inflight;
-  } finally {
-    if (state.inflight === inflight) state.inflight = null;
-  }
-}
-
-async function fetchMicrosoftOidcJson(
-  database: LooseRecord,
-  url: string,
-  request: LooseRecord,
-  policy: LooseRecord,
-) {
-  return await fetchBoundedOAuthJson(database, url, request, {
-    ...policy,
-    timeoutProperty: "__microsoftOidcTimeoutMs",
-    defaultTimeoutMs: 5_000,
-  });
-}
-
-async function readBoundedJsonBody(response: LooseRecord, maxBytes: number) {
-  const declaredLength = Number(response.headers?.get?.("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    try { await response.body?.cancel?.(); } catch { /* response disposal is best effort */ }
-    throw new Error("OIDC response exceeded its byte limit");
-  }
-  const reader = response.body?.getReader?.();
-  if (!reader) throw new Error("OIDC response body was unavailable");
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > maxBytes) {
-        throw new Error("OIDC response exceeded its byte limit");
-      }
-      chunks.push(Buffer.from(chunk.value));
-    }
-  } catch (error) {
-    try { await reader.cancel(); } catch { /* response disposal is best effort */ }
-    throw error;
-  } finally {
-    try { reader.releaseLock?.(); } catch { /* response disposal is best effort */ }
-  }
-  return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
-}
-
-function microsoftOidcCache(database: LooseRecord) {
-  if (!database.__microsoftOidcCache ||
-      !(database.__microsoftOidcCache.discovery instanceof Map) ||
-      !(database.__microsoftOidcCache.jwks instanceof Map)) {
-    database.__microsoftOidcCache = {
-      discovery: new Map(),
-      jwks: new Map(),
-      nextAccess: 1,
-    };
-  }
-  if (!Number.isSafeInteger(database.__microsoftOidcCache.nextAccess)) {
-    database.__microsoftOidcCache.nextAccess = 1;
-  }
-  return database.__microsoftOidcCache;
-}
-
-function microsoftOidcNow(database: LooseRecord) {
-  return Number.isFinite(database.__microsoftOidcNowMs)
-    ? Number(database.__microsoftOidcNowMs)
-    : Date.now();
-}
-
-function microsoftOidcCacheKey(parts: string[]) {
-  return JSON.stringify(parts);
-}
-
-function pruneMicrosoftOidcCacheMap(
-  cache: Map<string, LooseRecord>,
-  now: number,
-  maximumSize: number,
-  reserveSlot = false,
-) {
-  for (const [key, state] of cache) {
-    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now)) {
-      cache.delete(key);
-    }
-  }
-  const targetSize = Math.max(0, maximumSize - (reserveSlot ? 1 : 0));
-  while (cache.size > targetSize) {
-    const candidates = [...cache.entries()]
-      .filter(([, state]) => !state?.inflight)
-      .sort(([leftKey, left], [rightKey, right]) => {
-        const accessDifference = Number(left?.lastAccess ?? 0) - Number(right?.lastAccess ?? 0);
-        return accessDifference || leftKey.localeCompare(rightKey);
-      });
-    if (candidates.length === 0) break;
-    cache.delete(candidates[0][0]);
-  }
-}
-
-async function completeMicrosoftOAuth(database: LooseRecord, context: LooseRecord) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const discovery = await discoverMicrosoftOpenIdConfiguration(database, microsoft.tenant);
-  const clientId = database.serverEnv[microsoft.clientIdEnv];
-  const clientSecret = database.serverEnv[microsoft.clientSecretEnv];
-  const token = await fetchMicrosoftOidcJson(database, discovery.token_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code: context.code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: context.redirectUri,
-      grant_type: "authorization_code",
-      code_verifier: context.pkceVerifier,
-      scope: "openid profile email",
-    }),
-  }, {
-    maxBytes: 64 * 1024,
-    unavailableCode: "OAUTH_EXCHANGE_FAILED",
-    unavailableMessage: "Microsoft OAuth code exchange failed.",
-    unavailableHint: "Check the Microsoft client credentials, tenant, consent, and callback URI, then retry sign-in.",
-    invalidCode: "OAUTH_EXCHANGE_FAILED",
-    invalidMessage: "Microsoft OAuth response was invalid.",
-    invalidHint: "Check the Microsoft client configuration and retry sign-in.",
-  });
-  if (!isPlainRecord(token)) {
-    throw commandError(
-      "Microsoft OAuth response was invalid.",
-      "Check the Microsoft client configuration and retry sign-in.",
-      "OAUTH_EXCHANGE_FAILED",
-    );
-  }
-  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError(
-      "Microsoft OAuth response did not include a valid identity token.",
-      "Check the Microsoft client configuration and retry sign-in.",
-      "OAUTH_ID_TOKEN_INVALID",
-    );
-  }
-  return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
-}
-
-async function verifyMicrosoftIdentityToken(
-  database: LooseRecord,
-  token: string,
-  expectedNonce: string,
-  discovery: LooseRecord,
-) {
-  if (typeof token !== "string" || token.length > 16 * 1024 ||
-      typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 ||
-      !isPlainRecord(discovery) ||
-      typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 ||
-      typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const parts = token.split(".");
-  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  let signature;
-  try {
-    header = parseMicrosoftJwtPart(parts[0], 2 * 1024);
-    claims = parseMicrosoftJwtPart(parts[1], 12 * 1024);
-    signature = decodeJwtPart(parts[2]);
-    if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
-  } catch {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const visible = (value: any, max: number) =>
-    typeof value === "string" && value.length > 0 && value.length <= max && /^[\x21-\x7e]+$/.test(value);
-  const validAudience = typeof claims.aud === "string"
-    ? visible(claims.aud, 512)
-    : Array.isArray(claims.aud) &&
-      claims.aud.length > 0 &&
-      claims.aud.length <= 10 &&
-      claims.aud.every((value: any) => visible(value, 512));
-  const numericDate = (value: any) => Number.isSafeInteger(value) && value >= 0;
-  const optionalNumericDate = (value: any) => value === undefined || numericDate(value);
-  const optionalProfile = (value: any, max: number) =>
-    value === undefined || value === null || (typeof value === "string" && value.length <= max);
-  const structurallyValid =
-    header.alg === "RS256" &&
-    visible(header.kid, 255) &&
-    visible(claims.iss, 2048) &&
-    validAudience &&
-    numericDate(claims.exp) &&
-    optionalNumericDate(claims.nbf) &&
-    optionalNumericDate(claims.iat) &&
-    visible(claims.nonce, 512) &&
-    typeof claims.tid === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) &&
-    visible(claims.sub, 255) &&
-    optionalProfile(claims.email, 1024) &&
-    optionalProfile(claims.name, 1024) &&
-    optionalProfile(claims.preferred_username, 1024);
-  if (!structurallyValid) {
-    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwk = await selectMicrosoftJwk(database, discovery, header.kid);
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      signature,
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const microsoft = database.authConfig.providers.microsoft;
-  const clientId = database.serverEnv[microsoft.clientIdEnv];
-  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  const expectedIssuer = discovery.issuer.replace("{tenantid}", claims.tid);
-  const expectedKeyIssuer = jwk.issuer.replace("{tenantid}", claims.tid);
-  const nowSeconds = Math.floor(microsoftOidcNow(database) / 1000);
-  const tenantAllowed = microsoftTenantAllowsClaims(microsoft.tenant, claims.tid, claims.iss, discovery.issuer);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
-    : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
-    : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
-    : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID"
-    : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
-    : claims.exp <= nowSeconds ? "OAUTH_ID_TOKEN_EXPIRED"
-    : claims.nbf !== undefined && claims.nbf > nowSeconds + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID"
-    : claims.iat !== undefined && claims.iat > nowSeconds + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID"
-    : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
-    : !tenantAllowed ? "OAUTH_TENANT_REJECTED"
-    : null;
-  if (invalidCode) {
-    const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
-    throw commandError(
-      tenantFailure ? "Microsoft account is not allowed by the configured tenant." : "Microsoft identity token failed verification.",
-      tenantFailure ? "Use an account accepted by this Capsule's Microsoft tenant selection." : "Retry Microsoft sign-in.",
-      invalidCode,
-    );
-  }
-  const email = normalizeSimulatedText(claims.email)?.toLowerCase() ?? null;
-  return {
-    subject: `${claims.tid.toLowerCase()}:${claims.sub}`,
-    email,
-    emailVerified: null,
-    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.preferred_username) ?? email ?? "Microsoft user",
-    picture: null,
-  };
-}
-
-async function verifyAppleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
-  if (typeof token !== "string" || token.length > 16 * 1024) {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let header;
-  let claims;
-  try {
-    header = parseBoundedJwtObject(parts[0]);
-    claims = parseBoundedJwtObject(parts[1]);
-  } catch {
-    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  if (
-    header.alg !== "RS256" ||
-    typeof header.kid !== "string" ||
-    !/^[\x21-\x7e]{1,255}$/.test(header.kid) ||
-    (header.typ !== undefined && header.typ !== "JWT")
-  ) {
-    throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const jwksUrl = oauthProviderTestEndpoint(
-    process.env.SPORADES_APPLE_JWKS_URL,
-    "https://appleid.apple.com/auth/keys",
-  );
-  let jwks;
-  try {
-    jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
-      maxBytes: 64 * 1024,
-      timeoutProperty: "__oauthJwksTimeoutMs",
-      defaultTimeoutMs: 5_000,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Apple signing keys could not be loaded.",
-      unavailableHint: "Retry Apple sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Apple signing keys were invalid.",
-      invalidHint: "Retry Apple sign-in.",
-    });
-  } catch (error: any) {
-    if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
-  }
-  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
-  if (!keys) {
-    throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  const jwk = keys
-    .find((candidate: LooseRecord) =>
-      isPlainJsonObject(candidate) &&
-      candidate.kid === header.kid &&
-      candidate.kty === "RSA" &&
-      candidate.use === "sig" &&
-      candidate.alg === "RS256" &&
-      typeof candidate.n === "string" &&
-      typeof candidate.e === "string");
-  if (!jwk) {
-    throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  let signatureValid = false;
-  let signatureCheckFailed = false;
-  try {
-    signatureValid = verify(
-      "RSA-SHA256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: jwk, format: "jwk" },
-      decodeJwtPart(parts[2]),
-    );
-  } catch {
-    signatureCheckFailed = true;
-  }
-  const clientId = database.authConfig.providers.apple.clientId;
-  const audiences = typeof claims.aud === "string"
-    ? [claims.aud]
-    : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 8 && claims.aud.every((audience: any) => typeof audience === "string")
-      ? claims.aud
-      : [];
-  const validSubject = typeof claims.sub === "string" &&
-    claims.sub.length <= 255 &&
-    /^[\x21-\x7e]+$/.test(claims.sub);
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
-    : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
-    : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
-    : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
-    : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
-    : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
-    : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
-    : null;
-  if (invalidCode) {
-    throw commandError("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
-  }
-  return {
-    subject: claims.sub,
-    email: normalizeSimulatedEmail(claims.email),
-    emailVerified: claims.email_verified === true || claims.email_verified === "true",
-    displayName: null,
-    picture: null,
-  };
-}
-
-function parseBoundedJwtObject(value: string) {
-  if (typeof value !== "string" || value.length > 12 * 1024) throw new Error("Invalid JWT part");
-  const bytes = decodeJwtPart(value);
-  if (bytes.length === 0 || bytes.length > 8 * 1024) throw new Error("Invalid JWT part");
-  const parsed = JSON.parse(bytes.toString("utf8"));
-  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JWT object");
-  return parsed;
-}
-
-async function readBoundedJsonResponse(response: LooseRecord, maxBytes: number) {
-  const contentLength = Number(response.headers?.get?.("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    await response.body?.cancel?.().catch?.(() => {});
-    throw new Error("Response too large");
-  }
-  const chunks = [];
-  let size = 0;
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        size += result.value.byteLength;
-        if (size > maxBytes) throw new Error("Response too large");
-        chunks.push(Buffer.from(result.value));
-      }
-    } catch (error) {
-      await reader.cancel().catch(() => {});
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-  } else {
-    try {
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > maxBytes) throw new Error("Response too large");
-      chunks.push(bytes);
-    } catch (error) {
-      await response.body?.cancel?.().catch?.(() => {});
-      throw error;
-    }
-  }
-  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JSON object");
-  return parsed;
-}
-
-function isPlainJsonObject(value: any) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function parseAppleAuthorizationUser(value: any) {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  let user;
-  try {
-    user = JSON.parse(value);
-  } catch {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  if (!user || typeof user !== "object" || Array.isArray(user) ||
-      (user.name !== undefined && (!user.name || typeof user.name !== "object" || Array.isArray(user.name)))) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  const firstName = sanitizeAppleNamePart(user.name?.firstName);
-  const lastName = sanitizeAppleNamePart(user.name?.lastName);
-  const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
-  return { displayName };
-}
-
-function sanitizeAppleNamePart(value: any) {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value !== "string") {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!text) return null;
-  if (text.length > 128) {
-    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
-  }
-  return text;
-}
-
-async function loadMicrosoftJwks(
-  database: LooseRecord,
-  discovery: LooseRecord,
-  forceRefresh = false,
-  observedGeneration: number | null = null,
-  missingKid: string | null = null,
-) {
-  const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = microsoftOidcCacheKey([
-    discovery.issuer,
-    discovery.jwks_uri,
-    microsoft.tenant ?? "",
-    microsoft.clientIdEnv ?? "",
-  ]);
-  const cacheRoot = microsoftOidcCache(database);
-  const cache = cacheRoot.jwks;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
-  let state = cache.get(cacheKey);
-  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
-    state = {
-      value: null,
-      expiresAt: 0,
-      generation: 0,
-      nextGeneration: 1,
-      inflight: null,
-      inflightKind: null,
-      missingKidCooldowns: new Map(),
-      lastAccess: cacheRoot.nextAccess++,
-    };
-    if (cache.size >= 32) {
-      throw commandError(
-        "Microsoft signing keys could not be loaded.",
-        "Retry Microsoft sign-in after other provider requests complete.",
-        "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      );
-    }
-    cache.set(cacheKey, state);
-  }
-  state.lastAccess = cacheRoot.nextAccess++;
-  if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = new Map();
-  const rememberMissingKid = (jwks: LooseRecord, missingKid: string | null, at: number) => {
-    if (typeof missingKid !== "string") return;
-    for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
-      if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
-    }
-    const found = Array.isArray(jwks?.keys) &&
-      jwks.keys.some((value: any) => isPlainRecord(value) && value.kid === missingKid);
-    state.missingKidCooldowns.delete(missingKid);
-    if (!found) state.missingKidCooldowns.set(missingKid, at + 10_000);
-    while (state.missingKidCooldowns.size > 64) {
-      state.missingKidCooldowns.delete(state.missingKidCooldowns.keys().next().value);
-    }
-  };
-  if (forceRefresh) {
-    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
-      rememberMissingKid(state.value, missingKid, now);
-      return state.value;
-    }
-    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
-    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now) return state.value;
-  } else if (state.value && state.expiresAt > now) {
-    return state.value;
-  }
-  if (state.inflight) {
-    const sharedInflight = state.inflight;
-    const sharedKind = state.inflightKind;
-    const shared = await sharedInflight;
-    if (!forceRefresh) return shared;
-    if (sharedKind === "rollover") {
-      rememberMissingKid(shared, missingKid, microsoftOidcNow(database));
-      return shared;
-    }
-    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) {
-      rememberMissingKid(state.value, missingKid, microsoftOidcNow(database));
-      return state.value;
-    }
-    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
-    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > microsoftOidcNow(database)) return state.value;
-  }
-  const requestGeneration = state.nextGeneration++;
-  const requestKind = forceRefresh ? "rollover" : "load";
-  const inflight = (async () => {
-    const jwks = await fetchMicrosoftOidcJson(database, discovery.jwks_uri, {}, {
-      maxBytes: 256 * 1024,
-      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-      unavailableMessage: "Microsoft signing keys could not be loaded.",
-      unavailableHint: "Retry Microsoft sign-in.",
-      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-      invalidMessage: "Microsoft signing keys were invalid.",
-      invalidHint: "Retry Microsoft sign-in.",
-    });
-    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
-      throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-    }
-    if (requestGeneration >= state.generation) {
-      state.value = jwks;
-      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1000;
-      state.generation = requestGeneration;
-      if (requestKind === "load") state.missingKidCooldowns.clear();
-      else rememberMissingKid(jwks, missingKid, microsoftOidcNow(database));
-    }
-    return state.value;
-  })();
-  state.inflight = inflight;
-  state.inflightKind = requestKind;
-  try {
-    return await inflight;
-  } finally {
-    if (state.inflight === inflight) {
-      state.inflight = null;
-      state.inflightKind = null;
-    }
-  }
-}
-
-async function selectMicrosoftJwk(database: LooseRecord, discovery: LooseRecord, kid: string) {
-  let jwks = await loadMicrosoftJwks(database, discovery, false);
-  let candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
-  if (!candidate) {
-    const microsoft = database.authConfig.providers.microsoft;
-    const cacheKey = microsoftOidcCacheKey([
-      discovery.issuer,
-      discovery.jwks_uri,
-      microsoft.tenant ?? "",
-      microsoft.clientIdEnv ?? "",
-    ]);
-    const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
-    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
-    candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
-  }
-  if (!candidate) {
-    throw commandError("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
-  }
-  const valid =
-    candidate.kty === "RSA" &&
-    (candidate.alg === undefined || candidate.alg === "RS256") &&
-    (candidate.use === undefined || candidate.use === "sig") &&
-    typeof candidate.issuer === "string" &&
-    candidate.issuer.length > 0 &&
-    candidate.issuer.length <= 2048 &&
-    typeof candidate.n === "string" &&
-    /^[A-Za-z0-9_-]+$/.test(candidate.n) &&
-    candidate.n.length >= 256 &&
-    candidate.n.length <= 2048 &&
-    typeof candidate.e === "string" &&
-    /^[A-Za-z0-9_-]+$/.test(candidate.e) &&
-    candidate.e.length >= 2 &&
-    candidate.e.length <= 16;
-  if (!valid) {
-    throw commandError("Microsoft signing key was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
-  }
-  return candidate;
-}
-
-function isPlainRecord(value: any) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function parseMicrosoftJwtPart(value: string, maxBytes: number) {
-  if (typeof value !== "string" || value.length > Math.ceil(maxBytes * 4 / 3) + 4) {
-    throw new Error("JWT segment exceeded its byte limit");
-  }
-  const decoded = decodeJwtPart(value);
-  if (decoded.length > maxBytes) throw new Error("JWT segment exceeded its byte limit");
-  const parsed = JSON.parse(decoded.toString("utf8"));
-  if (!isPlainRecord(parsed)) throw new Error("JWT segment was not an object");
-  return parsed;
-}
-
-function microsoftTenantAllowsClaims(selectedTenant: string, tenantId: string, issuer: string, discoveredIssuer: string) {
-  const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
-  if (selectedTenant === "common") return true;
-  if (selectedTenant === "organizations") return tenantId.toLowerCase() !== consumerTenant;
-  if (selectedTenant === "consumers") return tenantId.toLowerCase() === consumerTenant;
-  if (/^[0-9a-f-]{36}$/i.test(selectedTenant)) return tenantId.toLowerCase() === selectedTenant.toLowerCase();
-  return discoveredIssuer === issuer;
-}
-
-function validMicrosoftTenant(value: any) {
-  if (["common", "organizations", "consumers"].includes(value)) return true;
-  if (typeof value !== "string" || value.length > 253) return false;
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
-  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value);
-}
-
-function decodeJwtPart(value: string) {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error("Invalid JWT encoding");
-  }
-  return Buffer.from(value, "base64url");
-}
-
-async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord) {
-  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
-  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
-    ? provider
-    : "provider";
-  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
-  if (!subject) {
-    return {
-      ok: false,
-      error: {
-        message: `${providerName} profile is missing a stable subject.`,
-        hint: "Retry sign-in. Sporades requires a verified stable subject claim.",
-      },
-    };
-  }
-
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
-    if (!identity && email && provider === "google") {
-      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
-      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
-            message: "Google did not verify the email needed to restore this legacy account.",
-            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method.",
-          },
-        };
-      }
-      if (legacyIdentities.length > 1) {
-        return {
-          ok: false,
-          error: {
-            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
-            message: "Google email matches more than one legacy account.",
-            hint: "Sign in with an existing authentication method before linking this Google identity.",
-          },
-        };
-      }
-      identity = legacyIdentities[0] ?? null;
-    }
-    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
-      return {
-        ok: false,
-        error: {
-          code: "AUTH_IDENTITY_CONFLICT",
-          message: `${providerName} identity is already linked to another account.`,
-          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`,
-        },
-      };
-    }
-    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
-    const auth = {
-      userId: identity?.userId ?? session.auth.userId,
-      displayName,
-      email,
-      picture: profile.picture ?? null,
-      isAuthenticated: true,
-      isGuest: false,
-      provider,
-    };
-    const now = new Date().toISOString();
-    if (identity) {
-      await tx.updateAuthIdentity({
-        id: identity.id,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        updatedAt: now,
-      });
-    } else {
-      await tx.insertAuthIdentity({
-        id: randomUUID(),
-        userId: auth.userId,
-        provider,
-        subject,
-        email,
-        displayName: auth.displayName,
-        picture: auth.picture,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider,
-    });
-    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
-    } else {
-      await tx.setAuthSessionProvider(session.token, provider);
-      await refreshSessionOnAdapter(tx, session.token);
-    }
-    return { ok: true, auth };
-  });
-}
-
-function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: any; }) => void; end: () => void; }, location: any) {
-  response.writeHead(302, { location });
-  response.end();
-}
-
-export async function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (!database.mail.enabled) {
+    return { ok: false, error: mailNotConfiguredError() };
   }
   const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
-  if (!cleanEmail) {
-    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account whose password is being changed." } };
-  }
-  if (typeof newPassword !== "string" || newPassword.length < 8) {
-    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
-  }
-  const existing = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
-  if (!existing) {
-    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
-  }
-  const password = hashEmailPassword(newPassword);
-  await database.sqlite.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
-  return { ok: true };
-}
-
-export async function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any) {
-  if (provider !== "email") {
-    return {
-      ok: false,
-      error: {
-        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-        hint: "Use auth.signUp with the email provider.",
-      },
-    };
-  }
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-
-  const normalized: any = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-
-  if (await database.sqlite.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: "Use auth.signIn(\"email\", ...) with this email address.",
-      },
-    };
-  }
-
-  const password = hashEmailPassword(normalized.password);
-  const displayName = normalized.name || normalized.email;
-  const auth = {
-    userId: session.auth.userId,
-    displayName,
-    email: normalized.email,
-    picture: null as any,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "email",
-  };
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-    await tx.insertEmailCredential({
-      email: normalized.email,
-      userId: auth.userId,
-      passwordHash: password.hash,
-      passwordSalt: password.salt,
-      createdAt: new Date().toISOString(),
-    });
-    await tx.linkAuthUser({
-      id: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: 1,
-      isGuest: 0,
-      provider: "email",
-    });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
-  });
-}
-
-export async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
-  if (!database.authConfig.providers.email.enabled) {
-    return { ok: false, error: emailAuthDisabledError() };
-  }
-
-  const normalized: any = normalizeEmailCredentials(credentials);
-  if (!normalized.ok) {
-    return normalized;
-  }
-
-  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
   if (throttle.throttled) {
-    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+    return { ok: true };
   }
-
-  const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
-  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, normalized.email, session);
-    return { ok: false, error: invalidEmailCredentialsError() };
+  recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential) {
+    // Comparable work on the unregistered branch so timing does not separate it.
+    hashPasswordResetVerifier(randomBytes(32).toString("base64url"));
+    return { ok: true };
   }
-
-  resetEmailSignInAttempts(database, normalized.email, session);
-  const auth = {
-    userId: row.userId,
-    displayName: row.displayName,
-    email: row.email,
-    picture: row.picture,
-    isAuthenticated: Boolean(row.isAuthenticated),
-    isGuest: Boolean(row.isGuest),
-    provider: "email",
-  };
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => ({
-    ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
-    auth,
-  }));
-}
-
-function createEmailSignInThrottleState(database: LooseRecord) {
-  const existing = database.__emailSignInThrottle;
-  if (existing instanceof Map) {
-    return existing;
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: true };
   }
-  const next = new Map();
-  database.__emailSignInThrottle = next;
-  return next;
-}
-
-function emailSignInThrottleKeys(email: string, session: LooseRecord) {
-  return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
-}
-
-function currentEmailSignInThrottleState(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
-  const now = Date.now();
-  pruneEmailSignInThrottleState(attempts, now);
-  const keys = emailSignInThrottleKeys(email, session);
-  const entries = keys.map((key) => {
-    const current = attempts.get(key);
-    return {
-      key,
-      count: current?.count ?? 0,
-      resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS,
-    };
-  });
-  return {
-    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
-    entries,
-    count: Math.max(...entries.map((entry) => entry.count)),
-    resetAt: Math.max(...entries.map((entry) => entry.resetAt)),
-  };
-}
-
-function recordFailedEmailSignInAttempt(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
-  const current = currentEmailSignInThrottleState(database, email, session);
-  for (const entry of current.entries) {
-    attempts.set(entry.key, {
-      count: entry.count + 1,
-      resetAt: entry.resetAt,
-    });
-  }
-  boundEmailSignInThrottleState(attempts);
-}
-
-function resetEmailSignInAttempts(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
-  for (const key of emailSignInThrottleKeys(email, session)) {
-    attempts.delete(key);
-  }
-}
-
-function pruneEmailSignInThrottleState(attempts: Map<string, LooseRecord>, now = Date.now()) {
-  for (const [key, entry] of attempts) {
-    if (!entry || now >= entry.resetAt) {
-      attempts.delete(key);
-    }
-  }
-}
-
-function boundEmailSignInThrottleState(attempts: Map<string, LooseRecord>) {
-  while (attempts.size > EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES) {
-    let evictionKey: string | null = null;
-    let evictionPriority = Infinity;
-    let oldestResetAt = Infinity;
-    for (const [key, entry] of attempts) {
-      const priority = emailSignInThrottleEvictionPriority(key, entry);
-      const resetAt = Number(entry?.resetAt ?? 0);
-      if (priority < evictionPriority || (priority === evictionPriority && resetAt < oldestResetAt)) {
-        evictionPriority = priority;
-        oldestResetAt = resetAt;
-        evictionKey = key;
-      }
-    }
-    if (evictionKey === null) {
-      return;
-    }
-    attempts.delete(evictionKey);
-  }
-}
-
-function emailSignInThrottleEvictionPriority(key: string, entry: LooseRecord) {
-  const throttled = Number(entry?.count ?? 0) >= EMAIL_SIGN_IN_FAILURE_LIMIT;
-  if (key.startsWith("email\0") && throttled) {
-    return 3;
-  }
-  if (key.startsWith("caller\0") && throttled) {
-    return 2;
-  }
-  if (key.startsWith("email\0")) {
-    return 1;
-  }
-  return 0;
-}
-
-function callerContextKey(session: LooseRecord) {
-  return String(session?.token ?? session?.auth?.userId ?? "anonymous");
-}
-
-function invalidEmailCredentialsError(options: LooseRecord = {}) {
-  return {
-    message: "Email or password is incorrect.",
-    hint: "Check the credentials and try email sign-in again.",
-    ...(options.code ? { code: options.code } : {}),
-  };
-}
-
-function normalizeEmailCredentials(credentials: { email: any; password: any; name: null; }) {
-  const email = String(credentials.email ?? "").trim().toLowerCase();
-  const password = String(credentials.password ?? "");
-  const name = credentials.name == null ? "" : String(credentials.name).trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email address is invalid.",
-        hint: "Pass credentials with a valid email address.",
-      },
-    };
-  }
-  if (password.length < 8) {
-    return {
-      ok: false,
-      error: {
-        message: "Password is too short.",
-        hint: "Use a password with at least 8 characters.",
-      },
-    };
-  }
-  return { ok: true, email, password, name };
-}
-
-function hashEmailPassword(password: BinaryLike) {
-  const salt = randomBytes(16).toString("base64url");
-  const hash = scryptSync(password, salt, 64).toString("base64url");
-  return { hash, salt };
-}
-
-function verifyEmailPassword(password: BinaryLike, salt: BinaryLike, expectedHash: WithImplicitCoercion<string>) {
-  const actual = scryptSync(password, salt, 64);
-  const expected = Buffer.from(expectedHash, "base64url");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-function emailAuthDisabledError() {
-  return {
-    message: "Email auth is not enabled.",
-    hint: "Enable auth.providers.email in sporades.json.",
-  };
-}
-
-function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-    "id TEXT PRIMARY KEY, " +
-    "createdAt TEXT NOT NULL, " +
-    "displayName TEXT NOT NULL, " +
-    "email TEXT, " +
-    "picture TEXT, " +
-    "isAuthenticated INTEGER NOT NULL, " +
-    "isGuest INTEGER NOT NULL, " +
-    "provider TEXT NOT NULL" +
-    ")",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-    "token TEXT PRIMARY KEY, " +
-    "userId TEXT NOT NULL, " +
-    "provider TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "expiresAt TEXT NOT NULL" +
-    ")",
-  );
-  ensureSessionLifecycleColumns(sqlite);
-  ensureSessionProvenanceColumn(sqlite);
-  createProviderIdentityTables(sqlite);
-  if (authConfig?.providers?.email?.enabled) {
-    sqlite.exec(
-      "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-      "email TEXT PRIMARY KEY, " +
-      "userId TEXT NOT NULL, " +
-      "passwordHash TEXT NOT NULL, " +
-      "passwordSalt TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL" +
-      ")",
-    );
-  }
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-    "state TEXT PRIMARY KEY, " +
-    "provider TEXT NOT NULL, " +
-    "sessionToken TEXT NOT NULL, " +
-    "returnTo TEXT NOT NULL, " +
-    "redirectUri TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "expiresAt TEXT NOT NULL, " +
-    "nonce TEXT, " +
-    "pkceVerifier TEXT" +
-    ")",
-  );
-  ensureOAuthStateColumns(sqlite);
-}
-
-function ensureOAuthStateColumns(sqlite: LooseRecord) {
-  const existing = new Set(sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all().map((row: LooseRecord) => row.name));
-  const columns = [
-    ["provider", "TEXT"],
-    ["expiresAt", "TEXT"],
-    ["nonce", "TEXT"],
-    ["pkceVerifier", "TEXT"],
-  ];
-  for (const [name, type] of columns) {
-    if (!existing.has(name)) {
-      sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-}
-
-async function ensureLibsqlOAuthStateColumns(sqlite: LooseRecord) {
-  const rows = await sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all();
-  const existing = new Set(rows.map((row: LooseRecord) => row.name));
-  for (const [name, type] of [["provider", "TEXT"], ["expiresAt", "TEXT"], ["nonce", "TEXT"], ["pkceVerifier", "TEXT"]]) {
-    if (!existing.has(name)) {
-      await sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-}
-
-function createProviderIdentityTables(sqlite: LooseRecord) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-    "id TEXT PRIMARY KEY, " +
-    "userId TEXT NOT NULL, " +
-    "provider TEXT NOT NULL, " +
-    "subject TEXT NOT NULL, " +
-    "email TEXT, " +
-    "displayName TEXT, " +
-    "picture TEXT, " +
-    "createdAt TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL, " +
-    "UNIQUE(provider, subject)" +
-    ")",
-  );
-  sqlite.exec(
-    "INSERT INTO sporades_auth_identities " +
-    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-  );
-}
-
-async function createUserPreferencesTables(sqlite: LooseRecord) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_user_preferences (" +
-    "userId TEXT PRIMARY KEY, " +
-    "value TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL" +
-    ")",
-  );
-}
-
-function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    sqlite
-      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
-      .run(sessionExpiresAt(new Date().toISOString()));
-  }
-}
-
-function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasProvider = columns.some((column: { name: string; }) => column.name === "provider");
-  if (!hasProvider) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = " +
-    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-    "WHERE provider IS NULL",
-  );
-}
-
-async function ensureLibsqlSessionLifecycleColumns(sqlite: { engine?: string; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => Promise<void>; ensureLogStorage?: () => Promise<void>; insertLogIndexEvent?: (event: any) => Promise<void>; pruneLogIndex?: (limit: any) => Promise<void>; readRecentLogEvents?: (limit?: number) => Promise<any>; ensureFileStorage?: () => Promise<void>; ensureAuthStorage?: (authConfig?: null) => Promise<void>; consumeOAuthState?: (state: any) => Promise<any>; migrateAppSchema?: (schema: any) => Promise<void>; migrateExistingAppTable?: (existingTable: any, nextTable: any) => Promise<void>; listInspectableTables?: () => Promise<any>; dumpInspectableDatabase?: () => Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery?: (sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth?: () => Promise<{ ok: boolean; }>; withTransaction?: (fn: any) => Promise<any>; close?: () => Promise<void>; exec: any; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; createAppTable?: (table: any, tableName?: any) => any; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    await sqlite
-      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
-      .run(sessionExpiresAt(new Date().toISOString()));
-  }
-}
-
-async function ensureLibsqlSessionProvenanceColumn(sqlite: LooseRecord) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  if (!columns.some((column: { name: string; }) => column.name === "provider")) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  await sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = " +
-    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-    "WHERE provider IS NULL",
-  );
-}
-
-async function createLibsqlProviderIdentityTables(sqlite: LooseRecord) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-    "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
-    "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
-  );
-  await sqlite.exec(
-    "INSERT INTO sporades_auth_identities " +
-    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-  );
-}
-
-function splitSqlStatements(sql: any) {
-  const statements = [];
-  let start = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  const text = String(sql ?? "");
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (lineComment) {
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        if (text[index + 1] === quote && quote !== "`") {
-          index += 1;
-          continue;
-        }
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === ";") {
-      const statement = text.slice(start, index).trim();
-      if (statement) {
-        statements.push(statement);
-      }
-      start = index + 1;
-    }
-  }
-
-  const last = text.slice(start).trim();
-  if (last) {
-    statements.push(last);
-  }
-  return statements;
-}
-
-function sessionExpiresAt(from = new Date().toISOString()) {
-  const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
-  return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
-}
-
-function isExpiredSession(row: { expiresAt: string; }) {
-  return Date.parse(row.expiresAt) <= Date.now();
-}
-
-function createSessionToken() {
-  return randomBytes(32).toString("base64url");
-}
-
-async function refreshSession(database: LooseRecord, token: any) {
-  return await refreshSessionOnAdapter(database.sqlite, token);
-}
-
-async function refreshSessionOnAdapter(sqlite: LooseRecord, token: any) {
-  const now = new Date().toISOString();
-  const expiresAt = sessionExpiresAt(now);
-  await sqlite.refreshAuthSession(token, expiresAt);
-  return expiresAt;
-}
-
-async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId, provider));
-}
-
-async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  const now = new Date().toISOString();
-  const token = createSessionToken();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
-  return token;
-}
-
-async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
-}
-
-async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
-  const now = new Date().toISOString();
-  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, {
-    token: session.token,
-    userId,
-    provider,
-    createdAt: now,
-    expiresAt: sessionExpiresAt(now),
-  });
-}
-
-async function migrateAnonymousPreferences(database: LooseRecord, auth: LooseRecord, targetUserId: any, sqlite: LooseRecord | null = null) {
-  if (!auth?.isGuest || auth.userId === targetUserId) {
-    return;
-  }
-  const migrate = async (tx: LooseRecord) => {
-    const sourceRow = await tx.readUserPreferences(auth.userId);
-    if (!sourceRow) {
-      return;
-    }
-    const targetRow = await tx.readUserPreferences(targetUserId);
-    const source = JSON.parse(sourceRow.value);
-    const target = targetRow ? JSON.parse(targetRow.value) : {};
-    const next = { ...target, ...source };
-    assertJsonCompatible(next);
-    await tx.saveUserPreferences({
-      userId: targetUserId,
-      value: JSON.stringify(next),
-      updatedAt: new Date().toISOString(),
-    });
-  };
-  if (sqlite) {
-    await migrate(sqlite);
-    return;
-  }
-  await database.sqlite.withTransaction(migrate);
-}
-
-export async function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
-  if (sessionToken) {
-    const existing = await database.sqlite.readAuthSessionWithUser(sessionToken);
-    if (existing) {
-      if (isExpiredSession(existing)) {
-        await database.sqlite.deleteAuthSession(sessionToken);
-      } else {
-        return sessionFromRow(existing);
-      }
-    }
-  }
-
-  const now = new Date().toISOString();
-  const userId = randomUUID();
-  const token = createSessionToken();
-  await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-    await tx.insertAuthUser({
-      id: userId,
-      createdAt: now,
-      displayName: "Anonymous",
-      email: null,
-      picture: null,
-      isAuthenticated: 0,
-      isGuest: 1,
-      provider: "anonymous",
-    });
-    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
-  });
-  return {
-    token,
-    auth: {
-      userId,
-      displayName: "Anonymous",
-      email: null,
-      picture: null,
-      isAuthenticated: false,
-      isGuest: true,
-      provider: "anonymous",
-    },
-  };
-}
-
-function sessionFromRow(row: { token: any; userId: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
-  return {
-    token: row.token,
-    auth: {
-      userId: row.userId,
-      displayName: row.displayName,
-      email: row.email,
-      picture: row.picture,
-      isAuthenticated: Boolean(row.isAuthenticated),
-      isGuest: Boolean(row.isGuest),
-      provider: row.provider,
-    },
-  };
-}
-
-async function readCurrentUserPreferences(database: LooseRecord, auth: LooseRecord) {
-  const row = await database.sqlite.readUserPreferences(auth.userId);
-  return {
-    ok: true,
-    data: {
-      preferences: row ? JSON.parse(row.value) : {},
-    },
-    error: null,
-  };
-}
-
-export async function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any) {
-  try {
-    const normalizedPatch = normalizePreferencesPatch(patch);
-    const preferences = await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-      const row = await tx.readUserPreferences(auth.userId);
-      const current = row ? JSON.parse(row.value) : {};
-      const next = { ...current, ...normalizedPatch };
-      assertJsonCompatible(next);
-      await tx.saveUserPreferences({
-        userId: auth.userId,
-        value: JSON.stringify(next),
-        updatedAt: new Date().toISOString(),
-      });
-      return next;
-    });
-    return {
-      ok: true,
-      data: { preferences },
-      changes: normalizedPatch,
-      error: null,
-    };
-  } catch (error: any) {
-    if (error?.code === "INVALID_PREFERENCES_PATCH") {
-      return { ok: false, data: null, error };
-    }
-    return {
-      ok: false,
-      data: null,
-      error: createPreferencesError(
-        "Preferences update failed.",
-        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
-        "PREFERENCES_UPDATE_FAILED",
-      ),
-    };
-  }
-}
-
-function normalizePreferencesPatch(patch: any) {
-  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
-    throw createPreferencesError(
-      "Preferences updates must be JSON objects.",
-      "Pass a plain JSON object to preferences.update().",
-      "INVALID_PREFERENCES_PATCH",
-    );
-  }
-  assertJsonCompatible(patch);
-  return patch;
-}
-
-function createPreferencesError(message: string, hint: string, code: string) {
-  return { code, message, hint };
+  const body = passwordResetMailBody(issued.link);
+  // Delivery is queued, not awaited. Doing the SMTP round trip inline would make
+  // the reply time and any transport failure a reliable oracle for whether the
+  // address is registered, which is exactly what the uniform result prevents.
+  // The Job is durable and retried, so queueing does not mean dropping.
+  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
+    to: credential.email,
+    subject: typeof options.subject === "string" ? options.subject : "Reset your password",
+    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody,
+    // Job execution is at least once; the key keeps one Reset code to one mail.
+  }, `password-reset:${issued.selector}`);
+  return { ok: true };
 }
 
 function createWebSocketAccept(key: any) {
@@ -12579,7 +3230,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field: { name: any; }) => field.name)];
     const ownerScoped = table.fields.some((field: { name: string; }) => field.name === "ownerId");
-    const rows = (await database.sqlite.selectAppRows(table, {
+    const rows = (await database.adapter.selectAppRows(table, {
       columns,
       ownerId: ownerScoped ? context.auth.userId : undefined,
       orderBy: { fieldName: "createdAt", direction: "desc" },
@@ -12624,7 +3275,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   let context;
   let result;
   try {
-    const committed = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
 
@@ -12688,7 +3339,7 @@ async function runCustomMutation(database: LooseRecord, context: any, mutationNa
   return { ok: true, data: result ?? null, error: null as any };
 }
 
-async function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options: LooseRecord = {}) {
+export async function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options: LooseRecord = {}) {
   if (!messageName) {
     return {
       data: null as any,
@@ -12728,7 +3379,7 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
       assertJsonCompatible(data);
     }
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    const response = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
         transactionDatabase,
@@ -12838,6 +3489,24 @@ function createMutationContext(database: LooseRecord, auth: any) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
     },
+    async sendEmailPasswordResetLink(email: string, options: LooseRecord = {}) {
+      const result: any = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email: string) {
+      const result: any = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code: string) {
+      const result: any = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code: string, newPassword: string) {
+      const result: any = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
+    },
   };
   return context;
 }
@@ -12861,7 +3530,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         const pending = (context.__jobParentContext ?? context).__pendingJobEnqueues?.find((candidate: any) =>
           candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
@@ -12882,20 +3551,21 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         return jobState(row, true);
       }
       try {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error: any) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         }
         throw error;
       }
       scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+      return jobState(await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id: any) {
       const context = contextGetter();
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async cancel(id: any) { return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id); },
@@ -12906,108 +3576,13 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const queueDatabase = database.__rootDatabase ?? database;
-      const clauses=["actorUserId = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("status = ?");params.push(options.status)} if(options.handler){clauses.push("handler = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("createdAt >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("createdAt <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.sqlite.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params,limit+1);
+      const sql = queueDatabase.adapter.dialect.sql;
+      const clauses=["[actorUserId] = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.adapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
   };
 }
-
-function assertJobScheduleProvenance(row: any, expected: any) {
-  if (!expected) return;
-  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
-    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
-  }
-}
-
-function jobError(code: string, message: string, hint: string) {
-  const error: any = new Error(message); error.code = code; error.hint = hint; return error;
-}
-
-function boundedJobJson(value: any, limit: number, code: string, label: string) {
-  let serialized: string;
-  try { assertJsonCompatible(value); serialized = JSON.stringify(value); } catch { throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects."); }
-  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized;
-}
-
-function jobState(row: any, includeDetail: boolean) {
-  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
-  const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
-  if (includeDetail && row.result) state.result = JSON.parse(row.result);
-  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
-  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
-  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
-  return state;
-}
-
-function jobActorProvider(auth: LooseRecord) {
-  const provider = auth?.provider;
-  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
-  return auth?.isGuest ? "anonymous" : "authenticated";
-}
-
-/** Read the bounded operator view of every Job in one adapter snapshot. */
-export async function inspectRuntimeJobs(adapter: LooseRecord) {
-  const decode = (row: LooseRecord, field: string, value: unknown, fallback: unknown) => {
-    if (value === null || value === undefined || value === "") return fallback;
-    try { return JSON.parse(String(value)); }
-    catch {
-      const error: any = jobError("JOB_INSPECTION_INVALID_STATE", "Stored Job state is invalid.", "Repair or remove the malformed Job before retrying inspection.");
-      error.jobId = String(row.id); error.field = field; throw error;
-    }
-  };
-  const read = async (tx: LooseRecord) => {
-    let rows: LooseRecord[];
-    try {
-      rows = await tx.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt DESC, id DESC").all();
-    } catch (error) {
-      const message = String((error as any)?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    return rows.map((row) => ({
-      id: String(row.id), handler: String(row.handler), status: String(row.status),
-      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
-      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
-      attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
-      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,
-      availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
-      completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
-      leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
-      // until the runtime has a separate safe-result metadata classifier.
-      result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
-    }));
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-
-/** Read the bounded operator view of every Schedule in one adapter snapshot. */
-export async function inspectRuntimeSchedules(adapter: LooseRecord) {
-  const read = async (tx: LooseRecord) => {
-    let rows: LooseRecord[];
-    try {
-      rows = await tx.prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
-    } catch (error) {
-      const message = String((error as any)?.message ?? error);
-      if (/no such table|does not exist|unknown table/i.test(message)) return [];
-      throw error;
-    }
-    const summaries = [];
-    for (const row of rows) summaries.push(await scheduleSummary(tx, row));
-    return summaries;
-  };
-  if (!adapter?.withReadOnlySnapshot) throw jobError("SCHEDULE_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Schedule inspection.", "Upgrade the Sporades runtime and retry inspection.");
-  return await adapter.withReadOnlySnapshot(read);
-}
-
-function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
-async function cancelJob(database: LooseRecord, context: any, id: any) { const row = context.__privilegedJobAccess ? await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId); if (!row) return null; const now=database.clock.now().toISOString(); if (["queued","delayed"].includes(row.status)) { await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now,id); return jobState({...row,status:"cancelled",completedAt:now},true); } if(row.status==="running"){ database.__jobAbortControllers?.get(id)?.abort(); await database.sqlite.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now,id); return jobState({...row,cancelRequestedAt:now},true);} throw jobError("INVALID_JOB_STATE","Job cannot be cancelled from its current state.","Only queued, delayed, or running Jobs can be cancelled."); }
-
-function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 
 function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   const current = createCurrentUserJobApi(database, contextGetter);
@@ -13015,7 +3590,8 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
     async enqueue(handler: any, payload: any, options: any = {}) { assertActivePrivilegedJobAccess(contextGetter); return await current.enqueue(handler, payload, options); },
     async get(id: any) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
+      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id);
       return row ? jobState(row, true) : null;
     },
     async list(options: LooseRecord = {}) {
@@ -13024,36 +3600,21 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
       const limit = options.limit === undefined ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const sqlite = (database.__rootDatabase ?? database).sqlite;
-      const clauses:string[]=[]; const params:any[]=[]; if(options.status){clauses.push("status = ?");params.push(options.status)} if(options.handler){clauses.push("handler = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("createdAt >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("createdAt <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await sqlite.prepare(`SELECT * FROM sporades_jobs${clauses.length?` WHERE ${clauses.join(" AND ")}`:""} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params,limit+1);
+      const sqlite = (database.__rootDatabase ?? database).adapter;
+      const sql = sqlite.dialect.sql;
+      const clauses:string[]=[]; const params:any[]=[]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await sqlite.prepare(sql(`SELECT * FROM [sporades_jobs]${clauses.length?` WHERE ${clauses.join(" AND ")}`:""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
     async cancel(id: any) { assertActivePrivilegedJobAccess(contextGetter); return await cancelJob(database.__rootDatabase ?? database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id); },
   };
 }
-
-function assertActivePrivilegedJobAccess(contextGetter: () => LooseRecord) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-
-function encodeJobCursor(row: any) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
-function decodeJobCursor(value: any) {
-  if (value === undefined) return null;
-  try {
-    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
-    return cursor;
-  } catch { throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call."); }
-}
-
 async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
   if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+    await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -13068,22 +3629,23 @@ function scheduleCurrentUserJobWorker(database: LooseRecord) {
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
-  const row = await database.sqlite.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
+  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
   if (!row) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => { database.__jobWakeTimer = null; scheduleCurrentUserJobWorker(database); }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
 }
 
-async function runCurrentUserJobWorker(database: LooseRecord) {
+export async function runCurrentUserJobWorker(database: LooseRecord) {
   if (database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
+  const sql = database.adapter.dialect.sql;
   try {
     while (true) {
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
-      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
+      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
       if (!row) { await scheduleNextDelayedJob(database); return; }
       const startedAt = database.clock.now().toISOString();
-      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), row.id);
+      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, abortController);
@@ -13094,8 +3656,11 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, (privilegedCtx: any) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
-          const user = await database.sqlite.prepare(
-            "SELECT id, displayName, email, picture, isAuthenticated, isGuest FROM sporades_auth_users WHERE id = ?",
+          const user = await database.adapter.prepare(
+            sql(
+              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] " +
+              "FROM [sporades_auth_users] WHERE [id] = ?",
+            ),
           ).get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = {
@@ -13111,45 +3676,15 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
           result = await handler.handler(context, JSON.parse(row.payload));
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
-        const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
+        const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
       } catch (error: any) {
         const failure = safeJobFailure(error);
-        const failedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const abortError=error?.cause ?? error; const cancelled=abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:failedAt}); if(cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure),failedAt,JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(database.clock.now().getTime()+retry.delayMs).toISOString(); await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt,JSON.stringify(history), row.id);
+        const failedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const abortError=error?.cause ?? error; const cancelled=abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:failedAt}); if(cancelled) await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify(failure),failedAt,JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(database.clock.now().getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt,JSON.stringify(history), row.id);
       } finally { database.__jobAbortControllers?.delete(row.id);
       }
     }
   } finally { database.__jobWorkerRunning = false; }
 }
-
-function safeJobFailure(error: any) {
-  const knownCodes = new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
-  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
-  const messages: LooseRecord = {
-    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
-    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
-    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
-    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
-    JOB_FAILED: "Job handler failed.",
-  };
-  return { code, message: messages[code] };
-}
-
-async function drainPendingAclWrites(context: LooseRecord) {
-  let firstError: any = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
-  }
-}
-
 function createHookErrorResult(error: any) {
   return {
     ok: false,
@@ -13215,7 +3750,7 @@ async function runInsertMutation(database: LooseRecord, context: LooseRecord, mu
   }
 
   await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, async () => {
-    await database.sqlite.insertAppRow(table, values);
+    await database.adapter.insertAppRow(table, values);
     database.rowCache.clear();
   });
   return { ok: true, error: null };
@@ -13256,7 +3791,7 @@ async function runUpdateMutation(database: LooseRecord, context: LooseRecord, mu
   const now = new Date().toISOString();
   const ownerScoped = resolved.table.fields.some((field: { name: string; }) => field.name === "ownerId");
   const previousRow =
-    (await database.sqlite.selectAppRows(resolved.table, {
+    (await database.adapter.selectAppRows(resolved.table, {
       ownerId: ownerScoped ? context.auth.userId : undefined,
       where: { fieldName: "id", value: String(id) },
       limit: 1,
@@ -13269,7 +3804,7 @@ async function runUpdateMutation(database: LooseRecord, context: LooseRecord, mu
   }
 
   const write = async () => {
-    await database.sqlite.updateAppRow(
+    await database.adapter.updateAppRow(
       resolved.table,
       id,
       {
@@ -13307,164 +3842,6 @@ function formatMutationResult(message: LooseRecord, mutationName: any, result: L
     formatted.ok = result.ok;
   }
   return formatted;
-}
-
-function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
-  const authConfig = config.auth ?? { mode: "anonymous" };
-  const normalized = normalizeAuthConfig(authConfig);
-  const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
-  const runtimeProviders = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
-  const providers: LooseRecord = {};
-  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
-  for (const providerName of providerOrder) {
-    const provider = normalized.providers[providerName];
-    const credentialsConfigured = providerName === "anonymous" || providerName === "email"
-      ? true
-      : providerName === "apple"
-        ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv])
-        : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
-    const configured = providerName === "facebook"
-      ? credentialsConfigured && provider.graphVersion === "v23.0"
-      : credentialsConfigured;
-    const state: LooseRecord = {
-      enabled: provider.enabled,
-      configured,
-      runtimeAvailable: providerName === "facebook"
-        ? Boolean(provider.enabled && configured)
-        : runtimeProviders.has(providerName),
-    };
-    if (["google", "microsoft", "facebook"].includes(providerName)) {
-      state.clientIdEnv = provider.clientIdEnv;
-      state.clientSecretEnv = provider.clientSecretEnv;
-    }
-    if (providerName === "microsoft") state.tenant = provider.tenant;
-    if (providerName === "facebook") {
-      state.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
-    }
-    if (providerName === "apple") {
-      state.clientId = provider.clientId;
-      state.teamId = provider.teamId;
-      state.keyId = provider.keyId;
-      state.privateKeyEnv = provider.privateKeyEnv;
-    }
-    if (!["anonymous", "email"].includes(providerName)) {
-      state.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      if (providerName === "apple") {
-        state.callbackUrl = null;
-        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
-      } else {
-        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
-      }
-    }
-    providers[providerName] = state;
-  }
-  return {
-    mode: normalized.mode,
-    providers,
-    google: {
-      configured: providers.google.configured,
-      clientIdEnv: normalized.providers.google.clientIdEnv,
-      clientSecretEnv: normalized.providers.google.clientSecretEnv,
-    },
-  };
-}
-
-function normalizeAuthConfig(authConfig: LooseRecord) {
-  const providerConfig = authConfig.providers ?? {};
-  for (const provider of Object.keys(providerConfig)) {
-    if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
-      throw commandError(
-        `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook.",
-      );
-    }
-  }
-
-  const googleConfig = readProviderConfig(providerConfig.google);
-  const legacyGoogle = authConfig.google ?? {};
-  const microsoftConfig = readProviderConfig(providerConfig.microsoft);
-  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
-  const emailConfig = readProviderConfig(providerConfig.email);
-  const anonymousConfig = readProviderConfig(providerConfig.anonymous);
-  const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
-  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
-
-  return {
-    mode,
-    providers: {
-      anonymous: {
-        enabled: anonymousEnabled,
-        ...emptyProviderConfig(),
-      },
-      google: {
-        ...emptyProviderConfig(),
-        enabled: googleEnabled,
-        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
-        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
-      },
-      email: {
-        enabled: emailConfig.enabled,
-        ...emptyProviderConfig(),
-      },
-      microsoft: {
-        ...microsoftConfig,
-        tenant: microsoftConfig.tenant ?? "common",
-      },
-      apple: readProviderConfig(providerConfig.apple),
-      facebook: readFacebookProviderConfig(providerConfig.facebook),
-    },
-  };
-}
-
-function readProviderConfig(config: any) {
-  if (config === true) {
-    return { enabled: true, ...emptyProviderConfig() };
-  }
-  if (config === false || config === undefined || config === null) {
-    return { enabled: false, ...emptyProviderConfig() };
-  }
-  return {
-    enabled: config.enabled !== false,
-    clientIdEnv: config.clientIdEnv ?? null,
-    clientSecretEnv: config.clientSecretEnv ?? null,
-    clientId: config.clientId ?? null,
-    teamId: config.teamId ?? null,
-    keyId: config.keyId ?? null,
-    privateKeyEnv: config.privateKeyEnv ?? null,
-    tenant: config.tenant ?? null,
-    graphVersion: config.graphVersion === undefined
-      ? null
-      : typeof config.graphVersion === "string"
-        ? config.graphVersion
-        : "__invalid__",
-  };
-}
-
-function readFacebookProviderConfig(config: any) {
-  const normalized = readProviderConfig(config);
-  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
-    return { ...normalized, graphVersion: "v23.0" };
-  }
-  return normalized;
-}
-
-function emptyProviderConfig() {
-  return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
-}
-
-function authProvidersForClient(authConfig: LooseRecord, origin: any = null) {
-  const providers: LooseRecord = {};
-  for (const [name, provider] of Object.entries(authConfig.providers) as [string, any][]) {
-    providers[name] = {
-      enabled: provider.enabled,
-      configured: provider.configured,
-      runtimeAvailable: provider.runtimeAvailable && (name !== "apple" || appleOAuthOriginEligible(origin)),
-      ...(name === "facebook"
-        ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion }
-        : {}),
-    };
-  }
-  return providers;
 }
 
 function resolveTableForQuery(schema: { tables: any[]; }, queryName: any) {
@@ -13512,13 +3889,3 @@ function rowToApiValue(row: any, table: { fields: any; }) {
   return value;
 }
 
-function toSqlNumber(value: unknown, fieldName: any) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
-  }
-  return value;
-}
-
-function quoteIdentifier(identifier: any) {
-  return `"${String(identifier).replaceAll('"', '""')}"`;
-}
