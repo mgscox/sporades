@@ -8,7 +8,9 @@ import {
   confirmPasswordReset,
   createControllableRuntimeClock,
   createEmailPasswordResetLink,
+  hashPasswordResetVerifier,
   openDevDatabase,
+  prepareEmailPasswordResetDelivery,
   resolveAnonymousSession,
   signInWithEmail,
   signUpWithEmail,
@@ -104,6 +106,143 @@ test("confirming a reset sets the new password and spends the Reset code", async
     const replayVerify = await verifyPasswordResetCode(database, session, code);
     assert.equal(replayVerify.ok, false, "a spent Reset code must no longer verify");
   });
+});
+
+test("concurrent reset confirmations spend a Reset code once before changing the password", async () => {
+  const row = {
+    selector: "racing-reset-selector",
+    verifierHash: hashPasswordResetVerifier("racing-reset-verifier"),
+    email: "racing@example.com",
+    userId: "racing-user",
+    createdAt: "2031-03-01T09:00:00.000Z",
+    expiresAt: "2031-03-01T10:00:00.000Z",
+  };
+  let codeRemains = true;
+  let reads = 0;
+  let activeTransactions = 0;
+  const readInsideTransactions = [];
+  let releaseReads;
+  const bothContendersRead = new Promise((resolve) => {
+    releaseReads = resolve;
+  });
+  const passwordUpdates = [];
+  let sessionRevocations = 0;
+  const adapter = {
+    async findPasswordResetCode(selector) {
+      if (selector !== row.selector) return null;
+      readInsideTransactions.push(activeTransactions > 0);
+      reads += 1;
+      if (reads === 2) releaseReads();
+      await bothContendersRead;
+      // Both reads model transactions that took their snapshots before either
+      // contender spent the code. The conditional delete decides the winner.
+      return row;
+    },
+    async deletePasswordResetCode(selector) {
+      if (selector !== row.selector || !codeRemains) return { changes: 0 };
+      codeRemains = false;
+      return { changes: 1 };
+    },
+    async deletePasswordResetCodesForUser(userId) {
+      assert.equal(userId, row.userId);
+      return { changes: 0 };
+    },
+    async updateEmailCredentialPassword(email, hash, salt) {
+      passwordUpdates.push({ email, hash, salt });
+      return { changes: 1 };
+    },
+    async deleteAuthSessionsForUser(userId) {
+      assert.equal(userId, row.userId);
+      sessionRevocations += 1;
+      return { changes: 2 };
+    },
+    async withTransaction(run) {
+      activeTransactions += 1;
+      try {
+        return await run(adapter);
+      } finally {
+        activeTransactions -= 1;
+      }
+    },
+  };
+  const database = {
+    authConfig: { providers: { email: { enabled: true } } },
+    adapter,
+    clock: { now: () => new Date("2031-03-01T09:30:00.000Z") },
+  };
+  const session = {};
+  const code = `${row.selector}.racing-reset-verifier`;
+
+  const results = await Promise.all([
+    confirmPasswordReset(database, session, code, "winner-password"),
+    confirmPasswordReset(database, session, code, "loser-password"),
+  ]);
+
+  assert.deepEqual(results.map((result) => result.ok).sort(), [false, true]);
+  assert.equal(readInsideTransactions.filter(Boolean).length, 2, "each contender revalidates the code inside its Auth transaction");
+  assert.equal(readInsideTransactions.filter((insideTransaction) => !insideTransaction).length, 2, "the cheap preflight does not authorize the reset");
+  assert.equal(passwordUpdates.length, 1, "the contender that loses consumption cannot update the password");
+  assert.equal(sessionRevocations, 1, "only the successful confirmation revokes Sessions");
+  assert.equal(codeRemains, false);
+});
+
+test("a stale Reset code cannot consume a newly issued sibling", async () => {
+  const staleRow = {
+    selector: "stale-reset-selector",
+    verifierHash: hashPasswordResetVerifier("stale-reset-verifier"),
+    email: "stale@example.com",
+    userId: "stale-user",
+    createdAt: "2031-03-01T09:00:00.000Z",
+    expiresAt: "2031-03-01T10:00:00.000Z",
+  };
+  let replacementCodeRemains = true;
+  let passwordUpdates = 0;
+  let sessionRevocations = 0;
+  const adapter = {
+    // A transaction that began before another request replaced the code can
+    // still read this old row from its snapshot.
+    async findPasswordResetCode(selector) {
+      return selector === staleRow.selector ? staleRow : null;
+    },
+    async deletePasswordResetCode(selector) {
+      assert.equal(selector, staleRow.selector);
+      return { changes: 0 };
+    },
+    async deletePasswordResetCodesForUser(userId) {
+      assert.equal(userId, staleRow.userId);
+      const changes = replacementCodeRemains ? 1 : 0;
+      replacementCodeRemains = false;
+      return { changes };
+    },
+    async updateEmailCredentialPassword() {
+      passwordUpdates += 1;
+      return { changes: 1 };
+    },
+    async deleteAuthSessionsForUser() {
+      sessionRevocations += 1;
+      return { changes: 1 };
+    },
+    async withTransaction(run) {
+      return await run(adapter);
+    },
+  };
+  const database = {
+    authConfig: { providers: { email: { enabled: true } } },
+    adapter,
+    clock: { now: () => new Date("2031-03-01T09:30:00.000Z") },
+  };
+
+  const result = await confirmPasswordReset(
+    database,
+    {},
+    `${staleRow.selector}.stale-reset-verifier`,
+    "replacement-password",
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(replacementCodeRemains, true, "a stale reset must not delete the newer sibling code");
+  assert.equal(passwordUpdates, 0);
+  assert.equal(sessionRevocations, 0);
 });
 
 test("confirming a reset revokes every existing Session for that account", async () => {
@@ -362,4 +501,148 @@ test("an SMTP delivery failure does not tell the caller whether the address is r
     },
     close() {},
   });
+});
+
+test("a password reset request Job retries SMTP delivery with one Reset code", async () => {
+  const attemptedBodies = [];
+  await withMailDatabase(async (database, clock) => {
+    await registerEmailAccount(database, "retry-delivery@example.com", "original-password");
+    const session = await resolveAnonymousSession(database, null);
+
+    await sendEmailPasswordResetLink(database, session, "retry-delivery@example.com");
+    await drainJobQueue(clock);
+
+    let job = database.adapter.prepare(
+      "SELECT [status], [attempts] FROM [sporades_jobs] WHERE [handler] = ?",
+    ).get("_sporades_password_reset_request");
+    assert.equal(job.status, "delayed", "the first SMTP failure must schedule a retry");
+    assert.equal(job.attempts, 1);
+    assert.equal(
+      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?").get("retry-delivery@example.com").count,
+      1,
+    );
+
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+
+    job = database.adapter.prepare(
+      "SELECT [status], [attempts] FROM [sporades_jobs] WHERE [handler] = ?",
+    ).get("_sporades_password_reset_request");
+    assert.equal(job.status, "succeeded");
+    assert.equal(job.attempts, 2);
+    assert.equal(new Set(attemptedBodies).size, 1, "the retry must resend the same Reset link");
+    assert.equal(
+      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?").get("retry-delivery@example.com").count,
+      1,
+      "the retry must not create another Reset row",
+    );
+  }, {
+    async send(message) {
+      attemptedBodies.push(`${message.textBody ?? ""}${message.htmlBody ?? ""}`);
+      if (attemptedBodies.length === 1) throw new Error("SMTP unavailable");
+      return { messageId: "<retry-delivery@example.com>", accepted: ["retry-delivery@example.com"], rejected: [] };
+    },
+    close() {},
+  });
+});
+
+test("a retried reset request cannot resurrect a code consumed after its first send", async () => {
+  let attemptedDeliveries = 0;
+  let spentCode;
+  let runtimeDatabase;
+  await withMailDatabase(async (database, clock) => {
+    runtimeDatabase = database;
+    await registerEmailAccount(database, "spent-during-retry@example.com", "original-password");
+    const session = await resolveAnonymousSession(database, null);
+
+    await sendEmailPasswordResetLink(database, session, "spent-during-retry@example.com");
+    await drainJobQueue(clock);
+
+    assert.ok(spentCode, "the first delivery attempt must have issued a Reset code");
+    const afterSpend = await verifyPasswordResetCode(database, await resolveAnonymousSession(database, null), spentCode);
+    assert.equal(afterSpend.ok, false, "the first attempt spent the delivered code before its retry");
+
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+
+    const job = database.adapter.prepare(
+      "SELECT [status], [attempts] FROM [sporades_jobs] WHERE [handler] = ?",
+    ).get("_sporades_password_reset_request");
+    assert.equal(job.status, "succeeded");
+    assert.equal(job.attempts, 2);
+    assert.equal(attemptedDeliveries, 1, "the retry must no-op instead of sending a resurrected link");
+    assert.equal(
+      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?").get("spent-during-retry@example.com").count,
+      0,
+      "the retry must not recreate the consumed Reset row",
+    );
+  }, {
+    async send(message) {
+      attemptedDeliveries += 1;
+      const match = String(message.textBody ?? "").match(/[?&]code=([^\s]+)/);
+      spentCode = decodeURIComponent(match?.[1] ?? "");
+      const spent = await confirmPasswordReset(runtimeDatabase, await resolveAnonymousSession(runtimeDatabase, null), spentCode, "replacement-password");
+      assert.equal(spent.ok, true, spent.error?.message);
+      throw new Error("SMTP connection dropped after acceptance");
+    },
+    close() {},
+  });
+});
+
+test("registered and unregistered reset requests each enqueue one durable request Job", async () => {
+  const sent = [];
+  await withMailDatabase(async (database, clock) => {
+    await registerEmailAccount(database, "registered@example.com", "original-password");
+    const session = await resolveAnonymousSession(database, null);
+
+    await sendEmailPasswordResetLink(database, session, "registered@example.com");
+    await sendEmailPasswordResetLink(database, session, "never-registered@example.com");
+
+    const jobs = database.adapter.prepare(
+      "SELECT [payload] FROM [sporades_jobs] WHERE [handler] = ? ORDER BY [createdAt], [id]",
+    ).all("_sporades_password_reset_request");
+    assert.equal(jobs.length, 2, "every public reset request must perform the same durable enqueue");
+    assert.deepEqual(
+      jobs.map((job) => Object.keys(JSON.parse(job.payload)).sort()),
+      Array.from({ length: 2 }, () => ["code", "email", "htmlBody", "subject", "textBody"]),
+      "both public paths enqueue the identical request shape",
+    );
+
+    await drainJobQueue(clock);
+    assert.deepEqual(sent.map((message) => message.to), [[{ email: "registered@example.com" }]], "unknown accounts must complete their Job without mail");
+    assert.equal(
+      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes]").get().count,
+      1,
+      "an unknown request must not create a cover Reset row",
+    );
+  }, {
+    async send(message) {
+      sent.push(message);
+      return { messageId: "<registered@example.com>", accepted: ["registered@example.com"], rejected: [] };
+    },
+    close() {},
+  });
+});
+
+test("retrying a durable reset request reuses its one Reset code", async () => {
+  await withMailDatabase(async (database) => {
+    await registerEmailAccount(database, "retry@example.com", "original-password");
+    const payload = {
+      email: "retry@example.com",
+      code: `${"selector".padEnd(16, "x")}.${"verifier".padEnd(32, "x")}`,
+      subject: "Reset your password",
+      textBody: null,
+      htmlBody: null,
+    };
+
+    const first = await prepareEmailPasswordResetDelivery(database, payload);
+    const retried = await prepareEmailPasswordResetDelivery(database, payload);
+
+    assert.equal(retried.textBody, first.textBody, "a retry must resend the same opaque Reset link");
+    assert.equal(
+      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?").get("retry@example.com").count,
+      1,
+      "a retry must not consume another outstanding-code slot",
+    );
+  }, { async send() {}, close() {} });
 });

@@ -101,13 +101,16 @@ share one token implementation.
 ## Enumeration
 
 `sendEmailPasswordResetLink` and the client `auth.sendPasswordResetLink` resolve
-identically for registered and unregistered emails. The unregistered branch
-performs comparable work, including a dummy verifier hash, and queues no mail.
-No error, count, or timing distinguishes the two.
+identically for registered and unregistered emails. After the common throttle,
+both paths create an opaque code and enqueue the same runtime-owned Reset-request
+Job; neither performs account lookup, Reset-code storage, or mail work in the
+request path. No error, count, database sequence, or timing distinguishes the two.
 
-Delivery is queued rather than awaited, which is what makes that claim hold.
-Both branches return after bounded local work, and delivery outcomes belong to
-the Job rather than to the caller, so neither response timing nor transport
+The Job performs account lookup later. An unregistered address completes as a
+successful no-op without a Reset row or SMTP send. A registered address stores
+the code and sends the message; the opaque code travels in the Job payload so a
+retry reuses the same link and outstanding-code slot. Delivery outcomes belong
+to the Job rather than to the caller, so neither account existence nor transport
 health is observable from the reply.
 
 `createEmailPasswordResetLink` is deliberately not uniform: its entire purpose is

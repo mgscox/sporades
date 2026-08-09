@@ -1596,13 +1596,15 @@ async function readLocalTemplateIgnoreRules(sourceDir: string): Promise<LocalTem
     .filter((line) => line && !line.startsWith("#"))
     .map((line) => {
       const ignored = !line.startsWith("!");
-      const raw = (ignored ? line : line.slice(1)).replace(/^\//, "").replace(/\/$/, "");
+      const rule = ignored ? line : line.slice(1);
+      const rootAnchored = rule.startsWith("/");
+      const raw = rule.replace(/^\//, "").replace(/\/$/, "");
       const escaped = raw.replace(/[.+^${}()|[\]\\]/g, "\\$&")
         .replace(/\*\*/g, "\u0000")
         .replace(/\*/g, "[^/]*")
         .replace(/\?/g, "[^/]")
         .replace(/\u0000/g, ".*");
-      const prefix = raw.includes("/") ? "^" : "^(?:.*/)?";
+      const prefix = rootAnchored || raw.includes("/") ? "^" : "^(?:.*/)?";
       return { ignored, pattern: new RegExp(`${prefix}${escaped}(?:/.*)?$`) };
     });
 }

@@ -98,6 +98,13 @@
 // appear in it. `Buffer` and `URL` are globals.
 import { resolveAnonymousSession } from "./auth-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForOwner, } from "./file-storage-runtime.js";
+const CLIENT_REQUEST_ERROR_CODES = new Set([
+    "INVALID_JSON_REQUEST",
+    "OAUTH_INVALID_CALLBACK",
+    "OAUTH_INVALID_STATE",
+    "OAUTH_PROVIDER_MISMATCH",
+    "OAUTH_UNKNOWN_PROVIDER",
+]);
 export async function readJsonRequest(request, limitSource = null) {
     const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
     return raw ? JSON.parse(raw) : {};
@@ -526,7 +533,7 @@ export function writeEndpointResult(response, result) {
     response.end(String(result ?? ""));
 }
 export function writeEndpointError(response, error) {
-    response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
+    response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
     response.end(`${JSON.stringify({
         ok: false,
         data: null,
@@ -548,6 +555,21 @@ export function writeEndpointError(response, error) {
                         : "Check the endpoint handler and retry the request.",
         },
     })}\n`);
+}
+function endpointErrorStatus(error) {
+    if (error?.code === "UNAUTHENTICATED")
+        return 401;
+    if (isPayloadTooLargeError(error))
+        return 413;
+    if (isClientRequestError(error))
+        return 400;
+    return 500;
+}
+// Routes surface a small set of runtime-owned request errors through the same writer as Capsule
+// handler failures. Keep their HTTP classification here, rather than teaching each route its own
+// status-code special case.
+function isClientRequestError(error) {
+    return CLIENT_REQUEST_ERROR_CODES.has(error?.code);
 }
 function endpointResponseError() {
     const error = new Error("Invalid endpoint response.");

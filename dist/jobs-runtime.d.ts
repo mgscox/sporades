@@ -26,7 +26,9 @@ export declare function createControllableRuntimeClock(initialInstant: string | 
     clearTimer(id: number): void;
     runDueTimers(): Promise<void>;
 };
-export declare function runtimeOwnedJobHandlers(): {
+export declare function runtimeOwnedJobHandlers(runtime: {
+    prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+}): {
     name: string;
     handler: (ctx: LooseRecord, payload: LooseRecord) => Promise<any>;
 }[];

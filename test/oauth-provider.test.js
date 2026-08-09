@@ -457,6 +457,69 @@ function responseRecorder() {
   };
 }
 
+test("OAuth callbacks report provider and state mistakes as client errors", async () => {
+  await withTempDatabase(async (database) => {
+    const session = await resolveAnonymousSession(database, null);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const insertState = async (state, provider) => {
+      await database.adapter.insertOAuthState({
+        state,
+        sessionToken: session.token,
+        returnTo: "http://127.0.0.1:4000",
+        provider,
+        redirectUri: `http://127.0.0.1:4000/__sporades/auth/${provider}/callback`,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+        nonce: "callback-nonce",
+        pkceVerifier: "callback-verifier",
+      });
+    };
+
+    await insertState("provider-mismatch", "google");
+    const mismatch = responseRecorder();
+    await routeSporadesAuth(database, {
+      method: "GET",
+      url: "/__sporades/auth/microsoft/callback?state=provider-mismatch&code=unused",
+      headers: {},
+    }, mismatch);
+    assert.equal(mismatch.statusCode, 400);
+    assert.equal(JSON.parse(mismatch.body).error.code, "OAUTH_PROVIDER_MISMATCH");
+
+    // An unsupported path provider is rejected before the state is consumed.
+    await insertState("unknown-provider", "nosuch");
+    const unknown = responseRecorder();
+    await routeSporadesAuth(database, {
+      method: "GET",
+      url: "/__sporades/auth/nosuch/callback?state=unknown-provider&code=unused",
+      headers: {},
+    }, unknown);
+    assert.equal(unknown.statusCode, 400);
+    assert.equal(JSON.parse(unknown.body).error.code, "OAUTH_UNKNOWN_PROVIDER");
+    assert.equal(
+      database.adapter.prepare("SELECT [state] FROM [sporades_auth_oauth_states] WHERE [state] = ?").get("unknown-provider").state,
+      "unknown-provider",
+      "unknown provider paths must not consume a valid state",
+    );
+
+    // Google is supported but disabled in this test Capsule, so this reaches configuration
+    // validation after state consumption and remains a server/configuration failure.
+    await insertState("unconfigured-provider", "google");
+    const unconfigured = responseRecorder();
+    await routeSporadesAuth(database, {
+      method: "GET",
+      url: "/__sporades/auth/google/callback?state=unconfigured-provider&code=unused",
+      headers: {},
+    }, unconfigured);
+    assert.equal(unconfigured.statusCode, 500);
+    assert.equal(JSON.parse(unconfigured.body).error.code, "OAUTH_PROVIDER_NOT_CONFIGURED");
+    assert.equal(
+      database.adapter.prepare("SELECT [state] FROM [sporades_auth_oauth_states] WHERE [state] = ?").get("unconfigured-provider"),
+      undefined,
+      "supported provider callbacks still consume their single-use state before configuration validation",
+    );
+  });
+});
+
 function formPostRequest(url, values) {
   const body = new URLSearchParams(values).toString();
   const request = Readable.from([Buffer.from(body)]);
@@ -779,6 +842,7 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
         callbackProvider: "beta",
         query: "code=wrong-provider",
         code: "OAUTH_PROVIDER_MISMATCH",
+        status: 400,
       },
       {
         provider: "alpha",
@@ -788,16 +852,19 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
         },
         query: "code=expired",
         code: "OAUTH_STATE_EXPIRED",
+        status: 500,
       },
       {
         provider: "alpha",
         query: "error=access_denied&error_description=sensitive-provider-detail",
         code: "OAUTH_PROVIDER_CANCELLED",
+        status: 500,
       },
       {
         provider: "failing",
         query: "code=exchange-failure",
         code: "Endpoint handler failed",
+        status: 500,
       },
     ];
 
@@ -819,7 +886,7 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
         },
         response,
       );
-      assert.equal(response.statusCode, 500);
+      assert.equal(response.statusCode, testCase.status);
       assert.match(response.body, new RegExp(testCase.code));
       assert.doesNotMatch(response.body, /sensitive-provider-detail|leaked secret/);
       assert.equal(

@@ -110,6 +110,14 @@ import {
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 
+const CLIENT_REQUEST_ERROR_CODES = new Set([
+  "INVALID_JSON_REQUEST",
+  "OAUTH_INVALID_CALLBACK",
+  "OAUTH_INVALID_STATE",
+  "OAUTH_PROVIDER_MISMATCH",
+  "OAUTH_UNKNOWN_PROVIDER",
+]);
+
 // These two moved out of the monolith entirely rather than being redeclared, because nothing
 // outside this domain referenced either: `RuntimeSecurityPolicy` was read by `prepareHttpSecurity`,
 // `resolveRuntimeSecurityPolicy`, `requestOriginAllowed` and `websocketOriginAllowed`, and
@@ -599,7 +607,7 @@ export function writeEndpointResult(response: any, result: any) {
 }
 
 export function writeEndpointError(response: any, error: any) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
@@ -623,6 +631,20 @@ export function writeEndpointError(response: any, error: any) {
       },
     })}\n`,
   );
+}
+
+function endpointErrorStatus(error: any) {
+  if (error?.code === "UNAUTHENTICATED") return 401;
+  if (isPayloadTooLargeError(error)) return 413;
+  if (isClientRequestError(error)) return 400;
+  return 500;
+}
+
+// Routes surface a small set of runtime-owned request errors through the same writer as Capsule
+// handler failures. Keep their HTTP classification here, rather than teaching each route its own
+// status-code special case.
+function isClientRequestError(error: any) {
+  return CLIENT_REQUEST_ERROR_CODES.has(error?.code);
 }
 
 function endpointResponseError() {

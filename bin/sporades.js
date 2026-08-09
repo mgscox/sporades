@@ -6235,6 +6235,13 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 }
 
 // src/http-runtime.ts
+var CLIENT_REQUEST_ERROR_CODES = /* @__PURE__ */ new Set([
+  "INVALID_JSON_REQUEST",
+  "OAUTH_INVALID_CALLBACK",
+  "OAUTH_INVALID_STATE",
+  "OAUTH_PROVIDER_MISMATCH",
+  "OAUTH_UNKNOWN_PROVIDER"
+]);
 async function readJsonRequest(request, limitSource = null) {
   const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
   return raw ? JSON.parse(raw) : {};
@@ -6602,7 +6609,7 @@ function writeEndpointResult(response, result) {
   response.end(String(result ?? ""));
 }
 function writeEndpointError(response, error) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
@@ -6615,6 +6622,15 @@ function writeEndpointError(response, error) {
     })}
 `
   );
+}
+function endpointErrorStatus(error) {
+  if (error?.code === "UNAUTHENTICATED") return 401;
+  if (isPayloadTooLargeError(error)) return 413;
+  if (isClientRequestError(error)) return 400;
+  return 500;
+}
+function isClientRequestError(error) {
+  return CLIENT_REQUEST_ERROR_CODES.has(error?.code);
 }
 function endpointResponseError() {
   const error = new Error("Invalid endpoint response.");
@@ -6636,6 +6652,7 @@ var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 var PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
 var PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
+var PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 function privilegedAuthUserId() {
   return "__privileged__";
 }
@@ -6914,6 +6931,9 @@ function oauthProviderAdapter(database, provider) {
     microsoft: createMicrosoftOAuthProviderAdapter
   };
   return factories[provider]?.(database) ?? null;
+}
+function isSupportedOAuthProvider(database, provider) {
+  return ["google", "microsoft", "apple", "facebook"].includes(provider) || Boolean(database.__oauthProviderAdapters?.[provider]);
 }
 function isOAuthLoopbackHostname(hostname) {
   if (typeof hostname !== "string") return false;
@@ -8226,9 +8246,11 @@ function normalizePasswordResetPath(value) {
   }
   return value;
 }
-function passwordResetCodeParts(database) {
-  const selector = nodeCryptoModule2.randomBytes(16).toString("base64url");
-  const verifier = nodeCryptoModule2.randomBytes(32).toString("base64url");
+function passwordResetCodeParts(database, requestedCode = null) {
+  const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule2.randomBytes(16).toString("base64url"), nodeCryptoModule2.randomBytes(32).toString("base64url")];
+  if (!selector || !verifier || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector) || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier)) {
+    throw commandError2("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
+  }
   return {
     selector,
     verifier,
@@ -8240,8 +8262,20 @@ function passwordResetCodeParts(database) {
 function hashPasswordResetVerifier(verifier) {
   return nodeCryptoModule2.createHash("sha256").update(verifier).digest("base64url");
 }
-async function issuePasswordResetCode(database, credential) {
-  const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
+async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+  const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
+  if (requestedCode) {
+    const existing = await database.adapter.findPasswordResetCode(selector);
+    if (existing && Date.parse(existing.expiresAt) > now.getTime()) {
+      if (existing.email !== credential.email || existing.userId !== credential.userId || existing.verifierHash !== verifierHash) {
+        throw commandError2("Password reset request conflicted with existing state.", "Request a new password reset link.", "PASSWORD_RESET_REQUEST_CONFLICT");
+      }
+      const link2 = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
+      link2.searchParams.set("code", code);
+      return { code, selector, link: link2.toString(), expiresAt: existing.expiresAt };
+    }
+    if (!allowRequestedCodeInsert) return null;
+  }
   const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
   await database.adapter.prunePasswordResetCodes(now.toISOString());
   const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now.toISOString());
@@ -8259,6 +8293,20 @@ async function issuePasswordResetCode(database, credential) {
   const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
   link.searchParams.set("code", code);
   return { code, selector, link: link.toString(), expiresAt };
+}
+async function prepareEmailPasswordResetDelivery(database, payload, attempt = 1) {
+  const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
+  const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
+  if (!credential) return null;
+  const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
+  if (!issued) return null;
+  const body = passwordResetMailBody(issued.link);
+  return {
+    to: credential.email,
+    subject: typeof payload?.subject === "string" ? payload.subject : "Reset your password",
+    textBody: typeof payload?.textBody === "string" ? payload.textBody : body.textBody,
+    htmlBody: typeof payload?.htmlBody === "string" ? payload.htmlBody : body.htmlBody
+  };
 }
 async function createEmailPasswordResetLink(database, _session, email) {
   if (!database.authConfig.providers.email.enabled) {
@@ -8329,12 +8377,20 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
   if (typeof newPassword !== "string" || newPassword.length < 8) {
     return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
   }
-  const row = await readPasswordResetCode(database, code);
-  if (!row) {
+  const preflight = await readPasswordResetCode(database, code);
+  if (!preflight) {
     return { ok: false, error: invalidPasswordResetCodeError() };
   }
   const password = hashEmailPassword(newPassword);
   return await database.adapter.withTransaction(async (tx) => {
+    const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
+    if (!row) {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
+    const consumed = await tx.deletePasswordResetCode(row.selector);
+    if (consumed?.changes !== 1) {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
     await tx.deletePasswordResetCodesForUser(row.userId);
     await tx.deleteAuthSessionsForUser(row.userId);
@@ -8964,6 +9020,10 @@ async function routeSporadesAuth(database, request, response) {
     return false;
   }
   const provider = match[1];
+  if (!isSupportedOAuthProvider(database, provider)) {
+    writeEndpointError(response, commandError2("Unknown OAuth provider.", "Retry sign-in with a provider configured by this Capsule.", "OAUTH_UNKNOWN_PROVIDER"));
+    return true;
+  }
   let callbackParameters;
   try {
     callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
@@ -10446,6 +10506,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       ).get(selector) ?? null;
     },
+    deletePasswordResetCode(selector) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
+    },
     countPasswordResetCodesForEmail(email, now) {
       return thenIfPromise(
         this.prepare(
@@ -11871,16 +11934,26 @@ function createRuntimeClock(clock) {
     clearTimer: (timer) => clearTimeout(timer)
   };
 }
-function runtimeOwnedJobHandlers() {
+function runtimeOwnedJobHandlers(runtime) {
   return [
     {
       name: PASSWORD_RESET_MAIL_JOB,
-      handler: async (ctx, payload) => ctx.mail.send({
-        to: payload.to,
-        subject: payload.subject,
-        textBody: payload.textBody,
-        htmlBody: payload.htmlBody
-      })
+      handler: async (ctx, payload) => {
+        return await ctx.mail.send({
+          to: payload.to,
+          subject: payload.subject,
+          textBody: payload.textBody,
+          htmlBody: payload.htmlBody
+        });
+      }
+    },
+    {
+      name: PASSWORD_RESET_REQUEST_JOB,
+      handler: async (ctx, payload) => {
+        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
+        if (!delivery) return;
+        return await ctx.mail.send(delivery);
+      }
     }
   ];
 }
@@ -12785,14 +12858,17 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
-  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
+  let database;
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
+    prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1)
+  })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
   const rowCache = /* @__PURE__ */ new Map();
-  const database = {
+  database = {
     adapter: sqlite,
     schema,
     endpoints,
@@ -12816,6 +12892,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     journeySessionInactivityMinutes,
     runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
     jobScheduleProvenanceByContext: /* @__PURE__ */ new WeakMap(),
+    __runtimeJobAttempts: /* @__PURE__ */ new WeakMap(),
     rowCache,
     serverEnv,
     mail,
@@ -14254,7 +14331,11 @@ async function readEndpointBody(request, headers, limitSource = null) {
     return null;
   }
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
-    return JSON.parse(raw);
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw commandError2("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
+    }
   }
   return raw;
 }
@@ -15113,7 +15194,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   }
 }
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0) {
   const queueDatabase = database.__rootDatabase ?? database;
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
@@ -15131,10 +15212,11 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey)
     now,
     idempotencyKey,
     now,
-    JSON.stringify(normalizeJobRetry(void 0))
+    JSON.stringify(normalizeJobRetry(retry))
   );
   scheduleCurrentUserJobWorker(queueDatabase);
 }
+var PASSWORD_RESET_REQUEST_RETRY = { maxAttempts: 3, delayMs: 1e3 };
 async function sendEmailPasswordResetLink(database, session, email, options = {}) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
@@ -15148,23 +15230,14 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
-  if (!credential) {
-    hashPasswordResetVerifier(randomBytes4(32).toString("base64url"));
-    return { ok: true };
-  }
-  const issued = await issuePasswordResetCode(database, credential);
-  if (!issued) {
-    return { ok: true };
-  }
-  const body = passwordResetMailBody(issued.link);
-  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
-    to: credential.email,
+  const code = `${randomBytes4(16).toString("base64url")}.${randomBytes4(32).toString("base64url")}`;
+  await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
+    email: cleanEmail,
+    code,
     subject: typeof options.subject === "string" ? options.subject : "Reset your password",
-    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
-    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody
-    // Job execution is at least once; the key keeps one Reset code to one mail.
-  }, `password-reset:${issued.selector}`);
+    textBody: typeof options.textBody === "string" ? options.textBody : null,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : null
+  }, `password-reset-request:${code.split(".")[0]}`, PASSWORD_RESET_REQUEST_RETRY);
   return { ok: true };
 }
 function createWebSocketAccept(key) {
@@ -15753,7 +15826,14 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
+            database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+            try {
+              return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+            } finally {
+              database.__runtimeJobAttempts.delete(privilegedCtx);
+            }
+          });
         } else {
           const user = await database.adapter.prepare(
             sql(
@@ -15772,7 +15852,12 @@ async function runCurrentUserJobWorker(database) {
           };
           const context = createMutationContext(database, auth);
           context.signal = abortController.signal;
-          result = await handler.handler(context, JSON.parse(row.payload));
+          database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+          try {
+            result = await handler.handler(context, JSON.parse(row.payload));
+          } finally {
+            database.__runtimeJobAttempts.delete(context);
+          }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
         const completedAt = database.clock.now().toISOString();
@@ -22882,9 +22967,11 @@ async function readLocalTemplateIgnoreRules(sourceDir) {
   }
   return contents.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line) => {
     const ignored = !line.startsWith("!");
-    const raw = (ignored ? line : line.slice(1)).replace(/^\//, "").replace(/\/$/, "");
+    const rule = ignored ? line : line.slice(1);
+    const rootAnchored = rule.startsWith("/");
+    const raw = rule.replace(/^\//, "").replace(/\/$/, "");
     const escaped = raw.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\0").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, ".*");
-    const prefix = raw.includes("/") ? "^" : "^(?:.*/)?";
+    const prefix = rootAnchored || raw.includes("/") ? "^" : "^(?:.*/)?";
     return { ignored, pattern: new RegExp(`${prefix}${escaped}(?:/.*)?$`) };
   });
 }
