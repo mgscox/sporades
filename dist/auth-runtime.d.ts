@@ -14,6 +14,7 @@ export declare const PASSWORD_RESET_MIN_TTL_MS: number;
 export declare const PASSWORD_RESET_MAX_TTL_MS: number;
 export declare const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
 export declare const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
+export declare const PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 export declare function privilegedAuthUserId(): string;
 export declare function isReservedAuthUserId(userId: any): boolean;
 export declare function authIdentityRowUnlessReserved(rowOrPromise: any): any;
@@ -82,11 +83,17 @@ export declare function writeRedirect(response: {
 }, location: any): void;
 export declare function normalizePasswordResetPath(value: any): string | null;
 export declare function hashPasswordResetVerifier(verifier: string): string;
-export declare function issuePasswordResetCode(database: LooseRecord, credential: LooseRecord): Promise<{
+export declare function issuePasswordResetCode(database: LooseRecord, credential: LooseRecord, requestedCode?: string | null, allowRequestedCodeInsert?: boolean): Promise<{
     code: string;
     selector: string;
     link: string;
-    expiresAt: string;
+    expiresAt: any;
+} | null>;
+export declare function prepareEmailPasswordResetDelivery(database: LooseRecord, payload: LooseRecord, attempt?: number): Promise<{
+    to: any;
+    subject: string;
+    textBody: string;
+    htmlBody: string;
 } | null>;
 export declare function createEmailPasswordResetLink(database: LooseRecord, _session: LooseRecord, email: string): Promise<{
     ok: boolean;
@@ -99,7 +106,7 @@ export declare function createEmailPasswordResetLink(database: LooseRecord, _ses
 } | {
     ok: boolean;
     link: string;
-    expiresAt: string;
+    expiresAt: any;
     error?: undefined;
 }>;
 export declare function serverAuthError(error: LooseRecord | undefined, fallback: string): Error & {

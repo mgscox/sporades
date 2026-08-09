@@ -649,6 +649,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             return this.prepare(sql("SELECT [selector], [verifierHash], [email], [userId], [createdAt], [expiresAt] " +
                 "FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).get(selector) ?? null;
         },
+        deletePasswordResetCode(selector) {
+            return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
+        },
         countPasswordResetCodesForEmail(email, now) {
             return thenIfPromise(this.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] " +
                 "WHERE [email] = ? AND [expiresAt] > ?")).get(email, now), (row) => Number(row?.count ?? 0));

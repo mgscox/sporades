@@ -114,12 +114,9 @@ export const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
 export const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
 export const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 export const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
-// Auth's, not mail's, despite the name and despite carrying `RESERVED_JOB_NAME_PREFIX`'s prefix. It
-// names the job that delivers a reset link, and that job's handler reaches the mail runtime through
-// `ctx.mail` rather than by calling anything in `mail-runtime.ts` — batch 2 established this when it
-// left the name behind, and the reference graph agrees: its consumers are
-// `sendEmailPasswordResetLink` and `runtimeOwnedJobHandlers`.
+// Kept for queued work from before reset requests became durable Jobs of their own.
 export const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
+export const PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 export function privilegedAuthUserId() {
     return "__privileged__";
 }
@@ -404,6 +401,9 @@ export function oauthProviderAdapter(database, provider) {
         microsoft: createMicrosoftOAuthProviderAdapter,
     };
     return factories[provider]?.(database) ?? null;
+}
+function isSupportedOAuthProvider(database, provider) {
+    return ["google", "microsoft", "apple", "facebook"].includes(provider) || Boolean(database.__oauthProviderAdapters?.[provider]);
 }
 export function isOAuthLoopbackHostname(hostname) {
     if (typeof hostname !== "string")
@@ -1766,9 +1766,13 @@ export function normalizePasswordResetPath(value) {
     }
     return value;
 }
-function passwordResetCodeParts(database) {
-    const selector = nodeCryptoModule.randomBytes(16).toString("base64url");
-    const verifier = nodeCryptoModule.randomBytes(32).toString("base64url");
+function passwordResetCodeParts(database, requestedCode = null) {
+    const [selector, verifier, ...rest] = typeof requestedCode === "string"
+        ? requestedCode.split(".")
+        : [nodeCryptoModule.randomBytes(16).toString("base64url"), nodeCryptoModule.randomBytes(32).toString("base64url")];
+    if (!selector || !verifier || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector) || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier)) {
+        throw commandError("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
+    }
     return {
         selector,
         verifier,
@@ -1783,8 +1787,24 @@ export function hashPasswordResetVerifier(verifier) {
 // Issuing does not invalidate outstanding codes, so a flood of reset requests
 // cannot kill a link the user is about to click. The outstanding count is capped
 // instead. Returns null when the account is already at the cap.
-export async function issuePasswordResetCode(database, credential) {
-    const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
+export async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+    const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
+    if (requestedCode) {
+        const existing = await database.adapter.findPasswordResetCode(selector);
+        if (existing && Date.parse(existing.expiresAt) > now.getTime()) {
+            if (existing.email !== credential.email || existing.userId !== credential.userId || existing.verifierHash !== verifierHash) {
+                throw commandError("Password reset request conflicted with existing state.", "Request a new password reset link.", "PASSWORD_RESET_REQUEST_CONFLICT");
+            }
+            const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
+            link.searchParams.set("code", code);
+            return { code, selector, link: link.toString(), expiresAt: existing.expiresAt };
+        }
+        // The request Job has already had a delivery attempt. A missing row can mean the code was spent
+        // (or expired and pruned); it can also be a pre-insert storage failure. Later attempts no-op in
+        // either case rather than recreating a selector/verifier a user may already have consumed.
+        if (!allowRequestedCodeInsert)
+            return null;
+    }
     const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
     await database.adapter.prunePasswordResetCodes(now.toISOString());
     const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now.toISOString());
@@ -1802,6 +1822,25 @@ export async function issuePasswordResetCode(database, credential) {
     const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
     link.searchParams.set("code", code);
     return { code, selector, link: link.toString(), expiresAt };
+}
+// The public request only enqueues a durable Job. The worker performs lookup and code creation, so
+// an unregistered address completes successfully without a Reset row or an SMTP send. Keeping the
+// opaque code stable in the Job payload makes retries resend one link rather than minting a new one.
+export async function prepareEmailPasswordResetDelivery(database, payload, attempt = 1) {
+    const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
+    const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
+    if (!credential)
+        return null;
+    const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
+    if (!issued)
+        return null;
+    const body = passwordResetMailBody(issued.link);
+    return {
+        to: credential.email,
+        subject: typeof payload?.subject === "string" ? payload.subject : "Reset your password",
+        textBody: typeof payload?.textBody === "string" ? payload.textBody : body.textBody,
+        htmlBody: typeof payload?.htmlBody === "string" ? payload.htmlBody : body.htmlBody,
+    };
 }
 export async function createEmailPasswordResetLink(database, _session, email) {
     if (!database.authConfig.providers.email.enabled) {
@@ -1877,15 +1916,30 @@ export async function confirmPasswordReset(database, _session, code, newPassword
     if (typeof newPassword !== "string" || newPassword.length < 8) {
         return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
     }
-    const row = await readPasswordResetCode(database, code);
-    if (!row) {
+    // This preflight avoids performing an expensive scrypt for obviously bad
+    // codes, but cannot authorize the change: another request may spend the
+    // code before the Auth transaction starts.
+    const preflight = await readPasswordResetCode(database, code);
+    if (!preflight) {
         return { ok: false, error: invalidPasswordResetCodeError() };
     }
     const password = hashEmailPassword(newPassword);
-    // Spending the code and writing the password share one Auth transaction, so a
-    // failure leaves the code unspent and the old password intact.
+    // Only this in-transaction validation and consumption authorize the
+    // credential write. A second contender can have passed the preflight before
+    // the first transaction commits, so its deletion result decides whether it
+    // may continue.
     return await database.adapter.withTransaction(async (tx) => {
+        const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
+        if (!row) {
+            return { ok: false, error: invalidPasswordResetCodeError() };
+        }
+        const consumed = await tx.deletePasswordResetCode(row.selector);
+        if (consumed?.changes !== 1) {
+            return { ok: false, error: invalidPasswordResetCodeError() };
+        }
         await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
+        // The selector-specific delete above authorizes this change. Once it has
+        // succeeded, clear any sibling codes the user could otherwise still use.
         await tx.deletePasswordResetCodesForUser(row.userId);
         // Evicting every Session for the account is the point of the reset: an
         // attacker holding a live Session must not outlive the password change.
@@ -2586,6 +2640,10 @@ export async function routeSporadesAuth(database, request, response) {
         return false;
     }
     const provider = match[1];
+    if (!isSupportedOAuthProvider(database, provider)) {
+        writeEndpointError(response, commandError("Unknown OAuth provider.", "Retry sign-in with a provider configured by this Capsule.", "OAUTH_UNKNOWN_PROVIDER"));
+        return true;
+    }
     let callbackParameters;
     try {
         callbackParameters = await readOAuthCallbackParameters(request, requestUrl);

@@ -15,32 +15,32 @@ import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./i
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
 import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import {
-  PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_MAIL_JOB,
+  PASSWORD_RESET_DEFAULT_PATH, PASSWORD_RESET_DEFAULT_TTL_MS, PASSWORD_RESET_REQUEST_JOB,
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
   confirmPasswordReset, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
-  emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword, hashPasswordResetVerifier,
-  invalidEmailCredentialsError, isReservedAuthUserId, issuePasswordResetCode, mailNotConfiguredError,
+  emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword,
+  invalidEmailCredentialsError, isReservedAuthUserId, mailNotConfiguredError,
   normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
-  oauthProviderAdapter, parseOAuthFormBody, passwordResetMailBody, privilegedAuthUserId,
+  oauthProviderAdapter, parseOAuthFormBody, prepareEmailPasswordResetDelivery, privilegedAuthUserId,
   readEndpointSessionToken, recordFailedEmailSignInAttempt, refreshSessionOnAdapter, requireAuth,
   resetEmailSignInAttempts, resolveAnonymousSession, serverAuthError, sessionExpiresAt, setEmailPassword,
   setOwnEmailPassword, validateConsumedOAuthCallbackParameters, verifyEmailPassword,
   verifyPasswordResetCode, writeRedirect,
-  // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
-  // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
-  // preferences stopped holding them.
-  linkProviderIdentity, signInWithEmail, signUpWithEmail,
-  // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
-  // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
-  // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-  beginOAuthSignIn, resolvePasswordResetConfig,
-  // Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
-  // method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
-  // resolves it here for as long as that method set is still below.
-  createAnonymousAuthTables,
 } from "./auth-runtime.js";
+// Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
+// the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
+// preferences stopped holding them.
+import { linkProviderIdentity, signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
+// Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
+// `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
+// `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
+import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
+// Batch 9. The auth storage bootstrap went home to its own domain's module once the shared adapter
+// method set — the only thing that calls it — was on its way out of this file. `ensureAuthStorage()`
+// resolves it here for as long as that method set is still below.
+import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
@@ -445,14 +445,18 @@ export async function openDevDatabase(
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
     : extractMutationHandlers(serverSource)) as any[];
   const messages = extractMessageHandlers(serverSource);
-  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
+  let database: LooseRecord;
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
+    prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
+      prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+  })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
   const rowCache = new Map();
-  const database: LooseRecord = {
+  database = {
     adapter: sqlite,
     schema,
     endpoints,
@@ -476,6 +480,7 @@ export async function openDevDatabase(
     journeySessionInactivityMinutes,
     runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
     jobScheduleProvenanceByContext: new WeakMap(),
+    __runtimeJobAttempts: new WeakMap(),
     rowCache,
     serverEnv,
     mail,
@@ -2090,7 +2095,11 @@ async function readEndpointBody(request: any, headers: { [x: string]: any; }, li
     return null;
   }
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
-    return JSON.parse(raw);
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
+    }
   }
   return raw;
 }
@@ -3017,7 +3026,13 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 // is active, and runtime code has no such context, so the row would be dropped.
 // A direct insert joins whatever transaction is already open, so a rolled-back
 // caller discards the Job with it.
-async function enqueueRuntimeJob(database: LooseRecord, handlerName: string, payload: LooseRecord, idempotencyKey: string) {
+async function enqueueRuntimeJob(
+  database: LooseRecord,
+  handlerName: string,
+  payload: LooseRecord,
+  idempotencyKey: string,
+  retry: LooseRecord | undefined = undefined,
+) {
   const queueDatabase = database.__rootDatabase ?? database;
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
@@ -3037,10 +3052,14 @@ async function enqueueRuntimeJob(database: LooseRecord, handlerName: string, pay
     now,
     idempotencyKey,
     now,
-    JSON.stringify(normalizeJobRetry(undefined)),
+    JSON.stringify(normalizeJobRetry(retry)),
   );
   scheduleCurrentUserJobWorker(queueDatabase);
 }
+
+// Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
+// bounded and private to this Job so Capsule Job defaults and API semantics remain unchanged.
+const PASSWORD_RESET_REQUEST_RETRY = { maxAttempts: 3, delayMs: 1_000 };
 
 // Resolves identically whether or not the email is registered: no error, count,
 // or send distinguishes the two, so this cannot be used to enumerate accounts.
@@ -3062,28 +3081,16 @@ export async function sendEmailPasswordResetLink(
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
-  if (!credential) {
-    // Comparable work on the unregistered branch so timing does not separate it.
-    hashPasswordResetVerifier(randomBytes(32).toString("base64url"));
-    return { ok: true };
-  }
-  const issued = await issuePasswordResetCode(database, credential);
-  if (!issued) {
-    return { ok: true };
-  }
-  const body = passwordResetMailBody(issued.link);
-  // Delivery is queued, not awaited. Doing the SMTP round trip inline would make
-  // the reply time and any transport failure a reliable oracle for whether the
-  // address is registered, which is exactly what the uniform result prevents.
-  // The Job is durable and retried, so queueing does not mean dropping.
-  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
-    to: credential.email,
+  const code = `${randomBytes(16).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
+  // Both paths stop after this one durable enqueue. The worker owns lookup, Reset-code creation,
+  // and SMTP delivery, so no request-side database or Job sequence identifies a registered email.
+  await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
+    email: cleanEmail,
+    code,
     subject: typeof options.subject === "string" ? options.subject : "Reset your password",
-    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
-    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody,
-    // Job execution is at least once; the key keeps one Reset code to one mail.
-  }, `password-reset:${issued.selector}`);
+    textBody: typeof options.textBody === "string" ? options.textBody : null,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : null,
+  }, `password-reset-request:${code.split(".")[0]}`, PASSWORD_RESET_REQUEST_RETRY);
   return { ok: true };
 }
 
@@ -3654,7 +3661,11 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, (privilegedCtx: any) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+            database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+            try { return await handler.handler(privilegedCtx, JSON.parse(row.payload)); }
+            finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
+          });
         } else {
           const user = await database.adapter.prepare(
             sql(
@@ -3673,7 +3684,9 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
           };
           const context = createMutationContext(database, auth); context.signal = abortController.signal;
-          result = await handler.handler(context, JSON.parse(row.payload));
+          database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+          try { result = await handler.handler(context, JSON.parse(row.payload)); }
+          finally { database.__runtimeJobAttempts.delete(context); }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
         const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
@@ -3888,4 +3901,3 @@ function rowToApiValue(row: any, table: { fields: any; }) {
   }
   return value;
 }
-

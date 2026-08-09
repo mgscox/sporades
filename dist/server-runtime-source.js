@@ -7,11 +7,15 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
-import { PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, hashPasswordResetVerifier, issuePasswordResetCode, mailNotConfiguredError, oauthProviderAdapter, passwordResetMailBody, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, signInWithEmail, signUpWithEmail, 
+import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
+// Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
+// the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
+// preferences stopped holding them.
+import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // Batch 8. `createWebSocketHub` starts an OAuth sign-in, and `openDevDatabase` and
 // `sendEmailPasswordResetLink` read the reset-link configuration. Both left this file for
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
-beginOAuthSignIn, resolvePasswordResetConfig, } from "./auth-runtime.js";
+import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
@@ -359,14 +363,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
         : extractMutationHandlers(serverSource));
     const messages = extractMessageHandlers(serverSource);
-    const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
+    let database;
+    const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
+            prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+        })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
     const contextMiddleware = extractContextMiddleware(serverSource);
     const mutationHooks = extractMutationHooks(serverSource);
     const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
     const rowCache = new Map();
-    const database = {
+    database = {
         adapter: sqlite,
         schema,
         endpoints,
@@ -390,6 +397,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         journeySessionInactivityMinutes,
         runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
         jobScheduleProvenanceByContext: new WeakMap(),
+        __runtimeJobAttempts: new WeakMap(),
         rowCache,
         serverEnv,
         mail,
@@ -1879,7 +1887,12 @@ async function readEndpointBody(request, headers, limitSource = null) {
         return null;
     }
     if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
-        return JSON.parse(raw);
+        try {
+            return JSON.parse(raw);
+        }
+        catch {
+            throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
+        }
     }
     return raw;
 }
@@ -2796,15 +2809,18 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
 // is active, and runtime code has no such context, so the row would be dropped.
 // A direct insert joins whatever transaction is already open, so a rolled-back
 // caller discards the Job with it.
-async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey) {
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined) {
     const queueDatabase = database.__rootDatabase ?? database;
     const now = queueDatabase.clock.now().toISOString();
     const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
     await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
         "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(undefined)));
+        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
     scheduleCurrentUserJobWorker(queueDatabase);
 }
+// Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
+// bounded and private to this Job so Capsule Job defaults and API semantics remain unchanged.
+const PASSWORD_RESET_REQUEST_RETRY = { maxAttempts: 3, delayMs: 1_000 };
 // Resolves identically whether or not the email is registered: no error, count,
 // or send distinguishes the two, so this cannot be used to enumerate accounts.
 export async function sendEmailPasswordResetLink(database, session, email, options = {}) {
@@ -2820,28 +2836,16 @@ export async function sendEmailPasswordResetLink(database, session, email, optio
         return { ok: true };
     }
     recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-    const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
-    if (!credential) {
-        // Comparable work on the unregistered branch so timing does not separate it.
-        hashPasswordResetVerifier(randomBytes(32).toString("base64url"));
-        return { ok: true };
-    }
-    const issued = await issuePasswordResetCode(database, credential);
-    if (!issued) {
-        return { ok: true };
-    }
-    const body = passwordResetMailBody(issued.link);
-    // Delivery is queued, not awaited. Doing the SMTP round trip inline would make
-    // the reply time and any transport failure a reliable oracle for whether the
-    // address is registered, which is exactly what the uniform result prevents.
-    // The Job is durable and retried, so queueing does not mean dropping.
-    await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
-        to: credential.email,
+    const code = `${randomBytes(16).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
+    // Both paths stop after this one durable enqueue. The worker owns lookup, Reset-code creation,
+    // and SMTP delivery, so no request-side database or Job sequence identifies a registered email.
+    await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
+        email: cleanEmail,
+        code,
         subject: typeof options.subject === "string" ? options.subject : "Reset your password",
-        textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
-        htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody,
-        // Job execution is at least once; the key keeps one Reset code to one mail.
-    }, `password-reset:${issued.selector}`);
+        textBody: typeof options.textBody === "string" ? options.textBody : null,
+        htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : null,
+    }, `password-reset-request:${code.split(".")[0]}`, PASSWORD_RESET_REQUEST_RETRY);
     return { ok: true };
 }
 function createWebSocketAccept(key) {
@@ -3447,7 +3451,15 @@ export async function runCurrentUserJobWorker(database) {
                 let result;
                 if (row.actorUserId === privilegedAuthUserId()) {
                     const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
+                        database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
+                        try {
+                            return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+                        }
+                        finally {
+                            database.__runtimeJobAttempts.delete(privilegedCtx);
+                        }
+                    });
                 }
                 else {
                     const user = await database.adapter.prepare(sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] " +
@@ -3465,7 +3477,13 @@ export async function runCurrentUserJobWorker(database) {
                     };
                     const context = createMutationContext(database, auth);
                     context.signal = abortController.signal;
-                    result = await handler.handler(context, JSON.parse(row.payload));
+                    database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
+                    try {
+                        result = await handler.handler(context, JSON.parse(row.payload));
+                    }
+                    finally {
+                        database.__runtimeJobAttempts.delete(context);
+                    }
                 }
                 const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
                 const completedAt = database.clock.now().toISOString();

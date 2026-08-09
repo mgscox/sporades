@@ -1334,6 +1334,45 @@ test("sporades create accepts a local template directory without copying ignored
   });
 });
 
+test("sporades create applies root-anchored local-template ignore rules only at the template root", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "template");
+    await mkdir(path.join(templateDir, "fixtures"), { recursive: true });
+    await mkdir(path.join(templateDir, "client", "fixtures"), { recursive: true });
+    await writeFile(path.join(templateDir, ".gitignore"), "/fixtures\n");
+    await writeFile(path.join(templateDir, "fixtures", "root.ts"), "export const root = true;\n");
+    await writeFile(path.join(templateDir, "client", "fixtures", "nested.ts"), "export const nested = true;\n");
+    await writeFile(path.join(templateDir, "package.json"), JSON.stringify({
+      name: "anchored-template",
+      private: true,
+      type: "module",
+      dependencies: { react: "^19.0.0" },
+    }, null, 2));
+    await writeFile(path.join(templateDir, "sporades.json"), JSON.stringify({
+      name: "anchored-template",
+      template: "blank",
+      client: { framework: "react", toolchain: "vite" },
+    }, null, 2));
+
+    const result = await runCli([
+      "create",
+      "anchored-island",
+      "--template",
+      templateDir,
+      "--no-install",
+      "--no-git",
+    ], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const projectDir = path.join(dir, "anchored-island");
+    await assert.rejects(readFile(path.join(projectDir, "fixtures", "root.ts"), "utf8"), /ENOENT/);
+    assert.equal(
+      await readFile(path.join(projectDir, "client", "fixtures", "nested.ts"), "utf8"),
+      "export const nested = true;\n",
+    );
+  });
+});
+
 test("sporades auth status reports anonymous and Google OAuth configuration state", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

@@ -56,7 +56,7 @@
 // moved out of.
 
 import { assertJsonCompatible, commandError } from "./runtime-errors.js";
-import { PASSWORD_RESET_MAIL_JOB, privilegedAuthUserId } from "./auth-runtime.js";
+import { PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_REQUEST_JOB, privilegedAuthUserId } from "./auth-runtime.js";
 
 // Synchronous access to a Node builtin without an import — see the header. Bound as one namespace
 // and **not destructured**: `bin/sporades.js` is the whole of `src/` in one esbuild scope, so a
@@ -357,16 +357,26 @@ export function createControllableRuntimeClock(initialInstant: string | number |
 
 // Jobs the runtime enqueues for itself. They live in the reserved `_sporades`
 // namespace, which Capsule definitions cannot claim.
-export function runtimeOwnedJobHandlers() {
+export function runtimeOwnedJobHandlers(runtime: { prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null> }) {
   return [
     {
       name: PASSWORD_RESET_MAIL_JOB,
-      handler: async (ctx: LooseRecord, payload: LooseRecord) => ctx.mail.send({
-        to: payload.to,
-        subject: payload.subject,
-        textBody: payload.textBody,
-        htmlBody: payload.htmlBody,
-      }),
+      handler: async (ctx: LooseRecord, payload: LooseRecord) => {
+        return await ctx.mail.send({
+          to: payload.to,
+          subject: payload.subject,
+          textBody: payload.textBody,
+          htmlBody: payload.htmlBody,
+        });
+      },
+    },
+    {
+      name: PASSWORD_RESET_REQUEST_JOB,
+      handler: async (ctx: LooseRecord, payload: LooseRecord) => {
+        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
+        if (!delivery) return;
+        return await ctx.mail.send(delivery);
+      },
     },
   ];
 }

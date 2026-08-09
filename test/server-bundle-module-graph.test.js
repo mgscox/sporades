@@ -403,7 +403,6 @@ const HTTP_SCRIPT = [
   { name: "endpoint wrong method", method: "DELETE", path: "/probe/status" },
   { name: "oauth callback no state", path: "/__sporades/auth/google/callback" },
   { name: "oauth callback unknown state", path: "/__sporades/auth/google/callback?state=abc&code=def" },
-  { name: "oauth callback unknown provider", path: "/__sporades/auth/nosuch/callback?state=abc&code=def" },
   { name: "file upload unknown token", method: "PUT", path: "/__sporades/uploads/not-a-real-upload", body: "payload" },
   { name: "private file unknown id", path: "/__sporades/files/private/not-a-real-file" },
   { name: "public file unknown id", path: "/__sporades/files/public/not-a-real-file" },
@@ -822,6 +821,14 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
     const status = run.http.find((entry) => entry.name === "endpoint status");
     assert.equal(status.status, 202);
     assert.equal(status.body.plainValue, "plain-env-value");
+    const badJson = run.http.find((entry) => entry.name === "endpoint echo bad json");
+    assert.equal(badJson.status, 400);
+    assert.equal(badJson.body.error.code, "INVALID_JSON_REQUEST");
+    for (const [name, code] of [["oauth callback no state", "OAUTH_INVALID_CALLBACK"], ["oauth callback unknown state", "OAUTH_INVALID_STATE"]]) {
+      const callback = run.http.find((entry) => entry.name === name);
+      assert.equal(callback.status, 400, JSON.stringify(callback));
+      assert.equal(callback.body.error.code, code);
+    }
     const signedIn = run.websocket.replies.find((entry, index) => WEBSOCKET_SCRIPT[index].id === "m19");
     assert.equal(signedIn.reply.type, "auth.signIn.result", JSON.stringify(signedIn));
     // Two successful mutations, two open subscriptions, one rebroadcast each.
@@ -834,24 +841,15 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
     // this claim: a step that started failing in *both* bundles compared equal and passed, so this
     // is a property of the runtime that the equivalence harness structurally could not see.
     //
-    // Writing it down turned up four cases that look like status-code bugs rather than deliberate
-    // answers. A body of `{not json` sent with `content-type: application/json` comes back 500
-    // rather than 400, and so do all three OAuth callback rejections — a missing state parameter, an
-    // unrecognised state and an unknown provider are all client errors reported as the Capsule's
-    // fault. Only `endpoint throwing handler` is honestly a 500.
+    // Only a throwing Capsule handler is honestly a 500. Malformed endpoint JSON and invalid OAuth
+    // callbacks are client errors, with the provider-validation case covered in oauth-provider.test.js
+    // using state that genuinely reaches provider validation.
     //
-    // None of that is this ticket's to change. Ticket 05 is a deletion, and "no behavioural change"
-    // cuts both ways — a drive-by status-code fix here would be indistinguishable, in the diff, from
-    // the deletion going wrong. Pinned rather than tolerated, so the set cannot grow quietly, and so
-    // whoever fixes one has to come here and delete its name.
+    // Pinned rather than tolerated, so the set cannot grow quietly.
     assert.deepEqual(
       HTTP_SCRIPT.filter((_step, index) => run.http[index].status >= 500).map((step) => step.name),
       [
-        "endpoint echo bad json",
         "endpoint throwing handler",
-        "oauth callback no state",
-        "oauth callback unknown state",
-        "oauth callback unknown provider",
       ],
     );
     // And which WebSocket steps answer an error frame, pinned the same way and for the same reason.
@@ -1212,6 +1210,7 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL",
   "RESERVED_JOB_NAME_PREFIX",
   "PASSWORD_RESET_MAIL_JOB",
+  "PASSWORD_RESET_REQUEST_JOB",
   "PRIVILEGED_AUDIT_SCHEMA",
   "PRIVILEGED_AUDIT_ACTOR_KINDS",
   "PRIVILEGED_AUDIT_OUTCOMES",

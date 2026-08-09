@@ -903,6 +903,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ),
       ).get(selector) ?? null;
     },
+    deletePasswordResetCode(selector: any) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
+    },
     countPasswordResetCodesForEmail(email: any, now: any) {
       return thenIfPromise(
         this.prepare(

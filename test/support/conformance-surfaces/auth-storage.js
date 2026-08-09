@@ -793,7 +793,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
-    name: "deletePasswordResetCodesForUser removes every Reset code for one Sporades user",
+    name: "deletePasswordResetCode consumes one exact Reset code and the user sweep removes its siblings",
     async run(adapter) {
       for (const selector of ["reset-selector-sweep-a", "reset-selector-sweep-b"]) {
         await adapter.insertPasswordResetCode({
@@ -815,8 +815,15 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       });
       assert.equal(await adapter.countPasswordResetCodesForEmail(SIGNED_IN_USER.email, NOW), 2);
 
+      const consumed = await adapter.deletePasswordResetCode("reset-selector-sweep-a");
+      assert.equal(consumed.changes, 1);
+      assert.equal(await adapter.findPasswordResetCode("reset-selector-sweep-a"), null);
+      assert.equal((await adapter.findPasswordResetCode("reset-selector-sweep-b")).userId, SIGNED_IN_USER.id);
+      assert.equal((await adapter.findPasswordResetCode("reset-selector-sweep-bystander")).userId, BYSTANDER_USER.id);
+      assert.equal((await adapter.deletePasswordResetCode("reset-selector-sweep-a")).changes, 0);
+
       const deleted = await adapter.deletePasswordResetCodesForUser(SIGNED_IN_USER.id);
-      assert.equal(deleted.changes, 2);
+      assert.equal(deleted.changes, 1);
       assert.equal(await adapter.countPasswordResetCodesForEmail(SIGNED_IN_USER.email, NOW), 0);
       assert.equal(await adapter.findPasswordResetCode("reset-selector-sweep-a"), null);
       assert.equal(await adapter.findPasswordResetCode("reset-selector-sweep-b"), null);
