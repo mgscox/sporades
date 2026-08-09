@@ -21709,7 +21709,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.6.6";
+var CLI_VERSION = "0.7.0";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
@@ -23753,6 +23753,8 @@ async function startDevSession(options) {
   const shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    process.stdout.write(`Stopping Sporades dev session...
+`);
     for (const watcher of watchers) {
       watcher.close();
     }
@@ -23995,6 +23997,7 @@ function emitDevEvent(options, data, error = null) {
   switch (data.event) {
     case "started":
       process.stdout.write(`Sporades dev session started at ${data.url}
+Use Ctrl-C to exit
 `);
       return;
     case "rebuild":

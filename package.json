@@ -1,6 +1,6 @@
 {
   "name": "sporades",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "description": "CLI-first platform for building, running, and hosting full-stack Sporades Capsules.",
   "homepage": "https://mgscox.github.io/sporades/",
   "license": "MIT",

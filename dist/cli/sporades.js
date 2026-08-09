@@ -2026,6 +2026,7 @@ async function startDevSession(options) {
         if (shutdownStarted)
             return;
         shutdownStarted = true;
+        process.stdout.write(`Stopping Sporades dev session...\n`);
         for (const watcher of watchers) {
             watcher.close();
         }
@@ -2260,7 +2261,7 @@ function emitDevEvent(options, data, error = null) {
     }
     switch (data.event) {
         case "started":
-            process.stdout.write(`Sporades dev session started at ${data.url}\n`);
+            process.stdout.write(`Sporades dev session started at ${data.url}\nUse Ctrl-C to exit\n`);
             return;
         case "rebuild":
             if (data.status === "started")
