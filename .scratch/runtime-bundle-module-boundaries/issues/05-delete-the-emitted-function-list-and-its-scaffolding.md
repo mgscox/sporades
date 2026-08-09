@@ -68,9 +68,8 @@ entry in the emitted list (batch 2 removed it when the domain moved); no string-
 lookup; not named in any probe or census list. The generated bundle carried it in **4
 occurrences before and 0 after**, which is the check that matters — the `export` and the
 artifact were coupled, so only removing both takes it out of every deployed Capsule. Full
-suite green, count unchanged. (That run was reported as 1,455 tests; `npm test` on this
-branch answers 1,392, and the larger figure came from a differently scoped invocation.
-Measured both ways before and after, and the count was unchanged either way.)
+suite green, count unchanged at 1,455 — which is the count with `SPORADES_POSTGRES_TEST_URL`
+set. Without it `npm test` answers 1,392, because 19 Postgres-gated tests skip.
 
 **The other three are deleted too, as of this ticket.** All were in `src/auth-runtime.ts`
 and all were genuinely unreferenced:
@@ -165,6 +164,14 @@ Full suite `npm test`: **1,387 tests, 1,331 pass, 0 fail, 56 skipped, exit 0**, 
 ticket 05 was 1,392 / 1,336 / 0 / 56, and the difference accounts exactly: −4 for the
 deleted free-binding guard file, −2 for the two carrier tests, +1 for the new census
 coverage test.
+
+**And again against a real Postgres**, because 19 of those 56 skips are gated on
+`SPORADES_POSTGRES_TEST_URL` — including `the bundle reads Postgres state through the
+inspection adapter`, which this ticket rewrote. Run against `postgres:16-alpine`:
+**1,450 tests, 1,413 pass, 0 fail, 37 skipped, exit 0.** The same −5 delta against the
+1,455 recorded earlier in this file, which was itself a Postgres-enabled run. The 37
+that remain are all live-service smoke tests — a disposable Docker acceptance run, the
+SSH Host smokes, and a real Mailjet SMTP send — none of which this change touches.
 
 Three tests are now stronger than what they replaced, because a comparison between
 two artifacts can only ever report that they agreed, never that either was right:
