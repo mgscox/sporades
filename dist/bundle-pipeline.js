@@ -3,7 +3,6 @@ import path from "node:path";
 import { buildClientToolchain, validateClientToolchainInput } from "./client-toolchain.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
-import { createServerBundleSource } from "./templates/server-bundle-template.js";
 import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
@@ -66,18 +65,18 @@ export async function createBundle(projectDir, config, options = {}) {
         serverSource,
         serverModuleSource: serverCapsuleModule,
     };
-    // Which builder assembles the server Bundle. Default is the emitted list, so nothing about a
-    // normal build or a deployment changes; `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` selects the
-    // module-graph builder instead.
+    // The server Bundle, assembled from an ordinary module graph.
     //
-    // The switch exists so the new builder is reachable from the shipping code path rather than from
-    // its own test alone. A builder only ever called directly cannot be exercised by the suites that
-    // drive `bin/sporades.js`, and those suites are the ones that resolve paths the way a released
-    // CLI does — which is exactly where the first version of this went wrong.
-    const serverBundle = process.env.SPORADES_SERVER_BUNDLE_MODULE_GRAPH === "1"
-        ? await createServerBundleModuleSource(serverBundleInputs)
-            .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); })
-        : createServerBundleSource(serverBundleInputs);
+    // There was a second builder here until ticket 05, selected by `SPORADES_SERVER_BUNDLE_MODULE_GRAPH`:
+    // it assembled the same program from `fn.toString()` over a registry of every runtime function,
+    // next to a hand-written preamble that restated the runtime's module constants. That mechanism
+    // decided the runtime's shape rather than serving it — a function could not call an unregistered
+    // helper, could not close over a module constant, and a name that failed to travel was a
+    // `ReferenceError` in a deployed Capsule rather than a build error. Both builders existed at once
+    // through the migration so the new one could be shown equivalent to the old before anything
+    // depended on it; the switch, the registry and the preamble are all gone now (ADR-0041).
+    const serverBundle = await createServerBundleModuleSource(serverBundleInputs)
+        .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); });
     await mkdir(buildDir, { recursive: true });
     const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
         .catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain); });

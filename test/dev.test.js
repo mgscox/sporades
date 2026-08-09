@@ -1322,9 +1322,10 @@ async function withAppleHttpsTunnel(upstreamUrl, publicPort, fn) {
 
 // The module-graph server bundle, driven the way a released CLI drives it.
 //
-// `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` swaps in the builder added alongside the emitted-list one;
-// with the variable unset every other test in this file still exercises the shipping path, so this
-// changes nothing about what deploys.
+// This ran under `SPORADES_SERVER_BUNDLE_MODULE_GRAPH=1` while a second builder existed, and it was
+// the only test in this file that exercised the module graph. Ticket 05 deleted the other builder,
+// so every test here drives this path now and the variable is gone. The test is kept all the same,
+// for the reason below, which no other test in this file covers.
 //
 // It runs through `bin/sporades.js` on purpose. That file is what `scripts/build-bin.mjs` produces,
 // and esbuild rewrites `import.meta.url` for the bundle's entry point only — so a module-graph
@@ -1345,18 +1346,17 @@ test("sporades dev bundles and serves a Capsule built from the runtime module gr
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
 
-    const child = startCli(["dev", "--json"], {
-      cwd: projectDir,
-      env: { SPORADES_SERVER_BUNDLE_MODULE_GRAPH: "1" },
-    });
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
       assert.equal(started.data.event, "started");
 
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
-      // esbuild labels each inlined module; the emitted-list bundle opens with its own banner and
-      // has no such labels. This is the cheapest honest check that the gate actually took effect.
+      // esbuild labels each inlined module with its path. The deleted builder opened with a
+      // `// Sporades server bundle` banner and had no such labels, so this pair still distinguishes
+      // the two — worth keeping as the check that a released CLI resolved the entry under `dist/`
+      // and bundled a graph, rather than falling back to anything else.
       assert.match(serverBundle, /\/\/ dist\/templates\/server-bundle-entry\.js/);
       assert.doesNotMatch(serverBundle, /^\/\/ Sporades server bundle/);
       assert.match(serverBundle, /graph-island/);
