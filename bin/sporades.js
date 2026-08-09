@@ -10297,8 +10297,7 @@ __export(mail_runtime_exports, {
   buildSmtpMessage: () => buildSmtpMessage,
   connectSmtpSocket: () => connectSmtpSocket,
   createMailRuntime: () => createMailRuntime,
-  createMailTransport: () => createMailTransport,
-  mailJsonSize: () => mailJsonSize
+  createMailTransport: () => createMailTransport
 });
 function mailError(code, message, hint) {
   const error = new Error(message);
@@ -10954,21 +10953,6 @@ function serializeMailgunJson(value, label, maximumBytes) {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Keep \`${label}\` within ${maximumBytes} UTF-8 bytes.`);
   }
   return asciiJson;
-}
-function mailJsonSize(value) {
-  const seen = /* @__PURE__ */ new Set();
-  const json = JSON.stringify(value, (_key, candidate) => {
-    if (typeof candidate === "bigint" || typeof candidate === "function" || typeof candidate === "symbol" || candidate === void 0) {
-      throw new Error("not JSON");
-    }
-    if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error("cyclic");
-      seen.add(candidate);
-    }
-    return candidate;
-  });
-  if (typeof json !== "string") throw new Error("not JSON");
-  return Buffer.byteLength(json);
 }
 function normalizeMailAddresses(value, field, required) {
   if (value === void 0 || value === null) {

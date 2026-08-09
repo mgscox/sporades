@@ -9,7 +9,6 @@ export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv
     }>;
     close(): any;
 };
-export declare function mailJsonSize(value: any): number;
 export declare function createMailTransport(smtp: any): {
     send(message: any): Promise<{
         messageId: any;

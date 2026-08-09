@@ -3,25 +3,24 @@
 // `server-runtime-source.ts` whole, and the bodies below are byte-identical to the ones that lived
 // there, so what changed is where they live rather than what they do.
 //
-// **What is exported and what is not.** Twenty-six functions moved; five are exported and
+// **What is exported and what is not.** Twenty-five functions moved; four are exported and
 // twenty-one are private. That is the property carrying a module whole buys: under the emitted list
 // every one of the twenty-one had to be registered in `SERVER_RUNTIME_SOURCE_FUNCTIONS` or become a
 // `ReferenceError` in a deployed Capsule, so "private" was not a thing this domain could be.
 //
-// The five, and who asks for each:
+// The four, and who asks for each:
 //
 //   createMailRuntime    `openDevDatabase`, in the still-monolithic runtime
 //   createMailTransport  `test/mail.test.js`, on the owned-transport boundary
 //   connectSmtpSocket    `test/mail.test.js`, on TLS server-name forwarding
 //   buildSmtpMessage     `test/mail.test.js`, throughout, as the MIME oracle
-//   mailJsonSize         nobody — see below
 //
-// `mailJsonSize` is the odd one. It has no caller anywhere in the repository; it reached the bundle
-// only by being an entry in the emitted list. Left private it would be tree-shaken out of the
-// carried block and stop reaching the shipped artifact, which was confirmed by building the block
-// with it private rather than assumed. It is exported to keep the artifact what it was, not to serve
-// a consumer — deleting dead code is a change this refactor batch should not be making, so it is
-// reported instead.
+// A twenty-sixth function, `mailJsonSize`, was moved with the domain and exported for a reason that
+// was not a consumer: it had no caller anywhere in the repository and reached the bundle only by
+// being an entry in the emitted list, so leaving it private would have let esbuild tree-shake it out
+// of the carried block and change the shipped artifact. Batch 2 exported it to keep that artifact
+// byte-comparable across a no-behaviour-change refactor, and reported it as dead rather than
+// deleting it there. It has since been deleted, and the artifact no longer carries it.
 //
 // Apart from those five `export` keywords and the four `crypto.randomUUID()` call sites explained
 // next, the bodies below are byte-identical to lines 938-2086 of `server-runtime-source.ts` at
@@ -757,22 +756,6 @@ function serializeMailgunJson(value: any, label: string, maximumBytes: number) {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Keep \`${label}\` within ${maximumBytes} UTF-8 bytes.`);
   }
   return asciiJson;
-}
-
-export function mailJsonSize(value: any) {
-  const seen = new Set();
-  const json = JSON.stringify(value, (_key, candidate) => {
-    if (typeof candidate === "bigint" || typeof candidate === "function" || typeof candidate === "symbol" || candidate === undefined) {
-      throw new Error("not JSON");
-    }
-    if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error("cyclic");
-      seen.add(candidate);
-    }
-    return candidate;
-  });
-  if (typeof json !== "string") throw new Error("not JSON");
-  return Buffer.byteLength(json);
 }
 
 function normalizeMailAddresses(value: any, field: string, required: boolean) {
