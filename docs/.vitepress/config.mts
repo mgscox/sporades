@@ -51,7 +51,13 @@ export default defineConfig({
       {
         text: "Reference",
         items: [
-          { text: "Feature reference", link: "/guide/reference" },
+          { text: "Feature reference index", link: "/guide/reference" },
+          { text: "Projects and configuration", link: "/reference/projects-and-configuration" },
+          { text: "Server runtime", link: "/reference/server-runtime" },
+          { text: "Jobs and schedules", link: "/reference/jobs-and-schedules" },
+          { text: "Client, auth, and preferences", link: "/reference/client-auth-and-preferences" },
+          { text: "Files and realtime", link: "/reference/files-and-realtime" },
+          { text: "Operations and hosting", link: "/reference/operations-and-hosting" },
           { text: "Architecture", link: "/architecture" },
           { text: "Runtime layout", link: "/runtime-layout" },
           { text: "Host server installation", link: "/server-installation" },

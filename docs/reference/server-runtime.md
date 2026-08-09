@@ -1,0 +1,475 @@
+# Server Runtime Reference
+
+Tables, queries, mutations, authorization, Server env, mail, middleware, actors, and Custom endpoints.
+
+[Back to the feature reference index](../guide/reference.md).
+
+## Building the Server Side
+
+### Define Tables
+
+Tables are declared inside `schema`:
+
+```ts
+import { Date, Json, Number, Reference, String, table } from "sporades/server";
+
+schema: {
+  projects: table({
+    name: String(),
+    budget: Number().default(0),
+    settings: Json().default({}),
+    ownerId: String(),
+  }),
+  tasks: table({
+    projectId: Reference("projects"),
+    title: String(),
+    dueAt: Date(),
+  }),
+}
+```
+
+Every row automatically gets `id`, `createdAt`, and `updatedAt`. App code does
+not set or update those fields.
+
+Use capitalized field builders: `String()`, `Boolean()`, `Number()`, `Date()`,
+`Json()`, and `Reference("tableName")`.
+
+Fields with `.default(value)` get that value when a write omits the field. A
+non-null default is also stored as a SQLite `NOT NULL DEFAULT` constraint, so
+fresh tables and migrated tables enforce it the same way.
+
+Fields without defaults are nullable at the storage and table API boundary. If
+you add one to a table that already has rows, existing rows read the new field
+as `null`; fresh tables use the same nullable column definition. Validate
+required business fields in your mutations before calling `ctx.db`.
+
+Tables can also declare ACL rules next to their fields. ACL rules are an
+invisible accept/reject authorization policy around normal `ctx.db` table
+operations; app code still reads and writes through the table API instead of
+calling permission helpers directly. Rules may be sync or async functions.
+`read` applies to row reads. `write` is the fallback for `insert`, `update`,
+and `delete` unless that operation has its own rule. Missing rules allow the
+operation by default.
+
+```ts
+schema: {
+  notes: table({
+    body: String(),
+    ownerId: String(),
+  }).acl({
+    read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+    write: async ({ previous, next, ctx }) => {
+      const ownerId = next?.ownerId ?? previous?.ownerId;
+      return ownerId === ctx.auth.userId;
+    },
+  }),
+}
+```
+
+Read ACLs filter rows after fetch in the current implementation, so denied rows
+are simply absent from query results. Write ACLs receive previous and next row
+state: insert receives `previous = null`, update receives both states, and
+delete receives `next = null`.
+
+ACL rules receive a constrained `ctx.acl` context for bounded read-only policy
+checks. `ctx.acl.db.get()` and `ctx.acl.db.exists()` can inspect Capsule app
+tables by stable table name; they cannot access runtime-owned tables such as
+auth, system metadata, logs, or raw storage tables. `ctx.acl.storage.get()` and
+`ctx.acl.storage.exists()` expose stable storage metadata resources such as
+`files`, resolved by File ID or absolute File path. Storage helpers return
+logical File metadata such as File ID, absolute File path, owner, bucket,
+status, timestamps, size, MIME type, original name, and version; they do not
+expose filesystem paths, object keys, Object buckets, runtime table names, or
+generated read URLs.
+
+When an ACL denies a write, clients receive an opaque `DENIED` error rather than
+policy internals. Sporades writes structured internal `acl.denied` log events
+with table name, operation, declared rule, actor shape, row IDs, and non-secret
+field names. `sporades doctor` may later warn about missing ACLs or
+open-to-the-world data; missing ACLs are not deny-by-default today.
+
+### Read With Queries
+
+Queries receive `ctx` and return serializable data:
+
+```ts
+queries: {
+  myProjects: query((ctx) =>
+    ctx.db.projects
+      .where("ownerId", ctx.auth.userId)
+      .orderBy("createdAt", "desc")
+      .all(),
+  ),
+}
+```
+
+Common table operations are:
+
+```ts
+ctx.db.projects.where("ownerId", ctx.auth.userId)
+ctx.db.projects.orderBy("createdAt", "desc")
+ctx.db.projects.limit(20)
+ctx.db.projects.get()
+ctx.db.projects.all()
+```
+
+Prefer filtering by `ctx.auth.userId` for per-user data. That keeps privacy in
+the server code where it belongs.
+
+### Change Data With Mutations
+
+Mutations receive `ctx` plus the arguments passed from the client:
+
+```ts
+mutations: {
+  createProject: mutation((ctx, input) => {
+    const name = String(input?.name ?? "").trim();
+    if (!name) {
+      throw new Error("Project name is required.");
+    }
+
+    return ctx.db.projects.insert({
+      name,
+      ownerId: ctx.auth.userId,
+      budget: 0,
+      settings: {},
+    });
+  }),
+
+  renameProject: mutation((ctx, id: string, nextName: string) => {
+    const project = ctx.db.projects.where("ownerId", ctx.auth.userId).where("id", id).get();
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+
+    return ctx.db.projects.update(id, { name: nextName.trim() });
+  }),
+}
+```
+
+Throw normal errors for user-facing failures. When an error has a `hint`
+property, Sporades includes it in structured error output.
+
+### Gate Handlers With requireAuth
+
+`requireAuth` is the canonical way to gate a handler on authentication. Call it
+at the top of any query, mutation, endpoint, or app message handler instead of
+hand-writing `ctx.auth` checks:
+
+```ts
+import { capsule, endpoint, mutation, query, requireAuth } from "sporades/server";
+
+export default capsule({
+  queries: {
+    myProjects: query((ctx) => {
+      const auth = requireAuth(ctx);
+      return ctx.db.projects.where("ownerId", auth.userId).all();
+    }),
+  },
+  mutations: {
+    deleteAccountData: mutation((ctx) => {
+      // Reject guest sessions too: require a linked (non-guest) user.
+      const auth = requireAuth(ctx, { linked: true });
+      ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
+        ctx.db.projects.delete(project.id);
+      });
+    }),
+  },
+  endpoints: {
+    profile: endpoint({ method: "GET", path: "/profile" }, (ctx) => ({
+      status: 200,
+      body: requireAuth(ctx),
+    })),
+  },
+});
+```
+
+On success `requireAuth(ctx)` returns the session's `AuthContext`, so `userId`
+and profile fields are available without re-reading `ctx.auth`. On failure it
+throws a structured auth error that reaches the client through the normal
+handler error pipeline with the stable `UNAUTHENTICATED` code:
+
+```json
+{ "ok": false, "error": { "code": "UNAUTHENTICATED", "message": "Unauthenticated.", "hint": "Sign in and retry the request." } }
+```
+
+Custom endpoints reply with HTTP `401` and the same structured error body.
+Clients can route users to sign-in on the `UNAUTHENTICATED` code alone.
+
+`requireAuth(ctx, { linked: true })` additionally requires a linked, non-guest
+user, so Anonymous-session guests cannot perform account-level actions.
+
+The public denial text stays opaque about server internals. Each denial also
+emits a structured `auth.denied` platform log entry with diagnostic context
+(handler kind, required auth level, and actor auth state) — inspect it with
+`sporades logs --json`.
+
+### Use Sealed Server Env
+
+A Sealed Server Environment uses public/private keys to encrypt environment
+variables, reducing exposure risk when copying data to and from a Host server.
+It does not require any local keychain or secure storage, and is almost
+transparent to development operations once enabled.
+
+#### Create and Import Values
+
+Use Sealed Server env for server-only values:
+
+```sh
+sporades env init
+```
+
+To migrate existing plaintext values, put them in `.env.sporades.server` and
+import them:
+
+```text
+OPENAI_API_KEY=sk-...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+```sh
+sporades env import --file .env.sporades.server
+sporades env status --json
+```
+
+Set or replace one value without putting it in an argument or temporary file:
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | sporades env set OPENAI_API_KEY --stdin
+```
+
+`env set` removes one final LF or CRLF normally added by line-oriented input,
+then preserves and re-seals every other existing value. If no sealed envelope
+exists yet, it preserves values from `.env.sporades.server` while creating the
+sealed envelope. It never prints the value.
+
+Test for a key without decrypting or printing it:
+
+```sh
+if sporades env has OPENAI_API_KEY; then
+  echo "OpenAI is configured"
+fi
+```
+
+`env has` exits `0` when the key is defined and `1` when it is absent. With
+`--json`, it emits `{ "name": "...", "defined": true|false }` inside the
+standard result envelope and keeps the same exit-status contract.
+
+#### Read Values in Server Code
+
+Read them from `ctx.env`:
+
+```ts
+endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
+  const secret = ctx.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) {
+    throw Object.assign(new Error("Billing is not configured."), {
+      hint: "Import STRIPE_WEBHOOK_SECRET with `sporades env import`.",
+    });
+  }
+});
+```
+
+Restart a running Dev session after importing or setting Sealed Server env.
+
+#### Export or Import an Envelope
+
+For portability, export the sealed envelope without private keys or plaintext
+values:
+
+```sh
+sporades env export --output sealed-server-env.json --json
+```
+
+Import an exported sealed envelope explicitly with:
+
+```sh
+sporades env import --sealed --file sealed-server-env.json --json
+```
+
+#### Push to a Hosted Capsule
+
+For Hosted Capsules, the Host server owns a per-Capsule Sealed Server env
+keypair. The CLI reads only the Hosted Capsule public key and fingerprint,
+re-encrypts local source values to that public key, and pushes only the sealed
+envelope.
+
+```sh
+sporades host push --host personal --subname team-notes --json
+```
+
+`sporades host push` decrypts the local Sealed Server env with the local
+private key, re-encrypts the values to the Hosted Capsule's current Host public
+key, and includes `.sporades/sealed-server-env/server-env.sealed.json` in the
+release archive. The release archive is copied to the Host server over SSH/SCP
+and installed under the Hosted Capsule's immutable `releases/<release-id>/`
+directory.
+
+Sporades stores local sealed material under `.sporades/sealed-server-env/`,
+which is ignored Runtime state. Host private keys stay in Host-owned
+`data/sealed-server-env/keys/` state and are mounted read-only when a release
+needs the matching fingerprint. Host private keys never leave the Host server,
+plaintext values never cross the local-to-Host boundary, and exported sealed
+envelopes never include private keys.
+
+`sporades env reencrypt --host personal --subname team-notes --json` is still
+available for explicit inspection and CI preparation. It uses the same
+public-key-only Host model and does not print plaintext values or private keys.
+
+#### Recover from Lost Keys
+
+Because those files do not live in the repository, a different developer machine
+or Host server may not have access to them (or they may be lost if local
+checkout or Host storage is deleted). Sporades creates keypairs automatically,
+but a new keypair cannot decrypt envelopes written for an old one.
+
+Recovery is achieved by re-sealing known values:
+
+- If local sealed key material is lost but you still have `.env.sporades.server`
+  or another source of truth for the values, run `sporades env import` again.
+- If Host private key material is lost, old Host-encrypted envelopes are
+  unrecoverable without that private key. Run `sporades host rotate-key`, then
+  push a release re-sealed from local Sealed Server env, legacy Server env
+  imported explicitly, or another source-of-truth value store.
+- If all private keys and all plaintext/source-of-truth values are gone, the
+  sealed values cannot be recovered. Regenerate the real provider secrets, add
+  them back to Server env, import, and push a new Host-encrypted release.
+
+### Send SMTP mail
+
+`ctx.mail.send(...)` accepts one provider-independent message with `to`,
+optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
+`htmlBody`, and an optional validated `provider` object. It returns a stable
+`{ messageId, accepted, rejected }` result. When `mail.smtp` is omitted from
+`sporades.json`, calls fail with `MAIL_DISABLED`.
+
+The same Server Bundle and configuration run unchanged in Dev sessions, local
+Container sessions, and Hosted Capsules. Credential values remain in Sealed
+Server env; configuration stores only their key names. Connection and socket
+timeouts are bounded, certificate verification is enabled by default, and
+runtime shutdown closes active SMTP sockets.
+
+Postmark and Mailgun fields become their documented, validated SMTP MIME
+headers. SMTP2GO and other portable vendors use validated custom `X-*` headers.
+The `provider` object is not an arbitrary vendor API payload and cannot alter
+addressing, MIME content, credentials, or transport behavior. No provider SDK
+is used. See [SMTP configuration and provider examples](../guide/configuration.md#smtp-mail).
+
+Delivery logs contain only the vendor, recipient counts, latency, a stable
+result category, and an opaque per-attempt mail identity. They exclude
+addresses, subjects, bodies, provider values, provider message IDs,
+credentials, Server env, and raw authentication.
+
+Direct SMTP delivery is external and cannot roll back with a failed database
+Transaction. Use a [durable mail Job](../guide/configuration.md#durable-mail-with-jobs)
+for important notifications, and design application-level idempotency for the
+Job Queue's at-least-once execution.
+
+### Add Middleware
+
+Use middleware when multiple handlers need the same derived context or guard:
+
+```ts
+export default capsule({
+  middleware: [
+    (ctx) => ({ ...ctx, tenant: ctx.env.TENANT }),
+    (ctx) => {
+      if (!ctx.tenant) {
+        throw Object.assign(new Error("Missing tenant."), {
+          hint: "Import TENANT with `sporades env import`.",
+        });
+      }
+      return ctx;
+    },
+  ],
+});
+```
+
+Middleware runs for queries, mutations, endpoints, and app messages.
+
+Query, mutation, endpoint, message, middleware, and mutation hook handlers may
+return Promises. Sporades awaits them before sending WebSocket results, writing
+HTTP endpoint responses, committing mutation transactions, or refreshing query
+subscriptions.
+
+### Choosing a server actor
+
+Most server handlers should use the current user from `ctx.auth`. That identity
+is the live Sporades session behind the request or App message, including
+Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
+file ownership, and authorization checks.
+
+The Job Queue uses a captured user identity for background work that should stay
+accountable to the user who authorized it after the original request ends. That
+is different from system-owned work.
+
+Use the Privileged server role only for trusted userless work that must run
+inside the Capsule without pretending to be a Sporades user:
+
+```ts
+mutations: {
+  repairIndex: mutation(async (ctx) => {
+    return await ctx.privileged.run({
+      operation: "search.repairIndex",
+      targetResourceKind: "capsule-db",
+      metadata: { source: "operator-action" },
+    }, async (privilegedCtx) => {
+      const rows = privilegedCtx.db.documents.all();
+      return { repaired: rows.length };
+    });
+  }),
+}
+```
+
+`ctx.privileged.run(...)` is available only in trusted server contexts: queries,
+mutations, Custom endpoints, App messages, context middleware, and supported
+mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
+`"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
+Capsule DB and File operations through the normal runtime boundaries.
+
+Privileged server role is not a Capsule role, app admin, Team, user, session,
+service account, or browser credential. It does not make downstream middleware
+or handlers privileged, and leaked derived contexts become ineffective after the
+callback finishes. Table ACL rules and `sporades/client` cannot call it.
+
+Every privileged run emits Privileged audit events with `started`, `completed`
+or `errored`, and `finished` outcomes. If the signal is already aborted, the
+callback does not run and the runtime reports `Privileged run aborted`.
+
+Jobs may also execute as the Privileged server role when trusted server code
+explicitly enqueues system-owned work. That does not turn the Job into a Capsule
+role, app admin, user session, or browser authority; the Job records its
+Privileged server role actor separately from who enqueued it.
+
+## Custom HTTP Endpoints
+
+Most app behavior should use queries and mutations. Use endpoints for HTTP
+integrations such as webhooks:
+
+```ts
+import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  endpoints: {
+    webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
+      ctx.log.info("Webhook received", {
+        path: ctx.request.path,
+        body: ctx.request.body,
+      });
+
+      return {
+        status: 202,
+        headers: { "x-sporades-endpoint": "accepted" },
+        body: {
+          received: true,
+          userId: ctx.auth.userId,
+        },
+      };
+    }),
+  },
+});
+```
+
+Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
+`ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
+query parameters, and parsed body data.

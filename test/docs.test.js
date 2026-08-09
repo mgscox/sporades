@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createMarkdownRenderer } from "vitepress";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,6 +25,12 @@ async function readProjectFile(relativePath) {
       "docs/guide/hosting.md",
       "docs/guide/troubleshooting.md",
       "docs/guide/reference.md",
+      "docs/reference/projects-and-configuration.md",
+      "docs/reference/server-runtime.md",
+      "docs/reference/jobs-and-schedules.md",
+      "docs/reference/client-auth-and-preferences.md",
+      "docs/reference/files-and-realtime.md",
+      "docs/reference/operations-and-hosting.md",
     ];
     return (await Promise.all(files.map((file) => readFile(path.join(repoRoot, file), "utf8")))).join("\n");
   }
@@ -70,6 +77,47 @@ async function runShell(scriptPath, options) {
     });
   });
 }
+
+test("the feature reference is split by lookup intent behind a compatible index", async () => {
+  const [index, projects, server, jobs, client, realtime, operations] = await Promise.all([
+    readProjectFile("docs/guide/reference.md"),
+    readProjectFile("docs/reference/projects-and-configuration.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+    readProjectFile("docs/reference/client-auth-and-preferences.md"),
+    readProjectFile("docs/reference/files-and-realtime.md"),
+    readProjectFile("docs/reference/operations-and-hosting.md"),
+  ]);
+  const markdown = await createMarkdownRenderer(path.join(repoRoot, "docs"), { html: false });
+  const renderedIndex = markdown.render(index);
+
+  for (const legacyAnchor of [
+    "create-a-capsule",
+    "building-the-server-side",
+    "current-user-jobs",
+    "auth-workflows",
+    "file-uploads",
+    "hosted-capsules",
+    "troubleshooting",
+  ]) assert.match(renderedIndex, new RegExp(`id=["']${legacyAnchor}["']`));
+
+  assert.match(projects, /authoritative client capability matrix/);
+  assert.match(server, /invisible accept\/reject authorization policy/);
+  assert.match(jobs, /Inspect Jobs from the CLI/);
+  assert.match(client, /Configure Microsoft sign-in/);
+  assert.match(realtime, /User Journey Tracker/);
+  assert.match(operations, /Sporades Doctor/);
+});
+
+test("README documentation links resolve from the npm package page", async () => {
+  const readme = await readProjectFile("README.md");
+  assert.doesNotMatch(readme, /\]\(docs\/[A-Za-z0-9_./-]+\.md(?:#[^)]+)?\)/);
+  for (const route of ["user-guide", "architecture", "runtime-layout", "server-installation", "PRD", "ROADMAP"]) {
+    assert.match(readme, new RegExp(`https://mgscox\\.github\\.io/sporades/${route}`));
+  }
+  assert.match(readme, /https:\/\/mgscox\.github\.io\/sporades\/guide\/reference/);
+  assert.match(readme, /https:\/\/mgscox\.github\.io\/sporades\/llms\.txt/);
+});
 
 test("canonical docs describe the implemented platform scope", async () => {
   const [prd, context, endpointAdr, envAdr, fieldBuilderAdr, authAdr, scaffoldTemplate] = await Promise.all([
@@ -224,7 +272,7 @@ test("published docs and API describe production SMTP mail parity", async () => 
     readProjectFile("docs/architecture.md"),
     readProjectFile("docs/guide/configuration.md"),
     readProjectFile("docs/guide/server.md"),
-    readProjectFile("docs/guide/reference.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
     readProjectFile("src/types/server.d.ts"),
     readProjectFile("docs/api/types/server.MailApi.html"),
     readProjectFile("docs/api/types/server.MailSendInput.html"),

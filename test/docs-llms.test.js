@@ -3,7 +3,21 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { generateLlmsDocumentation } from "../scripts/generate-llms-docs.mjs";
+import { generateLlmsDocumentation, SPORADES_LLMS_SECTIONS } from "../scripts/generate-llms-docs.mjs";
+
+test("LLM documentation publishes the split feature reference as focused sources", () => {
+  const reference = SPORADES_LLMS_SECTIONS.find(({ heading }) => heading === "Reference");
+  assert.deepEqual(reference.entries.map(({ path }) => path).filter(Boolean), [
+    "guide/reference.md",
+    "reference/projects-and-configuration.md",
+    "reference/server-runtime.md",
+    "reference/jobs-and-schedules.md",
+    "reference/client-auth-and-preferences.md",
+    "reference/files-and-realtime.md",
+    "reference/operations-and-hosting.md",
+    "sdk-documentation.md",
+  ]);
+});
 
 test("LLM documentation publishes a curated manifest and release-local Markdown sources", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-llms-"));

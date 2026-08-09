@@ -554,7 +554,7 @@ test("denied ACL reads emit structured diagnosis logs without exposing filtered 
 });
 
 test("ACL user guide documents policy behavior and storage helper boundaries", async () => {
-  const guide = await readFile(new URL("../docs/guide/reference.md", import.meta.url), "utf8");
+  const guide = await readFile(new URL("../docs/reference/server-runtime.md", import.meta.url), "utf8");
 
   assert.match(guide, /invisible accept\/reject authorization policy/);
   assert.match(guide, /Missing rules allow the\s+operation by default/);

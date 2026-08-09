@@ -57,6 +57,10 @@ sporades host push --restart
 
 - [User guide](https://mgscox.github.io/sporades/user-guide): build, run, inspect, deploy, auth,
   preferences, files, endpoints, messages, and common workflows.
+- [Feature reference](https://mgscox.github.io/sporades/guide/reference): exhaustive contracts and
+  command lookup, split into focused topic pages.
+- [LLM documentation manifest](https://mgscox.github.io/sporades/llms.txt): release-matched Markdown
+  sources for agents and other documentation tools.
 - [Architecture](https://mgscox.github.io/sporades/architecture): platform model, runtime modes, Host
   server design, and ownership boundaries.
 - [Runtime layout](https://mgscox.github.io/sporades/runtime-layout): generated files, mounts, Host
@@ -255,8 +259,9 @@ sporades host push --host personal --subname notes --verify --json
 
 Sporades is early, active platform work. It is useful for fast prototypes,
 agent-driven app loops, local production-like testing, and private hosted
-Capsules, but it is not trying to be a full production platform (yet). Check the 
-[Roadmap](docs/ROADMAP.md) for in-flight and planned features.
+Capsules, but it is not trying to be a full production platform (yet). Check the
+[Roadmap](https://mgscox.github.io/sporades/ROADMAP) for in-flight and planned
+features.
 
 The current focus is keeping the authoring surface small, the runtime
 inspectable, and the operational path friendly to both developers and agents.

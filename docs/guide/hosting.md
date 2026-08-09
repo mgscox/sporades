@@ -4,7 +4,8 @@ Hosting has two separate jobs: provision a Host server once, then publish and
 operate Capsules on it repeatedly.
 
 For provisioning, follow [Host server installation](../server-installation.md).
-For normal Capsule lifecycle commands, use the [Hosted Capsules reference](./reference.md#hosted-capsules).
+For normal Capsule lifecycle commands, use the
+[Hosted Capsules reference](../reference/operations-and-hosting.md#hosted-capsules).
 
 The normal publishing sequence is register once, import or seal Server env,
 push a release, then verify health and logs. Use structured Host commands so the

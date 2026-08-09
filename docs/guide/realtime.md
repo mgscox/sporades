@@ -2,8 +2,8 @@
 
 Sporades has two deliberately different realtime tools:
 
-- [App messages](./reference.md#app-messages) carry application-defined events over the client transport.
-- [User Journey Tracker](./reference.md#user-journey-tracker) publishes explicitly consented, transient current activity.
+- [App messages](../reference/files-and-realtime.md#app-messages) carry application-defined events over the client transport.
+- [User Journey Tracker](../reference/files-and-realtime.md#user-journey-tracker) publishes explicitly consented, transient current activity.
 
 Journey state is not analytics, an audit log, durable preferences, or an
 authoritative server input. Choose it only when the question is “what are

@@ -13,8 +13,9 @@ Sealed Server env, use the current actor by default, and enter the Privileged
 server role only for explicitly userless system work.
 
 Work through [tables, queries, mutations, `requireAuth`, Server env, middleware,
-and actor selection](./reference.md#building-the-server-side). For inbound HTTP
-integrations, continue with [Custom HTTP endpoints](./reference.md#custom-http-endpoints).
+and actor selection](../reference/server-runtime.md#building-the-server-side).
+For inbound HTTP integrations, continue with
+[Custom HTTP endpoints](../reference/server-runtime.md#custom-http-endpoints).
 
 Keep browser concerns in the [client](./client.md), and use [Jobs and Schedules](./background-work.md) for durable background work.
 

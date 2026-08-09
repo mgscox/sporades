@@ -12,6 +12,10 @@ Declare `schedule()` only for recurrence. Pin an IANA timezone when wall-clock
 meaning must remain consistent across Dev, Container, and Hosted environments.
 Schedules enqueue Jobs; retry and execution semantics remain Job Queue semantics.
 
-Read the [Job Queue and Schedule walkthrough](./reference.md#current-user-jobs), then use the [actor-selection guidance](./reference.md#choosing-a-server-actor) to choose a captured current user or the Privileged server role.
+Read the
+[Job Queue and Schedule walkthrough](../reference/jobs-and-schedules.md#current-user-jobs),
+then use the
+[actor-selection guidance](../reference/server-runtime.md#choosing-a-server-actor)
+to choose a captured current user or the Privileged server role.
 
 Use `sporades jobs` and `sporades schedules` for bounded JSON inspection of an active Dev session; equivalent `deploy` and `host` commands inspect other environments.

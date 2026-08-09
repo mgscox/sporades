@@ -15,4 +15,8 @@ sporades doctor --session dev --json
 Run `sporades deploy` only after the Dev loop is healthy. Reset commands delete
 owned runtime or service state deliberately; inspection commands should come first.
 
-Continue with [inspection and debugging](./reference.md#inspecting-and-debugging), [local Container sessions](./reference.md#local-container-sessions), [Container SSH](./reference.md#container-ssh-access), and [Sporades Doctor](./reference.md#sporades-doctor).
+Continue with
+[inspection and debugging](../reference/operations-and-hosting.md#inspecting-and-debugging),
+[local Container sessions](../reference/operations-and-hosting.md#local-container-sessions),
+[Container SSH](../reference/operations-and-hosting.md#container-ssh-access), and
+[Sporades Doctor](../reference/operations-and-hosting.md#sporades-doctor).

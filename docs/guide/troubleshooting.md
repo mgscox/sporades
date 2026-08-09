@@ -12,4 +12,7 @@ toolchain setup; startup failures belong to runtime configuration or services;
 route failures belong to the Container or Host lifecycle. Do not erase local
 state merely because a release or route is unhealthy.
 
-See [Troubleshooting](./reference.md#troubleshooting) for known symptoms and [local operations](./local-operations.md) for inspection commands. For filesystem ownership and mount questions, consult the [runtime layout](../runtime-layout.md).
+See [Troubleshooting](../reference/operations-and-hosting.md#troubleshooting)
+for known symptoms and [local operations](./local-operations.md) for inspection
+commands. For filesystem ownership and mount questions, consult the
+[runtime layout](../runtime-layout.md).

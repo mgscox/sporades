@@ -61,8 +61,8 @@ Keep application source out of `.sporades/`; that directory is replaceable
 runtime state.
 
 See the detailed reference for
-[project files and configuration](./reference.md#how-sporades-projects-fit-together)
+[project files and configuration](../reference/projects-and-configuration.md#how-sporades-projects-fit-together)
 and the
-[authoritative framework/toolchain matrix](./reference.md#create-a-capsule).
+[authoritative framework/toolchain matrix](../reference/projects-and-configuration.md#create-a-capsule).
 
 Next: [build the server](./server.md) or [build the client](./client.md).

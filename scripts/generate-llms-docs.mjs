@@ -34,7 +34,13 @@ export const SPORADES_LLMS_SECTIONS = [
   {
     heading: "Reference",
     entries: [
-      { title: "Feature reference", path: "guide/reference.md", description: "Exhaustive feature contracts and command lookup." },
+      { title: "Feature reference index", path: "guide/reference.md", description: "Compatibility index and topic map for exhaustive lookup." },
+      { title: "Projects and configuration reference", path: "reference/projects-and-configuration.md", description: "Capsule creation, project layout, configuration, security policy, database services, and Dev sessions." },
+      { title: "Server runtime reference", path: "reference/server-runtime.md", description: "Tables, queries, mutations, authorization, Server env, mail, middleware, actors, and endpoints." },
+      { title: "Jobs and schedules reference", path: "reference/jobs-and-schedules.md", description: "Durable background work, Schedule behavior, and CLI inspection." },
+      { title: "Client, authentication, and preferences reference", path: "reference/client-auth-and-preferences.md", description: "Subscribed client state, authentication workflows, provider configuration, and preferences." },
+      { title: "Files and realtime reference", path: "reference/files-and-realtime.md", description: "File operations, App messages, and consented transient User Journey state." },
+      { title: "Operations and hosting reference", path: "reference/operations-and-hosting.md", description: "Inspection, Container sessions, Hosted Capsules, Doctor, workflows, and troubleshooting." },
       { title: "SDK documentation", path: "sdk-documentation.md", description: "Map of conceptual guides, generated API reference, and source comments." },
     ],
   },
