@@ -687,7 +687,7 @@ orchestration, and the Host registry owns Hosted Capsule truth.
 
 ## Related documentation
 
-- [Repository context](../../CONTEXT.md)
+- [Repository context](https://github.com/mgscox/sporades/blob/main/CONTEXT.md)
 - [Product requirements](../PRD.md)
 - [Host server registry ADR](../adr/0016-host-server-registry-authoritative.md)
 - [Sporades feature reference](../guide/reference.md)
