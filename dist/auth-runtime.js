@@ -2110,9 +2110,6 @@ function isExpiredSession(row) {
 export function createSessionToken() {
     return nodeCryptoModule.randomBytes(32).toString("base64url");
 }
-async function refreshSession(database, token) {
-    return await refreshSessionOnAdapter(database.adapter, token);
-}
 export async function refreshSessionOnAdapter(sqlite, token) {
     const now = new Date().toISOString();
     const expiresAt = sessionExpiresAt(now);
@@ -2342,19 +2339,20 @@ export function authProvidersForClient(authConfig, origin = null) {
 // **Three are exported and four are private.** `signUpWithEmail` and `signInWithEmail` are called by
 // `createWebSocketHub` and by the database-adapter and password-reset suites;
 // `linkProviderIdentity` by `routeSporadesAuth`, which is still in the monolith behind the HTTP
-// layer, and by three OAuth suites — which resolved it through `SERVER_RUNTIME_SOURCE_FUNCTIONS.find`
-// until this batch and would have gone `undefined` rather than red. Exporting it is also what keeps
-// `test/oauth-provider.test.js`'s "one internal completion and linking seam" assertion true: that
-// test unions the emitted list with `Object.keys(authRuntime)`, so the name has to arrive here as an
-// export as it leaves the list.
+// layer, and by three OAuth suites — which resolved it through the emitted function list until this
+// batch and would have gone `undefined` rather than red. Exporting it is also what keeps
+// `test/oauth-provider.test.js`'s "one internal completion and linking seam" assertion true.
 //
 // `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` are private because only the five above
-// call them. `rotateSession` and `moveSessionToUser` are private for a stronger reason: **nothing in
-// the repository names them at all.** They were reachable only by being entries in the emitted list,
-// and a repo-wide scan over `src/`, `test/`, `scripts/` and `docs/` returns nothing but this
-// paragraph. Left private and unreferenced, esbuild drops them from the carried block — which is
-// correct, and worth stating rather than discovering: they are the two names this batch removes from
-// a deployed Capsule's top-level scope, and no caller anywhere loses a binding.
+// call them.
+//
+// **`rotateSession` and `moveSessionToUser` were a third and fourth private function here, and
+// ticket 05 deleted them.** Batch 3 found that nothing in the repository named either one: they were
+// reachable only by being entries in the emitted list, so making them private already dropped them
+// from a deployed Capsule's top-level scope, and a repo-wide scan over `src/`, `test/`, `scripts/`
+// and `docs/` returned nothing but the paragraph describing them. A migration batch must not change
+// what ships, so they were reported and left standing; the deletion ticket removed the declarations
+// too, along with `refreshSession`, which was dead in the same way.
 // ---------------------------------------------------------------------------------------------
 export async function signUpWithEmail(database, session, provider, credentials) {
     if (provider !== "email") {
@@ -2551,18 +2549,12 @@ export async function linkProviderIdentity(database, session, provider, profile)
         return { ok: true, auth };
     });
 }
-async function rotateSession(database, session, userId, provider = session.auth.provider) {
-    return await database.adapter.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
-}
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
     const now = new Date().toISOString();
     const token = createSessionToken();
     await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
     await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
     return token;
-}
-async function moveSessionToUser(database, session, userId, provider = session.auth.provider) {
-    return await database.adapter.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
 }
 async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
     const now = new Date().toISOString();

@@ -12,15 +12,23 @@ Capsule module travels as a base64 `data:` URL rather than as a second file
 beside the Bundle.
 
 This is a self-containment requirement, not a requirement about how the Bundle
-is produced. Assembling it from `Function.prototype.toString()` over
-`SERVER_RUNTIME_SOURCE_FUNCTIONS` satisfied it by construction, because
-concatenating source text resolves nothing — but so does bundling, provided the
-output's only external imports are builtins. Building the Bundle from a real
-module graph with esbuild is therefore compatible with the constraint, and
-`createServerBundleModuleSource` enforces it from esbuild's metafile at build
-time so that it holds by construction there too. A specifier that merely
-*resolves* is not enough: a URL import resolves and builds cleanly, and would
-still be a fetch from a read-only container.
+is produced, and that distinction is the whole reason this ADR exists separately
+from ADR-0041. Assembling the Bundle from `Function.prototype.toString()` over a
+registry of every runtime function satisfied the requirement by construction,
+because concatenating source text resolves nothing — but so does bundling,
+provided the output's only external imports are builtins. Building the Bundle
+from a real module graph with esbuild is therefore compatible with the
+constraint, and `createServerBundleModuleSource` enforces it from esbuild's
+metafile at build time so that it holds by construction there too. A specifier
+that merely *resolves* is not enough: a URL import resolves and builds cleanly,
+and would still be a fetch from a read-only container.
+
+The `toString()` mechanism is gone as of ticket 05 and the module graph is the
+only builder, so the paragraph above is now history rather than a comparison
+between two live options. It is kept because the reasoning is what licensed the
+change: anyone proposing a third way to produce the Bundle has to clear the same
+bar, and "the old one satisfied this by accident of its shape" is the thing worth
+remembering about it.
 
 No second constraint of this kind was found. The Bundle is written once and
 read only as an opaque file: nothing inspects its text, no size limit applies to

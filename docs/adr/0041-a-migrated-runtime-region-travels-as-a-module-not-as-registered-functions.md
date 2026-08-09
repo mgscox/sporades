@@ -1,5 +1,51 @@
 # A migrated runtime region travels as a module, not as registered functions
 
+## Status
+
+**Accepted, and superseded in its mechanism by ticket 05.** The decision below
+answers a question that no longer arises: *while both bundlers exist, how does a
+region that has left the monolith reach the bundle that still ships?* There is one
+bundler now. Everything specific to that transitional answer is deleted —
+`createServerBundleSource`, `MIGRATED_RUNTIME_MODULES`, the `buildSync` IIFE
+carrier and the top-level destructuring of its exports, the constant preamble, the
+skew probes and the free-binding guard.
+
+What the ADR decided, as opposed to how it arranged it, is unchanged and is now
+the only mechanism:
+
+- **A private helper needs no registration.** It is in the file, so it is in the
+  graph. This is what esbuild does by construction; there is no longer a carrier
+  that has to be made to do it.
+- **A name that fails to travel is a compile error.** Re-demonstrated by sabotage
+  before the guard was deleted: a misspelled private helper exits 2 with TS2552,
+  an import of a name a module does not export exits 2 with TS2305.
+
+Two things are worth carrying forward rather than leaving in the body below.
+
+**One sub-case of the free-binding guard was not covered by the compiler, and
+deleting the guard alone would have dropped it.** `tsconfig.json` compiles with
+`lib: ["ES2022", "DOM"]`, because `client.ts` and `client-runtime-template.ts` are
+browser code — so a runtime module could reference `document` or `navigator`,
+compile clean, and be a `ReferenceError` in a container that has no DOM. Verified,
+not assumed: with `document.title` planted in `inspection-sql.ts`, `npm run build`
+exited 0 and the free-binding guard failed. `tsconfig.runtime.json` restores it as
+a compile error, rooted at `server-bundle-entry.ts` with an empty `include` so the
+checked set is exactly the graph esbuild carries and there is no second list to
+keep in step.
+
+**A check was genuinely lost, and it is not the guard.** The carrier compared the
+copy of each migrated module it read from `dist/` against the copy the running CLI
+had inlined into `bin/sporades.js`, on every build. That comparison went with the
+builder. The module graph still reads `dist/`, and the released CLI still runs from
+`bin/`, so the skew it detected is still expressible; what remains is the narrower
+guarantee that esbuild cannot bundle a `dist/` file that will not parse or whose
+imports do not resolve. The ~1,100 lines of probe fixtures that made the stronger
+check work were the single largest piece of scaffolding in the sequence, and
+rebuilding them against one bundle was judged not worth it — but the trade is
+recorded here rather than left for someone to discover as an absence.
+
+## Context
+
 The read-only inspection validator is the first region of `server-runtime-source.ts`
 to become its own module. What it cost to move is not the relocation — that is a
 `git mv` and a set of imports — but the answer to a question the expand–contract

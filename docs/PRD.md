@@ -767,9 +767,10 @@ Capsule server code catches and shapes a safe response.
 
 generated runtime artifacts expose the same Privileged server role behavior as
 the source runtime code. `npm run build` regenerates the bundled `bin/` and
-`dist/` outputs, and the generated-runtime parity check protects helper lists
-such as `SERVER_RUNTIME_SOURCE_FUNCTIONS` so Dev sessions, Container sessions,
-and Hosted Capsules do not drift from source behavior.
+`dist/` outputs, so Dev sessions, Container sessions, and Hosted Capsules do not
+drift from source behavior. A deployed Capsule's server Bundle is built from the
+runtime module graph, so a name that fails to reach it is a build error rather
+than a runtime one.
 
 ## Job Queue
 

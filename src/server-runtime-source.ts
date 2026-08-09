@@ -196,15 +196,17 @@ export * from "./jobs-runtime.js";
 
 // The user-preferences domain left this file as batch 5 — the preference table's schema, the read
 // and update path, and the anonymous-to-account merge. Six declarations: three imported above, one
-// by `auth-runtime.js`, one exported for the two-bundle skew probe and one private. See
-// `user-preferences-runtime.ts` for why the domain is exactly six and not the fifteen identifiers a
-// name sweep for `preference` turns up.
+// by `auth-runtime.js`, and two private — one of which was exported for the two-bundle skew probe
+// until ticket 05 deleted it. See `user-preferences-runtime.ts` for why the domain is exactly six
+// and not the fifteen identifiers a name sweep for `preference` turns up.
 //
 // **This is the batch that let auth finish.** `migrateAnonymousPreferences` was the only thing
 // keeping `rotateSessionOnAdapter` and `moveSessionToUserOnAdapter` — and through them
 // `signInWithEmail`, `signUpWithEmail`, `linkProviderIdentity`, `rotateSession` and
-// `moveSessionToUser` — in this file after batch 3. All seven are in `auth-runtime.js` now, so the
+// `moveSessionToUser` — in this file after batch 3. All seven moved to `auth-runtime.js`, so the
 // three names imported from it above are the only part of that region this file still resolves.
+// (`rotateSession` and `moveSessionToUser` no longer exist anywhere: batch 3 found nothing in the
+// repository named them, and ticket 05 deleted the declarations.)
 //
 // Re-exported whole for the reason the seven above are, and one consumer makes it load-bearing
 // rather than convenient: `test/database-adapter.test.js` imports `updateCurrentUserPreferences`

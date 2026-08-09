@@ -2,9 +2,35 @@
 
 ## Status
 
-Accepted. Extends ADR-0041, which decided how a migrated runtime region travels
-into the emitted-list bundle, and narrows the rule it left in place for how such a
-module may reach anything outside itself.
+**Expired as a constraint by ticket 05, and kept as an explanation.** This ADR
+said below, in "What is not decided here", that it *expires with the emitted list*
+— the carrier and the whole `format: "iife"` problem go with that builder, and a
+static `import … from "node:crypto"` is unremarkable in a module the graph
+imports directly. The emitted list is deleted, so that moment has arrived, on the
+ADR's own terms rather than by reinterpretation.
+
+Concretely: **rule 4 below no longer holds.** A static import of a builtin in a
+runtime module is not refused and is not a build failure; `server-bundle-entry.ts`
+already does exactly that. The four-step ranking is therefore no longer a rule
+about what is *permitted* — only about what a given call site needs.
+
+The roughly two dozen `nodeCryptoModule.` and `nodeFsModule.` call sites across
+`auth-runtime.ts`, `jobs-runtime.ts`, `file-storage-runtime.ts` and
+`database-runtime.ts` are left exactly as they are. They are correct, they cost
+nothing at runtime, and converting them back to ordinary imports is a behavioural
+risk taken for tidiness — which is not what a deletion ticket is for. The ADR
+records that the conversion is now *available*, so that a reader who finds the
+prefixes odd learns why they exist and that nothing forbids removing them, rather
+than treating them as a live constraint and propagating them into new code.
+
+One footnote closes: the ADR notes that the accessor raises the effective Node
+floor to 22.3.0 while `package.json` declared `">=22"`, and calls that a gap in
+the declared range that was not its batch's to close. It has since been closed —
+`engines.node` is `">=22.3.0"`.
+
+Extends ADR-0041, which decided how a migrated runtime region travelled into the
+emitted-list bundle, and narrowed the rule it left in place for how such a module
+may reach anything outside itself.
 
 ## The problem this exists for
 
