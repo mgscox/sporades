@@ -1650,11 +1650,21 @@ async function finalizeLocalTemplateProject(options: LooseRecord, projectDir: st
   const defaultPackage = JSON.parse(defaults["package.json"]);
   const dependencies = { ...(packageJson.dependencies ?? {}) };
   delete dependencies.sporades;
+  const allowScripts = isLooseRecord(packageJson.allowScripts) ? { ...packageJson.allowScripts } : {};
+  for (const packageSpec of Object.keys(allowScripts)) {
+    if (packageSpec.startsWith("esbuild@") || packageSpec.startsWith("fsevents@")) {
+      delete allowScripts[packageSpec];
+    }
+  }
   const nextPackage = {
     ...packageJson,
     name: options.name,
     scripts: { ...defaultPackage.scripts, ...(packageJson.scripts ?? {}) },
     dependencies,
+    allowScripts: {
+      ...allowScripts,
+      ...defaultPackage.allowScripts,
+    },
     devDependencies: {
       ...(packageJson.devDependencies ?? {}),
       sporades: defaultSporadesDependency(),

@@ -83,6 +83,10 @@ export function scaffoldFiles(options) {
                 deploy: "sporades deploy",
             },
             dependencies: frameworkDependencies,
+            allowScripts: {
+                esbuild: true,
+                fsevents: true,
+            },
             devDependencies: {
                 ...frameworkDevDependencies,
                 sporades: sporadesDependency,

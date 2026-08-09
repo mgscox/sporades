@@ -174,6 +174,10 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(packageJson.devDependencies["@types/react"], "^19.0.0");
     assert.equal(packageJson.devDependencies["@types/react-dom"], "^19.0.0");
     assert.equal(packageJson.devDependencies.sporades, expectedSporadesVersionRange);
+    assert.deepEqual(packageJson.allowScripts, {
+      esbuild: true,
+      fsevents: true,
+    });
   });
 });
 
@@ -1291,6 +1295,11 @@ test("sporades create accepts a local template directory without copying ignored
       scripts: { test: "node --test", "custom:check": "node custom.mjs" },
       dependencies: { react: "^19.0.0" },
       devDependencies: { sporades: "0.1.0", typescript: "^5.8.0" },
+      allowScripts: {
+        "custom-native-addon": true,
+        "esbuild@0.25.12": false,
+        "fsevents@2.3.3": true,
+      },
     }, null, 2));
     await writeFile(path.join(templateDir, "sporades.json"), JSON.stringify({
       name: "daily-build-template",
@@ -1325,6 +1334,11 @@ test("sporades create accepts a local template directory without copying ignored
     assert.equal(packageJson.scripts.test, "node --test");
     assert.equal(packageJson.scripts.dev, "sporades dev");
     assert.equal(packageJson.scripts["custom:check"], "node custom.mjs");
+    assert.deepEqual(packageJson.allowScripts, {
+      "custom-native-addon": true,
+      esbuild: true,
+      fsevents: true,
+    });
     assert.equal(config.name, "local-island");
     assert.equal(await readFile(path.join(projectDir, "client", "index.tsx"), "utf8"), "export {};\n");
     await assert.rejects(readFile(path.join(projectDir, ".env.sporades.server"), "utf8"), /ENOENT/);
