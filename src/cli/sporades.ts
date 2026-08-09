@@ -2695,7 +2695,7 @@ function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null
 
   switch (data.event) {
     case "started":
-      process.stdout.write(`Sporades dev session started at ${data.url}\n`);
+      process.stdout.write(`Sporades dev session started at ${data.url}\nUse Ctrl-C to exit\n`);
       return;
 
     case "rebuild":
