@@ -10525,6 +10525,81 @@ test("a scaffolded Campfire proves fixtures, chat, reactions, and consented Jour
   });
 });
 
+test("a scaffolded Campfire awaits database operations from asynchronous Capsule services", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "campfire-async-island", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+
+    const projectDir = path.join(dir, "campfire-async-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir);
+
+    await withFakeLibsqlService(path.join(dir, "campfire-libsql.db"), async ({ url: serviceUrl }) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: { ...docker.env, FAKE_DOCKER_SERVICE_PORT: new URL(serviceUrl).port },
+      });
+      let socket;
+      try {
+        await waitForJsonLine(child);
+        await waitForJsonEvent(child, (event) => event.data?.event === "service" && event.data.status === "ready");
+        const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
+
+        async function request(id, type, details = {}) {
+          const response = waitForSocketMessage(socket, (message) => message.id === id);
+          socket.send(JSON.stringify({ id, type, ...details }));
+          return await response;
+        }
+
+        const signup = await request("signup", "auth.signUp", {
+          provider: "email",
+          credentials: { email: "athos@campfire.example", password: "all-for-one-campfire", name: "Athos" },
+        });
+        assert.equal(signup.error, null);
+
+        assert.equal((await request("register-1", "mutation.run", { mutation: "registerFixture", args: ["athos"] })).error, null);
+        assert.equal((await request("register-2", "mutation.run", { mutation: "registerFixture", args: ["athos"] })).error, null);
+        const profiles = await request("profiles", "query.subscribe", { query: "profiles" });
+        assert.deepEqual(profiles.data.map(({ key }) => key), ["athos"]);
+
+        const firstSeed = await request("seed-1", "mutation.run", { mutation: "seedCampfire", args: [] });
+        const secondSeed = await request("seed-2", "mutation.run", { mutation: "seedCampfire", args: [] });
+        assert.deepEqual(
+          [firstSeed, secondSeed].map(({ data }) => ({ created: data.created.length, alreadyPresent: data.alreadyPresent.length, failed: data.failed.length })),
+          [
+            { created: 8, alreadyPresent: 0, failed: 0 },
+            { created: 0, alreadyPresent: 8, failed: 0 },
+          ],
+        );
+
+        const crown = await request("crown", "query.subscribe", { query: "messagesProtectTheCrown" });
+        const message = crown.data.find(({ seedKey }) => seedKey === "crown-prompt");
+        assert.ok(message);
+        const refreshed = waitForSocketMessage(socket, (event) =>
+          event.query === "messagesProtectTheCrown"
+          && event.data?.some((row) => row.id === message.id && Object.keys(row.reactions).includes(`${signup.data.auth.userId}:up`)));
+        const reaction = await request("reaction", "mutation.run", {
+          mutation: "toggleReaction",
+          args: [{ messageId: message.id, kind: "up" }],
+        });
+        assert.deepEqual(reaction, { id: "reaction", type: "mutation.result", mutation: "toggleReaction", data: { active: true }, error: null });
+        await refreshed;
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
 test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {

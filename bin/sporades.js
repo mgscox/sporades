@@ -17817,20 +17817,20 @@ export default capsule({
     profiles: query((ctx) => ctx.db.profiles.all()),
   },
   mutations: {
-    seedCampfire: mutation((ctx) => {
+    seedCampfire: mutation(async (ctx) => {
       const created: Array<{ type: string; key: string }> = [], alreadyPresent: Array<{ type: string; key: string }> = [], failed: Array<{ type: string; key: string; message: string }> = [];
-      const ensure = (type: string, key: string, exists: () => boolean, create: () => unknown) => { try { if (exists()) alreadyPresent.push({ type, key }); else { create(); created.push({ type, key }); } } catch (error) { failed.push({ type, key, message: error instanceof Error ? error.message : "Unknown seed failure." }); } };
-      for (const slug of channels) ensure("channel", slug, () => ctx.db.channels.where("slug", slug).all().length > 0, () => ctx.db.channels.insert({ slug, name: slug }));
-      ensure("message", "general-welcome", () => ctx.db.messages.where("seedKey", "general-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos, seedKey: "general-welcome", reactions: {} }));
-      ensure("message", "ideas-welcome", () => ctx.db.messages.where("seedKey", "ideas-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos, seedKey: "ideas-welcome", reactions: {} }));
-      ensure("message", "random-welcome", () => ctx.db.messages.where("seedKey", "random-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "random", body: "Mostly discretion.", authorId: "fixture:aramis", authorName: fixtureNames.aramis, seedKey: "random-welcome", reactions: {} }));
-      ensure("message", "crown-prompt", () => ctx.db.messages.where("seedKey", "crown-prompt").all().length > 0, () => ctx.db.messages.insert({ channel: "protect-the-crown", body: "Is the crown adequately protected? \u{1F44D} All for one \xB7 \u{1F44E} One more guard, perhaps", authorId: "fixture:dartagnan", authorName: fixtureNames.dartagnan, seedKey: "crown-prompt", reactions: {} }));
+      const ensure = async (type: string, key: string, exists: () => unknown, create: () => unknown) => { try { if (await exists()) alreadyPresent.push({ type, key }); else { await create(); created.push({ type, key }); } } catch (error) { failed.push({ type, key, message: error instanceof Error ? error.message : "Unknown seed failure." }); } };
+      for (const slug of channels) await ensure("channel", slug, async () => (await ctx.db.channels.where("slug", slug).all()).length > 0, () => ctx.db.channels.insert({ slug, name: slug }));
+      await ensure("message", "general-welcome", async () => (await ctx.db.messages.where("seedKey", "general-welcome").all()).length > 0, () => ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos, seedKey: "general-welcome", reactions: {} }));
+      await ensure("message", "ideas-welcome", async () => (await ctx.db.messages.where("seedKey", "ideas-welcome").all()).length > 0, () => ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos, seedKey: "ideas-welcome", reactions: {} }));
+      await ensure("message", "random-welcome", async () => (await ctx.db.messages.where("seedKey", "random-welcome").all()).length > 0, () => ctx.db.messages.insert({ channel: "random", body: "Mostly discretion.", authorId: "fixture:aramis", authorName: fixtureNames.aramis, seedKey: "random-welcome", reactions: {} }));
+      await ensure("message", "crown-prompt", async () => (await ctx.db.messages.where("seedKey", "crown-prompt").all()).length > 0, () => ctx.db.messages.insert({ channel: "protect-the-crown", body: "Is the crown adequately protected? \u{1F44D} All for one \xB7 \u{1F44E} One more guard, perhaps", authorId: "fixture:dartagnan", authorName: fixtureNames.dartagnan, seedKey: "crown-prompt", reactions: {} }));
       return { created, alreadyPresent, failed };
     }),
-    registerFixture: mutation((ctx, key: any) => {
+    registerFixture: mutation(async (ctx, key: any) => {
       if (!Object.prototype.hasOwnProperty.call(fixtureNames, key)) throw new Error("Unknown Musketeer.");
       const fixtureKey = key as keyof typeof fixtureNames;
-      if (!ctx.db.profiles.where("userId", ctx.auth.userId).all().length) ctx.db.profiles.insert({ userId: ctx.auth.userId, key: fixtureKey, name: fixtureNames[fixtureKey] });
+      if (!(await ctx.db.profiles.where("userId", ctx.auth.userId).all()).length) await ctx.db.profiles.insert({ userId: ctx.auth.userId, key: fixtureKey, name: fixtureNames[fixtureKey] });
       return { registered: true };
     }),
     sendMessage: mutation((ctx, input: any) => {
@@ -17841,16 +17841,16 @@ export default capsule({
       if (body.length > 500) throw new Error("Messages must be 500 characters or fewer.");
       return ctx.db.messages.insert({ channel, body, authorId: ctx.auth.userId, authorName: ctx.auth.displayName, seedKey: "", reactions: {} });
     }),
-    toggleReaction: mutation((ctx, input: any) => {
+    toggleReaction: mutation(async (ctx, input: any) => {
       const kind = input?.kind;
       if (kind !== "up" && kind !== "down") throw new Error("Choose thumbs up or thumbs down.");
-      const message = ctx.db.messages.where("id", input?.messageId).all()[0];
+      const message = await ctx.db.messages.where("id", input?.messageId).get();
       if (!message) throw new Error("Message not found.");
       const identity = ctx.auth.userId + ":" + kind;
       const reactions: Record<string, boolean> = { ...((message.reactions ?? {}) as Record<string, boolean>) };
-      if (reactions[identity]) { delete reactions[identity]; ctx.db.messages.update(message.id, { reactions }); return { active: false }; }
+      if (reactions[identity]) { delete reactions[identity]; await ctx.db.messages.update(message.id, { reactions }); return { active: false }; }
       reactions[identity] = true;
-      ctx.db.messages.update(message.id, { reactions });
+      await ctx.db.messages.update(message.id, { reactions });
       return { active: true };
     }),
   },
