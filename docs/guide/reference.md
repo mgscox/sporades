@@ -73,8 +73,8 @@ sporades create no-install-yet --no-install --no-git
 ```
 
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
-`campfire`. Campfire demonstrates realtime messaging, durable reactions, email
-fixture identities, and explicitly consented ephemeral Journey activity.
+`campfire`. See [Projects and Client Frameworks](./projects.md#choose-a-template)
+for a short description of the features each template demonstrates.
 Available client frameworks are `react`, `preact`, `inferno`, `lit`, `solid`, `vue`, `svelte`,
 and framework-neutral Vanilla TypeScript. esbuild remains the React, Preact, and Inferno default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
@@ -85,6 +85,8 @@ TypeScript remains on esbuild. Inferno supports the complete template set, defau
 to esbuild, and accepts explicit `--toolchain vite`; both paths use native class
 components and lifecycle adapters without React compatibility packages. Inferno/Vite
 emits normalized hashed assets and uses Sporades full-page Dev refresh rather than HMR.
+See [Choose a client framework](./projects.md#choose-a-client-framework) for the
+authoring style and adapter exposed by each framework.
 
 The authoritative client capability matrix is:
 

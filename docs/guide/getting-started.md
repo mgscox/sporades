@@ -49,7 +49,12 @@ fields such as `ownerId`.
 
 ## 3. Connect the client
 
-In a React or Preact client, use the scaffolded hooks:
+The generated client uses the native Sporades adapter for the framework selected
+at creation time: subscriptions for Vanilla TypeScript, hooks for React and
+Preact, lifecycle adapters for Inferno, reactive controllers for Lit, signals
+for SolidJS, composables for Vue, or stores for Svelte.
+
+For example, a React or Preact scaffold uses hooks:
 
 ```tsx
 const todos = useQuery("todos");
@@ -60,7 +65,10 @@ await addTodo.run("Buy coffee");
 
 Queries remain subscribed through the Sporades transport, so successful
 mutations refresh connected clients without a separate fetch layer. Other
-framework scaffolds expose equivalent adapters over the same client contract.
+framework adapters expose the same client contract through their native
+reactivity and cleanup model. See
+[Projects and Client Frameworks](./projects.md#choose-a-client-framework) to
+compare all supported choices.
 
 ## 4. Inspect it
 
