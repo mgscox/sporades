@@ -693,36 +693,6 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
 
 Restart a running Dev session after importing or setting Sealed Server env.
 
-### Send SMTP mail
-
-`ctx.mail.send(...)` accepts one provider-independent message with `to`,
-optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
-`htmlBody`, and an optional validated `provider` object. It returns a stable
-`{ messageId, accepted, rejected }` result. When `mail.smtp` is omitted from
-`sporades.json`, calls fail with `MAIL_DISABLED`.
-
-The same Server Bundle and configuration run unchanged in Dev sessions, local
-Container sessions, and Hosted Capsules. Credential values remain in Sealed
-Server env; configuration stores only their key names. Connection and socket
-timeouts are bounded, certificate verification is enabled by default, and
-runtime shutdown closes active SMTP sockets.
-
-Postmark and Mailgun fields become their documented, validated SMTP MIME
-headers. SMTP2GO and other portable vendors use validated custom `X-*` headers.
-The `provider` object is not an arbitrary vendor API payload and cannot alter
-addressing, MIME content, credentials, or transport behavior. No provider SDK
-is used. See [SMTP configuration and provider examples](./configuration.md#smtp-mail).
-
-Delivery logs contain only the vendor, recipient counts, latency, a stable
-result category, and an opaque per-attempt mail identity. They exclude
-addresses, subjects, bodies, provider values, provider message IDs,
-credentials, Server env, and raw authentication.
-
-Direct SMTP delivery is external and cannot roll back with a failed database
-Transaction. Use a [durable mail Job](./configuration.md#durable-mail-with-jobs)
-for important notifications, and design application-level idempotency for the
-Job Queue's at-least-once execution.
-
 #### Export or Import an Envelope
 
 For portability, export the sealed envelope without private keys or plaintext
@@ -785,6 +755,36 @@ Recovery is achieved by re-sealing known values:
 - If all private keys and all plaintext/source-of-truth values are gone, the
   sealed values cannot be recovered. Regenerate the real provider secrets, add
   them back to Server env, import, and push a new Host-encrypted release.
+
+### Send SMTP mail
+
+`ctx.mail.send(...)` accepts one provider-independent message with `to`,
+optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
+`htmlBody`, and an optional validated `provider` object. It returns a stable
+`{ messageId, accepted, rejected }` result. When `mail.smtp` is omitted from
+`sporades.json`, calls fail with `MAIL_DISABLED`.
+
+The same Server Bundle and configuration run unchanged in Dev sessions, local
+Container sessions, and Hosted Capsules. Credential values remain in Sealed
+Server env; configuration stores only their key names. Connection and socket
+timeouts are bounded, certificate verification is enabled by default, and
+runtime shutdown closes active SMTP sockets.
+
+Postmark and Mailgun fields become their documented, validated SMTP MIME
+headers. SMTP2GO and other portable vendors use validated custom `X-*` headers.
+The `provider` object is not an arbitrary vendor API payload and cannot alter
+addressing, MIME content, credentials, or transport behavior. No provider SDK
+is used. See [SMTP configuration and provider examples](./configuration.md#smtp-mail).
+
+Delivery logs contain only the vendor, recipient counts, latency, a stable
+result category, and an opaque per-attempt mail identity. They exclude
+addresses, subjects, bodies, provider values, provider message IDs,
+credentials, Server env, and raw authentication.
+
+Direct SMTP delivery is external and cannot roll back with a failed database
+Transaction. Use a [durable mail Job](./configuration.md#durable-mail-with-jobs)
+for important notifications, and design application-level idempotency for the
+Job Queue's at-least-once execution.
 
 ### Add Middleware
 
