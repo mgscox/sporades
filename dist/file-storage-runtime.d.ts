@@ -107,20 +107,6 @@ export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket,
     }>;
     close(): void;
 };
-export declare function s3ObjectKey(namespace: string, fileId: string, version: string | number): string;
-export declare function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate, }: {
-    method: string;
-    pathname: string;
-    query: string;
-    headers: Record<string, string>;
-    payloadHash: string;
-    accessKey: string;
-    secretKey: string;
-    region: string;
-    date: string;
-    amzDate: string;
-}): string;
-export declare function s3CanonicalPath(basePath: string, bucket: string, key: string | null): string;
 export declare function checkRuntimeFileStorage(database: LooseRecord): Promise<any>;
 export declare function createFileStorageTables(sqlite: LooseRecord): any;
 export declare function contentTypeForFile(type: any): string;
@@ -167,22 +153,6 @@ export declare function revokePublicFileUrl(database: LooseRecord, auth: LooseRe
     error: any;
 }>;
 export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
-export declare function validatePublicUrlExpiry(options: LooseRecord): {
-    ok: boolean;
-    error: {
-        message: string;
-        hint: string;
-    };
-    expiresAt?: undefined;
-} | {
-    ok: boolean;
-    expiresAt: null;
-    error?: undefined;
-} | {
-    ok: boolean;
-    expiresAt: string;
-    error?: undefined;
-};
 export declare function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any): Promise<any>;
 export declare function fileMetadataFromRow(row: LooseRecord): {
     id: any;
@@ -193,17 +163,7 @@ export declare function fileMetadataFromRow(row: LooseRecord): {
     path: any;
     version: any;
 };
-export declare function fileMetadataFromUpload(upload: LooseRecord): {
-    id: any;
-    bucket: any;
-    size: number;
-    type: any;
-    name: any;
-    path: any;
-    version: any;
-};
 export declare function normalizeAbsoluteFilePath(value: string): string;
-export declare function normalizeFileName(name: any, filePath: string | null): string;
 export declare function isAbsoluteFilePath(value: string): boolean;
 export declare function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any): Promise<{
     ok: boolean;

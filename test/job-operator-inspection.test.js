@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createLibsqlDatabaseAdapter, createPostgresDatabaseAdapter, createSqliteDatabaseAdapter, inspectRuntimeJobs } from "../dist/server-runtime-source.js";
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 test("operator Job inspection returns one deterministic bounded snapshot", async () => {
@@ -57,7 +57,7 @@ test("operator Job inspection reads sporades_jobs through Postgres", { skip: !pr
 test("one-shot Bundle action does not evaluate Capsule code", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-action-"));
   const marker = path.join(dir, "capsule-evaluated");
-  const bundle = createServerBundleSource({
+  const bundle = await createServerBundleModuleSource({
     config: { name: "team-notes" }, serverEnv: {}, serverSource: "",
     serverModuleSource: `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "yes"); export default {};`,
   });

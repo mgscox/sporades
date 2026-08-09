@@ -33,15 +33,15 @@ import { readSqlQuotedIdentifier, skipSqlTrivia } from "./inspection-sql.js";
 // What `server-runtime-source.ts` still imports from `inspection-sql` is the gate's actual
 // interface: `validateReadOnlyInspectionSql` and `sqlWithoutTrailingTerminator`.
 //
-// **How this file reaches a deployed Capsule.** Both bundlers carry it whole, the same way they
-// carry `inspection-sql` (ADR-0041) — but by a different mechanism, and this file is the reason the
-// mechanism had to change. `transformSync` converts one already-compiled file and resolves nothing,
-// so given a module with an import it emits a `require(…)` and the Capsule dies at boot with
-// "Cannot determine intended module format". The emitted-list builder therefore bundles the
-// migrated modules together with `buildSync` instead — see `MIGRATED_RUNTIME_MODULES` in
-// `server-bundle-template.ts`, which also records why they are bundled as one block rather than one
-// block each. A name that fails to travel out of this file is a compile error, not a
-// `ReferenceError` in a deployed Capsule.
+// **How this file reaches a deployed Capsule.** It is imported, and esbuild carries it whole with
+// everything it references (ADR-0041). A name that fails to travel out of this file is a compile
+// error, not a `ReferenceError` in a deployed Capsule.
+//
+// This file was the reason the deleted emitted-list builder had to change how it carried a migrated
+// module, and the finding is worth keeping even though that builder is gone: `transformSync`
+// converts one already-compiled file and resolves nothing, so given a module with an import of its
+// own it emits a `require(…)`, and a Capsule spliced together from that dies at boot with "Cannot
+// determine intended module format". Anything that assembles ES module text has the same problem.
 
 // Whether an admitted inspection statement names the runtime's internal log-index table.
 //

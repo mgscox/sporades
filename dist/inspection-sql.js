@@ -10,16 +10,13 @@
 // trivia skipper and two identifier readers were five copies of one set of comment and quoting
 // rules; ADR-0038 records what that cost.
 //
-// Inside a module a helper needs no registration, because both bundlers now carry this file whole:
-//
-//   - the module-graph bundle imports it, and esbuild pulls in whatever it references;
-//   - the emitted-list bundle carries this module's own compiled text as one block, rather than
-//     `fn.toString()` over a list of its functions — see `createServerBundleSource`.
+// Inside a module a helper needs no registration, because the bundle carries this file whole: it is
+// imported, and esbuild pulls in whatever it references.
 //
 // So a name that fails to travel is a compile error in `npm run build` rather than a
 // `ReferenceError` a deployed Capsule reaches at runtime, and extracting a helper is an ordinary
 // edit. `nestingBlockCommentEnd` and `opensQuotedRun` below are the first two taken on those terms:
-// neither is exported, neither is registered anywhere, and both survive into both bundles.
+// neither is exported, neither is registered anywhere, and both reach every deployed Capsule.
 // ADR-0041 records the mechanism.
 //
 // **What is exported and what is not is not a statement about coupling.** Most of what is exported

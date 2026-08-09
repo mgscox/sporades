@@ -28,13 +28,12 @@
 // bridge. `migrateAnonymousPreferences` is exported for `auth-runtime.js`, which is the whole reason
 // this batch runs where it does: it is what kept seven auth functions in the monolith after batch 3.
 //
-// `normalizePreferencesPatch` is the fifth export and the one that is not there because something
-// resolves it. It is exported so the two-bundle skew probe can call it, and that is a deliberate
-// widening rather than an accident: `describeMigratedModuleAnswers` is synchronous and the other
-// three exports are `async`, so without it the only limb this domain could offer the differential
-// would be the DDL, and the validation path — including this module's one private helper and its one
-// cross-module import — would be carried into every deployed Capsule without being compared. See
-// `MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE` in `server-bundle-template.ts`.
+// `normalizePreferencesPatch` was a fifth export until ticket 05, and the one export that was not
+// there because something resolved it: it was exported so the two-bundle skew probe could call it, a
+// deliberate widening rather than an accident, because that probe was synchronous and the other
+// three exports are `async` — so without it the only limb this domain could offer was the DDL, and
+// the validation path would have been carried into every deployed Capsule uncompared. The probe went
+// with the emitted-list builder, and the function is private again.
 //
 // `createPreferencesError` is private, and it is this module's census sentinel in
 // `test/database-adapter-engine-seam.test.js` for that reason. Under the emitted list it had to be
@@ -124,7 +123,7 @@ export async function updateCurrentUserPreferences(database, auth, patch) {
         };
     }
 }
-export function normalizePreferencesPatch(patch) {
+function normalizePreferencesPatch(patch) {
     if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
         throw createPreferencesError("Preferences updates must be JSON objects.", "Pass a plain JSON object to preferences.update().", "INVALID_PREFERENCES_PATCH");
     }

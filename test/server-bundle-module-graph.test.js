@@ -1,23 +1,25 @@
-// Behavioural equivalence between the two ways the deployed Capsule server bundle can be built.
+// What a deployed Capsule server bundle answers, driven the way a container drives it.
 //
-// `createServerBundleSource` assembles the bundle by writing out `fn.toString()` for every entry in
-// `SERVER_RUNTIME_SOURCE_FUNCTIONS` next to a hand-written preamble that re-declares the runtime's
-// module constants. `createServerBundleModuleSource` builds the same program with esbuild from an
-// ordinary module graph. Both exist right now; the emitted-list one is still the artifact that
-// ships, and this file is the evidence that the other one could be.
+// This file was an *equivalence* harness for most of its life. Two builders existed: one assembled
+// the bundle by writing out `fn.toString()` for every entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS`
+// next to a hand-written preamble that re-declared the runtime's module constants, and
+// `createServerBundleModuleSource` built the same program with esbuild from an ordinary module
+// graph. Every test here built both, ran both, and compared what they answered — across HTTP, the
+// WebSocket transport where queries, mutations and auth live, the one-shot inspection actions for
+// Jobs and Schedules, file storage, and each database adapter.
 //
-// The two bundles are not textually comparable and are not meant to be. Each carries the Capsule
-// config, the Server env, the Capsule module as a base64 data URL and the runtime's own source
-// text, and esbuild renames and tree-shakes on top of that. So equivalence is established by
-// running both and comparing what they answer, across the surfaces a deployed Capsule actually
-// exposes: HTTP, the WebSocket transport where queries, mutations and auth live, the one-shot
-// inspection actions for Jobs and Schedules, file storage, and each database adapter.
+// Ticket 05 deleted the emitted-list builder, so there is no longer a second answer to compare
+// against. What survives is the half that was always the substance: booting the artifact a release
+// actually ships and asserting what it answers. The comparisons are gone; the concrete assertions
+// they sat next to are not, and several tests here gained assertions in the conversion, because a
+// claim that used to be carried by "the other bundle said the same" now has to be written down.
 //
-// Values that cannot be equal between two processes — row ids, timestamps, session tokens, ports,
-// temp directories — are normalized. The normalizer is deliberately narrow: it rewrites UUIDs, ISO
-// timestamps, opaque 32-character tokens, the temp directory and the origin, and nothing else. A
-// `Set` that arrived as an array, a number that arrived as a string, a missing field or a changed
-// error code all survive it.
+// Values that cannot be stable between runs — row ids, timestamps, session tokens, ports, temp
+// directories — are still normalized, because the recorded expectations below are compared against
+// them. The normalizer is deliberately narrow: it rewrites UUIDs, ISO timestamps, opaque
+// 32-character tokens, the temp directory and the origin, and nothing else. A `Set` that arrived as
+// an array, a number that arrived as a string, a missing field or a changed error code all survive
+// it.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -31,33 +33,9 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import * as authRuntimeModule from "../dist/auth-runtime.js";
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
-import * as inspectionSqlModule from "../dist/inspection-sql.js";
-import * as logIndexGuardModule from "../dist/log-index-guard.js";
-import * as mailConfigModule from "../dist/mail-config.js";
-import * as mailRuntimeModule from "../dist/mail-runtime.js";
-import * as userPreferencesRuntimeModule from "../dist/user-preferences-runtime.js";
-import * as fileStorageRuntimeModule from "../dist/file-storage-runtime.js";
-import * as maybePromiseModule from "../dist/maybe-promise.js";
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
-import {
-  MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE,
-  MIGRATED_MODULE_AUTH_SKEW_PROBE,
-  MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE,
-  MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE,
-  MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE,
-  MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE,
-  MIGRATED_MODULE_ROW_SKEW_PROBE,
-  MIGRATED_MODULE_SKEW_PROBE,
-  MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE,
-  MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE,
-  MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE,
-  createServerBundleSource,
-  migratedRuntimeModulesBlockFrom,
-} from "../dist/templates/server-bundle-template.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -256,15 +234,12 @@ function compiledCapsuleModule() {
   return capsuleModulePromise;
 }
 
-// Both builders, one set of inputs. Every equivalence claim below starts here so that neither
-// bundle can quietly be built from something the other did not see.
-async function buildBundlePair(inputs, options = {}) {
+// One bundle, built the way `createBundle` builds the one that ships. This returned a pair while
+// two builders existed; the Capsule module still defaults to the compiled fixture so that a test
+// which does not care about the Capsule's own source cannot accidentally build from nothing.
+async function buildBundle(inputs, options = {}) {
   const serverModuleSource = inputs.serverModuleSource ?? (await compiledCapsuleModule());
-  const shared = { ...inputs, serverModuleSource };
-  return {
-    emitted: createServerBundleSource(shared),
-    graph: await createServerBundleModuleSource({ ...shared, ...options }),
-  };
+  return createServerBundleModuleSource({ ...inputs, serverModuleSource, ...options });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -782,7 +757,7 @@ function runBundleAction(bundlePath, action, { cwd, env = {} }) {
 // ---------------------------------------------------------------------------------------------
 
 test("the server bundle builds from a module graph and imports nothing but Node builtins", async () => {
-  const { emitted, graph } = await buildBundlePair({
+  const source = await buildBundle({
     config: capsuleConfig(),
     serverEnv: {},
     serverSource: CAPSULE_SOURCE,
@@ -791,100 +766,119 @@ test("the server bundle builds from a module graph and imports nothing but Node 
   // A deployed Capsule is `node /app/server.mjs` in an image with no `node_modules`, and the only
   // files mounted beside it are `sporades.json` and the public tree. Whatever the bundle imports at
   // runtime has to already be in Node.
-  // `data:` is the other self-contained specifier: the emitted-list bundle loads the Capsule module
-  // from a literal data URL, which carries its own bytes and reaches no filesystem. Everything else
-  // would be a lookup the container cannot perform.
-  for (const [label, source] of [["emitted", emitted], ["module graph", graph]]) {
-    const specifiers = bundleImportSpecifiers(source);
-    assert.ok(specifiers.length > 0, `${label} bundle declared no imports at all`);
-    for (const specifier of specifiers) {
-      assert.ok(
-        specifier.startsWith("node:") || specifier.startsWith("data:"),
-        `${label} bundle imports ${specifier.slice(0, 80)}, which a deployed Capsule cannot resolve`,
-      );
-    }
-    assert.ok(specifiers.some((specifier) => specifier.startsWith("node:")), `${label} bundle imported no Node builtin`);
+  // `data:` is the other self-contained specifier: the bundle loads the Capsule module from a data
+  // URL, which carries its own bytes and reaches no filesystem. Everything else would be a lookup
+  // the container cannot perform.
+  const specifiers = bundleImportSpecifiers(source);
+  assert.ok(specifiers.length > 0, "bundle declared no imports at all");
+  for (const specifier of specifiers) {
+    assert.ok(
+      specifier.startsWith("node:") || specifier.startsWith("data:"),
+      `bundle imports ${specifier.slice(0, 80)}, which a deployed Capsule cannot resolve`,
+    );
   }
+  assert.ok(specifiers.some((specifier) => specifier.startsWith("node:")), "bundle imported no Node builtin");
 
-  // Both carry the same per-build values, which is the whole reason the bundle is generated rather
-  // than shipped.
-  for (const source of [emitted, graph]) {
-    assert.match(source, /bundle-equivalence/);
-    assert.match(source, /data:text\/javascript;base64,/);
-  }
+  // The per-build values, which are the whole reason the bundle is generated rather than shipped.
+  assert.match(source, /bundle-equivalence/);
+  assert.match(source, /data:text\/javascript;base64,/);
 
-  // And both carry a migrated domain, by two entirely different routes: the module graph reaches
-  // `mail-runtime` through `server-runtime-source`'s import of it, while the emitted-list bundle
-  // gets it from the carrier splicing the compiled module in as a block. A batch that moved a domain
-  // out of the emitted list and forgot the carrier leaves the graph bundle complete and the shipping
-  // one missing every name — which is a `ReferenceError` in a deployed Capsule and nothing here
-  // would otherwise notice, because the graph bundle is not the one that ships.
-  for (const [label, source] of [["emitted", emitted], ["module graph", graph]]) {
-    for (const name of ["createMailRuntime", "buildSmtpMessage", "encodeMimeHeaderValue", "validateMailConfig"]) {
-      assert.match(source, new RegExp(`function ${name}\\(`), `${label} bundle is missing ${name}`);
-    }
-    // The domain's sockets are opened through a dynamic import of a builtin, which is the one
-    // external form the carrier allows (ADR-0041). Both bundles must still be reaching for it.
-    assert.match(source, /import\("node:tls"\)/, `${label} bundle lost the SMTP TLS import`);
+  // And a migrated domain, reached through `server-runtime-source`'s import of it. This was the
+  // check that a batch had not moved a domain out of the emitted list while forgetting to add it to
+  // the carrier — a mistake that left this bundle complete and the shipping one missing every name.
+  // There is one bundle now and that particular mistake is not available, but the assertion is kept
+  // pointed at the artifact: it is also what would catch a domain dropped by tree-shaking because
+  // nothing imports it any more, which is this mechanism's own version of the same silence.
+  for (const name of ["createMailRuntime", "buildSmtpMessage", "encodeMimeHeaderValue", "validateMailConfig"]) {
+    assert.match(source, new RegExp(`function ${name}\\(`), `bundle is missing ${name}`);
   }
+  // The domain's sockets are opened through a dynamic import of a builtin (ADR-0042).
+  assert.match(source, /import\("node:tls"\)/, "bundle lost the SMTP TLS import");
 });
 
-test("a Capsule built from a module graph answers identically to the emitted-list bundle across HTTP and the WebSocket transport", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-equivalence-"));
+test("a Capsule built from a module graph answers the HTTP and WebSocket surfaces", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-surface-"));
   try {
     const config = capsuleConfig();
     const serverEnv = { PROBE_PLAIN_VALUE: "plain-env-value" };
-    const { emitted, graph } = await buildBundlePair({ config, serverEnv, serverSource: CAPSULE_SOURCE });
+    const source = await buildBundle({ config, serverEnv, serverSource: CAPSULE_SOURCE });
 
-    const emittedDir = path.join(root, "emitted");
-    const graphDir = path.join(root, "graph");
-    await mkdir(emittedDir, { recursive: true });
-    await mkdir(graphDir, { recursive: true });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    const run = await observeBundle({ source, dir });
 
-    const emittedRun = await observeBundle({ source: emitted, dir: emittedDir });
-    const graphRun = await observeBundle({ source: graph, dir: graphDir });
-
-    // Guard against a normalizer that collapsed everything into agreement: the run has to have
-    // actually exercised the runtime before its agreement means anything.
-    assert.equal(emittedRun.http.length, HTTP_SCRIPT.length);
-    assert.equal(emittedRun.websocket.replies.length, WEBSOCKET_SCRIPT.length);
-    const health = emittedRun.http.find((entry) => entry.name === "health with probe header");
+    // Every step of both scripts has to have actually run. This guarded the comparison against a
+    // normalizer that had collapsed everything into agreement; with nothing to compare against it
+    // guards the assertions below against a run that answered fewer steps than it was given.
+    assert.equal(run.http.length, HTTP_SCRIPT.length);
+    assert.equal(run.websocket.replies.length, WEBSOCKET_SCRIPT.length);
+    const health = run.http.find((entry) => entry.name === "health with probe header");
     assert.equal(health.status, 200, JSON.stringify(health));
     assert.equal(health.body.data.runtime.ready, true);
     assert.equal(health.body.data.checks.sqlite.ok, true);
     assert.equal(health.body.data.checks.fileStorage.ok, true);
-    const notes = emittedRun.http.find((entry) => entry.name === "endpoint notes populated");
+    const notes = run.http.find((entry) => entry.name === "endpoint notes populated");
     assert.deepEqual(notes.body.notes, [{ rank: 1, text: "second" }, { rank: 2, text: "first" }]);
-    const status = emittedRun.http.find((entry) => entry.name === "endpoint status");
+    const status = run.http.find((entry) => entry.name === "endpoint status");
     assert.equal(status.status, 202);
     assert.equal(status.body.plainValue, "plain-env-value");
-    const signedIn = emittedRun.websocket.replies.find((entry, index) => WEBSOCKET_SCRIPT[index].id === "m19");
+    const signedIn = run.websocket.replies.find((entry, index) => WEBSOCKET_SCRIPT[index].id === "m19");
     assert.equal(signedIn.reply.type, "auth.signIn.result", JSON.stringify(signedIn));
-    // Two successful mutations, two open subscriptions, one rebroadcast each. Asserted rather than
-    // merely compared: if this ever stops being a fixed number the comparison below turns into a
-    // coin toss, and a flaky equivalence proof is worse than none.
+    // Two successful mutations, two open subscriptions, one rebroadcast each.
     assert.deepEqual(
-      emittedRun.websocket.broadcasts.map((entry) => { const frame = JSON.parse(entry); return `${frame.id}:${frame.type}`; }),
+      run.websocket.broadcasts.map((entry) => { const frame = JSON.parse(entry); return `${frame.id}:${frame.type}`; }),
       ["m2:query.result", "m2:query.result", "m4:query.result", "m4:query.result"],
     );
 
-    for (const [index, step] of HTTP_SCRIPT.entries()) {
-      assert.deepEqual(graphRun.http[index], emittedRun.http[index], `HTTP surface differs at "${step.name}"`);
-    }
-    for (const [index, step] of WEBSOCKET_SCRIPT.entries()) {
-      assert.deepEqual(
-        graphRun.websocket.replies[index],
-        emittedRun.websocket.replies[index],
-        `WebSocket surface differs at "${step.type}" (${step.id})`,
-      );
-    }
-    assert.deepEqual(graphRun.websocket.broadcasts, emittedRun.websocket.broadcasts, "subscription broadcasts differ");
+    // Which steps the runtime answers with a 5xx, pinned exactly. The pairwise comparison never made
+    // this claim: a step that started failing in *both* bundles compared equal and passed, so this
+    // is a property of the runtime that the equivalence harness structurally could not see.
+    //
+    // Writing it down turned up four cases that look like status-code bugs rather than deliberate
+    // answers. A body of `{not json` sent with `content-type: application/json` comes back 500
+    // rather than 400, and so do all three OAuth callback rejections — a missing state parameter, an
+    // unrecognised state and an unknown provider are all client errors reported as the Capsule's
+    // fault. Only `endpoint throwing handler` is honestly a 500.
+    //
+    // None of that is this ticket's to change. Ticket 05 is a deletion, and "no behavioural change"
+    // cuts both ways — a drive-by status-code fix here would be indistinguishable, in the diff, from
+    // the deletion going wrong. Pinned rather than tolerated, so the set cannot grow quietly, and so
+    // whoever fixes one has to come here and delete its name.
+    assert.deepEqual(
+      HTTP_SCRIPT.filter((_step, index) => run.http[index].status >= 500).map((step) => step.name),
+      [
+        "endpoint echo bad json",
+        "endpoint throwing handler",
+        "oauth callback no state",
+        "oauth callback unknown state",
+        "oauth callback unknown provider",
+      ],
+    );
+    // And which WebSocket steps answer an error frame, pinned the same way and for the same reason.
+    // Six of them do, and every one is a refusal the script asks for on purpose — a non-object
+    // preferences patch, an unknown File reference, a public URL for a file that is not there, a
+    // bad password-reset code, a sign-in with wrong credentials, and an unregistered message type.
+    // The transport refusing exactly these and nothing else is the claim; that six error frames
+    // came back at all is not, on its own, worth anything.
+    assert.deepEqual(
+      WEBSOCKET_SCRIPT
+        .filter((_step, index) => run.websocket.replies[index].reply?.type === "error")
+        .map((step) => `${step.type}:${step.id}`),
+      [
+        "preferences.update:m11",
+        "file.url:m14",
+        "file.publicUrl.create:m15",
+        "auth.verifyPasswordResetCode:m17",
+        "auth.signIn:m18",
+        "nosuch.messagetype:m23",
+      ],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("both bundles unseal a sealed Server env identically", async () => {
+test("the bundle unseals a sealed Server env", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-sealed-"));
   try {
     const paths = sealedServerEnvPaths(root);
@@ -892,130 +886,123 @@ test("both bundles unseal a sealed Server env identically", async () => {
     const envelope = sealServerEnv({ PROBE_SEALED_VALUE: "sealed-env-value" }, keyPair.publicKey);
     await writeFile(paths.envelope, JSON.stringify(envelope));
 
-    const { emitted, graph } = await buildBundlePair({
+    const source = await buildBundle({
       config: capsuleConfig(),
       serverEnv: {},
       sealedServerEnv: { enabled: true },
       serverSource: CAPSULE_SOURCE,
     });
 
-    const observed = [];
-    for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      await writePublicTree(dir, "<!doctype html><html><body></body></html>");
-      const booted = await bootBundle({
-        source,
-        dir,
-        env: {
-          SPORADES_SEALED_SERVER_ENV_PATH: paths.envelope,
-          SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH: paths.privateKey,
-        },
-      });
-      try {
-        const response = await fetch(`${booted.baseUrl}/probe/status`);
-        observed.push({ label, status: response.status, body: await response.json() });
-      } finally {
-        await booted.stop();
-      }
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const booted = await bootBundle({
+      source,
+      dir,
+      env: {
+        SPORADES_SEALED_SERVER_ENV_PATH: paths.envelope,
+        SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH: paths.privateKey,
+      },
+    });
+    let observed;
+    try {
+      const response = await fetch(`${booted.baseUrl}/probe/status`);
+      observed = { status: response.status, body: await response.json() };
+    } finally {
+      await booted.stop();
     }
 
-    assert.equal(observed[0].body.sealedValue, "sealed-env-value", "sealed Server env did not reach the Capsule");
-    assert.equal(observed[0].status, 202);
-    assert.deepEqual(
-      { ...observed[1], label: "emitted" },
-      { ...observed[0], label: "emitted" },
-      "the two bundles disagree about a sealed Server env",
-    );
+    assert.equal(observed.body.sealedValue, "sealed-env-value", "sealed Server env did not reach the Capsule");
+    assert.equal(observed.status, 202);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("both bundles answer the one-shot Job and Schedule inspection actions identically on SQLite", async () => {
+test("the bundle answers the one-shot Job and Schedule inspection actions on SQLite", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-action-sqlite-"));
   try {
-    const { emitted, graph } = await buildBundlePair({
+    const source = await buildBundle({
       config: capsuleConfig(),
       serverEnv: {},
       serverSource: CAPSULE_SOURCE,
     });
 
-    const runs = [];
-    for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      await writePublicTree(dir, "<!doctype html><html><body></body></html>");
-      // Boot once so the Capsule's Schedules are registered and a Job row exists, then read the
-      // same state back through the one-shot action the CLI and the host helper use.
-      const booted = await bootBundle({ source, dir });
-      try {
-        await fetch(`${booted.baseUrl}/probe/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-      } finally {
-        await booted.stop();
-      }
-      const bundlePath = path.join(dir, "server.mjs");
-      const context = { literals: [[dir, "<dir>"]] };
-      runs.push({
-        label,
-        jobs: normalize(JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout), context),
-        schedules: normalize(JSON.parse((await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir })).stdout), context),
-        unsupported: await runBundleAction(bundlePath, "nope.inspect", { cwd: dir }),
-      });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    // Boot once so the Capsule's Schedules are registered and a Job row exists, then read the same
+    // state back through the one-shot action the CLI and the host helper use.
+    const booted = await bootBundle({ source, dir });
+    try {
+      await fetch(`${booted.baseUrl}/probe/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    } finally {
+      await booted.stop();
     }
+    const bundlePath = path.join(dir, "server.mjs");
+    const context = { literals: [[dir, "<dir>"]] };
+    const jobs = normalize(JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout), context);
+    const schedules = normalize(JSON.parse((await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir })).stdout), context);
+    const unsupported = await runBundleAction(bundlePath, "nope.inspect", { cwd: dir });
 
-    assert.equal(runs[0].jobs.ok, true, JSON.stringify(runs[0].jobs));
-    assert.equal(runs[0].jobs.data.jobs.length, 1, "expected the enqueued Job to be inspectable");
-    assert.equal(runs[0].jobs.data.jobs[0].handler, "tally");
-    assert.equal(runs[0].schedules.data.schedules.length, 1, "expected the declared Schedule to be inspectable");
-    assert.equal(runs[0].schedules.data.schedules[0].name, "tally");
+    assert.equal(jobs.ok, true, JSON.stringify(jobs));
+    assert.equal(jobs.data.jobs.length, 1, "expected the enqueued Job to be inspectable");
+    assert.equal(jobs.data.jobs[0].handler, "tally");
+    assert.equal(schedules.data.schedules.length, 1, "expected the declared Schedule to be inspectable");
+    assert.equal(schedules.data.schedules[0].name, "tally");
 
-    assert.deepEqual(runs[1].jobs, runs[0].jobs, "jobs.inspect differs between the two bundles");
-    assert.deepEqual(runs[1].schedules, runs[0].schedules, "schedules.inspect differs between the two bundles");
-    assert.equal(runs[1].unsupported.status, runs[0].unsupported.status);
-    assert.equal(runs[1].unsupported.stdout, runs[0].unsupported.stdout);
+    // An unknown action is refused rather than ignored, and refused on stdout as JSON, because the
+    // CLI and the host helper parse this stream. The comparison used to carry this claim without
+    // stating it; the shape is written down now.
+    assert.equal(unsupported.status, 1);
+    assert.deepEqual(JSON.parse(unsupported.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported Sporades runtime action.",
+        hint: "Upgrade the Sporades CLI and generated Bundle together.",
+      },
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("neither bundle evaluates Capsule code on the one-shot action path", async () => {
-  // ADR-0028. The emitted-list bundle keeps this true by importing the Capsule's data URL only when
-  // no action was requested. The module-graph bundle has to keep it true through esbuild, which is
+test("the bundle does not evaluate Capsule code on the one-shot action path", async () => {
+  // ADR-0028. The deleted emitted-list bundle kept this true by importing the Capsule's data URL
+  // only when no action was requested. This bundle has to keep it true through esbuild, which is
   // why the entry loads that URL through a variable: a literal would let esbuild resolve the module
   // at build time and pull the Capsule into the graph, where it would be evaluated on every path.
+  // That makes this test load-bearing rather than a second opinion — the hazard it covers belongs
+  // to the surviving mechanism, not the deleted one.
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-action-purity-"));
   try {
     const marker = path.join(root, "capsule-evaluated");
-    const inputs = {
+    const source = await buildBundle({
       config: capsuleConfig(),
       serverEnv: {},
       serverSource: "",
       serverModuleSource: `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "yes"); export default {};`,
-    };
-    const { emitted, graph } = await buildBundlePair(inputs);
+    });
 
-    for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      const bundlePath = path.join(dir, "server.mjs");
-      await writeFile(bundlePath, source);
-      const result = await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir });
-      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
-      assert.deepEqual(
-        JSON.parse(result.stdout),
-        { ok: true, data: { capsule: { name: "bundle-equivalence" }, jobs: [] }, error: null },
-        `${label} action output`,
-      );
-      await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" }, `${label} evaluated the Capsule module`);
-      await assert.rejects(readFile(path.join(dir, "data", "data.db")), { code: "ENOENT" }, `${label} opened a database`);
-    }
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    const bundlePath = path.join(dir, "server.mjs");
+    await writeFile(bundlePath, source);
+    const result = await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      JSON.parse(result.stdout),
+      { ok: true, data: { capsule: { name: "bundle-equivalence" }, jobs: [] }, error: null },
+    );
+    await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" }, "the bundle evaluated the Capsule module");
+    await assert.rejects(readFile(path.join(dir, "data", "data.db")), { code: "ENOENT" }, "the bundle opened a database");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("both bundles read the same Postgres state through the inspection adapter", {
+test("the bundle reads Postgres state through the inspection adapter", {
   skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test.",
 }, async () => {
   const { createPostgresDatabaseAdapter } = await import("../dist/server-runtime-source.js");
@@ -1034,43 +1021,34 @@ test("both bundles read the same Postgres state through the inspection adapter",
     await adapter.prepare(sql(SCHEDULES_INSERT)).run(...schedulesRow("pg-schedule"));
 
     const config = capsuleConfig({ services: { database: { engine: "postgres" } } });
-    const { emitted, graph } = await buildBundlePair({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const source = await buildBundle({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
 
     const env = {
       SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
       SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
     };
-    const runs = [];
-    for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      const bundlePath = path.join(dir, "server.mjs");
-      await writeFile(bundlePath, source);
-      runs.push({
-        label,
-        jobs: await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir, env }),
-        schedules: await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir, env }),
-      });
-    }
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    const bundlePath = path.join(dir, "server.mjs");
+    await writeFile(bundlePath, source);
+    const jobsRun = await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir, env });
+    const schedulesRun = await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir, env });
 
-    // Both read the same rows out of the same database, so this comparison needs no normalization
-    // at all: the bytes on stdout have to match.
-    const emittedJobs = JSON.parse(runs[0].jobs.stdout);
-    assert.equal(emittedJobs.ok, true, runs[0].jobs.stdout + runs[0].jobs.stderr);
-    assert.equal(emittedJobs.data.jobs.length, 1);
-    assert.equal(emittedJobs.data.jobs[0].id, "pg-equivalence");
-    assert.equal(emittedJobs.data.jobs[0].actor.mode, "privileged-server-role");
-    assert.equal("payload" in emittedJobs.data.jobs[0], false);
+    const jobs = JSON.parse(jobsRun.stdout);
+    assert.equal(jobsRun.status, 0, jobsRun.stdout + jobsRun.stderr);
+    assert.equal(jobs.ok, true, jobsRun.stdout + jobsRun.stderr);
+    assert.equal(jobs.data.jobs.length, 1);
+    assert.equal(jobs.data.jobs[0].id, "pg-equivalence");
+    assert.equal(jobs.data.jobs[0].actor.mode, "privileged-server-role");
+    // ADR-0028: the operator view carries no Job payload. The seeded row's payload is
+    // `{"secret":true}`, so this is the assertion that a Postgres read does not leak it.
+    assert.equal("payload" in jobs.data.jobs[0], false);
 
-    const emittedSchedules = JSON.parse(runs[0].schedules.stdout);
-    assert.equal(emittedSchedules.ok, true, runs[0].schedules.stdout + runs[0].schedules.stderr);
-    assert.equal(emittedSchedules.data.schedules.length, 1, runs[0].schedules.stdout);
-    assert.equal(emittedSchedules.data.schedules[0].name, "pg-schedule");
-
-    assert.equal(runs[1].jobs.stdout, runs[0].jobs.stdout, "Postgres jobs.inspect differs between the two bundles");
-    assert.equal(runs[1].jobs.status, runs[0].jobs.status);
-    assert.equal(runs[1].schedules.stdout, runs[0].schedules.stdout, "Postgres schedules.inspect differs between the two bundles");
-    assert.equal(runs[1].schedules.status, runs[0].schedules.status);
+    const schedules = JSON.parse(schedulesRun.stdout);
+    assert.equal(schedulesRun.status, 0, schedulesRun.stdout + schedulesRun.stderr);
+    assert.equal(schedules.ok, true, schedulesRun.stdout + schedulesRun.stderr);
+    assert.equal(schedules.data.schedules.length, 1, schedulesRun.stdout);
+    assert.equal(schedules.data.schedules[0].name, "pg-schedule");
   } finally {
     await adapter.exec(sql("DROP TABLE IF EXISTS [sporades_jobs]")).catch(() => {});
     await adapter.exec(sql("DROP TABLE IF EXISTS [sporades_schedules]")).catch(() => {});
@@ -1079,13 +1057,13 @@ test("both bundles read the same Postgres state through the inspection adapter",
   }
 });
 
-test("both bundles read the same libSQL state through the inspection adapter", async () => {
+test("the bundle reads libSQL state through the inspection adapter", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-action-libsql-"));
   try {
     await withFakeLibsqlService(path.join(root, "remote.db"), async ({ url }) => {
       const { createLibsqlDatabaseAdapter } = await import("../dist/server-runtime-source.js");
-      // Seeded so the comparison has something to disagree about: two empty results match each
-      // other whatever the bundles do.
+      // Seeded rather than read empty: an empty result would satisfy every assertion below without
+      // the pipeline having read anything.
       const seed = await createLibsqlDatabaseAdapter({ url });
       try {
         await seed.exec("CREATE TABLE sporades_jobs (id TEXT, handler TEXT, enqueuedByUserId TEXT, actorUserId TEXT, payload TEXT, status TEXT, availableAt TEXT, attempts INTEGER, idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT, startedAt TEXT, completedAt TEXT, failedAt TEXT, retryJson TEXT, attemptHistory TEXT, cancelRequestedAt TEXT, leaseExpiresAt TEXT)");
@@ -1100,46 +1078,42 @@ test("both bundles read the same libSQL state through the inspection adapter", a
       }
 
       const config = capsuleConfig({ services: { database: { engine: "libsql" } } });
-      const { emitted, graph } = await buildBundlePair({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
+      const source = await buildBundle({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
       const env = {
         SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
         SPORADES_SERVICE_DATABASE_URL: url,
       };
-      const runs = [];
-      for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-        const dir = path.join(root, label);
-        await mkdir(dir, { recursive: true });
-        const bundlePath = path.join(dir, "server.mjs");
-        await writeFile(bundlePath, source);
-        runs.push({
-          jobs: await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir, env }),
-          schedules: await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir, env }),
-        });
-      }
-      const emittedJobs = JSON.parse(runs[0].jobs.stdout);
-      assert.equal(emittedJobs.ok, true, runs[0].jobs.stdout + runs[0].jobs.stderr);
-      assert.equal(emittedJobs.data.jobs.length, 1, runs[0].jobs.stdout);
-      assert.equal(emittedJobs.data.jobs[0].id, "libsql-equivalence");
-      assert.equal("payload" in emittedJobs.data.jobs[0], false);
-      const emittedSchedules = JSON.parse(runs[0].schedules.stdout);
-      assert.equal(emittedSchedules.ok, true, runs[0].schedules.stdout + runs[0].schedules.stderr);
-      assert.equal(emittedSchedules.data.schedules.length, 1, runs[0].schedules.stdout);
-      assert.equal(emittedSchedules.data.schedules[0].name, "libsql-schedule");
+      const dir = path.join(root, "graph");
+      await mkdir(dir, { recursive: true });
+      const bundlePath = path.join(dir, "server.mjs");
+      await writeFile(bundlePath, source);
+      const jobsRun = await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir, env });
+      const schedulesRun = await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir, env });
 
-      assert.equal(runs[1].jobs.stdout, runs[0].jobs.stdout, "libSQL jobs.inspect differs between the two bundles");
-      assert.equal(runs[1].schedules.stdout, runs[0].schedules.stdout, "libSQL schedules.inspect differs between the two bundles");
+      const jobs = JSON.parse(jobsRun.stdout);
+      assert.equal(jobsRun.status, 0, jobsRun.stdout + jobsRun.stderr);
+      assert.equal(jobs.ok, true, jobsRun.stdout + jobsRun.stderr);
+      assert.equal(jobs.data.jobs.length, 1, jobsRun.stdout);
+      assert.equal(jobs.data.jobs[0].id, "libsql-equivalence");
+      // The seeded payload is `{"secret":true}` (ADR-0028, as for Postgres above).
+      assert.equal("payload" in jobs.data.jobs[0], false);
+      const schedules = JSON.parse(schedulesRun.stdout);
+      assert.equal(schedulesRun.status, 0, schedulesRun.stdout + schedulesRun.stderr);
+      assert.equal(schedules.ok, true, schedulesRun.stdout + schedulesRun.stderr);
+      assert.equal(schedules.data.schedules.length, 1, schedulesRun.stdout);
+      assert.equal(schedules.data.schedules[0].name, "libsql-schedule");
     });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("both bundles drive S3-compatible file storage identically", async () => {
+test("the bundle drives S3-compatible file storage", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-s3-"));
   try {
     await withFakeS3CompatibleService(async ({ endpoint }) => {
       const config = capsuleConfig({ services: { storage: { kind: "storage", engine: "minio" } } });
-      const { emitted, graph } = await buildBundlePair({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
+      const source = await buildBundle({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
       // The credentials the fake service verifies against.
       const env = {
         SPORADES_SERVICE_STORAGE_ENGINE: "minio",
@@ -1151,43 +1125,57 @@ test("both bundles drive S3-compatible file storage identically", async () => {
         SPORADES_SERVICE_STORAGE_NAMESPACE: "bundle-equivalence",
       };
 
-      const observed = [];
-      for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-        const dir = path.join(root, label);
-        await mkdir(dir, { recursive: true });
-        await writePublicTree(dir, "<!doctype html><html><body></body></html>");
-        const booted = await bootBundle({ source, dir, env });
-        const context = { literals: [[dir, "<dir>"], [booted.baseUrl, "<origin>"], [endpoint, "<s3>"]] };
+      const dir = path.join(root, "graph");
+      await mkdir(dir, { recursive: true });
+      await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+      const booted = await bootBundle({ source, dir, env });
+      const context = { literals: [[dir, "<dir>"], [booted.baseUrl, "<origin>"], [endpoint, "<s3>"]] };
+      let observed;
+      try {
+        const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, {
+          headers: { "x-sporades-host-probe": "equivalence" },
+        });
+        const socket = await openBundleSocket(booted.baseUrl);
+        const uploads = [];
         try {
-          const health = await fetch(`${booted.baseUrl}/__sporades/health/runtime`, {
-            headers: { "x-sporades-host-probe": "equivalence" },
-          });
-          const socket = await openBundleSocket(booted.baseUrl);
-          const uploads = [];
-          try {
-            for (const message of [
-              { id: "s1", type: "file.uploadUrl", file: { name: "probe.txt", type: "text/plain", size: 11, path: "/probe.txt" } },
-              { id: "s2", type: "file.url", fileReference: "not-a-real-file" },
-            ]) {
-              socket.send(message);
-              uploads.push(normalize(await socket.waitFor((candidate) => candidate.id === message.id), context));
-            }
-          } finally {
-            socket.close();
+          for (const message of [
+            { id: "s1", type: "file.uploadUrl", file: { name: "probe.txt", type: "text/plain", size: 11, path: "/probe.txt" } },
+            { id: "s2", type: "file.url", fileReference: "not-a-real-file" },
+          ]) {
+            socket.send(message);
+            uploads.push(normalize(await socket.waitFor((candidate) => candidate.id === message.id), context));
           }
-          observed.push({
-            status: health.status,
-            health: normalize(await health.json(), context),
-            uploads,
-          });
         } finally {
-          await booted.stop();
+          socket.close();
         }
+        observed = {
+          status: health.status,
+          health: normalize(await health.json(), context),
+          uploads,
+        };
+      } finally {
+        await booted.stop();
       }
 
-      assert.equal(observed[0].status, 200, JSON.stringify(observed[0]));
-      assert.equal(observed[0].health.data.checks.fileStorage.ok, true, "the fake S3 service was not exercised");
-      assert.deepEqual(observed[1], observed[0], "the two bundles disagree about S3-compatible file storage");
+      assert.equal(observed.status, 200, JSON.stringify(observed));
+      assert.equal(observed.health.data.checks.fileStorage.ok, true, "the fake S3 service was not exercised");
+      // The two frames the socket was driven for, which the comparison used to carry without ever
+      // stating. Note what the first one actually says: the upload is offered against the runtime's
+      // own `/__sporades/uploads/` route, not against a presigned S3 URL — the Capsule proxies the
+      // body rather than handing the client a signed URL to the bucket. The S3 path is exercised
+      // here by the health check above, which reaches the fake service.
+      assert.equal(observed.uploads[0].id, "s1");
+      assert.equal(observed.uploads[0].type, "file.uploadUrl.result", JSON.stringify(observed.uploads[0]));
+      assert.equal(observed.uploads[0].error, null);
+      assert.equal(observed.uploads[0].data.method, "PUT");
+      assert.match(observed.uploads[0].data.uploadUrl, /^\/__sporades\/uploads\//);
+      assert.equal(observed.uploads[0].data.file.name, "probe.txt");
+      assert.equal(observed.uploads[0].data.file.size, 11);
+      // And an unknown File reference is refused rather than signed.
+      assert.equal(observed.uploads[1].id, "s2");
+      assert.equal(observed.uploads[1].type, "error", JSON.stringify(observed.uploads[1]));
+      assert.equal(observed.uploads[1].data, null);
+      assert.equal(observed.uploads[1].error.message, "File not found.");
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1197,12 +1185,17 @@ test("both bundles drive S3-compatible file storage identically", async () => {
 // ---------------------------------------------------------------------------------------------
 // The constants.
 //
-// The emitted-list bundle re-declares each of these in a preamble, serialized from the runtime
-// module's own declaration. The module-graph bundle closes over the declaration itself. Comparing
-// the two by reading the generated text would prove nothing about what a Capsule executes, so both
-// bundles are booted and asked what the name is actually bound to — including its type, because a
-// `Set` that arrived as an array or a number that arrived as a string is exactly the silent class
-// this whole effort exists to remove.
+// The deleted emitted-list bundle re-declared each of these in a preamble, serialized from the
+// runtime module's own declaration, because a function reached that bundle as source text and a
+// module binding it closed over did not follow. Seventeen constants travelled that way, several of
+// them security thresholds, and a restated copy that drifted would have been silent.
+//
+// This bundle closes over the declaration itself, so the second copy is gone and with it the class
+// of drift. What is checked here is the claim underneath: that the values a booted Capsule is
+// holding are the values the runtime modules declare. Reading the generated text would prove
+// nothing about what a Capsule executes, so a Capsule is booted and asked what each name is
+// actually bound to — including its type, because a `Set` that arrived as an array or a number that
+// arrived as a string is exactly the silent class this whole effort exists to remove.
 // ---------------------------------------------------------------------------------------------
 
 const RUNTIME_SOURCE_CONSTANTS = [
@@ -1250,74 +1243,82 @@ process.exit(0);
 `;
 }
 
-test("every constant the preamble serializes carries the same value and the same type in the module-graph bundle", async () => {
+// The same description, computed in this process against the modules `dist/` exports. The probe
+// above runs the string form inside a booted Capsule; this one runs on the declarations that Capsule
+// was built from, so the two can be compared.
+function describeConstant(value) {
+  if (typeof value === "symbol") return { type: "symbol", description: value.description };
+  if (value instanceof Set) return { type: "Set", values: [...value].map(describeConstant) };
+  if (value instanceof Map) return { type: "Map", entries: [...value].map(([k, v]) => [k, describeConstant(v)]) };
+  if (Array.isArray(value)) return { type: "Array", values: value.map(describeConstant) };
+  if (value === null) return { type: "null" };
+  if (typeof value === "object") return { type: "object", entries: Object.entries(value).map(([k, v]) => [k, describeConstant(v)]) };
+  return { type: typeof value, value };
+}
+
+test("every runtime constant reaches a booted Capsule with the value and the type its module declares", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-constants-"));
   try {
-    const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE };
-    const emittedReport = path.join(root, "emitted.json");
-    const graphReport = path.join(root, "graph.json");
-
-    // The emitted-list bundle declares every one of these at its own top level, so the report can
-    // name them directly. The module-graph bundle resolves names through imports, so its copy of
-    // the same report brings the bindings in — which is the difference under test.
-    const emitted = createServerBundleSource({ ...inputs, serverModuleSource: await compiledCapsuleModule() })
-      + constantProbeReport(emittedReport);
-    const graph = await createServerBundleModuleSource({
-      ...inputs,
-      serverModuleSource: await compiledCapsuleModule(),
-      epilogue: [
-        `import { ${RUNTIME_SOURCE_CONSTANTS.join(", ")} } from "../server-runtime-source.js";`,
-        `import { PUBLIC_TREE_LIMITS } from "../public-tree-contract.js";`,
-        constantProbeReport(graphReport),
-      ].join("\n"),
-    });
-
-    for (const [label, source] of [["emitted", emitted], ["graph", graph]]) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      await writePublicTree(dir, "<!doctype html><html><body></body></html>");
-      const bundlePath = path.join(dir, "server.mjs");
-      await writeFile(bundlePath, source);
-      const port = await reserveFreePort();
-      const result = spawnSync(process.execPath, [bundlePath], {
-        cwd: dir,
-        env: { ...process.env, PORT: String(port) },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, `${label} constant probe failed: ${result.stderr}`);
-    }
-
-    const emittedConstants = JSON.parse(await readFile(emittedReport, "utf8"));
-    const graphConstants = JSON.parse(await readFile(graphReport, "utf8"));
-
-    assert.deepEqual(Object.keys(emittedConstants).sort(), [...PROBED_CONSTANTS].sort());
-
-    // The list above is written out by hand, and so is the preamble's. Two hand-kept lists agreeing
-    // with each other proves nothing about a constant added to only one of them, and this probe's
-    // own assertions cannot see that gap: a constant nobody probes is a constant nobody compares.
-    //
-    // Derived from the runtime module instead. The preamble can only serialize what that module
-    // exports, so every exported SCREAMING_CASE binding is a candidate — and any that is not probed
-    // has to be named here as a deliberate exclusion rather than quietly missed.
-    const runtimeModule = await import("../dist/server-runtime-source.js");
-    const NOT_A_SERIALIZED_CONSTANT = new Set(["SERVER_RUNTIME_SOURCE_FUNCTIONS"]);
-    assert.deepEqual(
-      Object.keys(runtimeModule).filter((name) => /^[A-Z][A-Z0-9_]*$/.test(name) && !NOT_A_SERIALIZED_CONSTANT.has(name)).sort(),
-      [...RUNTIME_SOURCE_CONSTANTS].sort(),
-      "the runtime module exports a constant this probe does not compare",
+    const report = path.join(root, "graph.json");
+    const source = await buildBundle(
+      { config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE },
+      {
+        epilogue: [
+          `import { ${RUNTIME_SOURCE_CONSTANTS.join(", ")} } from "../server-runtime-source.js";`,
+          `import { PUBLIC_TREE_LIMITS } from "../public-tree-contract.js";`,
+          constantProbeReport(report),
+        ].join("\n"),
+      },
     );
 
-    // The report has to have observed real structure, or agreement between two empty objects would
-    // pass for equivalence.
-    assert.equal(emittedConstants.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
-    assert.equal(emittedConstants.PRIVILEGED_AUDIT_ACTOR_KINDS.type, "Set");
-    assert.equal(emittedConstants.SIDE_EFFECT_SQL_KEYWORDS.type, "Set");
-    assert.ok(emittedConstants.SIDE_EFFECT_SQL_KEYWORDS.values.length > 5);
-    assert.equal(emittedConstants.ACL_HELPER_STATE.type, "symbol");
-    assert.equal(emittedConstants.PUBLIC_TREE_LIMITS.type, "object");
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const bundlePath = path.join(dir, "server.mjs");
+    await writeFile(bundlePath, source);
+    const port = await reserveFreePort();
+    const result = spawnSync(process.execPath, [bundlePath], {
+      cwd: dir,
+      env: { ...process.env, PORT: String(port) },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `constant probe failed: ${result.stderr}`);
 
+    const bundled = JSON.parse(await readFile(report, "utf8"));
+    assert.deepEqual(Object.keys(bundled).sort(), [...PROBED_CONSTANTS].sort());
+
+    // The list above is written out by hand, and a hand-kept list cannot see a constant added to the
+    // runtime and never added to it: a constant nobody probes is a constant nobody checks.
+    //
+    // Derived from the runtime module instead. Every exported SCREAMING_CASE binding is a candidate,
+    // and any that is not probed has to be named here as a deliberate exclusion rather than quietly
+    // missed.
+    const runtimeModule = await import("../dist/server-runtime-source.js");
+    const NOT_A_RUNTIME_CONSTANT = new Set(["SERVER_RUNTIME_SOURCE_FUNCTIONS"]);
+    assert.deepEqual(
+      Object.keys(runtimeModule).filter((name) => /^[A-Z][A-Z0-9_]*$/.test(name) && !NOT_A_RUNTIME_CONSTANT.has(name)).sort(),
+      [...RUNTIME_SOURCE_CONSTANTS].sort(),
+      "the runtime module exports a constant this probe does not check",
+    );
+
+    // The report has to have observed real structure, or a probe that wrote `{}` for everything
+    // would agree with a `dist/` read that did the same.
+    assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
+    assert.equal(bundled.PRIVILEGED_AUDIT_ACTOR_KINDS.type, "Set");
+    assert.equal(bundled.SIDE_EFFECT_SQL_KEYWORDS.type, "Set");
+    assert.ok(bundled.SIDE_EFFECT_SQL_KEYWORDS.values.length > 5);
+    assert.equal(bundled.ACL_HELPER_STATE.type, "symbol");
+    assert.equal(bundled.PUBLIC_TREE_LIMITS.type, "object");
+
+    // This compared the two bundles to each other until ticket 05, and the comparison could only
+    // ever say they agreed — not that either was right. Compared against the declarations now, which
+    // is the claim that actually matters and the one ticket 05 has to make: several of these are
+    // security thresholds, and what a deployed Capsule enforces has to be what the runtime source
+    // says. A restated copy that drifted would resolve exactly as cleanly as a correct one.
+    const publicTreeContract = await import("../dist/public-tree-contract.js");
     for (const name of PROBED_CONSTANTS) {
-      assert.deepEqual(graphConstants[name], emittedConstants[name], `constant ${name} differs between the two bundles`);
+      const declared = name === "PUBLIC_TREE_LIMITS" ? publicTreeContract[name] : runtimeModule[name];
+      assert.deepEqual(bundled[name], describeConstant(declared), `constant ${name} is not what its module declares`);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1325,15 +1326,13 @@ test("every constant the preamble serializes carries the same value and the same
 });
 
 // ---------------------------------------------------------------------------------------------
-// The read-only inspection surface, in both bundles.
+// The read-only inspection surface.
 //
-// This is the first region of the runtime to have left `server-runtime-source.ts`, and the two
-// bundles now reach it by genuinely different routes: the module-graph bundle imports
-// `inspection-sql` and lets esbuild resolve the names, while the emitted-list bundle carries that
-// module's compiled text as one block and destructures its exports at the bundle's top level
-// (ADR-0041). Everything else about this file compares *behaviour over a Capsule*; the inspection
-// gate is not reachable that way, because `sporades db query` goes through the CLI rather than
-// through HTTP or the WebSocket transport. So it is compared directly, inside each booted bundle.
+// This is the first region of the runtime to have left `server-runtime-source.ts`, and the region
+// ADR-0038 records the most defects in. Everything else in this file checks *behaviour over a
+// Capsule*; the inspection gate is not reachable that way, because `sporades db query` goes through
+// the CLI rather than through HTTP or the WebSocket transport. So it is driven directly, inside a
+// booted bundle, and compared against the module under `dist/` that the bundle was built from.
 //
 // The corpus is asserted to contain every shape this gate has actually shipped a defect in before
 // any result from it is read. ADR-0038 records why: three separate rounds of this work reported
@@ -1473,70 +1472,107 @@ function runInspectionProbe(label, dir, bundlePath, attempt = 1) {
   );
 }
 
-test("both bundles answer the whole read-only inspection surface identically", async () => {
+// The same report, computed in this process from the modules under `dist/`. The probe above runs
+// the string form inside a booted Capsule; this runs the identical calls against the declarations
+// that Capsule was built from. Round-tripped through JSON so the two are comparable: the probe's
+// report has been through `JSON.stringify` and an `undefined` or a `Set` does not survive that.
+async function inspectionSurfaceReference() {
+  const sqlModule = await import("../dist/inspection-sql.js");
+  const guardModule = await import("../dist/log-index-guard.js");
+  const call = (fn, ...args) => {
+    try { return { ok: true, value: fn(...args) }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }
+  };
+  const {
+    readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens,
+    containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma,
+    skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes,
+    sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator,
+    validateReadOnlyInspectionSql,
+  } = sqlModule;
+  const { isInternalLogIndexMetadataRow, readSqlTableReference, targetsInternalLogIndexTable } = guardModule;
+  return JSON.parse(JSON.stringify(INSPECTION_SURFACE_CORPUS.map((sql) => ({
+    sql,
+    validate: call(validateReadOnlyInspectionSql, sql),
+    strip: call(sqlWithoutTrailingTerminator, sql),
+    disagreement: call(sqlTheEnginesLexDifferently, sql),
+    fingerprintCr: call(sqlContentFingerprint, sql, true),
+    fingerprintLf: call(sqlContentFingerprint, sql, false),
+    firstToken: call(readFirstSqlToken, sql),
+    multiple: call(hasMultipleSqlStatements, sql),
+    sideEffect: call(containsSideEffectSqlToken, sql),
+    tokensCr: call(readSqlTokens, sql, true),
+    tokensLf: call(readSqlTokens, sql, false),
+    trivia: call(skipSqlTrivia, sql, 0, true),
+    quotedIdentifier: call(readSqlQuotedIdentifier, sql, 0, "'\"`["),
+    bareIdentifier: call(readBareSqlIdentifier, sql, 0),
+    pragma: call(isSafeInspectionPragma, sql, 6),
+    skipEveryEngine: call(skipSqlQuotedOrCommented, sql, 0, sqlDialectEveryEngineQuotes(true)),
+    skipWithheld: call(skipSqlQuotedOrCommented, sql, 0, sqlDialectWithoutPostgresStringForms(true)),
+    targetsLogIndex: call(targetsInternalLogIndexTable, sql),
+    logIndexReference: call(readSqlTableReference, sql, 0),
+    createTableRow: call(isInternalLogIndexMetadataRow, { sql: "CREATE TABLE " + sql }, sql),
+    schemaQueryRow: call(isInternalLogIndexMetadataRow, { note: sql }, "SELECT note FROM sqlite_schema"),
+  }))));
+}
+
+test("the bundled inspection gate answers exactly what the module under dist answers", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-inspection-"));
   try {
-    const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
-    const reportPath = (label) => path.join(root, `${label}.json`);
-    const bundles = [
-      ["emitted", createServerBundleSource(inputs) + inspectionSurfaceReport(reportPath("emitted"))],
-      [
-        "graph",
-        await createServerBundleModuleSource({
-          ...inputs,
-          // The module under test, imported by name. The emitted-list bundle reaches the same names
-          // through the destructuring its inspection module block ends with, and that difference in
-          // how the names resolve is the thing this test exists to find nothing wrong with.
-          epilogue: [
-            `import { readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens, containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma, skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes, sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "../inspection-sql.js";`,
-            `import { isInternalLogIndexMetadataRow, readSqlTableReference, targetsInternalLogIndexTable } from "../log-index-guard.js";`,
-            inspectionSurfaceReport(reportPath("graph")),
-          ].join("\n"),
-        }),
-      ],
-    ];
+    const reportPath = path.join(root, "graph.json");
+    const source = await buildBundle(
+      { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" },
+      {
+        // The modules under test, imported by name so the probe resolves them the way the runtime
+        // does. Ticket 05 turned this from a bundle-to-bundle comparison into a bundle-to-source
+        // one, which is the stronger claim: the old form could only report that two artifacts
+        // agreed, never that either matched the module a reader would go and edit.
+        epilogue: [
+          `import { readBareSqlIdentifier, readFirstSqlToken, readSqlQuotedIdentifier, readSqlTokens, containsSideEffectSqlToken, hasMultipleSqlStatements, isSafeInspectionPragma, skipSqlQuotedOrCommented, skipSqlTrivia, sqlContentFingerprint, sqlDialectEveryEngineQuotes, sqlDialectWithoutPostgresStringForms, sqlTheEnginesLexDifferently, sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "../inspection-sql.js";`,
+          `import { isInternalLogIndexMetadataRow, readSqlTableReference, targetsInternalLogIndexTable } from "../log-index-guard.js";`,
+          inspectionSurfaceReport(reportPath),
+        ].join("\n"),
+      },
+    );
 
-    for (const [label, source] of bundles) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      const bundlePath = path.join(dir, "server.mjs");
-      await writeFile(bundlePath, source);
-      runInspectionProbe(label, dir, bundlePath);
-    }
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    const bundlePath = path.join(dir, "server.mjs");
+    await writeFile(bundlePath, source);
+    runInspectionProbe("graph", dir, bundlePath);
 
-    const emittedReport = JSON.parse(await readFile(reportPath("emitted"), "utf8"));
-    const graphReport = JSON.parse(await readFile(reportPath("graph"), "utf8"));
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
 
-    // Guard the measurement before trusting it. Two reports of refusals-for-everything, or of a
-    // gate that answered nothing, would compare equal and prove nothing.
-    assert.equal(emittedReport.length, INSPECTION_SURFACE_CORPUS.length);
-    const admitted = emittedReport.filter((entry) => entry.validate.value?.ok === true).length;
-    const refused = emittedReport.filter((entry) => entry.validate.value?.ok === false).length;
-    assert.ok(admitted > 20, `the corpus admits ${admitted} statements — too few to be comparing an inspection gate`);
-    assert.ok(refused > 20, `the corpus refuses ${refused} statements — too few to be comparing an inspection gate`);
+    // Guard the measurement before trusting it. A report of refusals-for-everything, or of a gate
+    // that answered nothing, would match a reference that did the same and prove nothing.
+    assert.equal(report.length, INSPECTION_SURFACE_CORPUS.length);
+    const admitted = report.filter((entry) => entry.validate.value?.ok === true).length;
+    const refused = report.filter((entry) => entry.validate.value?.ok === false).length;
+    assert.ok(admitted > 20, `the corpus admits ${admitted} statements — too few to be checking an inspection gate`);
+    assert.ok(refused > 20, `the corpus refuses ${refused} statements — too few to be checking an inspection gate`);
     assert.ok(
-      new Set(emittedReport.map((entry) => entry.validate.value?.error?.message)).size >= 4,
+      new Set(report.map((entry) => entry.validate.value?.error?.message)).size >= 4,
       "the corpus does not reach every refusal limb, so a limb that changed would be invisible here",
     );
 
-    // And the same for the log-index guard's two limbs, which are the newest thing in this report.
-    // A limb the corpus reaches in one direction only compares clean for the wrong reason, which is
-    // the failure ADR-0038 records the sweep corpus making three separate times.
+    // And the same for the log-index guard's limbs. A limb the corpus reaches in one direction only
+    // passes for the wrong reason, which is the failure ADR-0038 records the sweep corpus making
+    // three separate times.
     for (const [limb, reads] of [
       ["targetsLogIndex", (entry) => entry.targetsLogIndex.value],
       ["createTableRow", (entry) => entry.createTableRow.value],
       ["schemaQueryRow", (entry) => entry.schemaQueryRow.value],
     ]) {
-      const hits = emittedReport.filter((entry) => reads(entry) === true).length;
-      assert.ok(hits > 0, `the corpus never makes ${limb} answer true, so the log-index guard is compared vacuously`);
-      assert.ok(hits < emittedReport.length, `the corpus never makes ${limb} answer false, so the log-index guard is compared vacuously`);
+      const hits = report.filter((entry) => reads(entry) === true).length;
+      assert.ok(hits > 0, `the corpus never makes ${limb} answer true, so the log-index guard is checked vacuously`);
+      assert.ok(hits < report.length, `the corpus never makes ${limb} answer false, so the log-index guard is checked vacuously`);
     }
 
-    for (const [index, entry] of emittedReport.entries()) {
+    const reference = await inspectionSurfaceReference();
+    for (const [index, entry] of reference.entries()) {
       assert.deepEqual(
-        graphReport[index],
+        report[index],
         entry,
-        `the two bundles answer differently for ${JSON.stringify(entry.sql)}`,
+        `the bundled gate and dist/ answer differently for ${JSON.stringify(entry.sql)}`,
       );
     }
   } finally {
@@ -1544,1159 +1580,50 @@ test("both bundles answer the whole read-only inspection surface identically", a
   }
 });
 
-// While the CLI ships as a bundle there are two copies of every migrated module: the one esbuild
-// inlined into `bin/sporades.js`, which is what `createServerBundleSource` imports, and the file
-// under `dist/` on disk, which is what it builds the carried text from. A tree whose `dist/` and
-// `bin/` came from different builds would put the `dist/` gate inside a Capsule while every other
-// runtime function in that same Capsule came from `bin/`, and nothing in `scripts/` compares the two
-// for freshness.
+// Two tests stood here until ticket 05, and both belonged to the deleted builder rather than to the
+// runtime.
 //
-// So the builder compares them itself, and this is that check exercised against trees skewed on
-// purpose. Driven through `migratedRuntimeModulesBlockFrom` against a copy of `dist/` in a temporary
-// directory, rather than by editing the tree the suite is running out of.
+// The first drove the carrier's freshness check: while the CLI ships as `bin/sporades.js` there are
+// two copies of every migrated module — the one esbuild inlined into the binary, which the
+// emitted-list builder imported, and the file under `dist/`, which it built the carried text from —
+// and it compared them on every build against a set of probe fixtures. The second asserted that the
+// emitted-list bundle carried a migrated module's *private* helpers, which was that ticket's whole
+// point: a helper registered nowhere still reached a deployed Capsule, where under the emitted list
+// it would have been a `ReferenceError`.
 //
-// A directory rather than a string of module text, which is what this drove before the carrier
-// bundled: `buildSync` accepts no plugins, so an in-memory graph cannot be handed to esbuild. It is
-// also the more faithful seam — a skewed module is resolved here by the same import the shipping
-// build resolves, which is what lets the last case below exist at all.
-test("a carried copy of a migrated runtime module that disagrees with the running one fails the build", async () => {
-  const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
-  const files = ["inspection-sql.js", "log-index-guard.js", "mail-config.js", "mail-runtime.js", "runtime-errors.js", "auth-runtime.js", "jobs-runtime.js", "user-preferences-runtime.js", "maybe-promise.js", "file-storage-runtime.js", "runtime-log-policy.js", "stored-value-coding.js", "acl-runtime.js", "http-runtime.js", "log-index-storage.js", "database-runtime.js"];
-  const originals = Object.fromEntries(
-    await Promise.all(files.map(async (file) => [file, await readFile(path.join(distDir, file), "utf8")])),
-  );
+// Both are gone with the builder they tested, and the ~1,100 lines of skew-probe fixtures in
+// `server-bundle-template.ts` that fed the first went with them. The private-helper property is not
+// dropped: it is what a module graph does by construction, and `dist/`-freshness is now covered only
+// in the narrow sense that esbuild cannot bundle a `dist/` file that will not parse. See ADR-0041
+// for what that trade actually costs.
 
-  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-skew-"));
-  // Writes `dist/` into a scratch directory with one file replaced, and builds the block from it.
-  const blockWith = async (file, contents) => {
-    const dir = path.join(root, `skew-${Math.random().toString(36).slice(2)}`);
-    await mkdir(dir, { recursive: true });
-    await Promise.all(files.map((name) => writeFile(path.join(dir, name), name === file ? contents : originals[name])));
-    return migratedRuntimeModulesBlockFrom(dir);
-  };
-
-  try {
-    // The honest copies build, or every rejection below would be meaningless. Both modules are
-    // asserted present in the one block, since carrying them together is the point of the change
-    // that introduced this: a private helper of the gate, and the guard's private identifier reader.
-    const honest = await blockWith("inspection-sql.js", originals["inspection-sql.js"]);
-    assert.match(honest, /function nestingBlockCommentEnd\(/);
-    assert.match(honest, /function readSqlIdentifier\(/);
-    // And the mail domain's, which arrived in batch 2. `encodeMimeHeaderValue` is private to
-    // `mail-runtime`; `validateMailConfig` is the whole of `mail-config`, a file that was reaching
-    // the bundle through the emitted list until this batch carried it here instead.
-    assert.match(honest, /function encodeMimeHeaderValue\(/);
-    assert.match(honest, /function validateMailConfig\(/);
-    // The allowance the two static-import cases below are the counterweight to: the SMTP transport
-    // opens its sockets with `await import("node:tls" | "node:net")`, esbuild emits a dynamic import
-    // of an external verbatim rather than lowering it, and a deployed Capsule resolves a builtin
-    // exactly as the bundle's own top-level imports do. Asserted on the text so that a carrier which
-    // started lowering these — to `require(…)`, which this bundle cannot execute — is caught here
-    // rather than at a Capsule's boot.
-    assert.match(honest, /await import\("node:tls"\)/);
-    assert.match(honest, /await import\("node:net"\)/);
-    assert.equal(/\brequire\s*\(/.test(honest), false, "the carried block would resolve a specifier through `require`");
-
-    // Guard the probe before trusting it. A corpus the gate admits in full cannot tell an
-    // allow-everything validator from the real one, which is the case this check exists for.
-    const refused = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === false);
-    const admitted = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => inspectionSqlModule.validateReadOnlyInspectionSql(sql).ok === true);
-    assert.ok(refused.length >= 5, `the skew probe only refuses ${refused.length} statements — it cannot see a validator that admits everything`);
-    assert.ok(admitted.length >= 5, `the skew probe only admits ${admitted.length} statements — it cannot see a validator that refuses everything`);
-
-    // And the same, for the second module carried here: the probe must reach both of the log-index
-    // guard's answers in both directions, or a skewed copy of it compares clean for the wrong reason.
-    const targeted = MIGRATED_MODULE_SKEW_PROBE.filter((sql) => logIndexGuardModule.targetsInternalLogIndexTable(sql));
-    assert.ok(targeted.length >= 2, `the skew probe reaches the log-index guard for ${targeted.length} statements — too few to see it go missing`);
-    assert.ok(
-      MIGRATED_MODULE_SKEW_PROBE.some((sql) => !logIndexGuardModule.targetsInternalLogIndexTable(sql)),
-      "the skew probe cannot see a log-index guard that answers true for everything",
-    );
-    const flagged = MIGRATED_MODULE_ROW_SKEW_PROBE.filter(([row, sql]) => logIndexGuardModule.isInternalLogIndexMetadataRow(row, sql));
-    assert.ok(flagged.length >= 3, `the row probe flags ${flagged.length} rows — too few to see the row filter go missing`);
-    assert.ok(
-      MIGRATED_MODULE_ROW_SKEW_PROBE.some(([row, sql]) => !logIndexGuardModule.isInternalLogIndexMetadataRow(row, sql)),
-      "the row probe cannot see a row filter that flags everything",
-    );
-
-    // And for the mail domain, on the same terms. A config probe the validator accepts in full
-    // cannot tell a `validateMailConfig` that returns its input from the real one, and one it
-    // refuses in full cannot tell it from a validator that refuses everything — so both directions
-    // are settled before any rejection below is trusted.
-    const threw = (config) => {
-      try {
-        mailConfigModule.validateMailConfig(config);
-        return false;
-      } catch {
-        return true;
-      }
-    };
-    const refusedConfigs = MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE.filter(threw);
-    assert.ok(refusedConfigs.length >= 4, `the mail config probe only refuses ${refusedConfigs.length} configurations — it cannot see a validator that admits everything`);
-    assert.ok(
-      MIGRATED_MODULE_MAIL_CONFIG_SKEW_PROBE.filter((config) => !threw(config)).length >= 4,
-      "the mail config probe cannot see a validator that refuses everything",
-    );
-
-    // The MIME probe's teeth are that the messages differ from each other in the limbs the private
-    // helpers own. Assembling them all identically would compare a skewed copy as clean, which is
-    // the "reports clean for the wrong reason" shape this whole check exists for.
-    const assembled = MIGRATED_MODULE_MAIL_MESSAGE_SKEW_PROBE.map((message) => mailRuntimeModule.buildSmtpMessage(message));
-    assert.equal(new Set(assembled).size, assembled.length, "the mail message probe assembles two identical messages — one of them proves nothing");
-    assert.ok(
-      assembled.some((mime) => mime.includes("=?UTF-8?B?")),
-      "the mail message probe never reaches the RFC 2047 encoder, so a copy that lost it compares clean",
-    );
-    assert.ok(
-      assembled.some((mime) => /\r\n[ \t]/.test(mime)),
-      "the mail message probe never folds a header, so a copy that lost the folder compares clean",
-    );
-
-    // And the auth domain, which arrived in batch 3. Its private helpers and its credential hashing
-    // are in the block, and `commandError` is in it through `runtime-errors.js` — the module auth
-    // imports, which is why the block resolving imports between migrated modules matters here again.
-    assert.match(honest, /function passwordResetCodeParts\(/);
-    assert.match(honest, /function hashEmailPassword\(/);
-    assert.match(honest, /function commandError\(/);
-    // The accessor ADR-0042 records, asserted on the text: this is the only way the carried copy of
-    // the auth domain reaches `scryptSync`, and a carrier that had started lowering it — or a module
-    // edited back to a static `import … from "node:crypto"` — is caught here rather than at a
-    // Capsule's boot. The `require` assertion above covers the second half of that.
-    assert.match(honest, /process\.getBuiltinModule\("node:crypto"\)/);
-
-    // Guard the auth probe in both directions, on the same terms as the three above. A credential
-    // probe that never accepts cannot see a `verifyEmailPassword` replaced by one returning false,
-    // and one that never rejects cannot see one returning true — which is the whole point of a
-    // password check.
-    const accepted = MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE.filter(
-      ([password, salt, expected]) => authRuntimeModule.verifyEmailPassword(password, salt, expected) === true,
-    );
-    assert.ok(accepted.length >= 1, "the credential probe never accepts a password, so a copy that rejects everything compares clean");
-    assert.ok(
-      MIGRATED_MODULE_AUTH_CREDENTIAL_SKEW_PROBE.filter(
-        ([password, salt, expected]) => authRuntimeModule.verifyEmailPassword(password, salt, expected) === false,
-      ).length >= 3,
-      "the credential probe never rejects a password, so a copy that accepts everything compares clean",
-    );
-    // And the pure gates, which are the domain's refusals: each named gate must both admit and
-    // refuse somewhere in the probe, or a skewed copy of it compares clean for the wrong reason.
-    const gateAnswer = ([name, args]) => {
-      try {
-        return JSON.stringify(authRuntimeModule[name](...args)) ?? "undefined";
-      } catch (error) {
-        return `threw:${error?.code ?? error?.message}`;
-      }
-    };
-    for (const gate of ["normalizeReturnTo", "isOAuthLoopbackHostname", "appleOAuthOriginEligible", "normalizePasswordResetPath", "isReservedAuthUserId", "requireAuth"]) {
-      const answers = new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.filter(([name]) => name === gate).map(gateAnswer));
-      assert.ok(answers.size >= 2, `the auth probe makes ${gate} answer the same way every time, so a skewed copy of it compares clean`);
-    }
-    // `oauthProviderTestEndpoint` is deliberately not in that list, and the reason is worth stating
-    // rather than leaving for the next reader to rediscover from a failing assertion. Its second
-    // branch is behind `SPORADES_OAUTH_TEST_ENDPOINTS === "1"`, which is unset here, so both probe
-    // inputs take the production branch and it answers the same way twice.
-    //
-    // It stays in the probe because the comparison is still real: the two copies read the same
-    // environment, so a carried copy that had started honouring the override — the defect this gate
-    // exists to prevent — returns the override while the running one returns the production URL, and
-    // that is a disagreement. What the probe cannot see, with the variable unset, is a change to the
-    // override-accepting branch itself. That branch is covered by `test/oauth-provider.test.js`,
-    // against `dist/`, which is where it is reachable.
-    assert.equal(
-      new Set(MIGRATED_MODULE_AUTH_SKEW_PROBE.filter(([name]) => name === "oauthProviderTestEndpoint").map(gateAnswer)).size,
-      1,
-      "SPORADES_OAUTH_TEST_ENDPOINTS is set in this environment, so the comment above no longer describes what this probe reaches",
-    );
-
-    // And batch 5's domain, on the same terms as the four above. The patch probe has to admit and
-    // refuse, or it cannot tell a `normalizePreferencesPatch` that returns its input from one that
-    // rejects everything — and its refusals have to arrive by *both* routes, or a copy that had lost
-    // the JSON check compares clean because the shape gate refused the rest.
-    const patchAnswer = ([, patch]) => {
-      try {
-        userPreferencesRuntimeModule.normalizePreferencesPatch(patch);
-        return "admitted";
-      } catch (error) {
-        return `threw:${error?.code ?? "no-code"}`;
-      }
-    };
-    const patchAnswers = MIGRATED_MODULE_PREFERENCES_PATCH_SKEW_PROBE.map(patchAnswer);
-    assert.ok(
-      patchAnswers.filter((answer) => answer === "admitted").length >= 3,
-      "the preferences patch probe never admits a patch, so a copy that refuses everything compares clean",
-    );
-    assert.ok(
-      patchAnswers.filter((answer) => answer === "threw:INVALID_PREFERENCES_PATCH").length >= 4,
-      "the preferences patch probe never reaches the shape gate's refusal, so a copy that admits everything compares clean",
-    );
-    assert.ok(
-      patchAnswers.some((answer) => answer === "threw:no-code"),
-      "the preferences patch probe never reaches assertJsonCompatible, so a copy that lost the JSON check compares clean",
-    );
-
-    // And batch 6's domain, file and object storage. Four things to settle before any storage
-    // rejection below is trusted, and each is a way this probe could report clean for the wrong
-    // reason rather than because the copies agree.
-    //
-    // The private helpers are in the block for the same reason every earlier batch's are: the module
-    // is carried whole, so a helper exported from nothing travels because it is in the file.
-    // `s3Hmac` is the S3 signing path's, `resolveLiveFileReference` is this module's census sentinel,
-    // and `chainMaybePromise` comes from `maybe-promise.js` — the module storage imports, which is
-    // why the block resolving imports between migrated modules matters here again.
-    assert.match(honest, /function s3Hmac\(/);
-    assert.match(honest, /function resolveLiveFileReference\(/);
-    assert.match(honest, /function chainMaybePromise\(/);
-
-    // First: the signature probe must produce four *different* signatures. A corpus that signed the
-    // same canonical request four ways over would compare a copy that had lost the method, the path
-    // or the region from its canonical request as clean.
-    const signatures = MIGRATED_MODULE_STORAGE_SIGNATURE_SKEW_PROBE.map(([, request]) => fileStorageRuntimeModule.s3Signature(request));
-    assert.equal(new Set(signatures).size, signatures.length, "the S3 signature probe signs two requests identically — one of them proves nothing");
-    assert.ok(
-      signatures.every((signature) => /^AWS4-HMAC-SHA256 Credential=\S+ SignedHeaders=\S+ Signature=[0-9a-f]{64}$/.test(signature)),
-      "the S3 signature probe is not producing a well-formed SigV4 header, so it is not exercising the signing path",
-    );
-
-    // Second: the pure gates must both admit and refuse, on the same terms as every corpus above.
-    // `normalizeAbsoluteFilePath` is the one that decides which row a `files.get("/x/y")` reads, and
-    // `contentTypeForFile` is a containment — it must answer `application/octet-stream` for something
-    // and echo the type back for something else, or a copy that had lost the allow-list compares
-    // clean while turning a stored `text/html` into stored XSS.
-    const storageAnswer = ([name, args]) => {
-      try {
-        return `returned:${JSON.stringify(fileStorageRuntimeModule[name](...args)) ?? "undefined"}`;
-      } catch (error) {
-        return `threw:${error?.message}`;
-      }
-    };
-    for (const gate of ["normalizeAbsoluteFilePath", "validatePublicUrlExpiry", "contentTypeForFile", "isAbsoluteFilePath"]) {
-      const answers = new Set(MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === gate).map(storageAnswer));
-      assert.ok(answers.size >= 2, `the storage probe makes ${gate} answer the same way every time, so a skewed copy of it compares clean`);
-    }
-    assert.ok(
-      MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.some(([name]) => name === "normalizeAbsoluteFilePath")
-        && MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === "normalizeAbsoluteFilePath").map(storageAnswer).some((answer) => answer.startsWith("threw:")),
-      "the storage probe never refuses a File path, so a copy that admitted everything compares clean",
-    );
-    assert.ok(
-      MIGRATED_MODULE_STORAGE_PATH_SKEW_PROBE.filter(([name]) => name === "contentTypeForFile")
-        .map(storageAnswer).includes('returned:"application/octet-stream"'),
-      "the storage probe never reaches the inline content-type refusal, so a copy that echoed the stored type compares clean",
-    );
-
-    // Third: the engine constructor probe must both build and refuse, or it cannot tell a
-    // constructor that validates nothing from one that refuses everything.
-    const engineAnswer = ([, config]) => {
-      try {
-        return `built:${fileStorageRuntimeModule.createS3CompatibleFileStorageAdapter(config).objectKeyPrefix}`;
-      } catch (error) {
-        return `threw:${error?.message}`;
-      }
-    };
-    const engineAnswers = MIGRATED_MODULE_STORAGE_ENGINE_SKEW_PROBE.map(engineAnswer);
-    assert.ok(engineAnswers.filter((answer) => answer.startsWith("built:")).length >= 2, "the storage engine probe never builds an adapter, so a copy that refuses everything compares clean");
-    assert.ok(engineAnswers.filter((answer) => answer.startsWith("threw:")).length >= 5, "the storage engine probe never refuses a configuration, so a copy that validates nothing compares clean");
-    assert.ok(
-      new Set(engineAnswers.filter((answer) => answer.startsWith("threw:"))).size >= 2,
-      "every storage engine refusal carries the same message, so a copy that collapsed them compares clean",
-    );
-
-    // Fourth: `maybe-promise.js`. Its probe has to take both arms of each function — a corpus of
-    // plain values cannot see a copy that stopped recognising a thenable, which is the shape that
-    // would make every adapter method on the asynchronous engines return before its statement ran.
-    assert.ok(
-      MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE.some(([, value]) => maybePromiseModule.isPromiseLike(value)),
-      "the maybe-promise probe holds no thenable, so a copy that stopped recognising one compares clean",
-    );
-    assert.ok(
-      MIGRATED_MODULE_MAYBE_PROMISE_SKEW_PROBE.some(([, value]) => !maybePromiseModule.isPromiseLike(value)),
-      "the maybe-promise probe holds only thenables, so a copy that called everything a promise compares clean",
-    );
-
-    const skews = [
-      // The one that was silent before this check existed: same exports, same names, a validator
-      // replaced by one that admits anything.
-      [
-        "a validator swapped for one that admits everything",
-        "inspection-sql.js",
-        originals["inspection-sql.js"].replace(
-          /export function validateReadOnlyInspectionSql\(sql\) \{/,
-          "export function validateReadOnlyInspectionSql(sql) {\n  if (true) return { ok: true };",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // A quieter body change, in the tokenizer rather than the validator: line comments stop ending
-      // at a carriage return, which is the defect that put a live `TRUNCATE` through this gate.
-      [
-        "a tokenizer whose line comment stops ending at a carriage return",
-        "inspection-sql.js",
-        originals["inspection-sql.js"].replace("dialect.lineCommentEndsAtCarriageReturn ? /[\\n\\r]/ : /\\n/", "/\\n/"),
-        /answer the skew probe differently/,
-      ],
-      // Structural skew: an export the running copy has and the carried one does not.
-      [
-        "a copy missing an export the running one has",
-        "inspection-sql.js",
-        originals["inspection-sql.js"].replace("export function sqlContentFingerprint(", "function sqlContentFingerprint("),
-        /export a different set of names.*missing sqlContentFingerprint/s,
-      ],
-      // Truncation part-way through a function, which is what an interrupted write leaves behind.
-      [
-        "a copy truncated mid-function",
-        "inspection-sql.js",
-        originals["inspection-sql.js"].slice(0, originals["inspection-sql.js"].indexOf("export function skipSqlQuotedOrCommented(") + 200),
-        /did not build|did not evaluate|export a different set of names/,
-      ],
-      // The second module, skewed on the limb the statement probe reaches: the log-index guard stops
-      // recognising the table it exists to conceal. Same exports, same names, and before this module
-      // was carried here at all there was nothing to compare it against.
-      [
-        "a log-index guard that no longer recognises the table it conceals",
-        "log-index-guard.js",
-        originals["log-index-guard.js"].replace(
-          'part.toLowerCase() === "sporades_log_events"',
-          'part.toLowerCase() === "sporades_log_events_renamed"',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // And on the limb only the row probe reaches. This one is the reason that probe exists: the
-      // guard's row filter answers no SQL question at all, so a copy that had lost it agrees with the
-      // running one about every statement above.
-      [
-        "a log-index guard whose row filter stopped flagging metadata rows",
-        "log-index-guard.js",
-        originals["log-index-guard.js"].replace(
-          "export function isInternalLogIndexMetadataRow(row, sql = \"\") {",
-          "export function isInternalLogIndexMetadataRow(row, sql = \"\") {\n  if (true) return false;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The skew that only a resolved graph can see: the guard imports the gate's tokenizer, so a
-      // `dist/` where the gate stopped exporting it is a build failure rather than a wrong answer.
-      // Under the previous carrier the two modules were converted independently and this was
-      // unreachable — which is the whole hazard `require(…)` in an ES module would have been.
-      [
-        "a gate that stopped exporting the tokenizer the guard imports",
-        "inspection-sql.js",
-        originals["inspection-sql.js"].replace("export function skipSqlTrivia(", "function skipSqlTrivia("),
-        /did not build.*skipSqlTrivia|export a different set of names.*missing skipSqlTrivia/s,
-      ],
-      // The mail domain, batch 2. This one is the reason `validateMailConfig` is worth probing at
-      // all: a copy that accepts whatever it is given exports the same single name, assembles every
-      // message below identically, and quietly lets a Capsule ship SMTP credentials over a hop with
-      // no TLS on it.
-      [
-        "a mail config validator swapped for one that admits everything",
-        "mail-config.js",
-        originals["mail-config.js"].replace(
-          "export function validateMailConfig(mail) {",
-          "export function validateMailConfig(mail) {\n  if (true) return mail;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // A quieter body change in the same file, on the one limb that is a security rule rather than
-      // a shape check: credentials over opportunistic or disabled TLS stop being refused.
-      [
-        "a mail config validator that stops refusing credentials over a plaintext hop",
-        "mail-config.js",
-        originals["mail-config.js"].replace('["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none"', "false"),
-        /answer the skew probe differently/,
-      ],
-      // A private helper of `mail-runtime`, which nothing exports and no list registers. Before this
-      // domain was carried whole there was no such thing as a private helper here to skew.
-      [
-        "a MIME encoder whose header folding stops at a different line length",
-        "mail-runtime.js",
-        originals["mail-runtime.js"].replace("Buffer.byteLength(text) <= 70", "Buffer.byteLength(text) <= 7000"),
-        /answer the skew probe differently/,
-      ],
-      // And the structural case for the domain's second file, so that "carried but not compared" is
-      // not reachable for it either.
-      [
-        "a mail runtime missing an export the running one has",
-        "mail-runtime.js",
-        originals["mail-runtime.js"].replace("export function createMailTransport(", "function createMailTransport("),
-        /export a different set of names.*missing createMailTransport/s,
-      ],
-      // Self-containment, and the most likely way a later batch loses it. `mail-runtime` reaches the
-      // UUID generator through the Web Crypto global rather than importing `randomUUID`, and the
-      // obvious "simplification" is to import it — which `format: "iife"` lowers to
-      // `__require("node:crypto")` and a Capsule then dies at boot on, with nothing in the suite
-      // seeing it. Refused at build instead, and the same for an unprefixed builtin, since `crypto`
-      // resolves in the container exactly as `node:crypto` does.
-      //
-      // These two are the counterweight to the allowance beside them: the check had to be narrowed
-      // in this batch so that the mail transport's `await import("node:tls")` could travel, and
-      // narrowing it is only safe while the static form is still refused. The honest build above is
-      // the other half of that pair — it carries both dynamic builtin imports and is not refused.
-      //
-      // The import has to be *used* or esbuild tree-shakes it away and the case proves nothing, so
-      // each of these rewrites one real call site to match — which is exactly the edit being
-      // guarded against, rather than a synthetic stand-in for it.
-      [
-        "a migrated module that imports a builtin statically instead of reaching a global",
-        "mail-runtime.js",
-        `import { randomUUID } from "node:crypto";\n${originals["mail-runtime.js"].replace("mail_${crypto.randomUUID()}", "mail_${randomUUID()}")}`,
-        /would resolve node:crypto at runtime/,
-      ],
-      [
-        "the same written without the `node:` prefix",
-        "mail-runtime.js",
-        `import { randomUUID } from "crypto";\n${originals["mail-runtime.js"].replace("mail_${crypto.randomUUID()}", "mail_${randomUUID()}")}`,
-        /would resolve crypto at runtime/,
-      ],
-      // Batch 3's domain. The first is the shape that would be silent everywhere else: a password
-      // check that says yes to anything keeps every export and every other answer.
-      [
-        "a credential check swapped for one that accepts any password",
-        "auth-runtime.js",
-        originals["auth-runtime.js"].replace(
-          /export function verifyEmailPassword\(password, salt, expectedHash\) \{/,
-          "export function verifyEmailPassword(password, salt, expectedHash) {\n  if (true) return true;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The length guard in front of the constant-time comparison. Dropping it is not a value
-      // change for any matching pair — which is why the truncated-hash vector is in the probe: with
-      // the guard gone `timingSafeEqual` throws on mismatched buffer lengths instead of returning
-      // false, and the two copies disagree.
-      [
-        "a credential check that lost the length guard before the constant-time compare",
-        "auth-runtime.js",
-        originals["auth-runtime.js"].replace(
-          "return actual.length === expected.length && nodeCryptoModule.timingSafeEqual(actual, expected);",
-          "return nodeCryptoModule.timingSafeEqual(actual, expected);",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The open-redirect containment, which is a gate rather than a credential: a `normalizeReturnTo`
-      // that stops pinning the origin hands an OAuth callback to whoever asked for it.
-      [
-        "a return-to normalizer that stopped pinning the origin",
-        "auth-runtime.js",
-        originals["auth-runtime.js"].replace("        if (url.origin !== origin) {\n            return origin;\n        }\n", ""),
-        /answer the skew probe differently/,
-      ],
-      // A private helper of `auth-runtime`, which nothing exports and no list registers — the same
-      // case batch 2 made for mail, at this domain's scale. `createAuthDenialLogData` is reached only
-      // through `requireAuth`, so a probe that did not call the exported one could not see it change.
-      [
-        "a private auth helper whose body changed",
-        "auth-runtime.js",
-        originals["auth-runtime.js"].replace("            isGuest: context?.auth?.isGuest ?? null,", "            isGuest: \"skewed\","),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on the module the rest of the domain imports. `runtime-errors` holds one
-      // function and `auth-runtime` cannot resolve without it, so this is the batch-1 case — "a gate
-      // that stopped exporting what its consumer imports" — reappearing one module along.
-      [
-        "an error module that stopped exporting what auth imports",
-        "runtime-errors.js",
-        originals["runtime-errors.js"].replace("export function commandError(", "function commandError("),
-        /did not build|export a different set of names/,
-      ],
-      // And the accessor ADR-0042 turns on, written the way ADR-0041 refuses. This is the pair the
-      // static-import cases above are for, asked of the module that actually needed the narrowing to
-      // go the other way: auth cannot use the dynamic form, so if `process.getBuiltinModule` were
-      // ever replaced by the import it reads like, the build must refuse it.
-      [
-        "the auth domain reaching node:crypto through a static import instead of the accessor",
-        "auth-runtime.js",
-        `import { scryptSync } from "node:crypto";\n${originals["auth-runtime.js"].replace("const actual = nodeCryptoModule.scryptSync(password, salt, 64);", "const actual = scryptSync(password, salt, 64);")}`,
-        /would resolve node:crypto at runtime/,
-      ],
-      // Batch 4's domain, jobs and schedules. The first is the shape peculiar to a scheduler: an
-      // occurrence calculator that is merely *late*. Every export survives, every Schedule still
-      // fires, and each one fires at the wrong minute — which no export-surface check can see and
-      // which is why the schedule limb of the probe compares a returned instant rather than a
-      // verdict.
-      [
-        "an occurrence calculator that returns every Schedule one minute late",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace("return new Date(candidate);", "return new Date(candidate.getTime() + 60000);"),
-        /answer the skew probe differently/,
-      ],
-      // A private helper of `jobs-runtime`, reached only through `nextScheduleOccurrence` — the same
-      // case as the auth and mail ones above, at this domain's scale. `scheduleWallClockParts` is
-      // where a Schedule's local weekday is decided, so a mis-mapped table sends every day-of-week
-      // Schedule to the wrong day while every exported name still answers.
-      [
-        "a private schedule helper that mis-maps a weekday",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace(
-          "{ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }",
-          "{ Sun: 1, Mon: 2, Tue: 3, Wed: 4, Thu: 5, Fri: 6, Sat: 0 }",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The bound every Job payload, result and failure passes through. Dropping it is the shape that
-      // reaches production as an oversized row rather than an error.
-      [
-        "a Job payload bound that stopped enforcing its byte limit",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace('if (Buffer.byteLength(serialized, "utf8") > limit)', "if (false)"),
-        /answer the skew probe differently/,
-      ],
-      // The failure sanitizer, which is a containment rather than a calculation: it decides which
-      // internal codes a Capsule author is allowed to see, so a copy that passed them through leaks.
-      [
-        "a Job failure sanitizer that leaks internal codes",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace(
-          'const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";',
-          'const code = error?.code ?? "JOB_FAILED";',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The Schedule fingerprint decides whether a redeployed Schedule counts as changed. A copy that
-      // computed it differently would re-reconcile every Schedule on every boot — a behaviour change
-      // that never throws and that only a value comparison catches.
-      [
-        "a Schedule fingerprint computed differently",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace(
-          "const fingerprint = JSON.stringify({ expression: normalizedExpression,",
-          'const fingerprint = JSON.stringify({ expression: normalizedExpression + " ",',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on the module the monolith imports twenty-four names from. `boundedJobJson`
-      // is one of them, so this is the "stopped exporting what its consumer imports" case again.
-      [
-        "a jobs module that stopped exporting what the monolith imports",
-        "jobs-runtime.js",
-        originals["jobs-runtime.js"].replace("export function boundedJobJson", "function boundedJobJson"),
-        /did not build|export a different set of names/,
-      ],
-      // And the ADR-0042 accessor written the way ADR-0041 refuses, asked of the second domain to
-      // need it. `scheduledOccurrenceIdentity` is synchronous and inside a transaction, so the
-      // dynamic form is not open to it either; if the accessor were ever replaced by the import it
-      // reads like, the build must refuse it.
-      [
-        "the jobs domain reaching node:crypto through a static import instead of the accessor",
-        "jobs-runtime.js",
-        `import { createHash } from "node:crypto";\n${originals["jobs-runtime.js"].replace('return nodeCryptoModule.createHash("sha256")', 'return createHash("sha256")')}`,
-        /would resolve node:crypto at runtime/,
-      ],
-      // Batch 5's domain, user preferences. The shape gate's two extra clauses are the interesting
-      // half: `null` and `[]` both pass `typeof === "object"`, so a copy reduced to the `typeof`
-      // check admits an array as a preferences patch and merges its indices into a user's settings.
-      // Every export survives and every honest patch still works, which is why this needs a probe
-      // that refuses rather than an export-surface check.
-      [
-        "a preferences shape gate reduced to its typeof check",
-        "user-preferences-runtime.js",
-        originals["user-preferences-runtime.js"].replace(
-          'if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {',
-          'if (typeof patch !== "object") {',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The JSON check, which is this module's only call out of itself. Dropping it is the shape that
-      // reaches production as a row the runtime cannot read back rather than as an error, and the
-      // shape gate goes on refusing everything it refused before — so only the two probe cases that
-      // are plain objects JSON cannot carry can see it.
-      [
-        "a preferences validator that stopped checking JSON compatibility",
-        "user-preferences-runtime.js",
-        originals["user-preferences-runtime.js"].replace(
-          "    assertJsonCompatible(patch);\n    return patch;",
-          "    return patch;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The private error factory, reached through nothing but the two functions above — the same
-      // case as the auth, mail and jobs private helpers, at this domain's scale. A dropped `code`
-      // turns every refused patch into `updateCurrentUserPreferences`'s generic failure branch
-      // instead of the specific one, which is a wrong error to a Capsule author rather than a wrong
-      // verdict, and `probedAnswer` compares the code for exactly this reason.
-      [
-        "a private preferences error factory that stopped carrying its code",
-        "user-preferences-runtime.js",
-        originals["user-preferences-runtime.js"].replace(
-          "    return { code, message, hint };",
-          "    return { message, hint };",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The table this domain creates, which no verdict-shaped probe could reach. A deployed Capsule
-      // that created `[value]` nullable would accept a preferences row the read path then cannot
-      // parse — silent at create time and a `JSON.parse` failure much later.
-      [
-        "a preferences table created with a different schema",
-        "user-preferences-runtime.js",
-        originals["user-preferences-runtime.js"].replace("[value] TEXT NOT NULL, ", "[value] TEXT, "),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on the module whose probe needs a name that nothing else resolves.
-      // `normalizePreferencesPatch` is exported for the probe rather than for a consumer, so this is
-      // the case that proves the export-surface check still covers a name with no other caller.
-      [
-        "a preferences module that stopped exporting what the probe asks it",
-        "user-preferences-runtime.js",
-        originals["user-preferences-runtime.js"].replace("export function normalizePreferencesPatch", "function normalizePreferencesPatch"),
-        /did not build|export a different set of names|do not supply/,
-      ],
-      // Batch 6's domain, file and object storage. The signing path first, because it is the limb
-      // whose loss is loudest in production and quietest here: a carried copy that derived its
-      // signing key from a different scope exports every name, builds every adapter, and then
-      // authenticates against no S3-compatible endpoint at all. The region is the part of the scope
-      // an operator would blame last.
-      [
-        "an S3 signing key derived from a different credential scope",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          'const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");',
-          'const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3-compatible");',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // And a quieter one in the same path: the canonical request loses the payload hash. The header
-      // stays well-formed and the signature stays 64 hex characters, so only a value comparison sees
-      // it — and it would let a modified body be presented under a signature that never covered it.
-      [
-        "a canonical request that stopped covering the payload hash",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          "const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join(\"\\n\");",
-          "const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders].join(\"\\n\");",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The percent-encoding of a canonical path segment. `encodeURIComponent` leaves six characters
-      // alone that S3 request signing does not, so a copy reduced to it signs a path the endpoint
-      // disagrees with — for exactly the File names containing a quote or a parenthesis, and no
-      // others. That is a failure that looks like a corrupt file rather than a signing bug.
-      [
-        "a canonical path segment that stopped re-encoding what encodeURIComponent leaves alone",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          "return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);",
-          "return encodeURIComponent(segment);",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The Capsule storage namespace, which is a containment rather than a calculation: it is the
-      // prefix that keeps one Capsule's objects out of another's inside a shared bucket. A copy
-      // reduced to a truthiness check accepts `../other` and writes outside its own prefix, and
-      // every honest namespace still works.
-      [
-        "a storage namespace gate reduced to a truthiness check",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          'if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {',
-          "if (!namespace) {",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The inline content-type allow-list. A copy that echoed the stored type back turns a stored
-      // `text/html` into stored XSS served from the Capsule's own origin, and every image upload in
-      // the suite still round-trips — which is why this needs a probe that refuses rather than an
-      // export-surface check.
-      [
-        "an inline content-type allow-list that echoes the stored type back",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          "return safeInlineTypes.has(normalized) ? normalized : \"application/octet-stream\";",
-          "return normalized;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The absolute File path rule, which decides which row `files.get("/x/y")` reads. Reduced to a
-      // `startsWith` check it stops collapsing repeated separators, so `/a//b` and `/a/b` become two
-      // different paths against a unique index that thinks they are one file.
-      [
-        "a File path normalizer that stopped collapsing empty segments",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          'return `/${segments.join("/")}`;',
-          "return raw;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The public-URL expiry gate, which is the one place a Capsule author's `noExpiry` and their
-      // `ttlSeconds` are kept from being passed together. A copy that accepted any number of choices
-      // would take the first branch that matched and silently ignore the rest.
-      [
-        "a public URL expiry gate that stopped requiring exactly one choice",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace("if (choices.length !== 1) {", "if (choices.length > 99) {"),
-        /answer the skew probe differently/,
-      ],
-      // The File metadata DDL, which no verdict-shaped probe reaches. The unique index is the whole
-      // reason two live rows cannot share a path, so a deployed Capsule that created it without the
-      // `WHERE` clause would refuse to store a second *version* of any file — and one created
-      // without the index at all would let two live rows share a path, which is the state
-      // `activeFilePathDedupeSql` exists to clean up.
-      [
-        "a File metadata table created without the live-path unique index",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          '"CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +',
-          '"CREATE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // And the private data migration that runs beside it. `activeFilePathDedupeSql` soft-deletes
-      // the duplicates `filePathBackfillSql` can produce, and both are private — reachable through
-      // nothing but `createFileStorageTables`, which is why that limb exists.
-      [
-        "a File path backfill that stopped disambiguating duplicate names",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace(
-          "\"ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END \" +",
-          "\"ELSE '/' || [bucketName] || '/' || [name] END \" +",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on the module the monolith imports sixteen names from.
-      [
-        "a storage module that stopped exporting what the monolith imports",
-        "file-storage-runtime.js",
-        originals["file-storage-runtime.js"].replace("export function createFileStorageTables", "function createFileStorageTables"),
-        /did not build|export a different set of names|do not supply/,
-      ],
-      // And the ADR-0042 accessor written the way ADR-0041 refuses, asked of the third domain to need
-      // it. `s3Hmac` and `s3Sha256Hex` are synchronous and inside the signature `s3Request` builds
-      // before it opens a socket, so neither the dynamic form nor the Web Crypto global is open to
-      // them; if the accessor were ever replaced by the import it reads like, the build must refuse.
-      [
-        "the storage domain reaching node:crypto through a static import instead of the accessor",
-        "file-storage-runtime.js",
-        `import { createHmac } from "node:crypto";\n${originals["file-storage-runtime.js"].replace('return nodeCryptoModule.createHmac("sha256"', 'return createHmac("sha256"')}`,
-        /would resolve node:crypto at runtime/,
-      ],
-      // `maybe-promise.js`, the non-domain module batch 6 extracted for the reason batch 3 extracted
-      // `runtime-errors.js`. A copy that stopped recognising a thenable makes every adapter method on
-      // the Postgres and libSQL engines return before its statement has run — the loudest possible
-      // production failure, and completely silent to an export-surface check.
-      [
-        "a maybe-promise bridge that stopped recognising a thenable",
-        "maybe-promise.js",
-        originals["maybe-promise.js"].replace(
-          'return value && typeof value === "object" && typeof value.then === "function";',
-          "return false;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // And the chaining arm, which the storage DDL limb reaches only in its synchronous lane. A copy
-      // that ran every step eagerly instead of chaining would fire a table's statements out of order
-      // against an asynchronous engine.
-      [
-        "a maybe-promise chain that stopped sequencing its steps",
-        "maybe-promise.js",
-        originals["maybe-promise.js"].replace("pending = pending.then(step);", "step();"),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on a module whose three names the monolith all imports back.
-      [
-        "a maybe-promise module that stopped exporting what the monolith imports",
-        "maybe-promise.js",
-        originals["maybe-promise.js"].replace("export function thenIfPromise", "function thenIfPromise"),
-        /did not build|export a different set of names|do not supply/,
-      ],
-      // Batch 7's domain, ACL and privileged audit. **The Symbol split first**, because it is the one
-      // skew in this whole file that fails *open* rather than closed and the one issue 16 spent its
-      // length reasoning about rather than executing. `ACL_HELPER_STATE` has exactly one writer and
-      // one reader; give the reader a Symbol of its own and `touchedAsyncRead` becomes invisible, so
-      // an ACL rule that consulted an asynchronous helper read returns `true` on a value it never
-      // awaited and the write is **allowed**. The module exports the same names, every other limb
-      // agrees, and a deployed Capsule writes rows its own policy would have refused.
-      [
-        "an ACL_HELPER_STATE the writer and the reader no longer share",
-        "acl-runtime.js",
-        originals["acl-runtime.js"]
-          .replace(
-            "function aclRuleTouchedAsyncHelperRead(aclContext) {",
-            'const ACL_HELPER_STATE_OTHER = Symbol("sporades.aclHelperState");\nfunction aclRuleTouchedAsyncHelperRead(aclContext) {',
-          )
-          .replace(
-            "return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;",
-            "return aclContext?.acl?.[ACL_HELPER_STATE_OTHER]?.touchedAsyncRead === true;",
-          ),
-        /answer the skew probe differently/,
-      ],
-      // The privileged bypass failing open. `hasPrivilegedDbAccess` is what lets `ctx.privileged.run`
-      // write past a Capsule's own ACL rules, and a copy that answered `true` for every context would
-      // turn every ordinary handler into a privileged one — every ACL rule in the Capsule silently
-      // never consulted.
-      [
-        "a privileged-access gate that admits every context",
-        "acl-runtime.js",
-        originals["acl-runtime.js"].replace(
-          "function hasPrivilegedDbAccess(context) {",
-          "function hasPrivilegedDbAccess(context) {\n  return true;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The write/insert/update/delete fallback ADR-0022 states. A copy that stopped falling back to
-      // `write` would leave a table declaring only a `write` rule unguarded on all three write
-      // operations, which is the single most common way a Capsule declares an ACL.
-      [
-        "an ACL resolver that stopped letting a write rule cover insert, update and delete",
-        "acl-runtime.js",
-        originals["acl-runtime.js"].replace(
-          "return aclRules[operation] ?? aclRules.write;",
-          "return aclRules[operation];",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The audit event contract drifting by one member of a `Set` that was a preamble constant until
-      // this batch. Every privileged run by a captured user would be recorded as `unknown`.
-      [
-        "a privileged audit actor-kind set missing a member",
-        "acl-runtime.js",
-        originals["acl-runtime.js"].replace('"privileged-server-role", "captured-user"', '"privileged-server-role"'),
-        /answer the skew probe differently/,
-      ],
-      // The export surface, on a module the monolith imports twenty-eight names back from.
-      [
-        "an ACL module that stopped exporting what the monolith imports",
-        "acl-runtime.js",
-        originals["acl-runtime.js"].replace("export function runTableWriteWithAcl", "function runTableWriteWithAcl"),
-        /did not build|export a different set of names|do not supply/,
-      ],
-      // Batch 7's two non-domain modules, reached from the ACL limbs as well as their own. The first
-      // is the join that decides which field names an ACL denial record may name: reduced to a bare
-      // `password` test it would write `clientSecret` and `authorization` into the record of every
-      // refused operation in a deployed Capsule, and every honest log would still look right.
-      [
-        "a sensitive-key test reduced to one word",
-        "runtime-log-policy.js",
-        originals["runtime-log-policy.js"].replace(
-          /export function isSensitiveLogKey[\s\S]*?\n}\n/,
-          'export function isSensitiveLogKey(key) {\n  return /password/i.test(String(key));\n}\n',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // And the decoding `ctx.acl.db.get()` answers with. A copy that stopped parsing a Json column
-      // hands an ACL rule a string where the Capsule author's policy expects an object — a rule that
-      // then denies every row, with nothing in any log to say why.
-      [
-        "a stored-row decoder that stopped parsing Json",
-        "stored-value-coding.js",
-        originals["stored-value-coding.js"].replace(
-          "output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);",
-          "output[field.name] = output[field.name];",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The writing half, which arrived beside it in batch 9. A copy whose Date branch stopped
-      // normalizing stores whatever string the Capsule author passed, so two Capsules on the same
-      // engine sort their Date columns differently — and `toSqlLiteral` in `database-runtime.js`
-      // renders a column default through this same call.
-      [
-        "a stored-value encoder that stopped normalizing Date columns",
-        "stored-value-coding.js",
-        originals["stored-value-coding.js"].replace(
-          "export function normalizeDateValue(value, fieldName) {",
-          "export function normalizeDateValue(value, fieldName) {\n  if (typeof value === \"string\") return value;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // ---------------------------------------------------------------------------------------
-      // Batch 9: the Database adapters and dialect. Every case below is one this project has
-      // actually got wrong, or one the seam exists to make impossible — and not one of them changes
-      // a return value, which is why the limb records statements instead. See
-      // `migratedModuleStatementRecorder` in `server-bundle-template.ts`.
-      //
-      // ADR-0039's original defect, exactly: the owner-scope predicate emitted unquoted. Postgres
-      // folds it to `ownerid` against a column created as `"ownerId"`, so every owner-scoped update
-      // on an app table — the tables Capsule code reaches through `ctx.db` — fails outright.
-      [
-        "an owner-scope predicate that bypasses the dialect's quoting",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          '` AND ${dialect.quoteIdentifier("ownerId")} = ?`',
-          '` AND ownerId = ?`',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The catalog query that hides SQLite's own tables from `sporades db tables`. A copy without
-      // the filter lists `sqlite_sequence` and every other internal table as if it were the
-      // Capsule's.
-      [
-        "a catalog query that stopped hiding SQLite's internal tables",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          `WHERE \${quoteIdentifier("type")} = 'table' AND \${quoteIdentifier("name")} NOT LIKE 'sqlite_%' `,
-          `WHERE \${quoteIdentifier("type")} = 'table' `,
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The upsert form is a dialect entry because the engines genuinely cannot agree on it. A copy
-      // that emitted SQLite's on Postgres is a syntax error at the first preference save.
-      [
-        "a Postgres dialect emitting SQLite's upsert form",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          "const updated = columns.filter((column) => !conflictColumns.includes(column));",
-          "const updated = columns.filter((column) => !conflictColumns.includes(column));\n            if (true) return `INSERT OR REPLACE INTO ${quoteIdentifier(table)}`;",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // ADR-0037's whole point: a dialect that half-answers the seam must fail at construction
-      // rather than at the first statement that needed the missing entry — which, on this seam, is
-      // the first Capsule boot on the engine nobody ran the suite against. A copy that stopped
-      // requiring an entry admits the incomplete spec instead.
-      [
-        "a dialect factory that stopped requiring every seam entry",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          "  const missing = required.filter((key) => spec[key] == null);",
-          "  const missing = [];",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The `== null` rule rather than `=== undefined`. An entry explicitly set to null would
-      // otherwise pass construction and fail at the statement that needed it.
-      [
-        "a dialect factory that admits a null seam entry",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          "  const missing = required.filter((key) => spec[key] == null);",
-          "  const missing = required.filter((key) => spec[key] === undefined);",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // The bind-placeholder walk on the inspection path. A copy whose quote handling drifted
-      // interpolates a parameter into what the human typed inside a string literal.
-      [
-        "a Postgres interpolator that stopped honouring quoted runs",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          'if (char === \'"\' || char === "\'" || char === "`") {',
-          'if (false) {',
-        ),
-        /answer the skew probe differently/,
-      ],
-      // ADR-0039's marker substitution. A copy that resolved a marker inside a string literal
-      // rewrites a Capsule's data, not its identifiers.
-      [
-        "a marker substitution that no longer stops at an identifier shape",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace(
-          "/\\[([A-Za-z_][A-Za-z0-9_]*)\\]/g",
-          "/\\[([^\\]]*)\\]/g",
-        ),
-        /answer the skew probe differently/,
-      ],
-      // A structural skew on this module, so the export-surface half is exercised for batch 9 as
-      // well as the answers half.
-      [
-        "a Database module missing an export the running one has",
-        "database-runtime.js",
-        originals["database-runtime.js"].replace("export function splitSqlStatements(", "function splitSqlStatements("),
-        /export a different set of names.*missing splitSqlStatements/s,
-      ],
-      // The Log index's storage, batch 9's other module. ADR-0036's bound is expressed as the
-      // retained set; a copy that dropped the ordering keeps a different history on every engine.
-      [
-        "a Log index prune that stopped ordering by the runtime sequence",
-        "log-index-storage.js",
-        originals["log-index-storage.js"].replace(
-          'ORDER BY [indexSequence] DESC LIMIT ?" +',
-          'LIMIT ?" +',
-        ),
-        /answer the skew probe differently/,
-      ],
-    ];
-
-    for (const [description, file, skewed, expected] of skews) {
-      assert.notEqual(skewed, originals[file], `the ${description} case did not actually change ${file}`);
-      await assert.rejects(
-        async () => blockWith(file, skewed),
-        (error) => {
-          assert.match(error.message, expected, `wrong rejection for ${description}: ${error.message}`);
-          assert.match(error.hint, /npm run build|reinstall the Sporades CLI|migrated runtime module/i, `no actionable hint for ${description}`);
-          return true;
-        },
-        `${description} was carried into the bundle instead of failing the build`,
-      );
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("the emitted-list bundle carries the migrated modules' private helpers, which no list registers", () => {
-  // Criterion 2 of the ticket this landed under, asserted rather than described. A private helper of
-  // a migrated module is exported from nothing and appears in no emitted list, and it still reaches
-  // the bundle that ships — because that bundle carries the module whole rather than one registered
-  // function at a time.
-  //
-  // Under the old mechanism this was impossible: a runtime function reached the bundle as its own
-  // source text, so a helper it called and nobody registered was a `ReferenceError` the first time a
-  // deployed Capsule executed that path, invisible to a green suite. Four names shipped that way.
-  const bundle = createServerBundleSource({
-    config: capsuleConfig(),
-    serverEnv: {},
-    serverSource: "",
-    serverModuleSource: "export default {};",
-  });
-
-  const migratedModules = {
-    ...inspectionSqlModule, ...logIndexGuardModule, ...mailConfigModule, ...mailRuntimeModule,
-    ...fileStorageRuntimeModule, ...maybePromiseModule,
-  };
-  // `readSqlIdentifier` is the log-index guard's, and it became private in the same change that made
-  // the guard a module: it was an entry in the emitted list until then, because a helper the list
-  // did not carry was a `ReferenceError` rather than a compile error.
-  //
-  // The four MIME and provider helpers after it are the mail domain's, and they are the same story
-  // at twenty-one times the scale: every one was a registered entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS`
-  // until batch 2, purely because a helper the list did not carry could not be called from one it did.
-  for (const helper of [
-    "nestingBlockCommentEnd",
-    "opensQuotedRun",
-    "readSqlIdentifier",
-    "encodeMimeHeaderValue",
-    "foldMimeHeader",
-    "normalizePostmarkProvider",
-    "mailError",
-    // The storage domain's, batch 6, and the same story again at twenty-seven. `s3Hmac` is the
-    // whole S3 signing path's HMAC and `resolveLiveFileReference` is what every ownership-scoped
-    // File lookup resolves through — both were emitted-list entries until this batch, purely
-    // because a helper the list did not carry could not be called from one it did, and both are
-    // now exported from nothing and named in no list.
-    "s3Hmac",
-    "resolveLiveFileReference",
-    // The Database adapters and dialect, batch 9, and the same story again at thirty-eight — the
-    // largest set of newly-private declarations in the sequence. `createPostgresScramSession` is the
-    // whole of this runtime's Postgres authentication and `migrateAppSchemaInTransaction` the one
-    // definition of what a Capsule schema migration does; both were emitted-list entries purely
-    // because a helper the list did not carry could not be called from one it did, and both are now
-    // exported from nothing and named in no list.
-    "createPostgresScramSession",
-    "migrateAppSchemaInTransaction",
-    // The Log index's storage, batch 9's other module, and the one batch 6's reverse-graph pass
-    // named without being able to move.
-    "chainSchemaOperation",
-  ]) {
-    assert.equal(
-      Object.keys(migratedModules).includes(helper),
-      false,
-      `${helper} is exported, so it is not the private helper this asserts`,
-    );
-    assert.equal(
-      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === helper),
-      false,
-      `${helper} is registered in the emitted list, so it is not travelling on the module's terms`,
-    );
-    assert.match(bundle, new RegExp(`function ${helper}\\(`), `${helper} did not reach the emitted-list bundle`);
-  }
-
-  // And the migrated regions' own entry points are no longer in the emitted list either — each
-  // travels as its module rather than as the registrations it used to need.
-  for (const moved of [
-    "validateReadOnlyInspectionSql",
-    "skipSqlQuotedOrCommented",
-    "sqlWithoutTrailingTerminator",
-    "targetsInternalLogIndexTable",
-    "readSqlTableReference",
-    "isInternalLogIndexMetadataRow",
-    "createMailRuntime",
-    "createMailTransport",
-    "buildSmtpMessage",
-    // `validateMailConfig` is the one this batch changed rather than moved. It has lived in
-    // `mail-config.ts` all along and reached the bundle by *also* being an entry in the emitted
-    // list — the arrangement ADR-0041 opens by describing as the cheapest thing that works for a
-    // leaf function. It is carried module text now, so the entry had to go or the bundle would
-    // declare it twice.
-    "validateMailConfig",
-    // Batch 6's entry points, one per shape the storage domain reaches the bundle in: an engine
-    // constructor, an upload-lifecycle entry point the WebSocket hub dispatches, the DDL the shared
-    // adapter method set calls, and one of `maybe-promise`'s three, which nine still-registered
-    // runtime functions call from their own source text.
-    "createS3CompatibleFileStorageAdapter",
-    "createPendingFileUpload",
-    "createFileStorageTables",
-    "isPromiseLike",
-    // Batch 9's entry points, one per shape the Database domain reaches the bundle in: the seam
-    // factory every engine's dialect is built through, the one shared method set, an engine
-    // constructor, and the adapter the bundle's own `db` action opens. `createSharedDatabaseAdapterMethods`
-    // is the one that matters — every behavioural call in a deployed Capsule goes through it.
-    "createDatabaseDialect",
-    "createSharedDatabaseAdapterMethods",
-    "createSqliteDatabaseAdapter",
-    "createRuntimeInspectionAdapter",
-    // And the Log index's storage, whose four exported names are what that method set calls.
-    "createLogIndexTables",
-    "insertLogIndexEvent",
-    // The auth storage bootstrap, which went home to `auth-runtime.js` in the same batch.
-    "createAnonymousAuthTables",
-    // The stored-value codec's writing half, which joined its reading half in `stored-value-coding.js`.
-    "serializeFieldValue",
-  ]) {
-    assert.equal(
-      SERVER_RUNTIME_SOURCE_FUNCTIONS.some((fn) => fn.name === moved),
-      false,
-      `${moved} is still registered in the emitted list as well as living in the module, which would declare it twice`,
-    );
-    assert.match(bundle, new RegExp(`function ${moved}\\(`), `${moved} did not reach the emitted-list bundle`);
-  }
-
-  // One copy of each, not one per module that imports it. The migrated modules are bundled into a
-  // single block precisely so that carrying a module which imports the inspection gate does not put
-  // a second copy of the one tokenizer into the artifact — see `migratedRuntimeModulesBlockFrom`.
-  for (const shared of ["skipSqlQuotedOrCommented", "skipSqlTrivia", "readSqlQuotedIdentifier"]) {
-    assert.equal(
-      bundle.split(`function ${shared}(`).length - 1,
-      1,
-      `${shared} appears in the emitted-list bundle more than once — the migrated modules are being carried separately`,
-    );
-  }
-
-  // ADR-0040: the block is spliced into an ES module, so a `require(…)` in it is not a slow path, it
-  // is a Capsule that does not boot. That is exactly what `transformSync` produced for a module with
-  // an import of its own, which is why the carrier bundles instead.
-  assert.equal(bundle.includes("require("), false, "the emitted-list bundle would resolve a specifier at runtime");
-});
-
-test("both bundles now mint ACL_HELPER_STATE exactly once, from the runtime's own declaration", async () => {
+test("the bundle mints ACL_HELPER_STATE exactly once, from the runtime's own declaration", async () => {
   // A `Symbol` has no serialization, so while `ACL_HELPER_STATE` was a monolith declaration the
-  // emitted-list bundle's constant preamble rebuilt it from that declaration's description and a
+  // deleted bundle's constant preamble rebuilt it from that declaration's description, and a
   // deployed Capsule held a *different* Symbol than the runtime module's. That was safe — this key
   // has exactly one writer (`createAclHelpers`) and one reader (`aclRuleTouchedAsyncHelperRead`),
-  // both of which travelled into the bundle and resolved the preamble's single declaration, and the
-  // frozen helper objects never cross between a bundled Capsule and this process — but it was
-  // reasoned about rather than checked, and this test recorded it as the one place where the
-  // module-graph bundle was deliberately not a copy of the emitted-list one.
+  // both of which resolved the preamble's single declaration, and the frozen helper objects never
+  // cross between a bundled Capsule and this process — but it was reasoned about rather than
+  // checked, and it was the one place the two bundles were deliberately not copies of each other.
   //
-  // **Batch 7 removed the difference rather than preserving it.** `ACL_HELPER_STATE` is a
-  // declaration inside `acl-runtime.js` now, carried into the emitted-list bundle as that module's
-  // own text, so the preamble does not write it and there is one `Symbol(…)` expression in each
-  // bundle instead of a declaration and a reconstruction. That is what this asserts, in both
-  // directions: exactly one mint, and no preamble copy of it.
+  // Batch 7 removed the difference rather than preserving it: `ACL_HELPER_STATE` is a declaration
+  // inside `acl-runtime.js`, so there is one `Symbol(…)` expression in the bundle rather than a
+  // declaration and a reconstruction beside it.
   //
   // Counting rather than matching, because "at least one" is what a reconstruction alongside the
   // declaration would also satisfy — which is precisely the duplicate-declaration hazard the four
-  // constants had to leave the preamble in the same commit to avoid.
-  const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" };
-  const emitted = createServerBundleSource(inputs);
-  const graph = await createServerBundleModuleSource({
-    ...inputs,
-    epilogue: `import { ACL_HELPER_STATE as __probeAclHelperState } from "../server-runtime-source.js";\nglobalThis.__probeAclHelperState = __probeAclHelperState;`,
-  });
+  // ACL constants had to leave the preamble in the same commit to avoid.
+  const bundle = await buildBundle(
+    { config: capsuleConfig(), serverEnv: {}, serverSource: "", serverModuleSource: "export default {};" },
+    { epilogue: `import { ACL_HELPER_STATE as __probeAclHelperState } from "../server-runtime-source.js";\nglobalThis.__probeAclHelperState = __probeAclHelperState;` },
+  );
 
-  for (const [label, bundle] of [["emitted", emitted], ["graph", graph]]) {
-    assert.equal(
-      bundle.split('Symbol("sporades.aclHelperState")').length - 1,
-      1,
-      `the ${label} bundle does not mint ACL_HELPER_STATE exactly once`,
-    );
-    assert.equal(
-      /const ACL_HELPER_STATE = Symbol\("sporades\.aclHelperState"\);/.test(bundle),
-      false,
-      `the ${label} bundle still reconstructs ACL_HELPER_STATE in a preamble beside the carried declaration`,
-    );
-  }
-
-  // And the name still resolves at each bundle's top level, which is what the writer and the reader
-  // inside the carried module reach it by. The emitted-list bundle gets it from the destructuring
-  // the migrated block ends with; the module-graph bundle from an import esbuild resolved.
-  assert.match(emitted, /const \{[^}]*\bACL_HELPER_STATE\b/);
-  assert.match(graph, /\bACL_HELPER_STATE\b/);
+  assert.equal(
+    bundle.split('Symbol("sporades.aclHelperState")').length - 1,
+    1,
+    "the bundle does not mint ACL_HELPER_STATE exactly once",
+  );
+  assert.match(bundle, /\bACL_HELPER_STATE\b/);
 });
 
 test("the module-graph bundle is reproducible for identical inputs", async () => {
@@ -2728,39 +1655,34 @@ const TRICKY_SERVER_SOURCE = [
   "",
 ].join("\r\n");
 
-test("both bundles carry the Capsule's entry source byte for byte", async () => {
+test("the bundle carries the Capsule's entry source byte for byte", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-source-"));
   try {
-    const reportPath = (label) => path.join(root, `${label}.txt`);
-    const epilogue = (label) => `
+    const reportPath = path.join(root, "graph.txt");
+    const source = await buildBundle(
+      { config: capsuleConfig(), serverEnv: {}, serverSource: TRICKY_SERVER_SOURCE, serverModuleSource: "export default {};" },
+      {
+        epilogue: `
 import { writeFileSync as __probeWriteFileSync } from "node:fs";
-__probeWriteFileSync(${JSON.stringify(reportPath(label))}, sporadesServerSource, "utf8");
+__probeWriteFileSync(${JSON.stringify(reportPath)}, sporadesServerSource, "utf8");
 process.exit(0);
-`;
-    const inputs = { config: capsuleConfig(), serverEnv: {}, serverSource: TRICKY_SERVER_SOURCE, serverModuleSource: "export default {};" };
-    const bundles = [
-      ["emitted", createServerBundleSource(inputs) + epilogue("emitted")],
-      ["graph", await createServerBundleModuleSource({ ...inputs, epilogue: epilogue("graph") })],
-    ];
+`,
+      },
+    );
 
-    for (const [label, source] of bundles) {
-      const dir = path.join(root, label);
-      await mkdir(dir, { recursive: true });
-      const bundlePath = path.join(dir, "server.mjs");
-      await writeFile(bundlePath, source);
-      const port = await reserveFreePort();
-      const result = spawnSync(process.execPath, [bundlePath], {
-        cwd: dir,
-        env: { ...process.env, PORT: String(port) },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, `${label} source probe failed: ${result.stderr}`);
-    }
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    const bundlePath = path.join(dir, "server.mjs");
+    await writeFile(bundlePath, source);
+    const port = await reserveFreePort();
+    const result = spawnSync(process.execPath, [bundlePath], {
+      cwd: dir,
+      env: { ...process.env, PORT: String(port) },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `source probe failed: ${result.stderr}`);
 
-    const emittedSource = await readFile(reportPath("emitted"), "utf8");
-    const graphSource = await readFile(reportPath("graph"), "utf8");
-    assert.equal(emittedSource, TRICKY_SERVER_SOURCE, "the emitted-list bundle altered the Capsule entry source");
-    assert.equal(graphSource, TRICKY_SERVER_SOURCE, "the module-graph bundle altered the Capsule entry source");
+    assert.equal(await readFile(reportPath, "utf8"), TRICKY_SERVER_SOURCE, "the bundle altered the Capsule entry source");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

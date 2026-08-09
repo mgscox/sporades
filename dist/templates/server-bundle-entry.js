@@ -1,21 +1,18 @@
-// The generated Capsule server bundle, expressed as a module rather than as concatenated source
-// text.
+// The generated Capsule server bundle: the boot program a deployed Capsule runs, written as
+// ordinary imports so that esbuild resolves every name.
 //
-// `server-bundle-template.ts` builds the same program by writing out `fn.toString()` for every
-// entry in `SERVER_RUNTIME_SOURCE_FUNCTIONS` next to a hand-assembled preamble that re-declares the
-// runtime's module constants. That mechanism decides the runtime's shape: a function cannot call a
-// helper unless the helper is also in the emitted list, cannot close over a module constant, and a
-// name that fails to travel is a `ReferenceError` in a deployed Capsule rather than a build error.
+// `server-bundle-template.ts` built the same program until ticket 05, by writing out `fn.toString()`
+// for every entry in a registry of 528 runtime functions, next to a hand-assembled preamble that
+// re-declared the runtime's module constants. That mechanism decided the runtime's shape rather than
+// serving it: a function could not call a helper unless the helper was also registered, could not
+// close over a module constant, and a name that failed to travel was a `ReferenceError` in a
+// deployed Capsule rather than a build error. This file was the expand half of an expand–contract
+// sequence; the contract half deleted the other builder, and this is the only one now.
 //
-// This file is the same boot program written as ordinary imports, so esbuild resolves the names
-// instead of a list doing it by hand. It is the expand half of an expand-contract sequence: the
-// emitted-list bundle is still the one that ships, and this one exists to be shown equivalent to it
-// before anything depends on it.
-//
-// Only the entry points the boot program actually calls are imported. `SERVER_RUNTIME_SOURCE_FUNCTIONS`
-// is deliberately not imported: that array references all 528 runtime functions, so importing it
-// would pin every one of them into the bundle and defeat the reachability analysis that is the
-// point of building from a graph.
+// Only the entry points the boot program actually calls are imported, so esbuild's reachability
+// analysis decides what a Capsule carries. That was worth stating while a registry existed —
+// importing it would have pinned all 528 functions into the graph — and it is still the rule: an
+// import added here for convenience carries its whole subgraph into every deployed Capsule.
 import { createDecipheriv, privateDecrypt } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";

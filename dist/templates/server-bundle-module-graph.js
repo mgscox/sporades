@@ -29,12 +29,10 @@ function resolveServerBundleEntry() {
         entryPath: path.join(packageRoot, "dist", "templates", "server-bundle-entry.js"),
     };
 }
-// Builds the deployed Capsule's server bundle from an ordinary module graph.
-//
-// This is the same program `createServerBundleSource` produces, resolved by esbuild from real
-// imports instead of assembled from `fn.toString()` next to a hand-written constant preamble. Both
-// builders exist: the emitted-list one is still the artifact that ships, and this one is here to be
-// shown equivalent to it first.
+// Builds the deployed Capsule's server bundle from an ordinary module graph. Since ticket 05 this is
+// the only builder; `createServerBundleSource` assembled the same program from `fn.toString()` next
+// to a hand-written constant preamble, and existed alongside this one until it had been shown
+// equivalent.
 //
 // The graph is rooted at the compiled entry in `dist/`, not at the TypeScript source, because a
 // published Sporades CLI ships `dist/` and not `src/` — see `package.json`'s `files`. How that path

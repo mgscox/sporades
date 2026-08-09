@@ -21,6 +21,5 @@ export declare function updateCurrentUserPreferences(database: LooseRecord, auth
     error: any;
     changes?: undefined;
 }>;
-export declare function normalizePreferencesPatch(patch: any): any;
 export {};
 //# sourceMappingURL=user-preferences-runtime.d.ts.map

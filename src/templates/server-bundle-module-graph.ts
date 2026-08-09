@@ -13,9 +13,12 @@ export type ServerBundleModuleGraphOptions = {
   // Appended to the entry before it is bundled, so a test can read values out of a bundle that was
   // built and booted rather than out of its text. `createBundle` never passes it.
   //
-  // This is a seam that exists for the equivalence proof, and it should not outlive it: once the
-  // emitted-list builder is gone there is nothing left to prove equivalent, and this option should
-  // go with it rather than settle into the shipping API.
+  // This was introduced for the two-bundle equivalence proof and marked for deletion with it. It
+  // outlives that proof deliberately: the checks it now carries ask what a *booted* Capsule holds —
+  // that every runtime constant has the value and the type its module declares, that the inspection
+  // gate inside the artifact answers what `dist/` answers, that the Capsule entry source survives
+  // byte for byte. None of those can be asked of the bundle's text, and all of them are about the
+  // artifact that ships rather than about a comparison between two artifacts.
   epilogue?: string;
 };
 
@@ -49,12 +52,10 @@ function resolveServerBundleEntry() {
   };
 }
 
-// Builds the deployed Capsule's server bundle from an ordinary module graph.
-//
-// This is the same program `createServerBundleSource` produces, resolved by esbuild from real
-// imports instead of assembled from `fn.toString()` next to a hand-written constant preamble. Both
-// builders exist: the emitted-list one is still the artifact that ships, and this one is here to be
-// shown equivalent to it first.
+// Builds the deployed Capsule's server bundle from an ordinary module graph. Since ticket 05 this is
+// the only builder; `createServerBundleSource` assembled the same program from `fn.toString()` next
+// to a hand-written constant preamble, and existed alongside this one until it had been shown
+// equivalent.
 //
 // The graph is rooted at the compiled entry in `dist/`, not at the TypeScript source, because a
 // published Sporades CLI ships `dist/` and not `src/` — see `package.json`'s `files`. How that path

@@ -30,7 +30,7 @@ import {
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
 import { job, mutation, query } from "../dist/server.js";
-import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
@@ -1332,7 +1332,7 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-bundle-"));
   const bundlePath = path.join(dir, "server.mjs");
   try {
-    const source = createServerBundleSource({
+    const source = await createServerBundleModuleSource({
       config: smtpConfig,
       serverEnv: { SMTP_USERNAME: "bundle-user", SMTP_PASSWORD: "bundle-password" },
       serverSource: "",

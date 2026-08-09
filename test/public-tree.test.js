@@ -637,7 +637,8 @@ test("normalized public trees reject symlinks and Unicode normalization collisio
 
 test("runtime infrastructure consumes only the normalized public tree contract", async () => {
   const infrastructureFiles = [
-    "src/templates/server-bundle-template.ts",
+    // `src/templates/server-bundle-template.ts` was the first entry here until ticket 05 deleted the
+    // emitted-list builder along with the file.
     "src/templates/server-bundle-entry.ts",
     "src/cli/host-request-builders.ts",
     "src/cli/sporades-host-helper.ts",

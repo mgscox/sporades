@@ -66,17 +66,18 @@
 //     `isAbsoluteFilePath`), and the three the two stranded HTTP functions need
 //     (`completePendingFileUpload`, `fileRowForOwner`, `contentTypeForFile`).
 //   - What `test/database-adapter.test.js` imports through the re-export bridge: both engine
-//     constructors and eight of the lifecycle entry points. Those are named imports rather than
-//     `SERVER_RUNTIME_SOURCE_FUNCTIONS.find(…)` lookups, so they keep resolving; the `.find` form
-//     returns `undefined` the moment a domain stops being entries in that list.
-//   - Six exported for the two-bundle skew probe and nothing else: `s3Signature`, `s3CanonicalPath`,
-//     `s3ObjectKey`, `validatePublicUrlExpiry`, `normalizeFileName` and `fileMetadataFromUpload`.
-//     That is the deliberate widening batch 5 made for `normalizePreferencesPatch`, for the same
-//     reason: `describeMigratedModuleAnswers` is synchronous, and this domain's entry points are
-//     `async` and take a database adapter, so without those six the only limbs the differential
-//     could offer would be the two engine constructors — and the AWS SigV4 signature, the File path
-//     rules and the public-URL expiry gate would be carried into every deployed Capsule without
-//     being compared. See `MIGRATED_MODULE_STORAGE_*_SKEW_PROBE` in `server-bundle-template.ts`.
+//     constructors and eight of the lifecycle entry points. Those are named imports, so they resolve
+//     or fail to compile.
+//
+// **Six more were exported until ticket 05, and are private again now.** `s3Signature`,
+// `s3CanonicalPath`, `s3ObjectKey`, `validatePublicUrlExpiry`, `normalizeFileName` and
+// `fileMetadataFromUpload` were exported for the two-bundle skew probe and for nothing else — a
+// deliberate widening at the time, because that probe was synchronous while this domain's entry
+// points are `async` and take a database adapter, so without the six the only limbs it could compare
+// were the two engine constructors and the AWS SigV4 signature, the File path rules and the
+// public-URL expiry gate would have been carried into every deployed Capsule uncompared. The probe
+// went with the emitted-list builder, so the widening had nothing left to serve and the six are back
+// behind the module boundary where the domain's own header says they belong.
 //
 // `resolveLiveFileReference` is this module's census sentinel in
 // `test/database-adapter-engine-seam.test.js`, and it is private for the sixth batch running. It is
@@ -264,7 +265,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         close() { },
     };
 }
-export function s3ObjectKey(namespace, fileId, version) {
+function s3ObjectKey(namespace, fileId, version) {
     return `${namespace}/files/${fileId}/${version}`;
 }
 async function s3Request(config, { method, key = null, body = null }) {
@@ -339,7 +340,7 @@ function s3SignedHeaders(headers) {
         .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
         .sort(([left], [right]) => left.localeCompare(right)));
 }
-export function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate, }) {
+function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate, }) {
     const signedHeaders = Object.keys(headers).join(";");
     const canonicalHeaders = Object.entries(headers)
         .map(([name, value]) => `${name}:${value}\n`)
@@ -356,7 +357,7 @@ function s3SigningKey(secretKey, date, region) {
     const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
     return s3Hmac(dateRegionServiceKey, "aws4_request");
 }
-export function s3CanonicalPath(basePath, bucket, key) {
+function s3CanonicalPath(basePath, bucket, key) {
     const base = String(basePath ?? "")
         .split("/")
         .filter(Boolean);
@@ -784,7 +785,7 @@ async function runFileMetadataTransaction(database, fn) {
     }
     return await database.adapter.withTransaction(fn);
 }
-export function validatePublicUrlExpiry(options) {
+function validatePublicUrlExpiry(options) {
     const choices = [options.ttlSeconds !== undefined, options.expires !== undefined, options.noExpiry === true].filter(Boolean);
     if (choices.length !== 1) {
         return {
@@ -833,7 +834,7 @@ export function fileMetadataFromRow(row) {
         version: row.version,
     };
 }
-export function fileMetadataFromUpload(upload) {
+function fileMetadataFromUpload(upload) {
     return {
         id: upload.fileId,
         bucket: upload.bucketName,
@@ -902,7 +903,7 @@ export function normalizeAbsoluteFilePath(value) {
     }
     return `/${segments.join("/")}`;
 }
-export function normalizeFileName(name, filePath) {
+function normalizeFileName(name, filePath) {
     const candidate = String(name ?? "").trim();
     if (candidate)
         return candidate;
