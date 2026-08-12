@@ -143,6 +143,71 @@ const smtp2goDocumentedLifecycleFixtures = [
   },
 ];
 
+const postmarkDelivery = {
+  RecordType: "Delivery",
+  MessageStream: "outbound",
+  MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+  Recipient: "Client@Example.com",
+  DeliveredAt: "2019-11-05T16:33:54.9070259Z",
+  Details: "Test delivery",
+  Tag: "welcome-email",
+  Metadata: { correlationId: "delivery-correlation-3" },
+};
+
+const postmarkDocumentedLifecycleFixtures = [
+  postmarkDelivery,
+  {
+    RecordType: "Bounce", MessageStream: "outbound", ID: 4323372036854775807,
+    Type: "HardBounce", TypeCode: 1, Name: "Hard bounce", Tag: "Test",
+    MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+    Metadata: { correlationId: "delivery-correlation-3" }, ServerID: 23,
+    Description: "The server was unable to deliver your message.", Details: "Test bounce details",
+    Email: "Client@Example.com", From: "sender@example.com",
+    BouncedAt: "2019-11-05T16:33:54.9070259Z", DumpAvailable: true,
+    Inactive: true, CanActivate: true, Subject: "Test subject",
+  },
+  {
+    RecordType: "Open", MessageStream: "outbound", FirstOpen: true,
+    Client: { Name: "Chrome 35.0.1916.153", Company: "Google", Family: "Chrome" },
+    OS: { Name: "OS X 10.7 Lion", Company: "Apple Computer, Inc.", Family: "OS X 10" },
+    Platform: "WebMail", UserAgent: "Test user agent", Geo: { CountryISOCode: "GB", IP: "192.0.2.10" },
+    MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+    Metadata: { correlationId: "delivery-correlation-3" },
+    ReceivedAt: "2019-11-05T16:34:54.9070259Z", Tag: "welcome-email", Recipient: "Client@Example.com",
+  },
+  {
+    RecordType: "Click", MessageStream: "outbound", ClickLocation: "HTML",
+    Client: { Name: "Chrome 35.0.1916.153", Company: "Google", Family: "Chrome" },
+    OS: { Name: "OS X 10.7 Lion", Company: "Apple Computer, Inc.", Family: "OS X 10" },
+    Platform: "Desktop", UserAgent: "Test user agent", OriginalLink: "https://example.com/report",
+    Geo: { CountryISOCode: "GB", IP: "192.0.2.10" },
+    MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+    Metadata: { correlationId: "delivery-correlation-3" },
+    ReceivedAt: "2019-11-05T16:35:54.9070259Z", Tag: "welcome-email", Recipient: "Client@Example.com",
+  },
+  {
+    RecordType: "SpamComplaint", MessageStream: "outbound", ID: 42,
+    Type: "SpamComplaint", TypeCode: 512, Name: "Spam complaint", Tag: "Test",
+    MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+    Metadata: { correlationId: "delivery-correlation-3" }, ServerID: 23,
+    Description: "", Details: "Test spam complaint details", Email: "Client@Example.com",
+    From: "sender@example.com", BouncedAt: "2019-11-05T16:36:54.9070259Z",
+    DumpAvailable: true, Inactive: true, CanActivate: false, Subject: "Test subject",
+  },
+  {
+    RecordType: "SubscriptionChange", MessageID: "883953f4-6105-42a2-a16a-77a8eac79483",
+    ServerID: 23, MessageStream: "outbound", ChangedAt: "2019-11-05T16:37:54.9070259Z",
+    Recipient: "Client@Example.com", Origin: "Recipient", SuppressSending: true,
+    SuppressionReason: "ManualSuppression", Tag: "welcome-email",
+    Metadata: { correlationId: "delivery-correlation-3" },
+  },
+  {
+    RecordType: "SubscriptionChange", MessageID: null, ServerID: 23, MessageStream: "outbound",
+    ChangedAt: "2019-11-05T16:38:54.9070259Z", Recipient: "Client@Example.com",
+    Origin: "Customer", SuppressSending: false, SuppressionReason: null, Tag: null, Metadata: {},
+  },
+];
+
 const anonymous = {
   userId: "email-event-reader",
   displayName: "Email event reader",
@@ -156,6 +221,7 @@ const anonymous = {
 async function withEmailEventDatabase(config, capsule, run, serverEnv = {
   MAILJET_WEBHOOK_SECRET: "mailjet-webhook-secret",
   SMTP2GO_WEBHOOK_SECRET: "smtp2go-webhook-secret",
+  POSTMARK_WEBHOOK_SECRET: "postmark-webhook-secret",
 }) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-email-events-"));
   const database = await openDevDatabase(
@@ -225,6 +291,14 @@ const smtp2goConfig = {
   },
 };
 
+const postmarkConfig = {
+  mail: {
+    webhooks: {
+      postmark: { path: "/postmark-webhook", secretEnv: "POSTMARK_WEBHOOK_SECRET" },
+    },
+  },
+};
+
 async function postSmtp2go(database, body, authorization = "Bearer smtp2go-webhook-secret") {
   const request = Object.assign(Readable.from([JSON.stringify(body)]), {
     method: "POST",
@@ -236,6 +310,130 @@ async function postSmtp2go(database, body, authorization = "Bearer smtp2go-webho
   if (handled) await response.finished;
   return { handled, response };
 }
+
+async function postPostmark(database, body, token = "postmark-webhook-secret") {
+  const request = Object.assign(Readable.from([JSON.stringify(body)]), {
+    method: "POST",
+    url: "/postmark-webhook",
+    headers: { "content-type": "application/json", "x-sporades-webhook-token": token },
+  });
+  const response = responseCapture();
+  const handled = await routeEndpoint(database, request, response);
+  if (handled) await response.finished;
+  return { handled, response };
+}
+
+test("Postmark callbacks reach the provider-neutral subscription only when configured and verified", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+
+  await withEmailEventDatabase({}, capsule, async (database) => {
+    assert.equal((await postPostmark(database, postmarkDelivery)).handled, false);
+  });
+
+  await withEmailEventDatabase(postmarkConfig, capsule, async (database) => {
+    assert.equal((await postPostmark(database, postmarkDelivery, "wrong")).response.status, 401);
+    assert.equal(seen.length, 0);
+    assert.equal((await postPostmark(database, postmarkDelivery)).response.status, 200);
+    assert.deepEqual(seen, [{
+      provider: "postmark",
+      kind: "delivered",
+      providerEventId: "postmark:delivery:4c36d261e5978360cce64e71442765bafc1ed1e58cc0adfe3ce99baecf78d7aa",
+      occurredAt: "2019-11-05T16:33:54.907Z",
+      correlationId: "delivery-correlation-3",
+      recipient: "client@example.com",
+      raw: postmarkDelivery,
+    }]);
+  });
+});
+
+test("Postmark documented lifecycle payloads normalize without changing raw event objects", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  await withEmailEventDatabase(postmarkConfig, capsule, async (database) => {
+    for (const fixture of postmarkDocumentedLifecycleFixtures) {
+      assert.equal((await postPostmark(database, fixture)).response.status, 200);
+    }
+  });
+  assert.deepEqual(
+    seen.map(({ kind }) => kind),
+    ["delivered", "bounced", "opened", "clicked", "complained", "unsubscribed", "resubscribed"],
+  );
+  assert.deepEqual(seen.map(({ raw }) => raw), postmarkDocumentedLifecycleFixtures);
+});
+
+test("Postmark retries keep one identity while distinct opens and clicks do not collapse", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const open = postmarkDocumentedLifecycleFixtures.find(({ RecordType }) => RecordType === "Open");
+  const click = postmarkDocumentedLifecycleFixtures.find(({ RecordType }) => RecordType === "Click");
+  await withEmailEventDatabase(postmarkConfig, capsule, async (database) => {
+    for (const fixture of [
+      postmarkDelivery,
+      postmarkDelivery,
+      open,
+      { ...open, Geo: { ...open.Geo, IP: "192.0.2.11" } },
+      click,
+      { ...click, OriginalLink: "https://example.com/other-report" },
+    ]) {
+      assert.equal((await postPostmark(database, fixture)).response.status, 200);
+    }
+  });
+  assert.equal(seen[0].providerEventId, seen[1].providerEventId);
+  assert.notEqual(seen[2].providerEventId, seen[3].providerEventId);
+  assert.notEqual(seen[4].providerEventId, seen[5].providerEventId);
+});
+
+test("Postmark suppression changes preserve reason-specific provider-neutral meaning", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const subscription = postmarkDocumentedLifecycleFixtures.find(({ RecordType }) => RecordType === "SubscriptionChange");
+  await withEmailEventDatabase(postmarkConfig, capsule, async (database) => {
+    for (const fixture of [
+      { ...subscription, SuppressionReason: "HardBounce", Origin: "Customer" },
+      { ...subscription, SuppressionReason: "SpamComplaint", Origin: "Customer" },
+      { ...subscription, SuppressionReason: "ManualSuppression", Origin: "Admin" },
+    ]) {
+      assert.equal((await postPostmark(database, fixture)).response.status, 200);
+    }
+  });
+  assert.deepEqual(seen.map(({ kind }) => kind), ["bounced", "complained", "blocked"]);
+});
+
+test("Postmark acknowledgement and failure semantics remain independent of a Capsule subscription", async () => {
+  await withEmailEventDatabase(postmarkConfig, {}, async (database) => {
+    const accepted = await postPostmark(database, postmarkDelivery);
+    assert.equal(accepted.response.status, 200);
+    assert.deepEqual(JSON.parse(accepted.response.body), { ok: true, accepted: 1, ignored: 0 });
+    for (const malformed of [[], [postmarkDelivery], {}, { ...postmarkDelivery, MessageID: "" }, { ...postmarkDelivery, DeliveredAt: "never" }]) {
+      assert.equal((await postPostmark(database, malformed)).response.status, 400);
+    }
+    const unknown = await postPostmark(database, { ...postmarkDelivery, RecordType: "FutureEvent" });
+    assert.equal(unknown.response.status, 200);
+    assert.deepEqual(JSON.parse(unknown.response.body), { ok: true, accepted: 0, ignored: 1 });
+  });
+
+  await withEmailEventDatabase(postmarkConfig, {}, async (database) => {
+    assert.equal((await postPostmark(database, postmarkDelivery)).response.status, 503);
+  }, {});
+
+  await withEmailEventDatabase(
+    postmarkConfig,
+    { emailEvents: emailEvent(() => { throw new Error("application failed"); }) },
+    async (database) => {
+      assert.equal((await postPostmark(database, postmarkDelivery)).response.status, 500);
+    },
+  );
+});
+
+test("runtime-owned Postmark routes never mint Anonymous users or sessions", async () => {
+  await withEmailEventDatabase(postmarkConfig, { emailEvents: emailEvent(() => {}) }, async (database) => {
+    assert.equal((await postPostmark(database, postmarkDelivery, "wrong")).response.status, 401);
+    assert.equal((await postPostmark(database, postmarkDelivery)).response.status, 200);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_users]").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_sessions]").get().count, 0);
+  });
+});
 
 test("SMTP2GO callbacks reach the same provider-neutral subscription only when configured and verified", async () => {
   const seen = [];
@@ -541,6 +739,19 @@ test("SMTP2GO webhook configuration rejects unsafe paths and Server env referenc
   ]) {
     await assert.rejects(
       withEmailEventDatabase({ mail: { webhooks: { smtp2go } } }, {}, async () => {}),
+      (error) => error.code === "INVALID_MAIL_CONFIG",
+    );
+  }
+});
+
+test("Postmark webhook configuration rejects unsafe paths and Server env references", async () => {
+  for (const postmark of [
+    { path: "https://capsule.example/postmark", secretEnv: "POSTMARK_WEBHOOK_SECRET" },
+    { path: "/postmark?token=checked-in", secretEnv: "POSTMARK_WEBHOOK_SECRET" },
+    { path: "/postmark", secretEnv: "not-an-env-name" },
+  ]) {
+    await assert.rejects(
+      withEmailEventDatabase({ mail: { webhooks: { postmark } } }, {}, async () => {}),
       (error) => error.code === "INVALID_MAIL_CONFIG",
     );
   }

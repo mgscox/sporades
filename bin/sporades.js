@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash5, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -3991,7 +3991,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash2, randomBytes as randomBytes4, randomUUID } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes4, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -4032,14 +4032,15 @@ function validateEmailWebhooksConfig(webhooks) {
   if (webhooks === void 0) return void 0;
   const webhooksData = captureMailConfigData(
     webhooks,
-    ["mailjet", "smtp2go"],
+    ["mailjet", "smtp2go", "postmark"],
     "Invalid email webhook configuration.",
     "Configure only supported providers under `mail.webhooks`."
   );
   const result = {};
   for (const [provider, defaultPath, defaultSecretEnv] of [
     ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
-    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"]
+    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
+    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"]
   ]) {
     const input = webhooksData.get(provider);
     if (input === void 0) continue;
@@ -5256,7 +5257,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { timingSafeEqual } from "node:crypto";
+import { createHash as createHash2, timingSafeEqual } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -5304,6 +5305,10 @@ function verifiedSmtp2goRequest(ctx, secret) {
   const authorization = text(ctx.request?.headers?.authorization);
   const match = authorization.match(/^Bearer ([^\s]+)$/i);
   const token = match?.[1] ?? "";
+  return token.length > 0 && secureEqual(token, secret);
+}
+function verifiedPostmarkRequest(ctx, secret) {
+  const token = text(ctx.request?.headers?.["x-sporades-webhook-token"]);
   return token.length > 0 && secureEqual(token, secret);
 }
 function mailjetMessageIdentity(raw) {
@@ -5395,6 +5400,9 @@ function normalizeSmtp2goEvent(raw) {
   };
 }
 function parseSmtp2goEvents(body) {
+  return parseSingleProviderEvent(body, normalizeSmtp2goEvent);
+}
+function parseSingleProviderEvent(body, normalize) {
   let value = body;
   if (typeof value === "string") {
     try {
@@ -5403,10 +5411,65 @@ function parseSmtp2goEvents(body) {
       return { malformed: true, events: [], ignored: 0 };
     }
   }
-  const event = normalizeSmtp2goEvent(value);
+  const event = normalize(value);
   if (event === false) return { malformed: true, events: [], ignored: 0 };
   if (event === null) return { malformed: false, events: [], ignored: 1 };
   return { malformed: false, events: [event], ignored: 0 };
+}
+function normalizePostmarkEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.RecordType !== "string" || !data.RecordType.trim()) return false;
+  const recordType = data.RecordType.trim();
+  const geo = data.Geo && typeof data.Geo === "object" && !Array.isArray(data.Geo) ? data.Geo : {};
+  const descriptor = {
+    Delivery: { kind: "delivered", timestamp: "DeliveredAt", recipient: "Recipient", identityDiscriminator: "" },
+    Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data.Type) },
+    Open: {
+      kind: "opened",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([data.FirstOpen, text(data.UserAgent), text(geo.IP)])
+    },
+    Click: {
+      kind: "clicked",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([text(data.OriginalLink), text(data.ClickLocation)])
+    },
+    SpamComplaint: { kind: "complained", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: "" },
+    SubscriptionChange: {
+      kind: data.SuppressSending === false ? "resubscribed" : data.SuppressSending === true && data.SuppressionReason === "ManualSuppression" && data.Origin === "Recipient" ? "unsubscribed" : data.SuppressSending === true && data.SuppressionReason === "HardBounce" ? "bounced" : data.SuppressSending === true && data.SuppressionReason === "SpamComplaint" ? "complained" : data.SuppressSending === true ? "blocked" : "",
+      timestamp: "ChangedAt",
+      recipient: "Recipient",
+      identityDiscriminator: `${text(data.SuppressSending)}:${text(data.SuppressionReason)}:${text(data.Origin)}`
+    }
+  }[recordType];
+  if (!descriptor) return null;
+  if (!descriptor.kind) return false;
+  const messageId = typeof data.MessageID === "string" ? data.MessageID.trim() : "";
+  const timestamp = data[descriptor.timestamp];
+  const milliseconds = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+  if (recordType !== "SubscriptionChange" && !messageId || !Number.isFinite(milliseconds)) return false;
+  const occurredAt = new Date(milliseconds).toISOString();
+  const recipient = text(data[descriptor.recipient]).trim().toLowerCase();
+  if (!recipient) return false;
+  const metadata = data.Metadata && typeof data.Metadata === "object" && !Array.isArray(data.Metadata) ? data.Metadata : {};
+  const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
+  const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
+  const identity = createHash2("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  return {
+    provider: "postmark",
+    kind: descriptor.kind,
+    providerEventId: `postmark:${recordType.toLowerCase()}:${identity}`,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...recipient ? { recipient } : {},
+    raw: data
+  };
+}
+function parsePostmarkEvents(body) {
+  return parseSingleProviderEvent(body, normalizePostmarkEvent);
 }
 async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
   if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
@@ -5460,6 +5523,15 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
     subscription,
     verifiedSmtp2goRequest,
     parseSmtp2goEvents
+  ));
+  const postmark = mailConfig?.webhooks?.postmark;
+  if (postmark?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_postmark_email_events",
+    postmark,
+    serverEnv,
+    subscription,
+    verifiedPostmarkRequest,
+    parsePostmarkEvents
   ));
   return endpoints;
 }
@@ -15534,7 +15606,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash3("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -20085,7 +20157,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -20351,7 +20423,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash3("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash4("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -24711,7 +24783,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash4("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash5("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;

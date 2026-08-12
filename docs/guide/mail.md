@@ -459,6 +459,85 @@ idempotent. SMTP2GO may include recipient,
 subject, bounce diagnostics, IP, geo-location, client, device, operating-system,
 and user-agent data in `raw`; the Capsule owns its privacy and retention policy.
 
+### Configure the Postmark callback route
+
+Enable `mail.webhooks.postmark` with its own runtime-owned route and callback
+secret:
+
+```json
+{
+  "mail": {
+    "webhooks": {
+      "postmark": {
+        "path": "/postmark-webhook",
+        "secretEnv": "POSTMARK_WEBHOOK_SECRET"
+      }
+    }
+  }
+}
+```
+
+Store a fresh high-entropy callback token under `POSTMARK_WEBHOOK_SECRET` in
+Sealed Server env. It is not `POSTMARK_API_KEY` or the Postmark Server API
+token. Configure the Postmark modular webhook with this custom header:
+
+```json
+{
+  "Name": "X-Sporades-Webhook-Token",
+  "Value": "<the POSTMARK_WEBHOOK_SECRET value>"
+}
+```
+
+Sporades compares that header in constant time before parsing the body.
+Postmark permits static callback headers but does not support HMAC webhook
+signatures. This is shared-secret authentication, not a signed payload or
+replay proof; keep downstream handling idempotent. Sporades does not
+automatically register or reconcile Postmark webhooks, so create the modular
+webhook separately for the appropriate Transactional Message Stream.
+
+To correlate a send with its callbacks, set `provider.metadata.correlationId`
+through the Postmark SMTP extension:
+
+```ts
+await ctx.mail.send({
+  to: "recipient@example.com",
+  subject: "Delivery update",
+  textBody: "Your update is ready.",
+  provider: {
+    metadata: {
+      correlationId: "delivery-018f"
+    }
+  }
+});
+```
+
+Sporades reads `correlationId` case-insensitively from the callback `Metadata`
+object. Postmark's `MessageID` identifies a message, not every lifecycle event:
+one message can produce multiple opens and clicks, and a subscription change
+may have no `MessageID`. Sporades therefore derives a deterministic
+provider-scoped `providerEventId` from the stable fields for each event type.
+
+Postmark event types normalize as follows:
+
+| Postmark | Condition | `VerifiedEmailEvent.kind` |
+| --- | --- | --- |
+| `Delivery` | — | `delivered` |
+| `Bounce` | — | `bounced` |
+| `Open` | — | `opened` |
+| `Click` | — | `clicked` |
+| `SpamComplaint` | — | `complained` |
+| `SubscriptionChange` | `SuppressSending: false` | `resubscribed` |
+| `SubscriptionChange` | recipient `ManualSuppression` | `unsubscribed` |
+| `SubscriptionChange` | hard-bounce or spam suppression | `bounced` or `complained` |
+| `SubscriptionChange` | other suppression | `blocked` |
+
+For Delivery, Open, Click, and SubscriptionChange, Postmark retries after one
+minute, five minutes, and 15 minutes when it does not receive success. Bounce
+has a longer documented schedule; Postmark does not publish a SpamComplaint
+schedule. A `403` permanently stops retries, so this adapter returns retryable
+non-200 responses for authentication, malformed data, missing configuration,
+and handler failures rather than using `403`.
+
 ### Subscribe in Capsule server code
 
 ```ts

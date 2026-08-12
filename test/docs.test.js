@@ -328,6 +328,24 @@ test("the Mail guide documents secure SMTP2GO provider-event setup and semantics
   ]) assert.match(mail, required);
 });
 
+test("the Mail guide documents secure Postmark provider-event setup and semantics", async () => {
+  const mail = await readProjectFile("docs/guide/mail.md");
+  for (const required of [
+    /mail\.webhooks\.postmark/,
+    /POSTMARK_WEBHOOK_SECRET/,
+    /X-Sporades-Webhook-Token/,
+    /not[\s\S]*(?:POSTMARK_API_KEY|Server API token)/i,
+    /shared secret[\s\S]*not[\s\S]*(?:signature|signed)/i,
+    /does not support HMAC/i,
+    /SubscriptionChange[\s\S]*resubscribed/,
+    /ManualSuppression[\s\S]*unsubscribed/,
+    /MessageID[\s\S]*not[\s\S]*(?:unique|providerEventId)/i,
+    /one minute[\s\S]*five minutes[\s\S]*15 minutes/i,
+    /provider\.metadata[\s\S]*correlationId/,
+    /does not[\s\S]*(?:automatically|yet)[\s\S]*(?:register|reconcile)/i,
+  ]) assert.match(mail, required);
+});
+
 test("published docs describe the complete Job scheduling contract", async () => {
   const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
     readProjectFile("docs/PRD.md"),

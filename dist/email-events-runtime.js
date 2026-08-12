@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 const MAILJET_EVENT_KINDS = {
     sent: "delivered",
     open: "opened",
@@ -49,6 +49,10 @@ function verifiedSmtp2goRequest(ctx, secret) {
     const authorization = text(ctx.request?.headers?.authorization);
     const match = authorization.match(/^Bearer ([^\s]+)$/i);
     const token = match?.[1] ?? "";
+    return token.length > 0 && secureEqual(token, secret);
+}
+function verifiedPostmarkRequest(ctx, secret) {
+    const token = text(ctx.request?.headers?.["x-sporades-webhook-token"]);
     return token.length > 0 && secureEqual(token, secret);
 }
 function mailjetMessageIdentity(raw) {
@@ -157,6 +161,9 @@ function normalizeSmtp2goEvent(raw) {
     };
 }
 function parseSmtp2goEvents(body) {
+    return parseSingleProviderEvent(body, normalizeSmtp2goEvent);
+}
+function parseSingleProviderEvent(body, normalize) {
     let value = body;
     if (typeof value === "string") {
         try {
@@ -166,12 +173,87 @@ function parseSmtp2goEvents(body) {
             return { malformed: true, events: [], ignored: 0 };
         }
     }
-    const event = normalizeSmtp2goEvent(value);
+    const event = normalize(value);
     if (event === false)
         return { malformed: true, events: [], ignored: 0 };
     if (event === null)
         return { malformed: false, events: [], ignored: 1 };
     return { malformed: false, events: [event], ignored: 0 };
+}
+function normalizePostmarkEvent(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        return false;
+    const data = raw;
+    if (typeof data.RecordType !== "string" || !data.RecordType.trim())
+        return false;
+    const recordType = data.RecordType.trim();
+    const geo = data.Geo && typeof data.Geo === "object" && !Array.isArray(data.Geo)
+        ? data.Geo
+        : {};
+    const descriptor = {
+        Delivery: { kind: "delivered", timestamp: "DeliveredAt", recipient: "Recipient", identityDiscriminator: "" },
+        Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data.Type) },
+        Open: {
+            kind: "opened",
+            timestamp: "ReceivedAt",
+            recipient: "Recipient",
+            identityDiscriminator: JSON.stringify([data.FirstOpen, text(data.UserAgent), text(geo.IP)]),
+        },
+        Click: {
+            kind: "clicked",
+            timestamp: "ReceivedAt",
+            recipient: "Recipient",
+            identityDiscriminator: JSON.stringify([text(data.OriginalLink), text(data.ClickLocation)]),
+        },
+        SpamComplaint: { kind: "complained", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: "" },
+        SubscriptionChange: {
+            kind: data.SuppressSending === false
+                ? "resubscribed"
+                : data.SuppressSending === true && data.SuppressionReason === "ManualSuppression" && data.Origin === "Recipient"
+                    ? "unsubscribed"
+                    : data.SuppressSending === true && data.SuppressionReason === "HardBounce"
+                        ? "bounced"
+                        : data.SuppressSending === true && data.SuppressionReason === "SpamComplaint"
+                            ? "complained"
+                            : data.SuppressSending === true ? "blocked" : "",
+            timestamp: "ChangedAt",
+            recipient: "Recipient",
+            identityDiscriminator: `${text(data.SuppressSending)}:${text(data.SuppressionReason)}:${text(data.Origin)}`,
+        },
+    }[recordType];
+    if (!descriptor)
+        return null;
+    if (!descriptor.kind)
+        return false;
+    const messageId = typeof data.MessageID === "string" ? data.MessageID.trim() : "";
+    const timestamp = data[descriptor.timestamp];
+    const milliseconds = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+    if ((recordType !== "SubscriptionChange" && !messageId) || !Number.isFinite(milliseconds))
+        return false;
+    const occurredAt = new Date(milliseconds).toISOString();
+    const recipient = text(data[descriptor.recipient]).trim().toLowerCase();
+    if (!recipient)
+        return false;
+    const metadata = data.Metadata && typeof data.Metadata === "object" && !Array.isArray(data.Metadata)
+        ? data.Metadata
+        : {};
+    const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
+    const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
+    const identity = createHash("sha256")
+        .update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator]))
+        .digest("hex");
+    return {
+        provider: "postmark",
+        kind: descriptor.kind,
+        providerEventId: `postmark:${recordType.toLowerCase()}:${identity}`,
+        occurredAt,
+        ...(correlationId ? { correlationId } : {}),
+        ...(recipient ? { recipient } : {}),
+        raw: data,
+    };
+}
+function parsePostmarkEvents(body) {
+    return parseSingleProviderEvent(body, normalizePostmarkEvent);
 }
 /** Send provider-normalized events through the Capsule's single email-event seam. */
 export async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
@@ -216,6 +298,9 @@ export function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
     const smtp2go = mailConfig?.webhooks?.smtp2go;
     if (smtp2go?.enabled)
         endpoints.push(createProviderEmailEventEndpoint("__sporades_smtp2go_email_events", smtp2go, serverEnv, subscription, verifiedSmtp2goRequest, parseSmtp2goEvents));
+    const postmark = mailConfig?.webhooks?.postmark;
+    if (postmark?.enabled)
+        endpoints.push(createProviderEmailEventEndpoint("__sporades_postmark_email_events", postmark, serverEnv, subscription, verifiedPostmarkRequest, parsePostmarkEvents));
     return endpoints;
 }
 //# sourceMappingURL=email-events-runtime.js.map

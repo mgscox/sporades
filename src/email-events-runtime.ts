@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 type LooseRecord = Record<string, any>;
 
@@ -56,6 +56,11 @@ function verifiedSmtp2goRequest(ctx: LooseRecord, secret: string) {
   const authorization = text(ctx.request?.headers?.authorization);
   const match = authorization.match(/^Bearer ([^\s]+)$/i);
   const token = match?.[1] ?? "";
+  return token.length > 0 && secureEqual(token, secret);
+}
+
+function verifiedPostmarkRequest(ctx: LooseRecord, secret: string) {
+  const token = text(ctx.request?.headers?.["x-sporades-webhook-token"]);
   return token.length > 0 && secureEqual(token, secret);
 }
 
@@ -153,14 +158,92 @@ function normalizeSmtp2goEvent(raw: unknown) {
 }
 
 function parseSmtp2goEvents(body: unknown) {
+  return parseSingleProviderEvent(body, normalizeSmtp2goEvent);
+}
+
+function parseSingleProviderEvent(
+  body: unknown,
+  normalize: (raw: unknown) => LooseRecord | false | null,
+) {
   let value = body;
   if (typeof value === "string") {
     try { value = JSON.parse(value); } catch { return { malformed: true, events: [], ignored: 0 }; }
   }
-  const event = normalizeSmtp2goEvent(value);
+  const event = normalize(value);
   if (event === false) return { malformed: true, events: [], ignored: 0 };
   if (event === null) return { malformed: false, events: [], ignored: 1 };
   return { malformed: false, events: [event], ignored: 0 };
+}
+
+function normalizePostmarkEvent(raw: unknown) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw as LooseRecord;
+  if (typeof data.RecordType !== "string" || !data.RecordType.trim()) return false;
+  const recordType = data.RecordType.trim();
+  const geo = data.Geo && typeof data.Geo === "object" && !Array.isArray(data.Geo)
+    ? data.Geo as LooseRecord
+    : {};
+  const descriptor = {
+    Delivery: { kind: "delivered", timestamp: "DeliveredAt", recipient: "Recipient", identityDiscriminator: "" },
+    Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data.Type) },
+    Open: {
+      kind: "opened",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([data.FirstOpen, text(data.UserAgent), text(geo.IP)]),
+    },
+    Click: {
+      kind: "clicked",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([text(data.OriginalLink), text(data.ClickLocation)]),
+    },
+    SpamComplaint: { kind: "complained", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: "" },
+    SubscriptionChange: {
+      kind: data.SuppressSending === false
+        ? "resubscribed"
+        : data.SuppressSending === true && data.SuppressionReason === "ManualSuppression" && data.Origin === "Recipient"
+          ? "unsubscribed"
+          : data.SuppressSending === true && data.SuppressionReason === "HardBounce"
+            ? "bounced"
+            : data.SuppressSending === true && data.SuppressionReason === "SpamComplaint"
+              ? "complained"
+              : data.SuppressSending === true ? "blocked" : "",
+      timestamp: "ChangedAt",
+      recipient: "Recipient",
+      identityDiscriminator: `${text(data.SuppressSending)}:${text(data.SuppressionReason)}:${text(data.Origin)}`,
+    },
+  }[recordType];
+  if (!descriptor) return null;
+  if (!descriptor.kind) return false;
+  const messageId = typeof data.MessageID === "string" ? data.MessageID.trim() : "";
+  const timestamp = data[descriptor.timestamp];
+  const milliseconds = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+  if ((recordType !== "SubscriptionChange" && !messageId) || !Number.isFinite(milliseconds)) return false;
+  const occurredAt = new Date(milliseconds).toISOString();
+  const recipient = text(data[descriptor.recipient]).trim().toLowerCase();
+  if (!recipient) return false;
+  const metadata = data.Metadata && typeof data.Metadata === "object" && !Array.isArray(data.Metadata)
+    ? data.Metadata as LooseRecord
+    : {};
+  const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
+  const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
+  const identity = createHash("sha256")
+    .update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator]))
+    .digest("hex");
+  return {
+    provider: "postmark",
+    kind: descriptor.kind,
+    providerEventId: `postmark:${recordType.toLowerCase()}:${identity}`,
+    occurredAt,
+    ...(correlationId ? { correlationId } : {}),
+    ...(recipient ? { recipient } : {}),
+    raw: data,
+  };
+}
+
+function parsePostmarkEvents(body: unknown) {
+  return parseSingleProviderEvent(body, normalizePostmarkEvent);
 }
 
 /** Send provider-normalized events through the Capsule's single email-event seam. */
@@ -225,6 +308,15 @@ export function createEmailEventEndpoints(mailConfig: LooseRecord | undefined, s
     subscription,
     verifiedSmtp2goRequest,
     parseSmtp2goEvents,
+  ));
+  const postmark = mailConfig?.webhooks?.postmark;
+  if (postmark?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_postmark_email_events",
+    postmark,
+    serverEnv,
+    subscription,
+    verifiedPostmarkRequest,
+    parsePostmarkEvents,
   ));
   return endpoints;
 }

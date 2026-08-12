@@ -15,11 +15,12 @@ function runtimeOwnedHttpPath(value) {
 export function validateEmailWebhooksConfig(webhooks) {
     if (webhooks === undefined)
         return undefined;
-    const webhooksData = captureMailConfigData(webhooks, ["mailjet", "smtp2go"], "Invalid email webhook configuration.", "Configure only supported providers under `mail.webhooks`.");
+    const webhooksData = captureMailConfigData(webhooks, ["mailjet", "smtp2go", "postmark"], "Invalid email webhook configuration.", "Configure only supported providers under `mail.webhooks`.");
     const result = {};
     for (const [provider, defaultPath, defaultSecretEnv] of [
         ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
         ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
+        ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"],
     ]) {
         const input = webhooksData.get(provider);
         if (input === undefined)
