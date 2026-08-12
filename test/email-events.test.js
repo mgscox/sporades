@@ -497,7 +497,10 @@ test("Mailgun acknowledgement and failure semantics remain independent of a Caps
   await withEmailEventDatabase(
     mailgunConfig,
     { emailEvents: emailEvent(() => { throw new Error("application failed"); }) },
-    async (database) => assert.equal((await postMailgun(database, delivered)).response.status, 500),
+    async (database) => {
+      const accepted = mailgunWebhook(mailgunDocumentedLifecycleEvents[0]);
+      assert.equal((await postMailgun(database, accepted)).response.status, 500);
+    },
   );
 });
 
