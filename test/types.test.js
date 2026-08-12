@@ -67,12 +67,20 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
   journey: { enabled: true, ttlSeconds: 30, capture: { navigation: true, focus: false } },
+  emailEvents: emailEvent(async (ctx, event) => {
+    ctx.log.info("email event", event.provider, event.kind, event.providerEventId, event.occurredAt);
+    event.correlationId?.toUpperCase();
+    event.recipient?.toUpperCase();
+    JSON.stringify(event.raw);
+    // @ts-expect-error Provider-specific payload fields stay under raw.
+    event.Message_GUID;
+  }),
   jobs: {
     summarise: job(async (ctx, payload) => {
       const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";

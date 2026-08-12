@@ -31,6 +31,11 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
   handler: HandlerType;
 };
 
+export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
+  kind: "emailEvent";
+  handler: HandlerType;
+};
+
 /**
  * A server-only recurring Job declaration using numeric five-field cron.
  * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
@@ -142,6 +147,11 @@ export function endpoint<const HandlerType extends Handler>(
     options,
     handler,
   };
+}
+
+/** Declare the single provider-neutral email-event subscription for a Capsule. */
+export function emailEvent<const HandlerType extends Handler>(handler: HandlerType): EmailEventDefinition<HandlerType> {
+  return { kind: "emailEvent", handler };
 }
 
 export function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType> {
@@ -282,6 +292,13 @@ export function endpoint(options, handler) {
   return {
     kind: "endpoint",
     options,
+    handler,
+  };
+}
+
+export function emailEvent(handler) {
+  return {
+    kind: "emailEvent",
     handler,
   };
 }

@@ -24,6 +24,10 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
     kind: "job";
     handler: HandlerType;
 };
+export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
+    kind: "emailEvent";
+    handler: HandlerType;
+};
 /**
  * A server-only recurring Job declaration using numeric five-field cron.
  * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
@@ -95,6 +99,8 @@ export type RequireAuthContext = {
 export declare function requireAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
 export declare function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition>;
 export declare function endpoint<const HandlerType extends Handler>(options: EndpointOptions, handler: HandlerType): EndpointDefinition<HandlerType>;
+/** Declare the single provider-neutral email-event subscription for a Capsule. */
+export declare function emailEvent<const HandlerType extends Handler>(handler: HandlerType): EmailEventDefinition<HandlerType>;
 export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;
 export declare function mutation<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"mutation", HandlerType>;
 export declare function message<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"message", HandlerType>;

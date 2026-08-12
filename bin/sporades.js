@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash5, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -2043,6 +2043,13 @@ export function endpoint(options, handler) {
   };
 }
 
+export function emailEvent(handler) {
+  return {
+    kind: "emailEvent",
+    handler,
+  };
+}
+
 export function query(handler) {
   return {
     kind: "query",
@@ -3984,48 +3991,106 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash2, randomBytes as randomBytes4, randomUUID } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes4, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+
+// src/mail-config-validation.ts
+function invalidMailConfig(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_MAIL_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+function captureMailConfigData(value, allowed, message, hint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
+  const entries = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") invalidMailConfig(message, hint);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      invalidMailConfig(message, hint);
+    }
+    if (!allowed.includes(key)) invalidMailConfig(message, hint);
+    entries.push([key, descriptor.value]);
+  }
+  return new Map(entries);
+}
+function isServerEnvReference(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+
+// src/email-events-config.ts
+function sameOriginWebhookPath(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+}
+function runtimeOwnedHttpPath(value) {
+  return /^\/__sporades\/(?:auth|debug|files|health|uploads)(?:\/|$)/.test(value);
+}
+function validateEmailWebhooksConfig(webhooks) {
+  if (webhooks === void 0) return void 0;
+  const webhooksData = captureMailConfigData(
+    webhooks,
+    ["mailjet", "smtp2go", "postmark", "mailgun"],
+    "Invalid email webhook configuration.",
+    "Configure only supported providers under `mail.webhooks`."
+  );
+  const result = {};
+  for (const [provider, defaultPath, defaultSecretEnv] of [
+    ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
+    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
+    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"],
+    ["mailgun", "/__sporades/mail/webhooks/mailgun", "MAILGUN_WEBHOOK_KEY"]
+  ]) {
+    const input = webhooksData.get(provider);
+    if (input === void 0) continue;
+    const data = captureMailConfigData(
+      input,
+      ["enabled", "path", "secretEnv"],
+      `Invalid ${provider} webhook configuration.`,
+      `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
+    );
+    const enabled = data.get("enabled") ?? true;
+    const path12 = data.get("path") ?? defaultPath;
+    const secretEnv = data.get("secretEnv") ?? defaultSecretEnv;
+    if (typeof enabled !== "boolean") {
+      invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
+    }
+    if (!sameOriginWebhookPath(path12) || runtimeOwnedHttpPath(path12)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook path.`,
+        `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
+      );
+    }
+    if (!isServerEnvReference(secretEnv)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook Server env reference.`,
+        `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
+      );
+    }
+    result[provider] = { enabled, path: path12, secretEnv };
+  }
+  return result;
+}
 
 // src/mail-config.ts
 function validateMailConfig(mail) {
-  const fail = (message, hint) => {
-    const error = new Error(message);
-    error.code = "INVALID_MAIL_CONFIG";
-    error.hint = hint;
-    throw error;
-  };
-  const capture = (value, allowed, message, hint) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) fail(message, hint);
-    const objectValue = value;
-    const prototype = Object.getPrototypeOf(objectValue);
-    if (prototype !== Object.prototype && prototype !== null) fail(message, hint);
-    const entries = [];
-    for (const key of Reflect.ownKeys(objectValue)) {
-      if (typeof key !== "string") fail(message, hint);
-      const stringKey = key;
-      const descriptor = Object.getOwnPropertyDescriptor(objectValue, stringKey);
-      if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
-        fail(message, hint);
-      }
-      entries.push([stringKey, descriptor.value]);
-    }
-    if (entries.map(([key]) => key).filter((key) => !allowed.includes(key)).sort().length > 0) {
-      fail(message, hint);
-    }
-    return new Map(entries);
-  };
-  const envReference = (value) => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+  const fail = invalidMailConfig;
+  const capture = captureMailConfigData;
+  const envReference = isServerEnvReference;
   const optional = (target, name, value) => {
     if (value !== void 0) target[name] = value;
   };
   if (mail === void 0) return void 0;
   const mailData = capture(
     mail,
-    ["smtp"],
+    ["smtp", "webhooks"],
     "Invalid mail configuration.",
     "Set `mail.smtp` in sporades.json, or omit `mail` to disable delivery."
   );
+  const webhooks = validateEmailWebhooksConfig(mailData.get("webhooks"));
+  if (mailData.get("smtp") === void 0) return webhooks === void 0 ? {} : { webhooks };
   const smtpData = capture(
     mailData.get("smtp"),
     ["vendor", "host", "port", "tls", "auth", "defaultFrom", "connectionTimeoutMs", "socketTimeoutMs"],
@@ -4112,7 +4177,7 @@ function validateMailConfig(mail) {
   optional(smtp, "defaultFrom", defaultFrom);
   optional(smtp, "connectionTimeoutMs", connectionTimeoutMs);
   optional(smtp, "socketTimeoutMs", socketTimeoutMs);
-  return { smtp };
+  return { smtp, ...webhooks === void 0 ? {} : { webhooks } };
 }
 
 // src/mail-runtime.ts
@@ -5099,13 +5164,13 @@ ${encodeMimeBase64(message.htmlBody)}\r
 ${encodeMimeBase64(html ? message.htmlBody : message.textBody)}`;
 }
 function encodeMimeHeaderValue(value, quoteAscii = false) {
-  const text = String(value);
-  if (/^[\x20-\x7e]*$/.test(text) && Buffer.byteLength(text) <= 70) {
-    return quoteAscii ? `"${text.replace(/(["\\])/g, "\\$1")}"` : text;
+  const text2 = String(value);
+  if (/^[\x20-\x7e]*$/.test(text2) && Buffer.byteLength(text2) <= 70) {
+    return quoteAscii ? `"${text2.replace(/(["\\])/g, "\\$1")}"` : text2;
   }
   const chunks = [];
   let current = "";
-  for (const character of text) {
+  for (const character of text2) {
     if (current && Buffer.byteLength(current + character) > 39) {
       chunks.push(current);
       current = "";
@@ -5139,10 +5204,10 @@ function foldMimeHeader(name, value) {
   return lines.join("\r\n");
 }
 function foldMailgunJsonHeader(name, value) {
-  const text = String(value);
+  const text2 = String(value);
   const tokens = [];
-  for (let index = 0; index < text.length; ) {
-    const character = text[index];
+  for (let index = 0; index < text2.length; ) {
+    const character = text2[index];
     if ("{}[],:".includes(character)) {
       tokens.push(character);
       index += 1;
@@ -5152,17 +5217,17 @@ function foldMailgunJsonHeader(name, value) {
     if (character === '"') {
       index += 1;
       let escaped = false;
-      while (index < text.length) {
-        const next = text[index];
+      while (index < text2.length) {
+        const next = text2[index];
         index += 1;
         if (escaped) escaped = false;
         else if (next === "\\") escaped = true;
         else if (next === '"') break;
       }
     } else {
-      while (index < text.length && !'{}[],:"'.includes(text[index])) index += 1;
+      while (index < text2.length && !'{}[],:"'.includes(text2[index])) index += 1;
     }
-    tokens.push(text.slice(start, index));
+    tokens.push(text2.slice(start, index));
   }
   const prefix = `${name}: `;
   const lines = [];
@@ -5190,6 +5255,349 @@ function foldMailgunJsonHeader(name, value) {
 }
 function encodeMimeBase64(value) {
   return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
+}
+
+// src/email-events-runtime.ts
+import { createHash as createHash2, createHmac, timingSafeEqual } from "node:crypto";
+var MAILJET_EVENT_KINDS = {
+  sent: "delivered",
+  open: "opened",
+  click: "clicked",
+  bounce: "bounced",
+  blocked: "blocked",
+  spam: "complained",
+  unsub: "unsubscribed"
+};
+var SMTP2GO_EVENT_KINDS = {
+  processed: "deferred",
+  delivered: "delivered",
+  open: "opened",
+  click: "clicked",
+  bounce: "bounced",
+  spam: "complained",
+  unsubscribe: "unsubscribed",
+  resubscribe: "resubscribed",
+  reject: "blocked"
+};
+function text(value) {
+  return typeof value === "string" ? value : value === void 0 || value === null ? "" : String(value);
+}
+function secureEqual(left, right) {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+function mailjetBasicPassword(authorization) {
+  if (typeof authorization !== "string" || !authorization.startsWith("Basic ")) return "";
+  try {
+    const decoded = Buffer.from(authorization.slice(6), "base64").toString("utf8");
+    const separator = decoded.indexOf(":");
+    return separator < 0 ? "" : decoded.slice(separator + 1);
+  } catch {
+    return "";
+  }
+}
+function verifiedMailjetRequest(ctx, secret) {
+  const token = text(ctx.request?.query?.token);
+  const basicPassword = mailjetBasicPassword(ctx.request?.headers?.authorization);
+  return token.length > 0 && secureEqual(token, secret) || basicPassword.length > 0 && secureEqual(basicPassword, secret);
+}
+function verifiedSmtp2goRequest(ctx, secret) {
+  const authorization = text(ctx.request?.headers?.authorization);
+  const match = authorization.match(/^Bearer ([^\s]+)$/i);
+  const token = match?.[1] ?? "";
+  return token.length > 0 && secureEqual(token, secret);
+}
+function verifiedPostmarkRequest(ctx, secret) {
+  const token = text(ctx.request?.headers?.["x-sporades-webhook-token"]);
+  return token.length > 0 && secureEqual(token, secret);
+}
+function parsedJsonObject(value) {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function verifiedMailgunRequest(ctx, secret) {
+  const body = parsedJsonObject(ctx.request?.body);
+  const signature = parsedJsonObject(body?.signature);
+  const timestamp = text(signature?.timestamp);
+  const token = text(signature?.token);
+  if (!timestamp || !token) return false;
+  const expected = createHmac("sha256", secret).update(`${timestamp}${token}`).digest("hex");
+  return [signature?.signature, signature?.["parent-signature"]].some((candidate) => typeof candidate === "string" && secureEqual(candidate, expected));
+}
+function mailjetMessageIdentity(raw) {
+  return typeof raw.Message_GUID === "string" && raw.Message_GUID.trim() ? raw.Message_GUID.trim() : typeof raw.mj_message_id === "string" ? raw.mj_message_id.trim() : "";
+}
+function mailjetProviderEventId(raw, event, seconds, identity) {
+  const clickUrl = event === "click" ? `:${text(raw.url)}` : "";
+  return `${event}:${identity}:${Math.trunc(seconds) || 0}${clickUrl}`;
+}
+function normalizeMailjetEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = MAILJET_EVENT_KINDS[providerKind];
+  if (!kind) return null;
+  const seconds = Number(data.time);
+  const identity = mailjetMessageIdentity(data);
+  if (!Number.isFinite(seconds) || seconds <= 0 || !identity) return false;
+  const providerEventId = mailjetProviderEventId(data, providerKind, seconds, identity);
+  const occurredAt = new Date(seconds * 1e3).toISOString();
+  return {
+    provider: "mailjet",
+    kind,
+    providerEventId,
+    occurredAt,
+    ...text(data.CustomID).trim() ? { correlationId: text(data.CustomID).trim() } : {},
+    ...text(data.email).trim() ? { recipient: text(data.email).trim().toLowerCase() } : {},
+    raw: data
+  };
+}
+function parseMailjetEvents(body) {
+  let value = body;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { malformed: true, events: [], ignored: 0 };
+    }
+  }
+  if (!value || typeof value !== "object") return { malformed: true, events: [], ignored: 0 };
+  const entries = Array.isArray(value) ? value : [value];
+  if (entries.length === 0) return { malformed: true, events: [], ignored: 0 };
+  const events = [];
+  let ignored = 0;
+  for (const entry of entries) {
+    const event = normalizeMailjetEvent(entry);
+    if (event === false) return { malformed: true, events: [], ignored: 0 };
+    if (event) events.push(event);
+    else ignored += 1;
+  }
+  return { malformed: false, events, ignored };
+}
+function smtp2goOccurredAt(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value < 1e12 ? value * 1e3 : value).toISOString();
+  }
+  if (typeof value !== "string" || !value.trim()) return "";
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1e3).toISOString() : "";
+  }
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : "";
+}
+function smtp2goCorrelationId(raw) {
+  const key = Object.keys(raw).find((name) => name.toLowerCase() === "x-sporades-correlation-id");
+  return key ? text(raw[key]).trim() : "";
+}
+function normalizeSmtp2goEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = SMTP2GO_EVENT_KINDS[providerKind];
+  if (!kind) return null;
+  const providerEventId = typeof data.id === "string" ? data.id.trim() : "";
+  const occurredAt = smtp2goOccurredAt(data.time);
+  if (!providerEventId || !occurredAt) return false;
+  const correlationId = smtp2goCorrelationId(data);
+  return {
+    provider: "smtp2go",
+    kind,
+    providerEventId,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...text(data.rcpt).trim() ? { recipient: text(data.rcpt).trim().toLowerCase() } : {},
+    raw: data
+  };
+}
+function parseSmtp2goEvents(body) {
+  return parseSingleProviderEvent(body, normalizeSmtp2goEvent);
+}
+function parseSingleProviderEvent(body, normalize) {
+  let value = body;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { malformed: true, events: [], ignored: 0 };
+    }
+  }
+  const event = normalize(value);
+  if (event === false) return { malformed: true, events: [], ignored: 0 };
+  if (event === null) return { malformed: false, events: [], ignored: 1 };
+  return { malformed: false, events: [event], ignored: 0 };
+}
+function normalizePostmarkEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.RecordType !== "string" || !data.RecordType.trim()) return false;
+  const recordType = data.RecordType.trim();
+  const geo = data.Geo && typeof data.Geo === "object" && !Array.isArray(data.Geo) ? data.Geo : {};
+  const descriptor = {
+    Delivery: { kind: "delivered", timestamp: "DeliveredAt", recipient: "Recipient", identityDiscriminator: "" },
+    Bounce: { kind: "bounced", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: text(data.Type) },
+    Open: {
+      kind: "opened",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([data.FirstOpen, text(data.UserAgent), text(geo.IP)])
+    },
+    Click: {
+      kind: "clicked",
+      timestamp: "ReceivedAt",
+      recipient: "Recipient",
+      identityDiscriminator: JSON.stringify([text(data.OriginalLink), text(data.ClickLocation)])
+    },
+    SpamComplaint: { kind: "complained", timestamp: "BouncedAt", recipient: "Email", identityDiscriminator: "" },
+    SubscriptionChange: {
+      kind: data.SuppressSending === false ? "resubscribed" : data.SuppressSending === true && data.SuppressionReason === "ManualSuppression" && data.Origin === "Recipient" ? "unsubscribed" : data.SuppressSending === true && data.SuppressionReason === "HardBounce" ? "bounced" : data.SuppressSending === true && data.SuppressionReason === "SpamComplaint" ? "complained" : data.SuppressSending === true ? "blocked" : "",
+      timestamp: "ChangedAt",
+      recipient: "Recipient",
+      identityDiscriminator: `${text(data.SuppressSending)}:${text(data.SuppressionReason)}:${text(data.Origin)}`
+    }
+  }[recordType];
+  if (!descriptor) return null;
+  if (!descriptor.kind) return false;
+  const messageId = typeof data.MessageID === "string" ? data.MessageID.trim() : "";
+  const timestamp = data[descriptor.timestamp];
+  const milliseconds = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+  if (recordType !== "SubscriptionChange" && !messageId || !Number.isFinite(milliseconds)) return false;
+  const occurredAt = new Date(milliseconds).toISOString();
+  const recipient = text(data[descriptor.recipient]).trim().toLowerCase();
+  if (!recipient) return false;
+  const metadata = data.Metadata && typeof data.Metadata === "object" && !Array.isArray(data.Metadata) ? data.Metadata : {};
+  const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
+  const correlationId = correlationKey ? text(metadata[correlationKey]).trim() : "";
+  const identity = createHash2("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  return {
+    provider: "postmark",
+    kind: descriptor.kind,
+    providerEventId: `postmark:${recordType.toLowerCase()}:${identity}`,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...recipient ? { recipient } : {},
+    raw: data
+  };
+}
+function parsePostmarkEvents(body) {
+  return parseSingleProviderEvent(body, normalizePostmarkEvent);
+}
+function normalizeMailgunWebhook(raw) {
+  const body = parsedJsonObject(raw);
+  const data = parsedJsonObject(body?.["event-data"]);
+  if (!body || !data || typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = providerKind === "accepted" ? "deferred" : providerKind === "delivered" ? "delivered" : providerKind === "opened" ? "opened" : providerKind === "clicked" ? "clicked" : providerKind === "unsubscribed" ? "unsubscribed" : providerKind === "complained" ? "complained" : providerKind === "failed" && data.severity === "temporary" ? "deferred" : providerKind === "failed" && data.severity === "permanent" ? data.reason === "suppress-complaint" ? "complained" : data.reason === "suppress-unsubscribe" ? "unsubscribed" : ["espblock", "policy", "blocklist"].includes(text(data.reason).toLowerCase()) ? "blocked" : "bounced" : "";
+  if (!kind) return providerKind === "failed" ? false : null;
+  const providerId = typeof data.id === "string" ? data.id.trim() : "";
+  const seconds = typeof data.timestamp === "number" ? data.timestamp : Number(data.timestamp);
+  if (!providerId || !Number.isFinite(seconds) || seconds <= 0) return false;
+  const occurredAt = new Date(seconds * 1e3).toISOString();
+  const recipient = text(data.recipient).trim().toLowerCase();
+  const variables = parsedJsonObject(data["user-variables"]) ?? {};
+  const correlationKey = Object.keys(variables).find((key) => key.toLowerCase() === "correlationid");
+  const correlationId = correlationKey ? text(variables[correlationKey]).trim() : "";
+  const account = parsedJsonObject(data.account) ?? {};
+  const domain = parsedJsonObject(data.domain) ?? {};
+  const accountId = text(account.id).trim();
+  const domainName = text(domain.name).trim().toLowerCase();
+  if (!accountId || !domainName) return false;
+  const providerScope = createHash2("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  return {
+    provider: "mailgun",
+    kind,
+    providerEventId: `mailgun:${providerScope}:${Math.floor(seconds / 86400)}:${providerId}`,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...recipient ? { recipient } : {},
+    raw: body
+  };
+}
+function parseMailgunEvents(body) {
+  return parseSingleProviderEvent(body, normalizeMailgunWebhook);
+}
+async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
+  if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
+  for (const event of events) {
+    await ctx.privileged.run({
+      operation: "email-events.dispatch",
+      targetResourceKind: "email-provider-callback",
+      metadata: { provider: event.provider, providerEventId: event.providerEventId }
+    }, (privilegedContext) => subscription.handler(privilegedContext, event));
+  }
+}
+function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse, rejectionStatus = { unverified: 401, malformed: 400 }) {
+  return {
+    name,
+    runtimeOwnedEmailEvent: true,
+    method: "POST",
+    path: config.path,
+    async handler(ctx) {
+      const secret = serverEnv[config.secretEnv];
+      if (typeof secret !== "string" || secret.length === 0) {
+        return { status: 503, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      if (!verify2(ctx, secret)) {
+        return { status: rejectionStatus.unverified, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      const parsed = parse(ctx.request?.body);
+      if (parsed.malformed) {
+        return { status: rejectionStatus.malformed, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      await dispatchVerifiedEmailEvents(ctx, parsed.events, subscription);
+      return { status: 200, body: { ok: true, accepted: parsed.events.length, ignored: parsed.ignored } };
+    }
+  };
+}
+function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
+  const mailjet = mailConfig?.webhooks?.mailjet;
+  const endpoints = [];
+  if (mailjet?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_mailjet_email_events",
+    mailjet,
+    serverEnv,
+    subscription,
+    verifiedMailjetRequest,
+    parseMailjetEvents
+  ));
+  const smtp2go = mailConfig?.webhooks?.smtp2go;
+  if (smtp2go?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_smtp2go_email_events",
+    smtp2go,
+    serverEnv,
+    subscription,
+    verifiedSmtp2goRequest,
+    parseSmtp2goEvents
+  ));
+  const postmark = mailConfig?.webhooks?.postmark;
+  if (postmark?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_postmark_email_events",
+    postmark,
+    serverEnv,
+    subscription,
+    verifiedPostmarkRequest,
+    parsePostmarkEvents
+  ));
+  const mailgun = mailConfig?.webhooks?.mailgun;
+  if (mailgun?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_mailgun_email_events",
+    mailgun,
+    serverEnv,
+    subscription,
+    verifiedMailgunRequest,
+    parseMailgunEvents,
+    { unverified: 406, malformed: 406 }
+  ));
+  return endpoints;
 }
 
 // src/runtime-errors.ts
@@ -6198,8 +6606,8 @@ function structuredFileException(message, hint) {
   return error;
 }
 function isUniqueConstraintError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
+  const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text2);
 }
 function filePathBackfillSql() {
   return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
@@ -6820,8 +7228,8 @@ function normalizeSimulatedText(value) {
   if (value === null || value === void 0) {
     return null;
   }
-  const text = String(value).trim();
-  return text ? text : null;
+  const text2 = String(value).trim();
+  return text2 ? text2 : null;
 }
 function parseOAuthFormBody(body) {
   const parameters = new URLSearchParams();
@@ -8055,12 +8463,12 @@ function sanitizeAppleNamePart(value) {
   if (typeof value !== "string") {
     throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!text) return null;
-  if (text.length > 128) {
+  const text2 = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text2) return null;
+  if (text2.length > 128) {
     throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
-  return text;
+  return text2;
 }
 async function loadMicrosoftJwks(database, discovery, forceRefresh = false, observedGeneration = null, missingKid = null) {
   const microsoft = database.authConfig.providers.microsoft;
@@ -9317,23 +9725,23 @@ function isSensitiveLogKey(key) {
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
-  const text = String(sql ?? "");
-  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+  const text2 = String(sql ?? "");
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text2)) {
     return unrepresentableInspectionSqlError();
   }
-  const disagreement = sqlTheEnginesLexDifferently(text);
+  const disagreement = sqlTheEnginesLexDifferently(text2);
   if (disagreement) {
     return ambiguousInspectionSqlError(disagreement);
   }
-  const firstToken = readFirstSqlToken(text);
-  if (!firstToken || hasMultipleSqlStatements(text)) {
+  const firstToken = readFirstSqlToken(text2);
+  if (!firstToken || hasMultipleSqlStatements(text2)) {
     return readOnlyInspectionSqlError();
   }
   const keyword = firstToken.toLowerCase();
   if (keyword === "pragma") {
-    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+    return isSafeInspectionPragma(text2, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
   }
-  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text2)) {
     return { ok: true };
   }
   return readOnlyInspectionSqlError();
@@ -9678,28 +10086,28 @@ function opensQuotedRun(sql, index) {
   return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
 }
 function sqlWithoutTrailingTerminator(sql) {
-  const text = String(sql ?? "");
+  const text2 = String(sql ?? "");
   const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
   let contentEnd = 0;
-  while (index < text.length) {
-    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
+  while (index < text2.length) {
+    const skipped = skipSqlQuotedOrCommented(text2, index, dialect);
     if (skipped > index) {
-      if (opensQuotedRun(text, index)) {
+      if (opensQuotedRun(text2, index)) {
         contentEnd = skipped;
       }
       index = skipped;
       continue;
     }
-    if (text[index] === ";") {
+    if (text2[index] === ";") {
       break;
     }
-    if (!/[ \t\n\r\f]/.test(text[index])) {
+    if (!/[ \t\n\r\f]/.test(text2[index])) {
       contentEnd = index + 1;
     }
     index += 1;
   }
-  return text.slice(0, contentEnd);
+  return text2.slice(0, contentEnd);
 }
 function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
@@ -9722,11 +10130,11 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
 
 // src/log-index-guard.ts
 function targetsInternalLogIndexTable(sql) {
-  const text = String(sql);
+  const text2 = String(sql);
   const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
   let match;
-  while (match = targetKeywords.exec(text)) {
-    const reference = readSqlTableReference(text, match.index + match[0].length);
+  while (match = targetKeywords.exec(text2)) {
+    const reference = readSqlTableReference(text2, match.index + match[0].length);
     if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
       return true;
     }
@@ -11173,10 +11581,10 @@ function postgresInterpolate(sql, params = []) {
   let lineComment = false;
   let blockComment = false;
   let result = "";
-  const text = String(sql ?? "");
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
+  const text2 = String(sql ?? "");
+  for (let position = 0; position < text2.length; position += 1) {
+    const char = text2[position];
+    const next = text2[position + 1];
     if (lineComment) {
       result += char;
       if (char === "\n") {
@@ -11598,8 +12006,8 @@ function fieldColumnDefaultSql(field) {
   return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 function isDuplicateColumnError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /duplicate column|already exists/i.test(text);
+  const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /duplicate column|already exists/i.test(text2);
 }
 function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
   try {
@@ -11650,10 +12058,10 @@ function splitSqlStatements(sql) {
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
-  const text = String(sql ?? "");
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
+  const text2 = String(sql ?? "");
+  for (let index = 0; index < text2.length; index += 1) {
+    const char = text2[index];
+    const next = text2[index + 1];
     if (lineComment) {
       if (char === "\n") {
         lineComment = false;
@@ -11677,7 +12085,7 @@ function splitSqlStatements(sql) {
         continue;
       }
       if (char === quote) {
-        if (text[index + 1] === quote && quote !== "`") {
+        if (text2[index + 1] === quote && quote !== "`") {
           index += 1;
           continue;
         }
@@ -11700,14 +12108,14 @@ function splitSqlStatements(sql) {
       continue;
     }
     if (char === ";") {
-      const statement = text.slice(start, index).trim();
+      const statement = text2.slice(start, index).trim();
       if (statement) {
         statements.push(statement);
       }
       start = index + 1;
     }
   }
-  const last = text.slice(start).trim();
+  const last = text2.slice(start).trim();
   if (last) {
     statements.push(last);
   }
@@ -12456,8 +12864,8 @@ function normalizePrivilegedAuditCorrelation(value) {
   return { id: String(value) };
 }
 function auditString(value, fallback) {
-  const text = value === null || value === void 0 ? "" : String(value);
-  return text.trim() ? text : fallback;
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return text2.trim() ? text2 : fallback;
 }
 function normalizeTableAcl(tableName, aclRules) {
   const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
@@ -12843,6 +13251,23 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     ...options,
     mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event))
   });
+  const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
+  const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
+  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+    const conflictsWithCapsule = capsuleEndpoints.some(
+      (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
+    );
+    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+      (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
+    );
+    if (conflictsWithCapsule || conflictsWithProvider) {
+      const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+      throw error;
+    }
+  }
+  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -12854,7 +13279,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serviceEnv
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
@@ -14013,16 +14437,21 @@ async function routeEndpoint(database, request, response) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-  const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  const session = endpoint.runtimeOwnedEmailEvent ? { auth: {
+    userId: privilegedAuthUserId(),
+    displayName: "Email provider callback",
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: false,
+    provider: "privileged-server-role"
+  } } : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(
-        transactionDatabase,
-        createEndpointContext(transactionDatabase, endpointRequest, session),
-        "endpoint"
-      );
+      const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
+      context = endpoint.runtimeOwnedEmailEvent ? endpointContext : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
       try {
         return await handler(context);
       } finally {
@@ -15241,7 +15670,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash3("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -19792,7 +20221,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -20058,7 +20487,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash3("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash4("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -23881,7 +24310,7 @@ function devInspectionTokenMatches(header, expectedToken) {
   }
   const actual = Buffer.from(actualToken);
   const expected = Buffer.from(expectedToken);
-  return actual.length === expected.length && timingSafeEqual2(actual, expected);
+  return actual.length === expected.length && timingSafeEqual3(actual, expected);
 }
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
@@ -24418,7 +24847,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash4("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash5("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
