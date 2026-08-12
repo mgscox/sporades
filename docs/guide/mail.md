@@ -660,10 +660,13 @@ and provider-added fields; the Capsule owns any persistence, redaction, retentio
 export, and erasure policy.
 
 The subscription runs inline with callback acknowledgement. A successful handler
-returns `200`; a handler error returns `500` so the provider can retry. Malformed
+returns `200`; a handler error returns `500` so the provider can retry. Unless a
+provider section above defines a provider-specific terminal response, malformed
 event bodies return `400`, bad credentials return `401`, and a missing configured
-secret returns `503`. Unknown event types are acknowledged with `200` because
-retrying cannot make them understood.
+secret returns `503`. Mailgun is the exception: its documented contract uses
+`406` as the terminal response for malformed bodies and invalid signatures.
+Unknown event types are acknowledged with `200` because retrying cannot make
+them understood.
 
 For durable processing, have the subscription enqueue a durable Job and use
 `providerEventId` as part of the application's idempotency policy. Job execution

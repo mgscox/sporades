@@ -359,6 +359,7 @@ test("the Mail guide documents signed Mailgun provider-event setup and semantics
     /suppress-complaint[\s\S]*complained/,
     /suppress-unsubscribe[\s\S]*unsubscribed/,
     /`200`[\s\S]*`406`/,
+    /provider-specific terminal response[\s\S]*Mailgun[\s\S]*`406`/i,
     /Delivery[\s\S]*(?:does not retry|not\s+retried)/i,
     /X-Mailgun-Variables[\s\S]*correlationId/,
     /US[\s\S]*EU[\s\S]*(?:separate|independent|isolated)/i,
