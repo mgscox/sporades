@@ -171,6 +171,37 @@ endpoint and credentials held in Sealed Server env:
 }
 ```
 
+### Mailjet SMTP
+
+Mailjet uses its API key pair as SMTP credentials: the public API key is the
+SMTP username and the private API key is the SMTP password. Keep both values
+in Sealed Server env; do not put either key in `sporades.json`.
+
+```json
+{
+  "mail": {
+    "smtp": {
+      "vendor": "mailjet",
+      "host": "in-v3.mailjet.com",
+      "port": 587,
+      "tls": {
+        "mode": "required-starttls",
+        "rejectUnauthorized": true
+      },
+      "auth": {
+        "method": "PLAIN",
+        "usernameEnv": "MJ_APIKEY_PUBLIC",
+        "passwordEnv": "MJ_APIKEY_PRIVATE"
+      },
+      "defaultFrom": "Capsule <mail@example.com>"
+    }
+  }
+}
+```
+
+This is Mailjet's standard authenticated SMTP transport. It does not use the
+Mailjet REST API or a provider SDK.
+
 Generic providers may receive explicitly selected custom headers through
 `provider.headers`:
 
