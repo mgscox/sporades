@@ -208,6 +208,56 @@ const postmarkDocumentedLifecycleFixtures = [
   },
 ];
 
+const mailgunSignature = {
+  token: "e0b5477167110d68991efc6b9f89f0a11066af27834600e123",
+  timestamp: "1770920772",
+  signature: "416630564d93ebebfac00deefc35d66cbe973cae8f452e99f119a34db3b6a166",
+};
+
+const mailgunEventCommon = {
+  account: { id: "1234567890303a4bd1f33898" },
+  domain: { name: "sample.mailgun.com" },
+  message: { headers: { "message-id": "20260203192030.53383e583ab41f62@sample.mailgun.com" } },
+  recipient: "Client@Example.com",
+  "user-variables": { correlationId: "delivery-correlation-4" },
+};
+
+const mailgunDocumentedLifecycleEvents = [
+  { ...mailgunEventCommon, event: "accepted", id: "CCXMjJ7nQi2N3BPigGOdgQ", timestamp: 1770146798.372891 },
+  {
+    ...mailgunEventCommon, event: "delivered", id: "MXcc2gEpS-eN8HfkOnmK2w", timestamp: 1770146431.6585283,
+    "delivery-status": { "attempt-no": 1, code: 250, message: "OK", tls: true },
+  },
+  {
+    ...mailgunEventCommon, event: "failed", id: "YusK9KhoTwe2C00iRxsEqQ", timestamp: 1770919267.4288595,
+    severity: "temporary", reason: "generic", "delivery-status": { code: 421, "retry-seconds": 600 },
+  },
+  {
+    ...mailgunEventCommon, event: "failed", id: "2kFItcrLQuKTdp-Ia2Xr7w", timestamp: 1770918175.5923693,
+    severity: "permanent", reason: "bounce", "delivery-status": { code: 550, "bounce-type": "hard" },
+  },
+  {
+    ...mailgunEventCommon, event: "opened", id: "q7DMpbLFRKW1QuiLC9XV4Q", timestamp: 1770327074.5549328,
+    ip: "192.0.2.10", "client-info": { "client-name": "Chrome", "device-type": "desktop" },
+  },
+  {
+    ...mailgunEventCommon, event: "clicked", id: "A9dLUrCXQjK92TlnW3zkIA", timestamp: 1770327118.6648676,
+    ip: "192.0.2.11", url: "https://example.com/report", "client-info": { "client-name": "Chrome Mobile" },
+  },
+  {
+    ...mailgunEventCommon, event: "unsubscribed", id: "89QcW8YuSv6lhSeN3n4qnA", timestamp: 1770327090.4656289,
+    tags: ["*"], ip: "192.0.2.10",
+  },
+  {
+    ...mailgunEventCommon, event: "complained", id: "rIVDlyk8SY-mJauQoYmNFA", timestamp: 1770920772.2684145,
+    "log-level": "warn", tags: ["webhook_payload"],
+  },
+];
+
+function mailgunWebhook(event, signature = mailgunSignature) {
+  return { signature, "event-data": event };
+}
+
 const anonymous = {
   userId: "email-event-reader",
   displayName: "Email event reader",
@@ -222,6 +272,7 @@ async function withEmailEventDatabase(config, capsule, run, serverEnv = {
   MAILJET_WEBHOOK_SECRET: "mailjet-webhook-secret",
   SMTP2GO_WEBHOOK_SECRET: "smtp2go-webhook-secret",
   POSTMARK_WEBHOOK_SECRET: "postmark-webhook-secret",
+  MAILGUN_WEBHOOK_KEY: "mailgun-test-signing-key",
 }) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-email-events-"));
   const database = await openDevDatabase(
@@ -299,6 +350,14 @@ const postmarkConfig = {
   },
 };
 
+const mailgunConfig = {
+  mail: {
+    webhooks: {
+      mailgun: { path: "/mailgun-webhook", secretEnv: "MAILGUN_WEBHOOK_KEY" },
+    },
+  },
+};
+
 async function postSmtp2go(database, body, authorization = "Bearer smtp2go-webhook-secret") {
   const request = Object.assign(Readable.from([JSON.stringify(body)]), {
     method: "POST",
@@ -322,6 +381,133 @@ async function postPostmark(database, body, token = "postmark-webhook-secret") {
   if (handled) await response.finished;
   return { handled, response };
 }
+
+async function postMailgun(database, body) {
+  const request = Object.assign(Readable.from([JSON.stringify(body)]), {
+    method: "POST",
+    url: "/mailgun-webhook",
+    headers: { "content-type": "application/json" },
+  });
+  const response = responseCapture();
+  const handled = await routeEndpoint(database, request, response);
+  if (handled) await response.finished;
+  return { handled, response };
+}
+
+test("Mailgun callbacks reach the provider-neutral subscription only when configured and signed", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const body = mailgunWebhook(mailgunDocumentedLifecycleEvents[1]);
+  await withEmailEventDatabase({}, capsule, async (database) => {
+    assert.equal((await postMailgun(database, body)).handled, false);
+  });
+  await withEmailEventDatabase(mailgunConfig, capsule, async (database) => {
+    const invalid = mailgunWebhook(mailgunDocumentedLifecycleEvents[1], { ...mailgunSignature, signature: "0".repeat(64) });
+    assert.equal((await postMailgun(database, invalid)).response.status, 406);
+    assert.equal(seen.length, 0);
+    assert.equal((await postMailgun(database, body)).response.status, 200);
+    assert.deepEqual(seen, [{
+      provider: "mailgun",
+      kind: "delivered",
+      providerEventId: "mailgun:cf5b09f5c993ce93:20487:MXcc2gEpS-eN8HfkOnmK2w",
+      occurredAt: "2026-02-03T19:20:31.658Z",
+      correlationId: "delivery-correlation-4",
+      recipient: "client@example.com",
+      raw: body,
+    }]);
+    const parentSigned = mailgunWebhook(mailgunDocumentedLifecycleEvents[1], {
+      ...mailgunSignature,
+      signature: "0".repeat(64),
+      "parent-signature": mailgunSignature.signature,
+    });
+    assert.equal((await postMailgun(database, parentSigned)).response.status, 200);
+  });
+});
+
+test("Mailgun documented lifecycle payloads normalize without changing raw webhook objects", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const bodies = mailgunDocumentedLifecycleEvents.map((event) => mailgunWebhook(event));
+  await withEmailEventDatabase(mailgunConfig, capsule, async (database) => {
+    for (const body of bodies) assert.equal((await postMailgun(database, body)).response.status, 200);
+  });
+  assert.deepEqual(
+    seen.map(({ kind }) => kind),
+    ["deferred", "delivered", "deferred", "bounced", "opened", "clicked", "unsubscribed", "complained"],
+  );
+  assert.deepEqual(seen.map(({ raw }) => raw), bodies);
+});
+
+test("Mailgun permanent failures preserve suppression and policy meaning", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const permanent = mailgunDocumentedLifecycleEvents[3];
+  await withEmailEventDatabase(mailgunConfig, capsule, async (database) => {
+    for (const [reason, id] of [
+      ["suppress-complaint", "mailgun-suppressed-complaint"],
+      ["suppress-unsubscribe", "mailgun-suppressed-unsubscribe"],
+      ["espblock", "mailgun-esp-block"],
+      ["bounce", "mailgun-bounce"],
+    ]) {
+      assert.equal((await postMailgun(database, mailgunWebhook({ ...permanent, reason, id }))).response.status, 200);
+    }
+  });
+  assert.deepEqual(seen.map(({ kind }) => kind), ["complained", "unsubscribed", "blocked", "bounced"]);
+});
+
+test("Mailgun retries retain a stable account-and-domain-scoped provider event identity", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  const body = mailgunWebhook(mailgunDocumentedLifecycleEvents[5]);
+  await withEmailEventDatabase(mailgunConfig, capsule, async (database) => {
+    assert.equal((await postMailgun(database, body)).response.status, 200);
+    assert.equal((await postMailgun(database, body)).response.status, 200);
+    const otherDomain = mailgunWebhook({
+      ...mailgunDocumentedLifecycleEvents[5],
+      domain: { name: "other.mailgun.example" },
+    });
+    assert.equal((await postMailgun(database, otherDomain)).response.status, 200);
+  });
+  assert.equal(seen[0].providerEventId, seen[1].providerEventId);
+  assert.notEqual(seen[0].providerEventId, seen[2].providerEventId);
+});
+
+test("Mailgun acknowledgement and failure semantics remain independent of a Capsule subscription", async () => {
+  const delivered = mailgunWebhook(mailgunDocumentedLifecycleEvents[1]);
+  await withEmailEventDatabase(mailgunConfig, {}, async (database) => {
+    assert.deepEqual(JSON.parse((await postMailgun(database, delivered)).response.body), { ok: true, accepted: 1, ignored: 0 });
+    const unknown = mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[1], event: "future-event" });
+    assert.deepEqual(JSON.parse((await postMailgun(database, unknown)).response.body), { ok: true, accepted: 0, ignored: 1 });
+    for (const malformed of [
+      {},
+      { signature: mailgunSignature },
+      { signature: mailgunSignature, "event-data": [] },
+      mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[1], id: "" }),
+      mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[1], timestamp: "never" }),
+      mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[1], account: {} }),
+      mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[1], domain: {} }),
+      mailgunWebhook({ ...mailgunDocumentedLifecycleEvents[2], severity: "mysterious" }),
+    ]) assert.equal((await postMailgun(database, malformed)).response.status, 406);
+  });
+
+  await withEmailEventDatabase(mailgunConfig, {}, async (database) => {
+    assert.equal((await postMailgun(database, delivered)).response.status, 503);
+  }, {});
+
+  await withEmailEventDatabase(
+    mailgunConfig,
+    { emailEvents: emailEvent(() => { throw new Error("application failed"); }) },
+    async (database) => assert.equal((await postMailgun(database, delivered)).response.status, 500),
+  );
+});
+
+test("runtime-owned Mailgun routes never mint Anonymous users or sessions", async () => {
+  await withEmailEventDatabase(mailgunConfig, { emailEvents: emailEvent(() => {}) }, async (database) => {
+    assert.equal((await postMailgun(database, mailgunWebhook(mailgunDocumentedLifecycleEvents[1]))).response.status, 200);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_users]").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_sessions]").get().count, 0);
+  });
+});
 
 test("Postmark callbacks reach the provider-neutral subscription only when configured and verified", async () => {
   const seen = [];
@@ -752,6 +938,19 @@ test("Postmark webhook configuration rejects unsafe paths and Server env referen
   ]) {
     await assert.rejects(
       withEmailEventDatabase({ mail: { webhooks: { postmark } } }, {}, async () => {}),
+      (error) => error.code === "INVALID_MAIL_CONFIG",
+    );
+  }
+});
+
+test("Mailgun webhook configuration rejects unsafe paths and Server env references", async () => {
+  for (const mailgun of [
+    { path: "https://capsule.example/mailgun", secretEnv: "MAILGUN_WEBHOOK_KEY" },
+    { path: "/mailgun?key=checked-in", secretEnv: "MAILGUN_WEBHOOK_KEY" },
+    { path: "/mailgun", secretEnv: "not-an-env-name" },
+  ]) {
+    await assert.rejects(
+      withEmailEventDatabase({ mail: { webhooks: { mailgun } } }, {}, async () => {}),
       (error) => error.code === "INVALID_MAIL_CONFIG",
     );
   }

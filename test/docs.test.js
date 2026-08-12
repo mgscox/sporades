@@ -340,8 +340,28 @@ test("the Mail guide documents secure Postmark provider-event setup and semantic
     /SubscriptionChange[\s\S]*resubscribed/,
     /ManualSuppression[\s\S]*unsubscribed/,
     /MessageID[\s\S]*not[\s\S]*(?:unique|providerEventId)/i,
-    /one minute[\s\S]*five minutes[\s\S]*15 minutes/i,
+    /one\s+minute[\s\S]*five\s+minutes[\s\S]*15\s+minutes/i,
     /provider\.metadata[\s\S]*correlationId/,
+    /does not[\s\S]*(?:automatically|yet)[\s\S]*(?:register|reconcile)/i,
+  ]) assert.match(mail, required);
+});
+
+test("the Mail guide documents signed Mailgun provider-event setup and semantics", async () => {
+  const mail = await readProjectFile("docs/guide/mail.md");
+  for (const required of [
+    /mail\.webhooks\.mailgun/,
+    /MAILGUN_WEBHOOK_KEY/,
+    /MAILGUN_API_KEY[\s\S]*not/i,
+    /HMAC-SHA256[\s\S]*timestamp[\s\S]*token/i,
+    /accepted[\s\S]*deferred/,
+    /temporary[\s\S]*deferred/,
+    /permanent[\s\S]*bounced/,
+    /suppress-complaint[\s\S]*complained/,
+    /suppress-unsubscribe[\s\S]*unsubscribed/,
+    /`200`[\s\S]*`406`/,
+    /Delivery[\s\S]*(?:does not retry|not\s+retried)/i,
+    /X-Mailgun-Variables[\s\S]*correlationId/,
+    /US[\s\S]*EU[\s\S]*(?:separate|independent|isolated)/i,
     /does not[\s\S]*(?:automatically|yet)[\s\S]*(?:register|reconcile)/i,
   ]) assert.match(mail, required);
 });

@@ -538,6 +538,85 @@ schedule. A `403` permanently stops retries, so this adapter returns retryable
 non-200 responses for authentication, malformed data, missing configuration,
 and handler failures rather than using `403`.
 
+### Configure the Mailgun callback route
+
+Enable `mail.webhooks.mailgun` with the Mailgun Webhook Signing Key held in
+Sealed Server env:
+
+```json
+{
+  "mail": {
+    "webhooks": {
+      "mailgun": {
+        "path": "/mailgun-webhook",
+        "secretEnv": "MAILGUN_WEBHOOK_KEY"
+      }
+    }
+  }
+}
+```
+
+`MAILGUN_WEBHOOK_KEY` is the account's Webhook Signing Key.
+`MAILGUN_API_KEY` is not a callback secret: the API key authorizes account
+configuration, while the signing key verifies callback bodies. Mailgun sends a `signature` object beside
+`event-data`. Sporades computes HMAC-SHA256 with the signing key over the
+signature `timestamp` followed immediately by its `token`, then compares the
+hexadecimal signature in constant time. Parent-account signatures are also
+accepted for subaccount events.
+
+Mailgun's US and EU APIs are isolated; configure the account or domain webhook
+separately in each region that sends Capsule mail. Sporades does not
+automatically register or reconcile Mailgun webhooks. A manual or operator
+workflow should select all required event subscriptions and post them to this
+route. Keep the API key out of the Capsule runtime.
+
+Mailgun events normalize as follows:
+
+| Mailgun | Condition | `VerifiedEmailEvent.kind` |
+| --- | --- | --- |
+| `accepted` | — | `deferred` |
+| `delivered` | — | `delivered` |
+| `failed` | temporary severity | `deferred` |
+| `failed` | permanent, ordinary bounce | `bounced` |
+| `failed` | permanent `suppress-complaint` | `complained` |
+| `failed` | permanent `suppress-unsubscribe` | `unsubscribed` |
+| `failed` | permanent policy, blocklist, or ESP block | `blocked` |
+| `opened` | — | `opened` |
+| `clicked` | — | `clicked` |
+| `unsubscribed` | — | `unsubscribed` |
+| `complained` | — | `complained` |
+
+Mailgun identifies each event only as unique within one day. Sporades combines
+the event ID with the event day and a hashed account/domain scope to form
+`providerEventId`; retries of one event remain stable without conflating events
+from different sending domains.
+
+For SMTP correlation, use Mailgun variables through the existing provider
+extension. Sporades emits them in `X-Mailgun-Variables`, and reads
+`correlationId` case-insensitively from the callback's `user-variables`:
+
+```ts
+await ctx.mail.send({
+  to: "recipient@example.com",
+  subject: "Delivery update",
+  textBody: "Your update is ready.",
+  provider: {
+    variables: {
+      correlationId: "delivery-018f"
+    }
+  }
+});
+```
+
+Mailgun treats exactly `200` as success and `406` as a permanent rejection.
+Sporades therefore returns `406` for an invalid signature or malformed body.
+Other failures remain retryable: non-Delivery callbacks retry after five, ten,
+and 15 minutes, then one, two, and four hours. Delivery notifications are not
+retried, so reconcile missed deliveries from Mailgun's event/log API when
+necessary. Raw envelopes may contain addresses, IPs, user agents, delivery
+diagnostics, storage URLs, and additive provider fields; the Capsule owns their
+privacy and retention policy.
+
 ### Subscribe in Capsule server code
 
 ```ts

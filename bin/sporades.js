@@ -4032,7 +4032,7 @@ function validateEmailWebhooksConfig(webhooks) {
   if (webhooks === void 0) return void 0;
   const webhooksData = captureMailConfigData(
     webhooks,
-    ["mailjet", "smtp2go", "postmark"],
+    ["mailjet", "smtp2go", "postmark", "mailgun"],
     "Invalid email webhook configuration.",
     "Configure only supported providers under `mail.webhooks`."
   );
@@ -4040,7 +4040,8 @@ function validateEmailWebhooksConfig(webhooks) {
   for (const [provider, defaultPath, defaultSecretEnv] of [
     ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
     ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
-    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"]
+    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"],
+    ["mailgun", "/__sporades/mail/webhooks/mailgun", "MAILGUN_WEBHOOK_KEY"]
   ]) {
     const input = webhooksData.get(provider);
     if (input === void 0) continue;
@@ -5257,7 +5258,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash2, timingSafeEqual } from "node:crypto";
+import { createHash as createHash2, createHmac, timingSafeEqual } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -5310,6 +5311,25 @@ function verifiedSmtp2goRequest(ctx, secret) {
 function verifiedPostmarkRequest(ctx, secret) {
   const token = text(ctx.request?.headers?.["x-sporades-webhook-token"]);
   return token.length > 0 && secureEqual(token, secret);
+}
+function parsedJsonObject(value) {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function verifiedMailgunRequest(ctx, secret) {
+  const body = parsedJsonObject(ctx.request?.body);
+  const signature = parsedJsonObject(body?.signature);
+  const timestamp = text(signature?.timestamp);
+  const token = text(signature?.token);
+  if (!timestamp || !token) return false;
+  const expected = createHmac("sha256", secret).update(`${timestamp}${token}`).digest("hex");
+  return [signature?.signature, signature?.["parent-signature"]].some((candidate) => typeof candidate === "string" && secureEqual(candidate, expected));
 }
 function mailjetMessageIdentity(raw) {
   return typeof raw.Message_GUID === "string" && raw.Message_GUID.trim() ? raw.Message_GUID.trim() : typeof raw.mj_message_id === "string" ? raw.mj_message_id.trim() : "";
@@ -5471,6 +5491,40 @@ function normalizePostmarkEvent(raw) {
 function parsePostmarkEvents(body) {
   return parseSingleProviderEvent(body, normalizePostmarkEvent);
 }
+function normalizeMailgunWebhook(raw) {
+  const body = parsedJsonObject(raw);
+  const data = parsedJsonObject(body?.["event-data"]);
+  if (!body || !data || typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = providerKind === "accepted" ? "deferred" : providerKind === "delivered" ? "delivered" : providerKind === "opened" ? "opened" : providerKind === "clicked" ? "clicked" : providerKind === "unsubscribed" ? "unsubscribed" : providerKind === "complained" ? "complained" : providerKind === "failed" && data.severity === "temporary" ? "deferred" : providerKind === "failed" && data.severity === "permanent" ? data.reason === "suppress-complaint" ? "complained" : data.reason === "suppress-unsubscribe" ? "unsubscribed" : ["espblock", "policy", "blocklist"].includes(text(data.reason).toLowerCase()) ? "blocked" : "bounced" : "";
+  if (!kind) return providerKind === "failed" ? false : null;
+  const providerId = typeof data.id === "string" ? data.id.trim() : "";
+  const seconds = typeof data.timestamp === "number" ? data.timestamp : Number(data.timestamp);
+  if (!providerId || !Number.isFinite(seconds) || seconds <= 0) return false;
+  const occurredAt = new Date(seconds * 1e3).toISOString();
+  const recipient = text(data.recipient).trim().toLowerCase();
+  const variables = parsedJsonObject(data["user-variables"]) ?? {};
+  const correlationKey = Object.keys(variables).find((key) => key.toLowerCase() === "correlationid");
+  const correlationId = correlationKey ? text(variables[correlationKey]).trim() : "";
+  const account = parsedJsonObject(data.account) ?? {};
+  const domain = parsedJsonObject(data.domain) ?? {};
+  const accountId = text(account.id).trim();
+  const domainName = text(domain.name).trim().toLowerCase();
+  if (!accountId || !domainName) return false;
+  const providerScope = createHash2("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  return {
+    provider: "mailgun",
+    kind,
+    providerEventId: `mailgun:${providerScope}:${Math.floor(seconds / 86400)}:${providerId}`,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...recipient ? { recipient } : {},
+    raw: body
+  };
+}
+function parseMailgunEvents(body) {
+  return parseSingleProviderEvent(body, normalizeMailgunWebhook);
+}
 async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
   if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
   for (const event of events) {
@@ -5481,7 +5535,7 @@ async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
     }, (privilegedContext) => subscription.handler(privilegedContext, event));
   }
 }
-function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse) {
+function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse, rejectionStatus = { unverified: 401, malformed: 400 }) {
   return {
     name,
     runtimeOwnedEmailEvent: true,
@@ -5493,11 +5547,11 @@ function createProviderEmailEventEndpoint(name, config, serverEnv, subscription,
         return { status: 503, body: { ok: false, accepted: 0, ignored: 0 } };
       }
       if (!verify2(ctx, secret)) {
-        return { status: 401, body: { ok: false, accepted: 0, ignored: 0 } };
+        return { status: rejectionStatus.unverified, body: { ok: false, accepted: 0, ignored: 0 } };
       }
       const parsed = parse(ctx.request?.body);
       if (parsed.malformed) {
-        return { status: 400, body: { ok: false, accepted: 0, ignored: 0 } };
+        return { status: rejectionStatus.malformed, body: { ok: false, accepted: 0, ignored: 0 } };
       }
       await dispatchVerifiedEmailEvents(ctx, parsed.events, subscription);
       return { status: 200, body: { ok: true, accepted: parsed.events.length, ignored: parsed.ignored } };
@@ -5532,6 +5586,16 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
     subscription,
     verifiedPostmarkRequest,
     parsePostmarkEvents
+  ));
+  const mailgun = mailConfig?.webhooks?.mailgun;
+  if (mailgun?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_mailgun_email_events",
+    mailgun,
+    serverEnv,
+    subscription,
+    verifiedMailgunRequest,
+    parseMailgunEvents,
+    { unverified: 406, malformed: 406 }
   ));
   return endpoints;
 }

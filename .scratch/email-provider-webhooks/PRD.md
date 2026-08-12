@@ -30,7 +30,8 @@ The numbered issues under `issues/` are tracer bullets. Mailjet proves the
 dispatcher and public contract first; SMTP2GO then proves the same dispatcher
 against a provider with first-class Authorization-header configuration, and
 Postmark proves deterministic identities across six distinct event families.
-Later
+Mailgun then proves signed callbacks and provider-specific acknowledgement
+semantics without changing the consolidated Capsule interface. Later
 tickets add registration, status derivation, further provider adapters, and
 operational documentation without introducing provider-specific Capsule
 interfaces.
