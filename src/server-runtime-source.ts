@@ -11,6 +11,7 @@ import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } fr
 import { Duplex } from "stream";
 import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
 import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
@@ -423,6 +424,19 @@ export async function openDevDatabase(
     ...options,
     mailLog: options.mailLog ?? ((event: LooseRecord) => mailLogSink?.emit(event)),
   });
+  const capsuleEndpoints = capsuleDefinition
+    ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
+    : extractEndpoints(serverSource);
+  const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
+  for (const providerEndpoint of emailEventEndpoints) {
+    if (capsuleEndpoints.some((endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path)) {
+      const error: any = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Choose a different Capsule endpoint path or change the provider webhook path in sporades.json.";
+      throw error;
+    }
+  }
+  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   // Handler sources extracted from Capsule server code are re-created with
@@ -437,9 +451,6 @@ export async function openDevDatabase(
     serviceEnv,
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = capsuleDefinition
-    ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
-    : extractEndpoints(serverSource);
   const queries: any[] = (extractQueryHandlersFromCapsule(capsuleDefinition) as any) ?? (extractQueryHandlers(serverSource) as any);
   const mutations: any[] = (capsuleDefinition
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
@@ -1756,16 +1767,25 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-  const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  const session = (endpoint as LooseRecord).runtimeOwnedEmailEvent
+    ? { auth: {
+        userId: privilegedAuthUserId(),
+        displayName: "Email provider callback",
+        email: null,
+        picture: null,
+        isAuthenticated: false,
+        isGuest: false,
+        provider: "privileged-server-role",
+      } }
+    : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context: LooseRecord | undefined;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(
-      transactionDatabase,
-      createEndpointContext(transactionDatabase, endpointRequest, session),
-      "endpoint",
-    );
+      const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
+      context = (endpoint as LooseRecord).runtimeOwnedEmailEvent
+        ? endpointContext
+        : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
       try {
         return await handler(context);
       } finally {

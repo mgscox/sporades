@@ -114,6 +114,18 @@ _Avoid_: app definition (that's the argument, not the function), config function
 A Capsule-defined HTTP handler declared with `endpoint({ method, path }, handler)`. Used for integration paths such as webhooks that cannot use the WebSocket client transport. Endpoints receive normal Sporades context plus `ctx.request`.
 _Avoid_: REST API (too broad), route handler (confuses it with client routing)
 
+**Email provider route**:
+A runtime-owned HTTP callback route enabled under `mail.webhooks` for one outbound email provider. It verifies and normalizes provider payloads before the Capsule can observe them, and remains distinct from a Capsule-defined Custom endpoint.
+_Avoid_: app webhook, Mailjet handler, email endpoint
+
+**Verified email event**:
+A provider-neutral email lifecycle value produced only after an Email provider route verifies a callback and validates one provider event. It includes normalized lifecycle fields plus the exact raw per-event provider JSON; Sporades does not persist either representation by default.
+_Avoid_: Mailjet event, delivery row, SMTP response
+
+**Email-event subscription**:
+The optional single Capsule handler declared with `emailEvents: emailEvent(handler)`. The consolidated runtime dispatcher invokes it under the Privileged server role for each Verified email event, independent of the provider-specific callback shape.
+_Avoid_: provider handler, EventEmitter listener, webhook endpoint
+
 **Message handler**:
 A Capsule-defined app-message handler declared with `message((ctx, data) => ...)`. Client-origin App messages enter server code through these handlers before any response or fan-out.
 _Avoid_: socket listener, raw WebSocket handler

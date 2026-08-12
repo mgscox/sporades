@@ -6,6 +6,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
@@ -341,6 +342,19 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         ...options,
         mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event)),
     });
+    const capsuleEndpoints = capsuleDefinition
+        ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
+        : extractEndpoints(serverSource);
+    const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
+    for (const providerEndpoint of emailEventEndpoints) {
+        if (capsuleEndpoints.some((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path)) {
+            const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
+            error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
+            error.hint = "Choose a different Capsule endpoint path or change the provider webhook path in sporades.json.";
+            throw error;
+        }
+    }
+    const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
@@ -355,9 +369,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         serviceEnv,
     });
     const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-    const endpoints = capsuleDefinition
-        ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
-        : extractEndpoints(serverSource);
     const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
     const mutations = (capsuleDefinition
         ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
@@ -1572,12 +1583,25 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
     const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-    const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+    const session = endpoint.runtimeOwnedEmailEvent
+        ? { auth: {
+                userId: privilegedAuthUserId(),
+                displayName: "Email provider callback",
+                email: null,
+                picture: null,
+                isAuthenticated: false,
+                isGuest: false,
+                provider: "privileged-server-role",
+            } }
+        : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
     let context;
     try {
         const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-            context = await applyContextMiddleware(transactionDatabase, createEndpointContext(transactionDatabase, endpointRequest, session), "endpoint");
+            const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
+            context = endpoint.runtimeOwnedEmailEvent
+                ? endpointContext
+                : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
             try {
                 return await handler(context);
             }

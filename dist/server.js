@@ -34,6 +34,10 @@ export function endpoint(options, handler) {
         handler,
     };
 }
+/** Declare the single provider-neutral email-event subscription for a Capsule. */
+export function emailEvent(handler) {
+    return { kind: "emailEvent", handler };
+}
 export function query(handler) {
     return {
         kind: "query",
@@ -154,6 +158,13 @@ export function endpoint(options, handler) {
   return {
     kind: "endpoint",
     options,
+    handler,
+  };
+}
+
+export function emailEvent(handler) {
+  return {
+    kind: "emailEvent",
     handler,
   };
 }

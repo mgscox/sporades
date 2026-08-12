@@ -267,28 +267,47 @@ test("docs publish the implemented User journey tracker contract", async () => {
 });
 
 test("published docs and API describe production SMTP mail parity", async () => {
-  const [prd, architecture, configuration, serverGuide, reference, declarations, apiMail, apiInput] = await Promise.all([
+  const [prd, architecture, mailGuide, serverGuide, reference, declarations, apiMail, apiInput] = await Promise.all([
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/architecture.md"),
-    readProjectFile("docs/guide/configuration.md"),
+    readProjectFile("docs/guide/mail.md"),
     readProjectFile("docs/guide/server.md"),
     readProjectFile("docs/reference/server-runtime.md"),
     readProjectFile("src/types/server.d.ts"),
     readProjectFile("docs/api/types/server.MailApi.html"),
     readProjectFile("docs/api/types/server.MailSendInput.html"),
   ]);
-  const published = [prd, architecture, configuration, serverGuide, reference].join("\n");
+  const published = [prd, architecture, mailGuide, serverGuide, reference].join("\n");
   for (const required of [
     "Dev sessions", "local Container sessions", "Hosted Capsules", "Postmark",
     "Mailgun", "SMTP2GO", "at least once", "idempotency", "cannot roll back",
   ]) assert.match(published, new RegExp(required, "i"));
-  assert.match(configuration, /provider\.headers/);
-  assert.match(configuration, /sendWelcome:\s*job/);
+  assert.match(mailGuide, /provider\.headers/);
+  assert.match(mailGuide, /sendWelcome:\s*job/);
   assert.match(architecture, /active\s+sockets/i);
   assert.match(reference, /exclude[\s\S]*addresses[\s\S]*bodies/i);
   assert.match(declarations, /intentionally[\s\S]*absent from browser, table ACL, and Schedule payload-factory contexts/i);
   assert.match(apiMail, /Server-only runtime-owned SMTP delivery API/);
   assert.match(apiInput, /not an arbitrary provider API payload/);
+});
+
+test("the Mail guide documents provider delivery events without claiming registration tooling", async () => {
+  const [configuration, mail, navigation] = await Promise.all([
+    readProjectFile("docs/guide/configuration.md"),
+    readProjectFile("docs/guide/mail.md"),
+    readProjectFile("docs/.vitepress/config.mts"),
+  ]);
+  assert.match(configuration, /guide\/mail|\.\/mail/);
+  assert.match(navigation, /Mail[\s\S]*\/guide\/mail/);
+  for (const required of [
+    /mail\.webhooks\.mailjet/,
+    /emailEvents:\s*emailEvent/,
+    /VerifiedEmailEvent/,
+    /raw\s+per-event/i,
+    /does not persist/i,
+    /durable Job/i,
+    /does not\s+(?:yet\s+)?register|registration[\s\S]*not/i,
+  ]) assert.match(mail, required);
 });
 
 test("published docs describe the complete Job scheduling contract", async () => {

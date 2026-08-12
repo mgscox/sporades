@@ -37,6 +37,7 @@ export default defineConfig({
           { text: "Files", link: "/guide/files" },
           { text: "Realtime features", link: "/guide/realtime" },
           { text: "Jobs and schedules", link: "/guide/background-work" },
+          { text: "Mail", link: "/guide/mail" },
           { text: "Configuration", link: "/guide/configuration" },
         ],
       },

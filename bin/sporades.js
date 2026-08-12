@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -2043,6 +2043,13 @@ export function endpoint(options, handler) {
   };
 }
 
+export function emailEvent(handler) {
+  return {
+    kind: "emailEvent",
+    handler,
+  };
+}
+
 export function query(handler) {
   return {
     kind: "query",
@@ -3987,45 +3994,91 @@ function restartPolicyStatus(mode, overrides = {}) {
 import { createHash as createHash2, randomBytes as randomBytes4, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
+// src/mail-config-validation.ts
+function invalidMailConfig(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_MAIL_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+function captureMailConfigData(value, allowed, message, hint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
+  const entries = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") invalidMailConfig(message, hint);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      invalidMailConfig(message, hint);
+    }
+    if (!allowed.includes(key)) invalidMailConfig(message, hint);
+    entries.push([key, descriptor.value]);
+  }
+  return new Map(entries);
+}
+function isServerEnvReference(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+
+// src/email-events-config.ts
+function sameOriginWebhookPath(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+}
+function validateEmailWebhooksConfig(webhooks) {
+  if (webhooks === void 0) return void 0;
+  const webhooksData = captureMailConfigData(
+    webhooks,
+    ["mailjet"],
+    "Invalid email webhook configuration.",
+    "Configure only supported providers under `mail.webhooks`."
+  );
+  const mailjetInput = webhooksData.get("mailjet");
+  if (mailjetInput === void 0) return {};
+  const mailjet = captureMailConfigData(
+    mailjetInput,
+    ["enabled", "path", "secretEnv"],
+    "Invalid Mailjet webhook configuration.",
+    "Configure `mail.webhooks.mailjet` with optional enabled, path, and secretEnv values."
+  );
+  const enabled = mailjet.get("enabled") ?? true;
+  const path12 = mailjet.get("path") ?? "/__sporades/mail/webhooks/mailjet";
+  const secretEnv = mailjet.get("secretEnv") ?? "MAILJET_WEBHOOK_SECRET";
+  if (typeof enabled !== "boolean") {
+    invalidMailConfig("Invalid Mailjet webhook enabled flag.", "Set `mail.webhooks.mailjet.enabled` to true or false.");
+  }
+  if (!sameOriginWebhookPath(path12)) {
+    invalidMailConfig(
+      "Invalid Mailjet webhook path.",
+      "Set `mail.webhooks.mailjet.path` to a same-origin absolute path without a query or fragment."
+    );
+  }
+  if (!isServerEnvReference(secretEnv)) {
+    invalidMailConfig(
+      "Invalid Mailjet webhook Server env reference.",
+      "Set `mail.webhooks.mailjet.secretEnv` to an uppercase Server env key without the reserved `SPORADES_` prefix."
+    );
+  }
+  return { mailjet: { enabled, path: path12, secretEnv } };
+}
+
 // src/mail-config.ts
 function validateMailConfig(mail) {
-  const fail = (message, hint) => {
-    const error = new Error(message);
-    error.code = "INVALID_MAIL_CONFIG";
-    error.hint = hint;
-    throw error;
-  };
-  const capture = (value, allowed, message, hint) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) fail(message, hint);
-    const objectValue = value;
-    const prototype = Object.getPrototypeOf(objectValue);
-    if (prototype !== Object.prototype && prototype !== null) fail(message, hint);
-    const entries = [];
-    for (const key of Reflect.ownKeys(objectValue)) {
-      if (typeof key !== "string") fail(message, hint);
-      const stringKey = key;
-      const descriptor = Object.getOwnPropertyDescriptor(objectValue, stringKey);
-      if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
-        fail(message, hint);
-      }
-      entries.push([stringKey, descriptor.value]);
-    }
-    if (entries.map(([key]) => key).filter((key) => !allowed.includes(key)).sort().length > 0) {
-      fail(message, hint);
-    }
-    return new Map(entries);
-  };
-  const envReference = (value) => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+  const fail = invalidMailConfig;
+  const capture = captureMailConfigData;
+  const envReference = isServerEnvReference;
   const optional = (target, name, value) => {
     if (value !== void 0) target[name] = value;
   };
   if (mail === void 0) return void 0;
   const mailData = capture(
     mail,
-    ["smtp"],
+    ["smtp", "webhooks"],
     "Invalid mail configuration.",
     "Set `mail.smtp` in sporades.json, or omit `mail` to disable delivery."
   );
+  const webhooks = validateEmailWebhooksConfig(mailData.get("webhooks"));
+  if (mailData.get("smtp") === void 0) return webhooks === void 0 ? {} : { webhooks };
   const smtpData = capture(
     mailData.get("smtp"),
     ["vendor", "host", "port", "tls", "auth", "defaultFrom", "connectionTimeoutMs", "socketTimeoutMs"],
@@ -4112,7 +4165,7 @@ function validateMailConfig(mail) {
   optional(smtp, "defaultFrom", defaultFrom);
   optional(smtp, "connectionTimeoutMs", connectionTimeoutMs);
   optional(smtp, "socketTimeoutMs", socketTimeoutMs);
-  return { smtp };
+  return { smtp, ...webhooks === void 0 ? {} : { webhooks } };
 }
 
 // src/mail-runtime.ts
@@ -5099,13 +5152,13 @@ ${encodeMimeBase64(message.htmlBody)}\r
 ${encodeMimeBase64(html ? message.htmlBody : message.textBody)}`;
 }
 function encodeMimeHeaderValue(value, quoteAscii = false) {
-  const text = String(value);
-  if (/^[\x20-\x7e]*$/.test(text) && Buffer.byteLength(text) <= 70) {
-    return quoteAscii ? `"${text.replace(/(["\\])/g, "\\$1")}"` : text;
+  const text2 = String(value);
+  if (/^[\x20-\x7e]*$/.test(text2) && Buffer.byteLength(text2) <= 70) {
+    return quoteAscii ? `"${text2.replace(/(["\\])/g, "\\$1")}"` : text2;
   }
   const chunks = [];
   let current = "";
-  for (const character of text) {
+  for (const character of text2) {
     if (current && Buffer.byteLength(current + character) > 39) {
       chunks.push(current);
       current = "";
@@ -5139,10 +5192,10 @@ function foldMimeHeader(name, value) {
   return lines.join("\r\n");
 }
 function foldMailgunJsonHeader(name, value) {
-  const text = String(value);
+  const text2 = String(value);
   const tokens = [];
-  for (let index = 0; index < text.length; ) {
-    const character = text[index];
+  for (let index = 0; index < text2.length; ) {
+    const character = text2[index];
     if ("{}[],:".includes(character)) {
       tokens.push(character);
       index += 1;
@@ -5152,17 +5205,17 @@ function foldMailgunJsonHeader(name, value) {
     if (character === '"') {
       index += 1;
       let escaped = false;
-      while (index < text.length) {
-        const next = text[index];
+      while (index < text2.length) {
+        const next = text2[index];
         index += 1;
         if (escaped) escaped = false;
         else if (next === "\\") escaped = true;
         else if (next === '"') break;
       }
     } else {
-      while (index < text.length && !'{}[],:"'.includes(text[index])) index += 1;
+      while (index < text2.length && !'{}[],:"'.includes(text2[index])) index += 1;
     }
-    tokens.push(text.slice(start, index));
+    tokens.push(text2.slice(start, index));
   }
   const prefix = `${name}: `;
   const lines = [];
@@ -5190,6 +5243,127 @@ function foldMailgunJsonHeader(name, value) {
 }
 function encodeMimeBase64(value) {
   return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
+}
+
+// src/email-events-runtime.ts
+import { timingSafeEqual } from "node:crypto";
+var MAILJET_EVENT_KINDS = {
+  sent: "delivered",
+  open: "opened",
+  click: "clicked",
+  bounce: "bounced",
+  blocked: "blocked",
+  spam: "complained",
+  unsub: "unsubscribed"
+};
+function text(value) {
+  return typeof value === "string" ? value : value === void 0 || value === null ? "" : String(value);
+}
+function secureEqual(left, right) {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+function mailjetBasicPassword(authorization) {
+  if (typeof authorization !== "string" || !authorization.startsWith("Basic ")) return "";
+  try {
+    const decoded = Buffer.from(authorization.slice(6), "base64").toString("utf8");
+    const separator = decoded.indexOf(":");
+    return separator < 0 ? "" : decoded.slice(separator + 1);
+  } catch {
+    return "";
+  }
+}
+function verifiedMailjetRequest(ctx, secret) {
+  const token = text(ctx.request?.query?.token);
+  const basicPassword = mailjetBasicPassword(ctx.request?.headers?.authorization);
+  return token.length > 0 && secureEqual(token, secret) || basicPassword.length > 0 && secureEqual(basicPassword, secret);
+}
+function mailjetMessageIdentity(raw) {
+  return typeof raw.Message_GUID === "string" && raw.Message_GUID.trim() ? raw.Message_GUID.trim() : typeof raw.mj_message_id === "string" ? raw.mj_message_id.trim() : "";
+}
+function mailjetProviderEventId(raw, event, seconds, identity) {
+  const clickUrl = event === "click" ? `:${text(raw.url)}` : "";
+  return `${event}:${identity}:${Math.trunc(seconds) || 0}${clickUrl}`;
+}
+function normalizeMailjetEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = MAILJET_EVENT_KINDS[providerKind];
+  if (!kind) return null;
+  const seconds = Number(data.time);
+  const identity = mailjetMessageIdentity(data);
+  if (!Number.isFinite(seconds) || seconds <= 0 || !identity) return false;
+  const providerEventId = mailjetProviderEventId(data, providerKind, seconds, identity);
+  const occurredAt = new Date(seconds * 1e3).toISOString();
+  return {
+    provider: "mailjet",
+    kind,
+    providerEventId,
+    occurredAt,
+    ...text(data.CustomID).trim() ? { correlationId: text(data.CustomID).trim() } : {},
+    ...text(data.email).trim() ? { recipient: text(data.email).trim().toLowerCase() } : {},
+    raw: data
+  };
+}
+function parseMailjetEvents(body) {
+  let value = body;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { malformed: true, events: [], ignored: 0 };
+    }
+  }
+  if (!value || typeof value !== "object") return { malformed: true, events: [], ignored: 0 };
+  const entries = Array.isArray(value) ? value : [value];
+  if (entries.length === 0) return { malformed: true, events: [], ignored: 0 };
+  const events = [];
+  let ignored = 0;
+  for (const entry of entries) {
+    const event = normalizeMailjetEvent(entry);
+    if (event === false) return { malformed: true, events: [], ignored: 0 };
+    if (event) events.push(event);
+    else ignored += 1;
+  }
+  return { malformed: false, events, ignored };
+}
+async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
+  if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
+  for (const event of events) {
+    await ctx.privileged.run({
+      operation: "email-events.dispatch",
+      targetResourceKind: "email-provider-callback",
+      metadata: { provider: event.provider, providerEventId: event.providerEventId }
+    }, (privilegedContext) => subscription.handler(privilegedContext, event));
+  }
+}
+function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
+  const mailjet = mailConfig?.webhooks?.mailjet;
+  if (!mailjet?.enabled) return [];
+  return [{
+    name: "__sporades_mailjet_email_events",
+    runtimeOwnedEmailEvent: true,
+    method: "POST",
+    path: mailjet.path,
+    async handler(ctx) {
+      const secret = serverEnv[mailjet.secretEnv];
+      if (typeof secret !== "string" || secret.length === 0) {
+        return { status: 503, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      if (!verifiedMailjetRequest(ctx, secret)) {
+        return { status: 401, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      const parsed = parseMailjetEvents(ctx.request?.body);
+      if (parsed.malformed) {
+        return { status: 400, body: { ok: false, accepted: 0, ignored: 0 } };
+      }
+      await dispatchVerifiedEmailEvents(ctx, parsed.events, subscription);
+      return { status: 200, body: { ok: true, accepted: parsed.events.length, ignored: parsed.ignored } };
+    }
+  }];
 }
 
 // src/runtime-errors.ts
@@ -6198,8 +6372,8 @@ function structuredFileException(message, hint) {
   return error;
 }
 function isUniqueConstraintError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text);
+  const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text2);
 }
 function filePathBackfillSql() {
   return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
@@ -6820,8 +6994,8 @@ function normalizeSimulatedText(value) {
   if (value === null || value === void 0) {
     return null;
   }
-  const text = String(value).trim();
-  return text ? text : null;
+  const text2 = String(value).trim();
+  return text2 ? text2 : null;
 }
 function parseOAuthFormBody(body) {
   const parameters = new URLSearchParams();
@@ -8055,12 +8229,12 @@ function sanitizeAppleNamePart(value) {
   if (typeof value !== "string") {
     throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!text) return null;
-  if (text.length > 128) {
+  const text2 = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text2) return null;
+  if (text2.length > 128) {
     throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
-  return text;
+  return text2;
 }
 async function loadMicrosoftJwks(database, discovery, forceRefresh = false, observedGeneration = null, missingKid = null) {
   const microsoft = database.authConfig.providers.microsoft;
@@ -9317,23 +9491,23 @@ function isSensitiveLogKey(key) {
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
-  const text = String(sql ?? "");
-  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text)) {
+  const text2 = String(sql ?? "");
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\0/.test(text2)) {
     return unrepresentableInspectionSqlError();
   }
-  const disagreement = sqlTheEnginesLexDifferently(text);
+  const disagreement = sqlTheEnginesLexDifferently(text2);
   if (disagreement) {
     return ambiguousInspectionSqlError(disagreement);
   }
-  const firstToken = readFirstSqlToken(text);
-  if (!firstToken || hasMultipleSqlStatements(text)) {
+  const firstToken = readFirstSqlToken(text2);
+  if (!firstToken || hasMultipleSqlStatements(text2)) {
     return readOnlyInspectionSqlError();
   }
   const keyword = firstToken.toLowerCase();
   if (keyword === "pragma") {
-    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+    return isSafeInspectionPragma(text2, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
   }
-  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text2)) {
     return { ok: true };
   }
   return readOnlyInspectionSqlError();
@@ -9678,28 +9852,28 @@ function opensQuotedRun(sql, index) {
   return skipSqlQuotedOrCommented(sql, index, sqlDialectQuotedRunsOnly()) > index;
 }
 function sqlWithoutTrailingTerminator(sql) {
-  const text = String(sql ?? "");
+  const text2 = String(sql ?? "");
   const dialect = sqlDialectEveryEngineQuotes(true);
   let index = 0;
   let contentEnd = 0;
-  while (index < text.length) {
-    const skipped = skipSqlQuotedOrCommented(text, index, dialect);
+  while (index < text2.length) {
+    const skipped = skipSqlQuotedOrCommented(text2, index, dialect);
     if (skipped > index) {
-      if (opensQuotedRun(text, index)) {
+      if (opensQuotedRun(text2, index)) {
         contentEnd = skipped;
       }
       index = skipped;
       continue;
     }
-    if (text[index] === ";") {
+    if (text2[index] === ";") {
       break;
     }
-    if (!/[ \t\n\r\f]/.test(text[index])) {
+    if (!/[ \t\n\r\f]/.test(text2[index])) {
       contentEnd = index + 1;
     }
     index += 1;
   }
-  return text.slice(0, contentEnd);
+  return text2.slice(0, contentEnd);
 }
 function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectCommentsOnly(lineCommentEndsAtCarriageReturn);
@@ -9722,11 +9896,11 @@ function skipSqlTrivia(sql, startIndex, lineCommentEndsAtCarriageReturn) {
 
 // src/log-index-guard.ts
 function targetsInternalLogIndexTable(sql) {
-  const text = String(sql);
+  const text2 = String(sql);
   const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
   let match;
-  while (match = targetKeywords.exec(text)) {
-    const reference = readSqlTableReference(text, match.index + match[0].length);
+  while (match = targetKeywords.exec(text2)) {
+    const reference = readSqlTableReference(text2, match.index + match[0].length);
     if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
       return true;
     }
@@ -11173,10 +11347,10 @@ function postgresInterpolate(sql, params = []) {
   let lineComment = false;
   let blockComment = false;
   let result = "";
-  const text = String(sql ?? "");
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
+  const text2 = String(sql ?? "");
+  for (let position = 0; position < text2.length; position += 1) {
+    const char = text2[position];
+    const next = text2[position + 1];
     if (lineComment) {
       result += char;
       if (char === "\n") {
@@ -11598,8 +11772,8 @@ function fieldColumnDefaultSql(field) {
   return field.defaultValue === void 0 ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 function isDuplicateColumnError(error) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /duplicate column|already exists/i.test(text);
+  const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /duplicate column|already exists/i.test(text2);
 }
 function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
   try {
@@ -11650,10 +11824,10 @@ function splitSqlStatements(sql) {
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
-  const text = String(sql ?? "");
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
+  const text2 = String(sql ?? "");
+  for (let index = 0; index < text2.length; index += 1) {
+    const char = text2[index];
+    const next = text2[index + 1];
     if (lineComment) {
       if (char === "\n") {
         lineComment = false;
@@ -11677,7 +11851,7 @@ function splitSqlStatements(sql) {
         continue;
       }
       if (char === quote) {
-        if (text[index + 1] === quote && quote !== "`") {
+        if (text2[index + 1] === quote && quote !== "`") {
           index += 1;
           continue;
         }
@@ -11700,14 +11874,14 @@ function splitSqlStatements(sql) {
       continue;
     }
     if (char === ";") {
-      const statement = text.slice(start, index).trim();
+      const statement = text2.slice(start, index).trim();
       if (statement) {
         statements.push(statement);
       }
       start = index + 1;
     }
   }
-  const last = text.slice(start).trim();
+  const last = text2.slice(start).trim();
   if (last) {
     statements.push(last);
   }
@@ -12456,8 +12630,8 @@ function normalizePrivilegedAuditCorrelation(value) {
   return { id: String(value) };
 }
 function auditString(value, fallback) {
-  const text = value === null || value === void 0 ? "" : String(value);
-  return text.trim() ? text : fallback;
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return text2.trim() ? text2 : fallback;
 }
 function normalizeTableAcl(tableName, aclRules) {
   const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
@@ -12843,6 +13017,17 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     ...options,
     mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event))
   });
+  const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
+  const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
+  for (const providerEndpoint of emailEventEndpoints) {
+    if (capsuleEndpoints.some((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path)) {
+      const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Choose a different Capsule endpoint path or change the provider webhook path in sporades.json.";
+      throw error;
+    }
+  }
+  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -12854,7 +13039,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serviceEnv
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
@@ -14013,16 +14197,21 @@ async function routeEndpoint(database, request, response) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-  const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  const session = endpoint.runtimeOwnedEmailEvent ? { auth: {
+    userId: privilegedAuthUserId(),
+    displayName: "Email provider callback",
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: false,
+    provider: "privileged-server-role"
+  } } : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(
-        transactionDatabase,
-        createEndpointContext(transactionDatabase, endpointRequest, session),
-        "endpoint"
-      );
+      const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
+      context = endpoint.runtimeOwnedEmailEvent ? endpointContext : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
       try {
         return await handler(context);
       } finally {
@@ -23881,7 +24070,7 @@ function devInspectionTokenMatches(header, expectedToken) {
   }
   const actual = Buffer.from(actualToken);
   const expected = Buffer.from(expectedToken);
-  return actual.length === expected.length && timingSafeEqual2(actual, expected);
+  return actual.length === expected.length && timingSafeEqual3(actual, expected);
 }
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");

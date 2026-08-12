@@ -477,6 +477,34 @@ export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> 
   request: EndpointRequest;
 };
 
+/** Provider-neutral lifecycle state reported by an outbound email provider. */
+export type EmailEventKind =
+  | "delivered"
+  | "opened"
+  | "clicked"
+  | "bounced"
+  | "blocked"
+  | "complained"
+  | "unsubscribed"
+  | "deferred";
+
+/** One verified provider callback event. Raw provider JSON is never persisted by Sporades. */
+export type VerifiedEmailEvent = {
+  provider: string;
+  kind: EmailEventKind;
+  providerEventId: string;
+  occurredAt: string;
+  correlationId?: string;
+  recipient?: string;
+  raw: JsonValue;
+};
+
+/** Handler for a Capsule's single provider-neutral email-event subscription. */
+export type EmailEventHandler<Schema extends SchemaDefinition = SchemaDefinition> = (
+  ctx: PrivilegedContext<Schema>,
+  event: VerifiedEmailEvent,
+) => MaybePromise<void>;
+
 /** Handler for a named query exposed over the Sporades client transport. */
 export type QueryHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
@@ -569,6 +597,11 @@ export type EndpointDefinition<Handler = EndpointHandler> = {
   handler: Handler;
 };
 
+export type EmailEventDefinition<Handler = EmailEventHandler> = {
+  kind: "emailEvent";
+  handler: Handler;
+};
+
 export type MessageDefinition<Handler = MessageHandler> = {
   kind: "message";
   handler: Handler;
@@ -653,6 +686,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   queries?: Record<string, QueryDefinition<QueryHandler<Schema>>>;
   mutations?: Record<string, MutationDefinition>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
+  emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
@@ -687,6 +721,9 @@ export function capsule<const Schema extends SchemaDefinition, const Definition 
 export function requireAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
 export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
+
+/** Declare the single provider-neutral email-event subscription for a Capsule. */
+export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
 export function query<Handler extends QueryHandler>(handler: Handler): QueryDefinition<Handler>;
 /** Define a named mutation for client-initiated writes or commands. */

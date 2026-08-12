@@ -1,40 +1,10 @@
+import { validateEmailWebhooksConfig } from "./email-events-config.js";
+import { captureMailConfigData, invalidMailConfig, isServerEnvReference } from "./mail-config-validation.js";
+
 export function validateMailConfig(mail: Record<string, any> | undefined) {
-  const fail = (message: string, hint: string) => {
-    const error: Error & { code?: string; hint?: string } = new Error(message);
-    error.code = "INVALID_MAIL_CONFIG";
-    error.hint = hint;
-    throw error;
-  };
-  const capture = (
-    value: unknown,
-    allowed: string[],
-    message: string,
-    hint: string,
-  ): Map<string, any> => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) fail(message, hint);
-    const objectValue = value as object;
-    const prototype = Object.getPrototypeOf(objectValue);
-    if (prototype !== Object.prototype && prototype !== null) fail(message, hint);
-    const entries: [string, any][] = [];
-    for (const key of Reflect.ownKeys(objectValue)) {
-      if (typeof key !== "string") fail(message, hint);
-      const stringKey = key as string;
-      const descriptor = Object.getOwnPropertyDescriptor(objectValue, stringKey);
-      if (
-        !descriptor
-        || !descriptor.enumerable
-        || !Object.prototype.hasOwnProperty.call(descriptor, "value")
-      ) {
-        fail(message, hint);
-      }
-      entries.push([stringKey, (descriptor as PropertyDescriptor).value]);
-    }
-    if (entries.map(([key]) => key).filter((key) => !allowed.includes(key)).sort().length > 0) {
-      fail(message, hint);
-    }
-    return new Map(entries);
-  };
-  const envReference = (value: unknown) => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+  const fail = invalidMailConfig;
+  const capture = captureMailConfigData;
+  const envReference = isServerEnvReference;
   const optional = (target: Record<string, any>, name: string, value: any) => {
     if (value !== undefined) target[name] = value;
   };
@@ -42,10 +12,12 @@ export function validateMailConfig(mail: Record<string, any> | undefined) {
   if (mail === undefined) return undefined;
   const mailData = capture(
     mail,
-    ["smtp"],
+    ["smtp", "webhooks"],
     "Invalid mail configuration.",
     "Set `mail.smtp` in sporades.json, or omit `mail` to disable delivery.",
   );
+  const webhooks = validateEmailWebhooksConfig(mailData.get("webhooks"));
+  if (mailData.get("smtp") === undefined) return webhooks === undefined ? {} : { webhooks };
   const smtpData = capture(
     mailData.get("smtp"),
     ["vendor", "host", "port", "tls", "auth", "defaultFrom", "connectionTimeoutMs", "socketTimeoutMs"],
@@ -146,5 +118,5 @@ export function validateMailConfig(mail: Record<string, any> | undefined) {
   optional(smtp, "defaultFrom", defaultFrom);
   optional(smtp, "connectionTimeoutMs", connectionTimeoutMs);
   optional(smtp, "socketTimeoutMs", socketTimeoutMs);
-  return { smtp };
+  return { smtp, ...(webhooks === undefined ? {} : { webhooks }) };
 }
