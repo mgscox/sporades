@@ -310,6 +310,24 @@ test("the Mail guide documents provider delivery events without claiming registr
   ]) assert.match(mail, required);
 });
 
+test("the Mail guide documents secure SMTP2GO provider-event setup and semantics", async () => {
+  const mail = await readProjectFile("docs/guide/mail.md");
+  for (const required of [
+    /mail\.webhooks\.smtp2go/,
+    /SMTP2GO_WEBHOOK_SECRET/,
+    /Bearer/i,
+    /shared secret[\s\S]*not[\s\S]*(?:signature|signed)/i,
+    /Basic[\s\S]*not accepted/i,
+    /output_format[\s\S]*json/i,
+    /defaults to\s+`form`/i,
+    /processed[\s\S]*deferred/,
+    /resubscribe[\s\S]*resubscribed/,
+    /35[\s\S]*(?:48 hours|48h)/i,
+    /X-Sporades-Correlation-Id/,
+    /does not[\s\S]*(?:automatically|yet)[\s\S]*(?:register|reconcile)/i,
+  ]) assert.match(mail, required);
+});
+
 test("published docs describe the complete Job scheduling contract", async () => {
   const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
     readProjectFile("docs/PRD.md"),

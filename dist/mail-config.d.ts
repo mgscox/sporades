@@ -2,23 +2,11 @@ export declare function validateMailConfig(mail: Record<string, any> | undefined
     webhooks?: undefined;
 } | {
     webhooks: {
-        mailjet?: undefined;
-    } | {
-        mailjet: {
-            enabled: boolean;
-            path: any;
-            secretEnv: any;
-        };
+        [x: string]: any;
     };
 } | {
     webhooks?: {
-        mailjet?: undefined;
-    } | {
-        mailjet: {
-            enabled: boolean;
-            path: any;
-            secretEnv: any;
-        };
+        [x: string]: any;
     } | undefined;
     smtp: Record<string, any>;
 } | undefined;

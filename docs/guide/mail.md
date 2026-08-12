@@ -393,6 +393,72 @@ Sporades does not yet register or reconcile the callback in the external Mailjet
 account. Configure Mailjet to post its events to this route separately; automated
 registration is a later operator workflow.
 
+### Configure the SMTP2GO callback route
+
+Enable `mail.webhooks.smtp2go` with a separate provider-owned route and Bearer
+secret:
+
+```json
+{
+  "mail": {
+    "webhooks": {
+      "smtp2go": {
+        "path": "/smtp2go-webhook",
+        "secretEnv": "SMTP2GO_WEBHOOK_SECRET"
+      }
+    }
+  }
+}
+```
+
+Store a fresh high-entropy callback token under `SMTP2GO_WEBHOOK_SECRET` in
+Sealed Server env. This token is not the SMTP2GO account API key. Sporades
+requires the callback request to carry it as `Authorization: Bearer <token>` and
+uses constant-time comparison before parsing the body.
+
+SMTP2GO callback authentication is a shared secret, not a payload signature:
+it authenticates possession of the configured token but does not cryptographically
+bind that token to the body or timestamp. SMTP2GO can also send HTTP Basic
+credentials, but Basic authentication is not accepted by this adapter; configure
+Bearer explicitly so every supported deployment uses one verification contract.
+
+Configure the webhook in SMTP2GO under **Settings > Webhooks**, or with its
+`POST /v3/webhook/add` API. Select JSON output explicitly: SMTP2GO's
+`output_format` defaults to `form`, while this adapter accepts provider JSON so
+it can preserve the exact object under `raw`. Configure:
+
+- `auth_header_type: "bearer"` and the callback token as `auth_header_value`;
+- `output_format: "json"`;
+- the required email events; and
+- `X-Sporades-Correlation-Id` under `headers` when messages carry that custom
+  header and the Capsule needs send-to-event correlation.
+
+Sporades does not automatically register or reconcile the SMTP2GO webhook.
+Manual setup keeps account API credentials outside the Capsule runtime until an
+explicit operator reconciliation workflow is implemented.
+
+SMTP2GO event names normalize as follows:
+
+| SMTP2GO | `VerifiedEmailEvent.kind` |
+| --- | --- |
+| `processed` | `deferred` |
+| `delivered` | `delivered` |
+| `open` | `opened` |
+| `click` | `clicked` |
+| `bounce` | `bounced` |
+| `spam` | `complained` |
+| `unsubscribe` | `unsubscribed` |
+| `resubscribe` | `resubscribed` |
+| `reject` | `blocked` |
+
+SMTP2GO documents up to 35 delivery attempts over roughly 48 hours and a
+ten-second response-header timeout. Replayed callbacks therefore remain normal
+operation. Sporades requires the callback's string `id` and currently exposes it
+as `providerEventId`; enqueue durable work with that value and make the Job
+idempotent. SMTP2GO may include recipient,
+subject, bounce diagnostics, IP, geo-location, client, device, operating-system,
+and user-agent data in `raw`; the Capsule owns its privacy and retention policy.
+
 ### Subscribe in Capsule server code
 
 ```ts

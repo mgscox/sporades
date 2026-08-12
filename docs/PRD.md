@@ -122,8 +122,9 @@ The repository currently includes:
   with provider-specific verification and normalization feeding one optional
   provider-neutral Capsule Email-event subscription. Verified events include
   exact raw per-event provider JSON, run under the Privileged server role, and
-  are not persisted by Sporades. The current adapter supports Mailjet; external
-  callback registration and reconciliation remain separate future operator work.
+  are not persisted by Sporades. Current adapters support Mailjet and SMTP2GO;
+  external callback registration and reconciliation remain separate future
+  operator work.
 - Runtime-owned current-user preferences through the `sporades/client`
   `preferences` SDK, backed by Sporades user identity rather than Capsule app
   schema.

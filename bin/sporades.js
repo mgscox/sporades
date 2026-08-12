@@ -4025,41 +4025,51 @@ function isServerEnvReference(value) {
 function sameOriginWebhookPath(value) {
   return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
 }
+function runtimeOwnedHttpPath(value) {
+  return /^\/__sporades\/(?:auth|debug|files|health|uploads)(?:\/|$)/.test(value);
+}
 function validateEmailWebhooksConfig(webhooks) {
   if (webhooks === void 0) return void 0;
   const webhooksData = captureMailConfigData(
     webhooks,
-    ["mailjet"],
+    ["mailjet", "smtp2go"],
     "Invalid email webhook configuration.",
     "Configure only supported providers under `mail.webhooks`."
   );
-  const mailjetInput = webhooksData.get("mailjet");
-  if (mailjetInput === void 0) return {};
-  const mailjet = captureMailConfigData(
-    mailjetInput,
-    ["enabled", "path", "secretEnv"],
-    "Invalid Mailjet webhook configuration.",
-    "Configure `mail.webhooks.mailjet` with optional enabled, path, and secretEnv values."
-  );
-  const enabled = mailjet.get("enabled") ?? true;
-  const path12 = mailjet.get("path") ?? "/__sporades/mail/webhooks/mailjet";
-  const secretEnv = mailjet.get("secretEnv") ?? "MAILJET_WEBHOOK_SECRET";
-  if (typeof enabled !== "boolean") {
-    invalidMailConfig("Invalid Mailjet webhook enabled flag.", "Set `mail.webhooks.mailjet.enabled` to true or false.");
-  }
-  if (!sameOriginWebhookPath(path12)) {
-    invalidMailConfig(
-      "Invalid Mailjet webhook path.",
-      "Set `mail.webhooks.mailjet.path` to a same-origin absolute path without a query or fragment."
+  const result = {};
+  for (const [provider, defaultPath, defaultSecretEnv] of [
+    ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
+    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"]
+  ]) {
+    const input = webhooksData.get(provider);
+    if (input === void 0) continue;
+    const data = captureMailConfigData(
+      input,
+      ["enabled", "path", "secretEnv"],
+      `Invalid ${provider} webhook configuration.`,
+      `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
     );
+    const enabled = data.get("enabled") ?? true;
+    const path12 = data.get("path") ?? defaultPath;
+    const secretEnv = data.get("secretEnv") ?? defaultSecretEnv;
+    if (typeof enabled !== "boolean") {
+      invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
+    }
+    if (!sameOriginWebhookPath(path12) || runtimeOwnedHttpPath(path12)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook path.`,
+        `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
+      );
+    }
+    if (!isServerEnvReference(secretEnv)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook Server env reference.`,
+        `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
+      );
+    }
+    result[provider] = { enabled, path: path12, secretEnv };
   }
-  if (!isServerEnvReference(secretEnv)) {
-    invalidMailConfig(
-      "Invalid Mailjet webhook Server env reference.",
-      "Set `mail.webhooks.mailjet.secretEnv` to an uppercase Server env key without the reserved `SPORADES_` prefix."
-    );
-  }
-  return { mailjet: { enabled, path: path12, secretEnv } };
+  return result;
 }
 
 // src/mail-config.ts
@@ -5256,6 +5266,17 @@ var MAILJET_EVENT_KINDS = {
   spam: "complained",
   unsub: "unsubscribed"
 };
+var SMTP2GO_EVENT_KINDS = {
+  processed: "deferred",
+  delivered: "delivered",
+  open: "opened",
+  click: "clicked",
+  bounce: "bounced",
+  spam: "complained",
+  unsubscribe: "unsubscribed",
+  resubscribe: "resubscribed",
+  reject: "blocked"
+};
 function text(value) {
   return typeof value === "string" ? value : value === void 0 || value === null ? "" : String(value);
 }
@@ -5278,6 +5299,12 @@ function verifiedMailjetRequest(ctx, secret) {
   const token = text(ctx.request?.query?.token);
   const basicPassword = mailjetBasicPassword(ctx.request?.headers?.authorization);
   return token.length > 0 && secureEqual(token, secret) || basicPassword.length > 0 && secureEqual(basicPassword, secret);
+}
+function verifiedSmtp2goRequest(ctx, secret) {
+  const authorization = text(ctx.request?.headers?.authorization);
+  const match = authorization.match(/^Bearer ([^\s]+)$/i);
+  const token = match?.[1] ?? "";
+  return token.length > 0 && secureEqual(token, secret);
 }
 function mailjetMessageIdentity(raw) {
   return typeof raw.Message_GUID === "string" && raw.Message_GUID.trim() ? raw.Message_GUID.trim() : typeof raw.mj_message_id === "string" ? raw.mj_message_id.trim() : "";
@@ -5330,6 +5357,57 @@ function parseMailjetEvents(body) {
   }
   return { malformed: false, events, ignored };
 }
+function smtp2goOccurredAt(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value < 1e12 ? value * 1e3 : value).toISOString();
+  }
+  if (typeof value !== "string" || !value.trim()) return "";
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1e3).toISOString() : "";
+  }
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : "";
+}
+function smtp2goCorrelationId(raw) {
+  const key = Object.keys(raw).find((name) => name.toLowerCase() === "x-sporades-correlation-id");
+  return key ? text(raw[key]).trim() : "";
+}
+function normalizeSmtp2goEvent(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw;
+  if (typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = SMTP2GO_EVENT_KINDS[providerKind];
+  if (!kind) return null;
+  const providerEventId = typeof data.id === "string" ? data.id.trim() : "";
+  const occurredAt = smtp2goOccurredAt(data.time);
+  if (!providerEventId || !occurredAt) return false;
+  const correlationId = smtp2goCorrelationId(data);
+  return {
+    provider: "smtp2go",
+    kind,
+    providerEventId,
+    occurredAt,
+    ...correlationId ? { correlationId } : {},
+    ...text(data.rcpt).trim() ? { recipient: text(data.rcpt).trim().toLowerCase() } : {},
+    raw: data
+  };
+}
+function parseSmtp2goEvents(body) {
+  let value = body;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { malformed: true, events: [], ignored: 0 };
+    }
+  }
+  const event = normalizeSmtp2goEvent(value);
+  if (event === false) return { malformed: true, events: [], ignored: 0 };
+  if (event === null) return { malformed: false, events: [], ignored: 1 };
+  return { malformed: false, events: [event], ignored: 0 };
+}
 async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
   if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
   for (const event of events) {
@@ -5340,30 +5418,50 @@ async function dispatchVerifiedEmailEvents(ctx, events, subscription) {
     }, (privilegedContext) => subscription.handler(privilegedContext, event));
   }
 }
-function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
-  const mailjet = mailConfig?.webhooks?.mailjet;
-  if (!mailjet?.enabled) return [];
-  return [{
-    name: "__sporades_mailjet_email_events",
+function createProviderEmailEventEndpoint(name, config, serverEnv, subscription, verify2, parse) {
+  return {
+    name,
     runtimeOwnedEmailEvent: true,
     method: "POST",
-    path: mailjet.path,
+    path: config.path,
     async handler(ctx) {
-      const secret = serverEnv[mailjet.secretEnv];
+      const secret = serverEnv[config.secretEnv];
       if (typeof secret !== "string" || secret.length === 0) {
         return { status: 503, body: { ok: false, accepted: 0, ignored: 0 } };
       }
-      if (!verifiedMailjetRequest(ctx, secret)) {
+      if (!verify2(ctx, secret)) {
         return { status: 401, body: { ok: false, accepted: 0, ignored: 0 } };
       }
-      const parsed = parseMailjetEvents(ctx.request?.body);
+      const parsed = parse(ctx.request?.body);
       if (parsed.malformed) {
         return { status: 400, body: { ok: false, accepted: 0, ignored: 0 } };
       }
       await dispatchVerifiedEmailEvents(ctx, parsed.events, subscription);
       return { status: 200, body: { ok: true, accepted: parsed.events.length, ignored: parsed.ignored } };
     }
-  }];
+  };
+}
+function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
+  const mailjet = mailConfig?.webhooks?.mailjet;
+  const endpoints = [];
+  if (mailjet?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_mailjet_email_events",
+    mailjet,
+    serverEnv,
+    subscription,
+    verifiedMailjetRequest,
+    parseMailjetEvents
+  ));
+  const smtp2go = mailConfig?.webhooks?.smtp2go;
+  if (smtp2go?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_smtp2go_email_events",
+    smtp2go,
+    serverEnv,
+    subscription,
+    verifiedSmtp2goRequest,
+    parseSmtp2goEvents
+  ));
+  return endpoints;
 }
 
 // src/runtime-errors.ts
@@ -13019,11 +13117,17 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   });
   const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const providerEndpoint of emailEventEndpoints) {
-    if (capsuleEndpoints.some((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path)) {
+  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+    const conflictsWithCapsule = capsuleEndpoints.some(
+      (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
+    );
+    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+      (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
+    );
+    if (conflictsWithCapsule || conflictsWithProvider) {
       const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
       error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Choose a different Capsule endpoint path or change the provider webhook path in sporades.json.";
+      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
       throw error;
     }
   }

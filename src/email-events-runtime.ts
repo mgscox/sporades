@@ -12,6 +12,18 @@ const MAILJET_EVENT_KINDS: Record<string, string> = {
   unsub: "unsubscribed",
 };
 
+const SMTP2GO_EVENT_KINDS: Record<string, string> = {
+  processed: "deferred",
+  delivered: "delivered",
+  open: "opened",
+  click: "clicked",
+  bounce: "bounced",
+  spam: "complained",
+  unsubscribe: "unsubscribed",
+  resubscribe: "resubscribed",
+  reject: "blocked",
+};
+
 function text(value: unknown) {
   return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value);
 }
@@ -38,6 +50,13 @@ function verifiedMailjetRequest(ctx: LooseRecord, secret: string) {
   const basicPassword = mailjetBasicPassword(ctx.request?.headers?.authorization);
   return (token.length > 0 && secureEqual(token, secret))
     || (basicPassword.length > 0 && secureEqual(basicPassword, secret));
+}
+
+function verifiedSmtp2goRequest(ctx: LooseRecord, secret: string) {
+  const authorization = text(ctx.request?.headers?.authorization);
+  const match = authorization.match(/^Bearer ([^\s]+)$/i);
+  const token = match?.[1] ?? "";
+  return token.length > 0 && secureEqual(token, secret);
 }
 
 function mailjetMessageIdentity(raw: LooseRecord) {
@@ -93,6 +112,57 @@ function parseMailjetEvents(body: unknown) {
   return { malformed: false, events, ignored };
 }
 
+function smtp2goOccurredAt(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value < 1_000_000_000_000 ? value * 1000 : value).toISOString();
+  }
+  if (typeof value !== "string" || !value.trim()) return "";
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : "";
+  }
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : "";
+}
+
+function smtp2goCorrelationId(raw: LooseRecord) {
+  const key = Object.keys(raw).find((name) => name.toLowerCase() === "x-sporades-correlation-id");
+  return key ? text(raw[key]).trim() : "";
+}
+
+function normalizeSmtp2goEvent(raw: unknown) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const data = raw as LooseRecord;
+  if (typeof data.event !== "string" || !data.event.trim()) return false;
+  const providerKind = data.event.trim().toLowerCase();
+  const kind = SMTP2GO_EVENT_KINDS[providerKind];
+  if (!kind) return null;
+  const providerEventId = typeof data.id === "string" ? data.id.trim() : "";
+  const occurredAt = smtp2goOccurredAt(data.time);
+  if (!providerEventId || !occurredAt) return false;
+  const correlationId = smtp2goCorrelationId(data);
+  return {
+    provider: "smtp2go",
+    kind,
+    providerEventId,
+    occurredAt,
+    ...(correlationId ? { correlationId } : {}),
+    ...(text(data.rcpt).trim() ? { recipient: text(data.rcpt).trim().toLowerCase() } : {}),
+    raw: data,
+  };
+}
+
+function parseSmtp2goEvents(body: unknown) {
+  let value = body;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return { malformed: true, events: [], ignored: 0 }; }
+  }
+  const event = normalizeSmtp2goEvent(value);
+  if (event === false) return { malformed: true, events: [], ignored: 0 };
+  if (event === null) return { malformed: false, events: [], ignored: 1 };
+  return { malformed: false, events: [event], ignored: 0 };
+}
+
 /** Send provider-normalized events through the Capsule's single email-event seam. */
 export async function dispatchVerifiedEmailEvents(ctx: LooseRecord, events: LooseRecord[], subscription?: LooseRecord) {
   if (subscription?.kind !== "emailEvent" || typeof subscription.handler !== "function") return;
@@ -105,28 +175,56 @@ export async function dispatchVerifiedEmailEvents(ctx: LooseRecord, events: Loos
   }
 }
 
-export function createEmailEventEndpoints(mailConfig: LooseRecord | undefined, serverEnv: LooseRecord, subscription: LooseRecord | undefined) {
-  const mailjet = mailConfig?.webhooks?.mailjet;
-  if (!mailjet?.enabled) return [];
-  return [{
-    name: "__sporades_mailjet_email_events",
+function createProviderEmailEventEndpoint(
+  name: string,
+  config: LooseRecord,
+  serverEnv: LooseRecord,
+  subscription: LooseRecord | undefined,
+  verify: (ctx: LooseRecord, secret: string) => boolean,
+  parse: (body: unknown) => { malformed: boolean; events: LooseRecord[]; ignored: number },
+) {
+  return {
+    name,
     runtimeOwnedEmailEvent: true,
     method: "POST",
-    path: mailjet.path,
+    path: config.path,
     async handler(ctx: LooseRecord) {
-      const secret = serverEnv[mailjet.secretEnv];
+      const secret = serverEnv[config.secretEnv];
       if (typeof secret !== "string" || secret.length === 0) {
         return { status: 503, body: { ok: false, accepted: 0, ignored: 0 } };
       }
-      if (!verifiedMailjetRequest(ctx, secret)) {
+      if (!verify(ctx, secret)) {
         return { status: 401, body: { ok: false, accepted: 0, ignored: 0 } };
       }
-      const parsed = parseMailjetEvents(ctx.request?.body);
+      const parsed = parse(ctx.request?.body);
       if (parsed.malformed) {
         return { status: 400, body: { ok: false, accepted: 0, ignored: 0 } };
       }
       await dispatchVerifiedEmailEvents(ctx, parsed.events, subscription);
       return { status: 200, body: { ok: true, accepted: parsed.events.length, ignored: parsed.ignored } };
     },
-  }];
+  };
+}
+
+export function createEmailEventEndpoints(mailConfig: LooseRecord | undefined, serverEnv: LooseRecord, subscription: LooseRecord | undefined) {
+  const mailjet = mailConfig?.webhooks?.mailjet;
+  const endpoints = [];
+  if (mailjet?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_mailjet_email_events",
+    mailjet,
+    serverEnv,
+    subscription,
+    verifiedMailjetRequest,
+    parseMailjetEvents,
+  ));
+  const smtp2go = mailConfig?.webhooks?.smtp2go;
+  if (smtp2go?.enabled) endpoints.push(createProviderEmailEventEndpoint(
+    "__sporades_smtp2go_email_events",
+    smtp2go,
+    serverEnv,
+    subscription,
+    verifiedSmtp2goRequest,
+    parseSmtp2goEvents,
+  ));
+  return endpoints;
 }

@@ -13,39 +13,50 @@ function sameOriginWebhookPath(value: unknown) {
     && !value.split("/").includes("..");
 }
 
+function runtimeOwnedHttpPath(value: string) {
+  return /^\/__sporades\/(?:auth|debug|files|health|uploads)(?:\/|$)/.test(value);
+}
+
 export function validateEmailWebhooksConfig(webhooks: LooseRecord | undefined) {
   if (webhooks === undefined) return undefined;
   const webhooksData = captureMailConfigData(
     webhooks,
-    ["mailjet"],
+    ["mailjet", "smtp2go"],
     "Invalid email webhook configuration.",
     "Configure only supported providers under `mail.webhooks`.",
   );
-  const mailjetInput = webhooksData.get("mailjet");
-  if (mailjetInput === undefined) return {};
-  const mailjet = captureMailConfigData(
-    mailjetInput,
-    ["enabled", "path", "secretEnv"],
-    "Invalid Mailjet webhook configuration.",
-    "Configure `mail.webhooks.mailjet` with optional enabled, path, and secretEnv values.",
-  );
-  const enabled = mailjet.get("enabled") ?? true;
-  const path = mailjet.get("path") ?? "/__sporades/mail/webhooks/mailjet";
-  const secretEnv = mailjet.get("secretEnv") ?? "MAILJET_WEBHOOK_SECRET";
-  if (typeof enabled !== "boolean") {
-    invalidMailConfig("Invalid Mailjet webhook enabled flag.", "Set `mail.webhooks.mailjet.enabled` to true or false.");
-  }
-  if (!sameOriginWebhookPath(path)) {
-    invalidMailConfig(
-      "Invalid Mailjet webhook path.",
-      "Set `mail.webhooks.mailjet.path` to a same-origin absolute path without a query or fragment.",
+  const result: LooseRecord = {};
+  for (const [provider, defaultPath, defaultSecretEnv] of [
+    ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
+    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
+  ]) {
+    const input = webhooksData.get(provider);
+    if (input === undefined) continue;
+    const data = captureMailConfigData(
+      input,
+      ["enabled", "path", "secretEnv"],
+      `Invalid ${provider} webhook configuration.`,
+      `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`,
     );
+    const enabled = data.get("enabled") ?? true;
+    const path = data.get("path") ?? defaultPath;
+    const secretEnv = data.get("secretEnv") ?? defaultSecretEnv;
+    if (typeof enabled !== "boolean") {
+      invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
+    }
+    if (!sameOriginWebhookPath(path) || runtimeOwnedHttpPath(path)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook path.`,
+        `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`,
+      );
+    }
+    if (!isServerEnvReference(secretEnv)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook Server env reference.`,
+        `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`,
+      );
+    }
+    result[provider] = { enabled, path, secretEnv };
   }
-  if (!isServerEnvReference(secretEnv)) {
-    invalidMailConfig(
-      "Invalid Mailjet webhook Server env reference.",
-      "Set `mail.webhooks.mailjet.secretEnv` to an uppercase Server env key without the reserved `SPORADES_` prefix.",
-    );
-  }
-  return { mailjet: { enabled, path, secretEnv } };
+  return result;
 }

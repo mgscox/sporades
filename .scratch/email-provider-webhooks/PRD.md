@@ -27,6 +27,8 @@ shape.
 ## Delivery sequence
 
 The numbered issues under `issues/` are tracer bullets. Mailjet proves the
-dispatcher and public contract first; later tickets add registration, status
-derivation, additional provider adapters, and operational documentation without
-introducing provider-specific Capsule interfaces.
+dispatcher and public contract first; SMTP2GO then proves the same dispatcher
+against a provider with first-class Authorization-header configuration. Later
+tickets add registration, status derivation, further provider adapters, and
+operational documentation without introducing provider-specific Capsule
+interfaces.

@@ -428,11 +428,17 @@ export async function openDevDatabase(
     ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
     : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const providerEndpoint of emailEventEndpoints) {
-    if (capsuleEndpoints.some((endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path)) {
+  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+    const conflictsWithCapsule = capsuleEndpoints.some(
+      (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
+    );
+    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+      (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
+    );
+    if (conflictsWithCapsule || conflictsWithProvider) {
       const error: any = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
       error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Choose a different Capsule endpoint path or change the provider webhook path in sporades.json.";
+      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
       throw error;
     }
   }

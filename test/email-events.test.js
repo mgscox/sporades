@@ -64,6 +64,85 @@ const mailjetDocumentedLifecycleFixtures = [
   },
 ];
 
+// Shape and value types come from SMTP2GO's live Test this webhook JSON output;
+// values are provider-synthetic or replaced while retaining their original types.
+const smtp2goCommon = {
+  "Message-Id": "<send-42@example.com>",
+  Subject: "Mail test - please ignore",
+  "X-Sporades-Correlation-Id": "delivery-correlation-2",
+  auth: "smtp-user",
+  email_id: "email-7ca7f608",
+  from: "mail@example.com",
+  from_address: "mail@example.com",
+  from_name: "",
+  "message-id": "<send-42@example.com>",
+  sender: "mail@example.com",
+  sendtime: "2015-08-04T22:39:34Z",
+  subject: "Mail test - please ignore",
+  time: "2019-07-03T22:46:33Z",
+};
+
+const smtp2goDelivered = {
+  ...smtp2goCommon,
+  context: "RCPT TO:<client@example.com>",
+  event: "delivered",
+  host: "mail.example.com [203.0.113.22]",
+  id: "76f25fdc693aa43863f9409ab5f0e703",
+  message: "250 OK",
+  rcpt: "Client@Example.com",
+};
+
+const smtp2goDocumentedLifecycleFixtures = [
+  {
+    ...smtp2goCommon, event: "processed", id: "5f1a307f74e3e3f61551a30a377ac908",
+    recipients: ["client@example.com", "other@example.com"], srchost: "203.0.113.22",
+  },
+  smtp2goDelivered,
+  {
+    ...smtp2goCommon, event: "open", id: "38b4c516440ec91673b7ecde3ba16b19",
+    context: "Unavailable", message: "Unavailable", rcpt: "client@example.com",
+    "opened-at": "2019-07-03T22:46:33Z", "user-agent": "Mail client", "read-secs": "60",
+    client: "Thunderbird 2.0", "client-device": "Other", "client-os": "Linux",
+    "geoip-continent": "OC", "geoip-country": "NZ", "geoip-city": "Auckland",
+    srchost: "192.0.2.10",
+  },
+  {
+    ...smtp2goCommon, event: "click", id: "ba3b0cd48f8b69c6f2510536e05e030b",
+    context: "Unavailable", message: "Unavailable", rcpt: "client@example.com",
+    "clicked-at": "2019-07-03T22:46:33Z", url: "https://example.com/report",
+    "user-agent": "Mail client", client: "Thunderbird 2.0", "client-device": "Other",
+    "client-os": "Linux", "geoip-continent": "OC", "geoip-country": "NZ",
+    "geoip-city": "Auckland", srchost: "192.0.2.10",
+  },
+  {
+    ...smtp2goCommon, event: "bounce", id: "fa3fe1c3f316014def2d7bd32779fccd",
+    context: "RCPT TO:<client@example.com>", rcpt: "client@example.com",
+    bounce: "hard", host: "mx.example.com", message: "550 user unknown",
+  },
+  {
+    ...smtp2goCommon, event: "bounce", id: "smtp2go-event-soft-bounce",
+    context: "RCPT TO:<client@example.com>", rcpt: "client@example.com",
+    bounce: "soft", host: "mx.example.com", message: "451 try again later",
+  },
+  {
+    ...smtp2goCommon, event: "spam", id: "90500515721201307fc68b1358a383d7",
+    context: "feedback", message: "", rcpt: "client@example.com",
+  },
+  {
+    ...smtp2goCommon, event: "unsubscribe", id: "dd808e3290be2bf8caa13f0ebc2b4e37",
+    context: "feedback", message: "mail@example.com", rcpt: "client@example.com",
+  },
+  {
+    ...smtp2goCommon, event: "resubscribe", id: "smtp2go-event-resubscribe",
+    context: "feedback", message: "mail@example.com", rcpt: "client@example.com",
+  },
+  {
+    ...smtp2goCommon, event: "reject", id: "c003df08125abef6a0550b867749b239",
+    context: "submission", message: "sender not verified", rcpt: "client@example.com",
+    srchost: "192.0.2.10",
+  },
+];
+
 const anonymous = {
   userId: "email-event-reader",
   displayName: "Email event reader",
@@ -74,7 +153,10 @@ const anonymous = {
   provider: "test",
 };
 
-async function withEmailEventDatabase(config, capsule, run, serverEnv = { MAILJET_WEBHOOK_SECRET: "mailjet-webhook-secret" }) {
+async function withEmailEventDatabase(config, capsule, run, serverEnv = {
+  MAILJET_WEBHOOK_SECRET: "mailjet-webhook-secret",
+  SMTP2GO_WEBHOOK_SECRET: "smtp2go-webhook-secret",
+}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-email-events-"));
   const database = await openDevDatabase(
     path.join(dir, "data.db"),
@@ -134,6 +216,119 @@ async function postMailjet(database, body, { token = "mailjet-webhook-secret", a
   if (handled) await response.finished;
   return { handled, response };
 }
+
+const smtp2goConfig = {
+  mail: {
+    webhooks: {
+      smtp2go: { path: "/smtp2go-webhook", secretEnv: "SMTP2GO_WEBHOOK_SECRET" },
+    },
+  },
+};
+
+async function postSmtp2go(database, body, authorization = "Bearer smtp2go-webhook-secret") {
+  const request = Object.assign(Readable.from([JSON.stringify(body)]), {
+    method: "POST",
+    url: "/smtp2go-webhook",
+    headers: { "content-type": "application/json", authorization },
+  });
+  const response = responseCapture();
+  const handled = await routeEndpoint(database, request, response);
+  if (handled) await response.finished;
+  return { handled, response };
+}
+
+test("SMTP2GO callbacks reach the same provider-neutral subscription only when configured and verified", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+
+  await withEmailEventDatabase({}, capsule, async (database) => {
+    assert.equal((await postSmtp2go(database, smtp2goDelivered)).handled, false);
+  });
+
+  await withEmailEventDatabase(smtp2goConfig, capsule, async (database) => {
+    assert.equal((await postSmtp2go(database, smtp2goDelivered, "Bearer wrong")).response.status, 401);
+    assert.equal(seen.length, 0);
+    const result = await postSmtp2go(database, smtp2goDelivered);
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(seen, [{
+      provider: "smtp2go",
+      kind: "delivered",
+      providerEventId: "76f25fdc693aa43863f9409ab5f0e703",
+      occurredAt: "2019-07-03T22:46:33.000Z",
+      correlationId: "delivery-correlation-2",
+      recipient: "client@example.com",
+      raw: smtp2goDelivered,
+    }]);
+  });
+});
+
+test("SMTP2GO documented email lifecycle names normalize without changing raw event objects", async () => {
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  await withEmailEventDatabase(smtp2goConfig, capsule, async (database) => {
+    for (const fixture of smtp2goDocumentedLifecycleFixtures) {
+      assert.equal((await postSmtp2go(database, fixture)).response.status, 200);
+    }
+    assert.deepEqual(
+      seen.map(({ kind }) => kind),
+      ["deferred", "delivered", "opened", "clicked", "bounced", "bounced", "complained", "unsubscribed", "resubscribed", "blocked"],
+    );
+    assert.deepEqual(seen.map(({ raw }) => raw), smtp2goDocumentedLifecycleFixtures);
+  });
+});
+
+test("SMTP2GO accepts omitted optional fields and exposes a stable identity on duplicate delivery", async () => {
+  const minimal = { event: "delivered", time: 1786529730, id: "smtp2go-event-minimal" };
+  const seen = [];
+  const capsule = { emailEvents: emailEvent((_ctx, event) => { seen.push(event); }) };
+  await withEmailEventDatabase(smtp2goConfig, capsule, async (database) => {
+    assert.equal((await postSmtp2go(database, minimal)).response.status, 200);
+    assert.equal((await postSmtp2go(database, minimal)).response.status, 200);
+  });
+  assert.deepEqual(seen, [
+    {
+      provider: "smtp2go",
+      kind: "delivered",
+      providerEventId: "smtp2go-event-minimal",
+      occurredAt: "2026-08-12T10:15:30.000Z",
+      raw: minimal,
+    },
+    {
+      provider: "smtp2go",
+      kind: "delivered",
+      providerEventId: "smtp2go-event-minimal",
+      occurredAt: "2026-08-12T10:15:30.000Z",
+      raw: minimal,
+    },
+  ]);
+});
+
+test("SMTP2GO acknowledgement and failure semantics remain independent of a Capsule subscription", async () => {
+  await withEmailEventDatabase(smtp2goConfig, {}, async (database) => {
+    const accepted = await postSmtp2go(database, smtp2goDelivered);
+    assert.equal(accepted.response.status, 200);
+    assert.deepEqual(JSON.parse(accepted.response.body), { ok: true, accepted: 1, ignored: 0 });
+    assert.equal((await postSmtp2go(database, smtp2goDelivered, "")).response.status, 401);
+    for (const malformed of [[], [smtp2goDelivered], {}, { ...smtp2goDelivered, id: "" }, { ...smtp2goDelivered, time: "never" }]) {
+      assert.equal((await postSmtp2go(database, malformed)).response.status, 400);
+    }
+    const unknown = await postSmtp2go(database, { ...smtp2goDelivered, event: "future-event" });
+    assert.equal(unknown.response.status, 200);
+    assert.deepEqual(JSON.parse(unknown.response.body), { ok: true, accepted: 0, ignored: 1 });
+  });
+
+  await withEmailEventDatabase(smtp2goConfig, {}, async (database) => {
+    assert.equal((await postSmtp2go(database, smtp2goDelivered)).response.status, 503);
+  }, {});
+
+  await withEmailEventDatabase(
+    smtp2goConfig,
+    { emailEvents: emailEvent(() => { throw new Error("application failed"); }) },
+    async (database) => {
+      assert.equal((await postSmtp2go(database, smtp2goDelivered)).response.status, 500);
+    },
+  );
+});
 
 test("Mailjet callbacks reach the provider-neutral Capsule email-event subscription only when configured", async () => {
   const seen = [];
@@ -229,6 +424,15 @@ test("runtime-owned Mailjet routes never mint Anonymous users or sessions", asyn
     assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_sessions]").get().count, 0);
     assert.deepEqual(middlewareAuth, [], "unverified provider requests must not reach Capsule middleware");
     delete globalThis.__emailEventMiddlewareAuth;
+  });
+});
+
+test("runtime-owned SMTP2GO routes never mint Anonymous users or sessions", async () => {
+  await withEmailEventDatabase(smtp2goConfig, { emailEvents: emailEvent(() => {}) }, async (database) => {
+    assert.equal((await postSmtp2go(database, smtp2goDelivered, "Bearer wrong")).response.status, 401);
+    assert.equal((await postSmtp2go(database, smtp2goDelivered)).response.status, 200);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_users]").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT COUNT(*) AS count FROM [sporades_auth_sessions]").get().count, 0);
   });
 });
 
@@ -329,6 +533,40 @@ test("Mailjet webhook configuration rejects unsafe paths and Server env referenc
   }
 });
 
+test("SMTP2GO webhook configuration rejects unsafe paths and Server env references", async () => {
+  for (const smtp2go of [
+    { path: "https://capsule.example/smtp2go", secretEnv: "SMTP2GO_WEBHOOK_SECRET" },
+    { path: "/smtp2go?token=checked-in", secretEnv: "SMTP2GO_WEBHOOK_SECRET" },
+    { path: "/smtp2go", secretEnv: "not-an-env-name" },
+  ]) {
+    await assert.rejects(
+      withEmailEventDatabase({ mail: { webhooks: { smtp2go } } }, {}, async () => {}),
+      (error) => error.code === "INVALID_MAIL_CONFIG",
+    );
+  }
+});
+
+test("email-provider routes cannot overlap Sporades runtime-owned HTTP namespaces", async () => {
+  const capsule = { emailEvents: emailEvent(() => {}) };
+  for (const path of [
+    "/__sporades/auth/google/callback",
+    "/__sporades/uploads/upload-id",
+    "/__sporades/files/private/file-id",
+    "/__sporades/health/runtime",
+    "/__sporades/debug/auth/clients",
+  ]) {
+    await assert.rejects(
+      withEmailEventDatabase(
+        { mail: { webhooks: { mailjet: { path, secretEnv: "MAILJET_WEBHOOK_SECRET" } } } },
+        capsule,
+        async () => {},
+      ),
+      (error) => error.code === "INVALID_MAIL_CONFIG",
+      path,
+    );
+  }
+});
+
 test("a Capsule endpoint cannot shadow its configured provider-facing email-event route", async () => {
   const capsule = {
     emailEvents: emailEvent(() => {}),
@@ -338,6 +576,21 @@ test("a Capsule endpoint cannot shadow its configured provider-facing email-even
   };
   await assert.rejects(
     withEmailEventDatabase(mailjetConfig, capsule, async () => {}),
+    (error) => error.code === "EMAIL_EVENT_ROUTE_CONFLICT",
+  );
+});
+
+test("two enabled email providers cannot claim the same provider-facing route", async () => {
+  const config = {
+    mail: {
+      webhooks: {
+        mailjet: { path: "/email-events", secretEnv: "MAILJET_WEBHOOK_SECRET" },
+        smtp2go: { path: "/email-events", secretEnv: "SMTP2GO_WEBHOOK_SECRET" },
+      },
+    },
+  };
+  await assert.rejects(
+    withEmailEventDatabase(config, { emailEvents: emailEvent(() => {}) }, async () => {}),
     (error) => error.code === "EMAIL_EVENT_ROUTE_CONFLICT",
   );
 });

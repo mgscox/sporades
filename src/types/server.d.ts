@@ -486,6 +486,7 @@ export type EmailEventKind =
   | "blocked"
   | "complained"
   | "unsubscribed"
+  | "resubscribed"
   | "deferred";
 
 /** One verified provider callback event. Raw provider JSON is never persisted by Sporades. */
