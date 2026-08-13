@@ -255,6 +255,40 @@ test("a signed-in user must verify their current password before changing it", a
   });
 });
 
+test("current-password verification throttles repeated failed changes", async () => {
+  await withTempDir(async (dir) => {
+    const { child, url } = await startResetCapsule(dir);
+    let socket;
+    try {
+      socket = await openSocket(url);
+      await signUp(socket, "owner-signup", "owner@example.com", "owner-password-1");
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const rejected = await sendAndWait(socket, {
+          id: `wrong-current-password-${attempt}`,
+          type: "auth.setPassword",
+          email: "owner@example.com",
+          currentPassword: "not-the-owner-password",
+          newPassword: "owner-password-2",
+        });
+        assert.equal(rejected.error.code, "INVALID_CURRENT_PASSWORD");
+      }
+
+      const throttled = await sendAndWait(socket, {
+        id: "throttled-current-password",
+        type: "auth.setPassword",
+        email: "owner@example.com",
+        currentPassword: "owner-password-1",
+        newPassword: "owner-password-2",
+      });
+      assert.equal(throttled.error.code, "INVALID_CURRENT_PASSWORD");
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-password-reset-transport-"));
   try {

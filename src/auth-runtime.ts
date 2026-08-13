@@ -2255,9 +2255,15 @@ export async function setOwnEmailPassword(database: LooseRecord, session: LooseR
   if (!credential || credential.userId !== auth.userId) {
     return { ok: false, error: emailNotOwnedError() };
   }
-  if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session);
+  if (throttle.throttled) {
     return { ok: false, error: invalidCurrentPasswordError() };
   }
+  if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
+    recordFailedEmailSignInAttempt(database, cleanEmail, session);
+    return { ok: false, error: invalidCurrentPasswordError() };
+  }
+  resetEmailSignInAttempts(database, cleanEmail, session);
   return await setEmailPassword(database, session, cleanEmail, newPassword);
 }
 
