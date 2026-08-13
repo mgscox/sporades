@@ -27,6 +27,7 @@ async function startResetCapsule(dir) {
   );
   const child = startCli(["dev", "--json"], { cwd: projectDir });
   const started = await waitForJsonLine(child);
+  assert.equal(started.ok, true, JSON.stringify(started.error));
   return { child, url: started.data.url };
 }
 
@@ -200,6 +201,7 @@ test("a signed-in user can still set their own password", async () => {
         id: "own-password",
         type: "auth.setPassword",
         email: "owner@example.com",
+        currentPassword: "owner-password-1",
         newPassword: "owner-password-2",
       });
 
@@ -209,6 +211,82 @@ test("a signed-in user can still set their own password", async () => {
         await canSignIn(socket, "owner-signin", "owner@example.com", "owner-password-2"),
         true,
         "the owner's new password must work",
+      );
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("a signed-in user must verify their current password before changing it", async () => {
+  await withTempDir(async (dir) => {
+    const { child, url } = await startResetCapsule(dir);
+    let socket;
+    try {
+      socket = await openSocket(url);
+      await signUp(socket, "owner-signup", "owner@example.com", "owner-password-1");
+
+      const attempt = await sendAndWait(socket, {
+        id: "wrong-current-password",
+        type: "auth.setPassword",
+        email: "owner@example.com",
+        currentPassword: "not-the-owner-password",
+        newPassword: "owner-password-2",
+      });
+
+      assert.notEqual(attempt.error, null, "an incorrect current password must reject the change");
+      assert.equal(attempt.error.code, "INVALID_CURRENT_PASSWORD");
+      await sendAndWait(socket, { id: "owner-signout", type: "auth.signOut" });
+      assert.equal(
+        await canSignIn(socket, "old-password-still-works", "owner@example.com", "owner-password-1"),
+        true,
+        "a rejected change must leave the existing password intact",
+      );
+      assert.equal(
+        await canSignIn(socket, "new-password-never-set", "owner@example.com", "owner-password-2"),
+        false,
+        "a rejected change must not set the requested password",
+      );
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("current-password verification throttles repeated failed changes", async () => {
+  await withTempDir(async (dir) => {
+    const { child, url } = await startResetCapsule(dir);
+    let socket;
+    try {
+      socket = await openSocket(url);
+      await signUp(socket, "owner-signup", "owner@example.com", "owner-password-1");
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const rejected = await sendAndWait(socket, {
+          id: `wrong-current-password-${attempt}`,
+          type: "auth.setPassword",
+          email: "owner@example.com",
+          currentPassword: "not-the-owner-password",
+          newPassword: "owner-password-2",
+        });
+        assert.equal(rejected.error.code, "INVALID_CURRENT_PASSWORD");
+      }
+
+      const throttled = await sendAndWait(socket, {
+        id: "throttled-current-password",
+        type: "auth.setPassword",
+        email: "owner@example.com",
+        currentPassword: "owner-password-1",
+        newPassword: "owner-password-2",
+      });
+      assert.equal(throttled.error.code, "INVALID_CURRENT_PASSWORD");
+      await sendAndWait(socket, { id: "owner-signout", type: "auth.signOut" });
+      assert.equal(
+        await canSignIn(socket, "sign-in-remains-available", "owner@example.com", "owner-password-1"),
+        true,
+        "password-change failures must not lock the account out of sign-in",
       );
     } finally {
       socket?.close();

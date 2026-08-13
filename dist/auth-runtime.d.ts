@@ -7,6 +7,7 @@ export declare const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 export declare const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS: number;
 export declare const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export declare const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+export declare const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 export declare const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 export declare const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
 export declare const PASSWORD_RESET_DEFAULT_TTL_MS: number;
@@ -135,7 +136,7 @@ export declare function mailNotConfiguredError(): {
     message: string;
     hint: string;
 };
-export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, newPassword: string): Promise<{
+export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, currentPassword: string, newPassword: string): Promise<{
     ok: boolean;
     error: {
         message: string;

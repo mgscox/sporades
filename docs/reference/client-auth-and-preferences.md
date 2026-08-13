@@ -458,18 +458,24 @@ Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
 ### Reset or Change an Email Password
 
-The runtime exposes `auth.setPassword(email, newPassword)` on the client SDK
+The runtime exposes `auth.setPassword(email, currentPassword, newPassword)` on the client SDK
 and `ctx.serverAuth.setEmailPassword(email, newPassword)` on the server context.
-Both update an existing email credential's password with server-side scrypt
-hashing and a fresh random salt. The runtime never exposes the password hash,
-salt, or internal credential table to Capsule code.
+The client call requires the signed-in user to prove knowledge of their current
+password; the server API is trusted for reset and administrative flows. Both
+update an existing email credential's password with server-side scrypt hashing
+and a fresh random salt. The runtime never exposes the password hash, salt, or
+internal credential table to Capsule code.
 
 From the client (e.g. a settings page where the user is already signed in):
 
 ```tsx
 import { auth } from "sporades/client";
 
-const result = await auth.setPassword("mira@example.com", "new-secure-password");
+const result = await auth.setPassword(
+  "mira@example.com",
+  "current-secure-password",
+  "new-secure-password",
+);
 if (result.error) {
   // show result.error.message
 }

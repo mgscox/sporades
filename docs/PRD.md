@@ -444,7 +444,7 @@ Supported provider behavior:
 | Provider | Config | Behavior |
 | --- | --- | --- |
 | Anonymous | `auth.providers.anonymous`, legacy `auth.mode`, or unset | Creates a persistent anonymous Sporades session. |
-| Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. `auth.setPassword(email, newPassword)` and `ctx.serverAuth.setEmailPassword(email, newPassword)` update an existing email credential's password with server-side scrypt hashing. |
+| Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. Browser password changes call `auth.setPassword(email, currentPassword, newPassword)` and require the signed-in owner to verify the current password. Trusted server code can use `ctx.serverAuth.setEmailPassword(email, newPassword)` for reset and administrative flows. Both update an existing email credential with server-side scrypt hashing. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
 | Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | HTTPS-domain-only server-owned `form_post` flow; runtime ES256 client credential and strictly verified Apple subject link the current Anonymous account. |
 | Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |

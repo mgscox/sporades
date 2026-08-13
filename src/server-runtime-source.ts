@@ -2565,7 +2565,13 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (message.type === "auth.setPassword") {
-      const result: any = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result: any = await setOwnEmailPassword(
+        database,
+        client.session,
+        message.email ?? "",
+        message.currentPassword ?? "",
+        message.newPassword ?? "",
+      );
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",

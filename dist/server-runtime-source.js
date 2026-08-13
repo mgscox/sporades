@@ -2350,7 +2350,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             return;
         }
         if (message.type === "auth.setPassword") {
-            const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+            const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.currentPassword ?? "", message.newPassword ?? "");
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.ok ? "auth.setPassword.result" : "error",
