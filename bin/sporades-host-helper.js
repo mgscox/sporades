@@ -413,7 +413,7 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.7.1";
+var CLI_VERSION = "0.7.2";
 
 // src/cli/schedule-inspection-envelope.ts
 function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
