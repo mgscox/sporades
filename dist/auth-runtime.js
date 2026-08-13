@@ -1968,11 +1968,12 @@ export function mailNotConfiguredError() {
     };
 }
 // Browser-facing password change. `setEmailPassword` is the trusted server-only
-// API and deliberately accepts any registered email, so the ownership gate lives
-// here rather than there: a browser may only change the credential its own
-// Session owns. Non-existent and someone-else's emails share one opaque denial,
-// so this cannot be used to discover which addresses have accounts.
-export async function setOwnEmailPassword(database, session, email, newPassword) {
+// API and deliberately accepts any registered email, so the ownership and
+// re-authentication gates live here rather than there: a browser may only
+// change the credential its own Session owns after proving knowledge of its
+// current password. Non-existent and someone-else's emails share one opaque
+// denial, so this cannot be used to discover which addresses have accounts.
+export async function setOwnEmailPassword(database, session, email, currentPassword, newPassword) {
     let auth;
     try {
         auth = requireAuth({ ...session, kind: "message" }, { linked: true });
@@ -1985,6 +1986,9 @@ export async function setOwnEmailPassword(database, session, email, newPassword)
     if (!credential || credential.userId !== auth.userId) {
         return { ok: false, error: emailNotOwnedError() };
     }
+    if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
+        return { ok: false, error: invalidCurrentPasswordError() };
+    }
     return await setEmailPassword(database, session, cleanEmail, newPassword);
 }
 function emailNotOwnedError() {
@@ -1992,6 +1996,13 @@ function emailNotOwnedError() {
         code: "AUTH_EMAIL_NOT_OWNED",
         message: "That email address is not this account's email credential.",
         hint: "Change the password for the signed-in account, or use a password reset link.",
+    };
+}
+function invalidCurrentPasswordError() {
+    return {
+        code: "INVALID_CURRENT_PASSWORD",
+        message: "Current password is incorrect.",
+        hint: "Enter the current password for this email credential, or use a password reset link.",
     };
 }
 export async function setEmailPassword(database, _session, email, newPassword) {

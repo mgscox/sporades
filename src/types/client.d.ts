@@ -108,7 +108,8 @@ export type AuthApi = {
   signIn(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown): Promise<SporadesResult>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
-  setPassword(email: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
+  /** Change the signed-in email credential after verifying its current password. */
+  setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
   /**
    * Ask the runtime to mail a password reset link.
    *

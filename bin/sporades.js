@@ -82,8 +82,8 @@ export const auth = {
   signOut() {
     return connect().signOut();
   },
-  setPassword(email, newPassword) {
-    return connect().setPassword(email, newPassword);
+  setPassword(email, currentPassword, newPassword) {
+    return connect().setPassword(email, currentPassword, newPassword);
   },
   sendPasswordResetLink(email) {
     return connect().sendPasswordResetLink(email);
@@ -174,8 +174,8 @@ export function createHooks(primitives) {
       signOut() {
         return connect().signOut();
       },
-      setPassword(email, newPassword) {
-        return connect().setPassword(email, newPassword);
+      setPassword(email, currentPassword, newPassword) {
+        return connect().setPassword(email, currentPassword, newPassword);
       },
     };
   }
@@ -232,7 +232,7 @@ export function createVueComposables(primitives) {
     state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     state.signOut = () => connect().signOut();
-    state.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;
   }
 
@@ -284,7 +284,7 @@ export function createSolidPrimitives(primitives) {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
-      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
+      setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
   }
 
@@ -382,7 +382,7 @@ export function createLitControllers() {
     controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     controller.signOut = () => connect().signOut();
-    controller.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
   }
 
@@ -455,7 +455,7 @@ export function createInfernoAdapters() {
     adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     adapter.signOut = () => connect().signOut();
-    adapter.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;
   }
   return { queryAdapter, mutationAdapter, authAdapter };
@@ -505,7 +505,7 @@ export function createSvelteStores() {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
-      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
+      setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
   }
 
@@ -1010,8 +1010,8 @@ function createConnection() {
         return result;
       });
     },
-    setPassword(email, newPassword) {
-      return request("auth.setPassword", { email, newPassword });
+    setPassword(email, currentPassword, newPassword) {
+      return request("auth.setPassword", { email, currentPassword, newPassword });
     },
     sendPasswordResetLink(email) {
       return request("auth.sendPasswordResetLink", { email });
@@ -8827,7 +8827,7 @@ function mailNotConfiguredError() {
     hint: "Set `mail.smtp` in sporades.json, or use ctx.serverAuth.createEmailPasswordResetLink with your own delivery path."
   };
 }
-async function setOwnEmailPassword(database, session, email, newPassword) {
+async function setOwnEmailPassword(database, session, email, currentPassword, newPassword) {
   let auth;
   try {
     auth = requireAuth({ ...session, kind: "message" }, { linked: true });
@@ -8839,6 +8839,9 @@ async function setOwnEmailPassword(database, session, email, newPassword) {
   if (!credential || credential.userId !== auth.userId) {
     return { ok: false, error: emailNotOwnedError() };
   }
+  if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
+    return { ok: false, error: invalidCurrentPasswordError() };
+  }
   return await setEmailPassword(database, session, cleanEmail, newPassword);
 }
 function emailNotOwnedError() {
@@ -8846,6 +8849,13 @@ function emailNotOwnedError() {
     code: "AUTH_EMAIL_NOT_OWNED",
     message: "That email address is not this account's email credential.",
     hint: "Change the password for the signed-in account, or use a password reset link."
+  };
+}
+function invalidCurrentPasswordError() {
+  return {
+    code: "INVALID_CURRENT_PASSWORD",
+    message: "Current password is incorrect.",
+    hint: "Enter the current password for this email credential, or use a password reset link."
   };
 }
 async function setEmailPassword(database, _session, email, newPassword) {
@@ -15161,7 +15171,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (message.type === "auth.setPassword") {
-      const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result = await setOwnEmailPassword(
+        database,
+        client.session,
+        message.email ?? "",
+        message.currentPassword ?? "",
+        message.newPassword ?? ""
+      );
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",

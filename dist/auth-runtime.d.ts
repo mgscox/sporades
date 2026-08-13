@@ -135,7 +135,7 @@ export declare function mailNotConfiguredError(): {
     message: string;
     hint: string;
 };
-export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, newPassword: string): Promise<{
+export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, currentPassword: string, newPassword: string): Promise<{
     ok: boolean;
     error: {
         message: string;

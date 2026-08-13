@@ -496,12 +496,13 @@ subject; mutable email and username claims are profile data, not identity keys.
 Email credentials are managed by the runtime. The internal
 `sporades_auth_email_credentials` table stores scrypt-hashed passwords with
 per-credential random salts. Capsule code updates passwords through
-`auth.setPassword(email, newPassword)` on the client or
-`ctx.serverAuth.setEmailPassword(email, newPassword)` on the server, both of
-which delegate to the same runtime function. The runtime handles hashing and
-never exposes the credential table, password hash, or salt to app code. This
-enables password reset and change flows in Capsule apps without direct access
-to the internal auth database.
+`auth.setPassword(email, currentPassword, newPassword)` on the client or
+`ctx.serverAuth.setEmailPassword(email, newPassword)` on the server. The
+browser path requires the signed-in credential owner to verify their current
+password, while the trusted server path supports reset flows. The runtime
+handles hashing and never exposes the credential table, password hash, or salt
+to app code. This enables password reset and change flows in Capsule apps
+without direct access to the internal auth database.
 
 Provider secrets live in Server env. `sporades.json` stores env var names and
 provider configuration, not secret values.

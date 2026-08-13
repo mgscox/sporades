@@ -172,10 +172,12 @@ without SMTP can still implement reset through its own delivery path.
 
 `auth.setPassword` is the browser's direct password-change path and is not part
 of the Reset code flow, but it targets the same credential, so it is gated
-here. Two conditions are required, and both are necessary: a linked, non-guest
-Session, and that the named email is that Session's own credential.
-Authentication establishes who is calling; only the ownership check establishes
-which credential they may change.
+here. Three conditions are required, and all are necessary: a linked,
+non-guest Session; that the named email is that Session's own credential; and
+verification of that credential's current password.
+Authentication establishes who is calling; the ownership check establishes
+which credential they may change; and current-password verification confirms
+the caller recently holds that credential's secret.
 
 The gate lives on the browser path rather than inside `setEmailPassword`,
 because that function is also the trusted server-only

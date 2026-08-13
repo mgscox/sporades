@@ -59,8 +59,8 @@ export const auth = {
   signOut() {
     return connect().signOut();
   },
-  setPassword(email, newPassword) {
-    return connect().setPassword(email, newPassword);
+  setPassword(email, currentPassword, newPassword) {
+    return connect().setPassword(email, currentPassword, newPassword);
   },
   sendPasswordResetLink(email) {
     return connect().sendPasswordResetLink(email);
@@ -151,8 +151,8 @@ export function createHooks(primitives) {
       signOut() {
         return connect().signOut();
       },
-      setPassword(email, newPassword) {
-        return connect().setPassword(email, newPassword);
+      setPassword(email, currentPassword, newPassword) {
+        return connect().setPassword(email, currentPassword, newPassword);
       },
     };
   }
@@ -209,7 +209,7 @@ export function createVueComposables(primitives) {
     state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     state.signOut = () => connect().signOut();
-    state.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    state.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return state;
   }
 
@@ -261,7 +261,7 @@ export function createSolidPrimitives(primitives) {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
-      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
+      setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
   }
 
@@ -359,7 +359,7 @@ export function createLitControllers() {
     controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     controller.signOut = () => connect().signOut();
-    controller.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    controller.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return controller;
   }
 
@@ -432,7 +432,7 @@ export function createInfernoAdapters() {
     adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     adapter.signOut = () => connect().signOut();
-    adapter.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
+    adapter.setPassword = (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword);
     return adapter;
   }
   return { queryAdapter, mutationAdapter, authAdapter };
@@ -482,7 +482,7 @@ export function createSvelteStores() {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
-      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
+      setPassword: (email, currentPassword, newPassword) => connect().setPassword(email, currentPassword, newPassword),
     };
   }
 
@@ -987,8 +987,8 @@ function createConnection() {
         return result;
       });
     },
-    setPassword(email, newPassword) {
-      return request("auth.setPassword", { email, newPassword });
+    setPassword(email, currentPassword, newPassword) {
+      return request("auth.setPassword", { email, currentPassword, newPassword });
     },
     sendPasswordResetLink(email) {
       return request("auth.sendPasswordResetLink", { email });
