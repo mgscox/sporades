@@ -129,6 +129,8 @@ export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 
 export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 
+export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
+
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 
 export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
@@ -2255,15 +2257,15 @@ export async function setOwnEmailPassword(database: LooseRecord, session: LooseR
   if (!credential || credential.userId !== auth.userId) {
     return { ok: false, error: emailNotOwnedError() };
   }
-  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session);
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
   if (throttle.throttled) {
     return { ok: false, error: invalidCurrentPasswordError() };
   }
   if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, cleanEmail, session);
+    recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
     return { ok: false, error: invalidCurrentPasswordError() };
   }
-  resetEmailSignInAttempts(database, cleanEmail, session);
+  resetEmailSignInAttempts(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
   return await setEmailPassword(database, session, cleanEmail, newPassword);
 }
 
@@ -2303,8 +2305,8 @@ export async function setEmailPassword(database: LooseRecord, _session: LooseRec
   return { ok: true };
 }
 
-// Sign-in failures and reset requests share this throttle shape but never share a
-// bucket: requesting a reset must not lock the account out of sign-in.
+// Sign-in, password-change, and reset requests share this throttle shape but
+// never share a bucket: one auth action must not lock out another.
 function createEmailSignInThrottleState(database: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const existing = database[scope];
   if (existing instanceof Map) {

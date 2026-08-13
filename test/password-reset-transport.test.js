@@ -282,6 +282,12 @@ test("current-password verification throttles repeated failed changes", async ()
         newPassword: "owner-password-2",
       });
       assert.equal(throttled.error.code, "INVALID_CURRENT_PASSWORD");
+      await sendAndWait(socket, { id: "owner-signout", type: "auth.signOut" });
+      assert.equal(
+        await canSignIn(socket, "sign-in-remains-available", "owner@example.com", "owner-password-1"),
+        true,
+        "password-change failures must not lock the account out of sign-in",
+      );
     } finally {
       socket?.close();
       await stopDevSession(child);

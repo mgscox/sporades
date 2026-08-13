@@ -7053,6 +7053,7 @@ var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+var PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
@@ -8839,15 +8840,15 @@ async function setOwnEmailPassword(database, session, email, currentPassword, ne
   if (!credential || credential.userId !== auth.userId) {
     return { ok: false, error: emailNotOwnedError() };
   }
-  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session);
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
   if (throttle.throttled) {
     return { ok: false, error: invalidCurrentPasswordError() };
   }
   if (typeof currentPassword !== "string" || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)) {
-    recordFailedEmailSignInAttempt(database, cleanEmail, session);
+    recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
     return { ok: false, error: invalidCurrentPasswordError() };
   }
-  resetEmailSignInAttempts(database, cleanEmail, session);
+  resetEmailSignInAttempts(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
   return await setEmailPassword(database, session, cleanEmail, newPassword);
 }
 function emailNotOwnedError() {
