@@ -505,6 +505,10 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
     const ownerSignUp = await signUp(owner, "lifecycle-owner", "lifecycle-owner@example.com", "Lifecycle Owner");
     const firstSignUp = await signUp(firstMember, "lifecycle-first", "lifecycle-first@example.com", "First Member");
     const secondSignUp = await signUp(secondMember, "lifecycle-second", "lifecycle-second@example.com", "Second Member");
+    const firstMemberSingleton = (await send(firstMember, {
+      id: "lifecycle-first-singleton", type: "teams.list", sessionToken: firstSignUp.data.sessionToken,
+    })).data.teams;
+    assert.equal(firstMemberSingleton.length, 1);
     const team = (await send(owner, { id: "lifecycle-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
 
     for (const [id, email, token] of [["lifecycle-first-link", "lifecycle-first@example.com", firstSignUp.data.sessionToken], ["lifecycle-second-link", "lifecycle-second@example.com", secondSignUp.data.sessionToken]]) {
@@ -530,7 +534,9 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
     const lastAdminLeave = await send(firstMember, { id: "lifecycle-last-leave", type: "teams.leave", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminLeave.error.code, "DENIED");
     assert.deepEqual(await runMutation(runtime.database, firstSignUp.data.auth, "deleteOwnedTeam", [team.id]), { ok: true, data: { deleted: true }, error: null });
-    assert.deepEqual((await send(firstMember, { id: "lifecycle-after-delete", type: "teams.list", sessionToken: firstSignUp.data.sessionToken })).data, { teams: [] }, "bootstrap history prevents deleted singleton Team recreation");
+    const afterDelete = (await send(firstMember, { id: "lifecycle-after-delete", type: "teams.list", sessionToken: firstSignUp.data.sessionToken })).data;
+    assert.deepEqual(afterDelete, { teams: firstMemberSingleton }, "deleting an unrelated sole-member Team preserves the caller's existing singleton without recreating the deleted Team");
+    assert.ok(!afterDelete.teams.some((entry) => entry.id === team.id), "bootstrap history prevents deleted singleton Team recreation");
   } finally {
     owner?.close(); firstMember?.close(); secondMember?.close();
     await runtime.close();

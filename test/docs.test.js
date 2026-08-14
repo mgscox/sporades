@@ -825,19 +825,20 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.doesNotMatch(apiClient, /JobApi/);
 });
 
-test("roadmap distinguishes the delivered Teams listing foundation from deferred Team work", async () => {
+test("roadmap distinguishes delivered Team membership roles from deferred Team ACL", async () => {
   const roadmap = await readProjectFile("docs/ROADMAP.md");
 
   assert.match(roadmap, /Built-in Teams foundation \| implemented/);
-  assert.match(roadmap, /`teams\.list\(\)`/);
-  assert.match(roadmap, /`ctx\.teams\.list\(\)`/);
+  assert.match(roadmap, /Capsules declare bounded `teams\.appRoles`/);
+  assert.match(roadmap, /exact-Team admins atomically reconcile membership-scoped assignments/);
   assert.match(roadmap, /singleton Team/);
   assert.match(roadmap, /Capsule roles[\s\S]*must not compete with membership-scoped Team application roles/);
   assert.match(roadmap, /A non-Team role model requires a distinct demonstrated use case/);
-  assert.match(roadmap, /Team administration, Join links, application roles, and Team ACL \| candidate/);
-  for (const ticket of ["03-create-and-rename-additional-teams", "04-list-team-memberships-within-admin-scope", "05-create-and-manage-email-bound-join-links", "06-validate-join-links-after-authentication", "07-join-a-team-through-a-validated-link", "08-manage-the-team-admin-lifecycle", "09-declare-and-assign-membership-application-roles", "10-authorize-capsule-resources-through-team-acl"]) {
-    assert.match(roadmap, new RegExp(`issues/${ticket}\\.md`));
-  }
+  assert.match(roadmap, /Tickets 01–09 record these delivered slices/);
+  assert.match(roadmap, /\| Team ACL \| candidate \|[\s\S]*membership application roles are implemented through Ticket 09[\s\S]*Team ACL remains intentionally deferred to Ticket 10/);
+  assert.match(roadmap, /issues\/10-authorize-capsule-resources-through-team-acl\.md/);
+  assert.doesNotMatch(roadmap, /issues\/09-declare-and-assign-membership-application-roles\.md/);
+  assert.doesNotMatch(roadmap, /Team administration, Join links, application roles, and Team ACL \| candidate/);
   assert.doesNotMatch(roadmap, /\| Teams for ACL \| candidate/);
 });
 
