@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Bootstrap Teams during account linking; 05 — Create and manage email-bound Join links.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The browser Team interface accepts an opaque Join code and returns only a normal structured result containing `{ valid: boolean }` for ordinary capability outcomes.
 - [ ] The trusted server Team interface exposes the same non-consuming validation semantics for the current linked user.
