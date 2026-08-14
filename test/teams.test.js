@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { createWebSocketHub, openDevDatabase, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
+import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 const capsule = {
   name: "teams-test",
@@ -100,7 +101,7 @@ test("linked users create and rename explicit additional Teams through browser a
     });
     assert.equal(signedUp.error, null, JSON.stringify(signedUp.error));
 
-    const created = await send(owner, { id: "additional-create", type: "teams.create", name: "  Product\u00a0Team  " });
+    const created = await send(owner, { id: "additional-create", type: "teams.create", name: "  Ｐｒｏｄｕｃｔ\u00a0Team  " });
     assert.equal(created.error, null, JSON.stringify(created.error));
     assert.deepEqual(created.data, {
       team: {
@@ -114,11 +115,17 @@ test("linked users create and rename explicit additional Teams through browser a
 
     const invalid = await send(owner, { id: "additional-invalid-name", type: "teams.create", name: "   " });
     assert.equal(invalid.error.code, "INVALID_TEAM_NAME");
+    const nonString = await send(owner, { id: "additional-non-string", type: "teams.create", name: { value: "nope" } });
+    assert.equal(nonString.error.code, "INVALID_TEAM_NAME");
+    const eightyBytes = await send(owner, { id: "additional-eighty-bytes", type: "teams.create", name: "a".repeat(80) });
+    assert.equal(eightyBytes.error, null, JSON.stringify(eightyBytes.error));
+    const tooLong = await send(owner, { id: "additional-too-long", type: "teams.create", name: "a".repeat(81) });
+    assert.equal(tooLong.error.code, "INVALID_TEAM_NAME");
 
     const listed = await send(owner, { id: "additional-list", type: "teams.list" });
     assert.equal(listed.error, null, JSON.stringify(listed.error));
-    assert.equal(listed.data.teams.length, 2);
-    assert.deepEqual(listed.data.teams.map((team) => team.id), [listed.data.teams[0].id, created.data.team.id]);
+    assert.equal(listed.data.teams.length, 3);
+    assert.deepEqual(listed.data.teams.map((team) => team.id), [listed.data.teams[0].id, created.data.team.id, eightyBytes.data.team.id]);
 
     const trustedCreate = await runMutation(runtime.database, signedUp.data.auth, "createAdditionalTeam", ["Trusted Team"]);
     assert.equal(trustedCreate.error, null, JSON.stringify(trustedCreate.error));
@@ -138,7 +145,7 @@ test("linked users create and rename explicit additional Teams through browser a
     assert.equal(renamedOverBrowser.data.team.name, "Platform Team");
 
     const auditEvents = (await runtime.database.log.tail(20)).filter((event) => event.event.startsWith("teams."));
-    assert.deepEqual(auditEvents.map((event) => event.event), ["teams.created", "teams.created", "teams.renamed", "teams.renamed"]);
+    assert.deepEqual(auditEvents.map((event) => event.event), ["teams.created", "teams.created", "teams.created", "teams.renamed", "teams.renamed"]);
     assert.doesNotMatch(JSON.stringify(auditEvents), /Product Team|Platform Team|sessionToken|provider/);
 
     stranger = await runtime.open();
@@ -149,6 +156,9 @@ test("linked users create and rename explicit additional Teams through browser a
       credentials: { email: "additional-stranger@example.com", password: "password-123", name: "Additional Stranger" },
     });
     assert.equal(strangerSignUp.error, null, JSON.stringify(strangerSignUp.error));
+    await runtime.database.adapter.prepare(runtime.database.adapter.dialect.sql(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+    )).run(created.data.team.id, strangerSignUp.data.auth.userId, new Date().toISOString());
     const denied = await send(stranger, {
       id: "additional-stranger-rename",
       type: "teams.rename",
@@ -158,6 +168,8 @@ test("linked users create and rename explicit additional Teams through browser a
     assert.equal(denied.error.code, "DENIED");
     assert.equal(denied.error.message, "Team operation denied.");
     assert.doesNotMatch(JSON.stringify(denied), /Product Team|Platform Team|additional-owner/);
+    const malformed = await send(stranger, { id: "additional-malformed-rename", type: "teams.rename", teamId: { id: created.data.team.id }, name: "Nope" });
+    assert.equal(malformed.error.code, "DENIED");
 
     owner.close(); owner = null;
     stranger.close(); stranger = null;
@@ -166,7 +178,7 @@ test("linked users create and rename explicit additional Teams through browser a
     owner = await runtime.open();
     const afterRestart = await send(owner, { id: "additional-after-restart", type: "teams.list", sessionToken: signedUp.data.sessionToken });
     assert.equal(afterRestart.error, null, JSON.stringify(afterRestart.error));
-    assert.deepEqual(afterRestart.data.teams.map((team) => team.name), ["My Team", "Platform Team", "Trusted Renamed Team"]);
+    assert.deepEqual(afterRestart.data.teams.map((team) => team.name), ["My Team", "Platform Team", "a".repeat(80), "Trusted Renamed Team"]);
   } finally {
     owner?.close(); stranger?.close();
     await runtime?.close();
@@ -190,6 +202,7 @@ test("additional Team creation is atomic and bounded across the trusted server i
     assert.equal(rolledBack.ok, false);
     assert.equal(countTeams(baseAdapter), 0, "a failed Team mutation leaves no orphan Team");
     assert.equal(countMemberships(baseAdapter), 0);
+    assert.equal((await runtime.database.log.tail(20)).some((event) => event.event === "teams.created"), false, "rolled-back creation emits no success audit");
 
     runtime.database.mutationHooks.afterMutation = [];
     for (let index = 0; index < 24; index += 1) {
@@ -207,6 +220,32 @@ test("additional Team creation is atomic and bounded across the trusted server i
   } finally {
     runtime.database.mutationHooks.afterMutation = [];
     await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the durable Team membership claim holds the limit across concurrent runtimes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-cross-runtime-"));
+  const databasePath = path.join(dir, "data.db");
+  const first = await openDevDatabase(databasePath, "", {}, { name: "teams-cross-runtime", auth: { providers: { anonymous: true, email: true } } }, capsule);
+  const second = await openDevDatabase(databasePath, "", {}, { name: "teams-cross-runtime", auth: { providers: { anonymous: true, email: true } } }, capsule);
+  const auth = { userId: "team-cross-runtime-user", displayName: "Cross runtime", email: "cross-runtime@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
+  try {
+    await first.adapter.withTransaction((tx) => tx.linkAuthUser({
+      id: auth.userId, displayName: auth.displayName, email: auth.email, picture: null,
+      isAuthenticated: 1, isGuest: 0, provider: "email",
+    }));
+    for (let index = 0; index < 23; index += 1) await createAdditionalTeam(first, auth, `Concurrent Team ${index + 1}`);
+    const results = await Promise.allSettled([
+      createAdditionalTeam(first, auth, "Concurrent winner one"),
+      createAdditionalTeam(second, auth, "Concurrent winner two"),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const rejected = results.find((result) => result.status === "rejected");
+    assert.equal(rejected.reason.code, "TEAM_LIMIT_REACHED");
+    assert.equal(countMemberships(first.adapter), 25);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
     await rm(dir, { recursive: true, force: true });
   }
 });

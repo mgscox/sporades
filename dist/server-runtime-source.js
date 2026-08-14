@@ -18,7 +18,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, flushTeamSecurityEvents, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -1625,6 +1625,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         });
         await flushPendingJobEnqueues(context);
+        flushTeamSecurityEvents(database, context);
         return result;
     }
     catch (error) {
@@ -1675,7 +1676,7 @@ function createEndpointContext(database, endpointRequest, session) {
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = database.mail;
-    context.teams = createCurrentUserTeamsApi(database, auth);
+    context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -3151,6 +3152,7 @@ export async function runMutation(database, auth, mutationName, args) {
             return result;
         });
         await flushPendingJobEnqueues(context);
+        flushTeamSecurityEvents(database, context);
         return committed;
     }
     catch (error) {
@@ -3242,6 +3244,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
             return { data: result ?? null, error: null };
         });
         await flushPendingJobEnqueues(context);
+        flushTeamSecurityEvents(database, context);
         return response;
     }
     catch (error) {
@@ -3314,7 +3317,7 @@ function createMutationContext(database, auth) {
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = database.mail;
-    context.teams = createCurrentUserTeamsApi(database, auth);
+    context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);

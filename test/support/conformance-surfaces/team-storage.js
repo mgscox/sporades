@@ -18,16 +18,19 @@ export const CONFORMANCE_SURFACE = {
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_teams]"), 0);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships]"), 0);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_bootstrap]"), 0);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_membership_counters]"), 0);
 
         const sql = adapter.dialect.sql;
         await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run("team-one", "My Team", NOW, "user-one");
         await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)")).run("team-one", "user-one", "admin", NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?)")).run("user-one", "team-one", NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, ?)")).run("user-one", 1);
 
         await adapter.ensureTeamsStorage();
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [id] = ?", "team-one"), 1);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?", "team-one", "user-one"), 1);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_bootstrap] WHERE [userId] = ? AND [teamId] = ?", "user-one", "team-one"), 1);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_membership_counters] WHERE [userId] = ? AND [membershipCount] = ?", "user-one", 1), 1);
       },
     },
   ],

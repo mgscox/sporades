@@ -45,7 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, flushTeamSecurityEvents, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -1817,6 +1817,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     });
     await flushPendingJobEnqueues(context);
+    flushTeamSecurityEvents(database, context);
     return result;
   } catch (error) {
     await flushPendingJobEnqueues(context);
@@ -1871,7 +1872,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
-  context.teams = createCurrentUserTeamsApi(database, auth);
+  context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -3418,6 +3419,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       return result;
     });
     await flushPendingJobEnqueues(context);
+    flushTeamSecurityEvents(database, context);
     return committed;
   } catch (error: any) {
     await flushPendingJobEnqueues(context);
@@ -3516,6 +3518,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       return { data: result ?? null, error: null as any };
     });
     await flushPendingJobEnqueues(context);
+    flushTeamSecurityEvents(database, context);
     return response;
   } catch (error: any) {
     await flushPendingJobEnqueues(context);
@@ -3601,7 +3604,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
-  context.teams = createCurrentUserTeamsApi(database, auth);
+  context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);

@@ -26,9 +26,12 @@ export function createTeamTables(adapter) {
         () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] (" +
             "[userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
             ")")),
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_membership_counters] (" +
+            "[userId] TEXT PRIMARY KEY, [membershipCount] INTEGER NOT NULL" +
+            ")")),
     ]);
 }
-export function createCurrentUserTeamsApi(database, auth) {
+export function createCurrentUserTeamsApi(database, auth, contextGetter) {
     return {
         async list() {
             requireAuth({ auth }, { linked: true });
@@ -36,11 +39,11 @@ export function createCurrentUserTeamsApi(database, auth) {
         },
         async create(name) {
             requireAuth({ auth }, { linked: true });
-            return createAdditionalTeam(database, auth, name);
+            return createAdditionalTeam(database, auth, name, contextGetter?.());
         },
         async rename(teamId, name) {
             requireAuth({ auth }, { linked: true });
-            return renameCurrentUserTeam(database, auth, teamId, name);
+            return renameCurrentUserTeam(database, auth, teamId, name, contextGetter?.());
         },
     };
 }
@@ -63,13 +66,15 @@ export async function listCurrentUserTeams(database, auth) {
         })),
     };
 }
-export async function createAdditionalTeam(database, auth, name) {
+export async function createAdditionalTeam(database, auth, name, eventContext) {
     requireAuth({ auth }, { linked: true });
     const normalizedName = normalizeTeamName(name);
     const team = await withTeamTransaction(database, async (tx) => {
         await ensureInitialTeamOnAdapter(tx, auth.userId);
-        const count = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [userId] = ?")).get(auth.userId);
-        if (Number(count?.count ?? 0) >= TEAM_MEMBERSHIP_MAX) {
+        await ensureMembershipCounterOnAdapter(tx, auth.userId);
+        const claim = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
+            "WHERE [userId] = ? AND [membershipCount] < ?")).run(auth.userId, TEAM_MEMBERSHIP_MAX);
+        if (Number(claim?.changes ?? 0) !== 1) {
             throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
         const id = randomUUID();
@@ -78,10 +83,10 @@ export async function createAdditionalTeam(database, auth, name) {
         await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, auth.userId, now);
         return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
     });
-    emitTeamSecurityEvent(database, "teams.created", auth.userId, team.id);
+    emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id);
     return { team };
 }
-export async function renameCurrentUserTeam(database, auth, teamId, name) {
+export async function renameCurrentUserTeam(database, auth, teamId, name, eventContext) {
     requireAuth({ auth }, { linked: true });
     if (!isOpaqueTeamId(teamId))
         throw teamDenied();
@@ -98,7 +103,7 @@ export async function renameCurrentUserTeam(database, auth, teamId, name) {
         const count = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
         return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
     });
-    emitTeamSecurityEvent(database, "teams.renamed", auth.userId, team.id);
+    emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id);
     return { team };
 }
 async function ensureInitialTeam(database, auth) {
@@ -135,7 +140,7 @@ async function withTeamTransaction(database, callback) {
     // operations must not race a lazy/bootstrap auth transaction into BEGIN.
     const root = database.__rootDatabase ?? database;
     const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
-    const work = previous.catch(() => undefined).then(() => database.adapter.withTransaction(callback));
+    const work = previous.catch(() => undefined).then(() => teamTransactionWithRetry(database.adapter, callback));
     root.__runtimeTransactionQueue = work;
     try {
         return await work;
@@ -143,6 +148,18 @@ async function withTeamTransaction(database, callback) {
     finally {
         if (root.__runtimeTransactionQueue === work)
             root.__runtimeTransactionQueue = null;
+    }
+}
+async function teamTransactionWithRetry(adapter, callback) {
+    for (let attempt = 0;; attempt += 1) {
+        try {
+            return await adapter.withTransaction(callback);
+        }
+        catch (error) {
+            if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error))
+                throw error;
+            await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+        }
     }
 }
 async function bootstrapWithRetry(adapter, userId) {
@@ -187,7 +204,16 @@ async function ensureInitialTeamOnAdapter(tx, userId) {
     }
     await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, userId);
     await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now);
+    await tx.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
     return id;
+}
+async function ensureMembershipCounterOnAdapter(tx, userId) {
+    const sql = tx.dialect.sql;
+    // Ticket 01 rows can predate this counter. The insert backfills exactly once;
+    // the guarded UPDATE above is the durable, cross-runtime admission claim.
+    await tx.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) " +
+        "SELECT ?, COUNT(*) FROM [sporades_team_memberships] WHERE [userId] = ? " +
+        "ON CONFLICT ([userId]) DO NOTHING")).run(userId, userId);
 }
 function safeTeamName(value) {
     const name = typeof value === "string" ? value.trim() : "";
@@ -218,7 +244,7 @@ function teamSummary(input) {
         memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0)),
     };
 }
-function emitTeamSecurityEvent(database, event, actorUserId, teamId) {
+function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId) {
     // Keep audit data identifier-only and bounded: names can contain sensitive
     // presentation text, while Sessions and provider records never belong here.
     const input = {
@@ -231,6 +257,21 @@ function emitTeamSecurityEvent(database, event, actorUserId, teamId) {
         release: null,
         correlation: null,
     };
+    if (database.__transactionActive && eventContext) {
+        eventContext.__teamSecurityEvents ??= [];
+        eventContext.__teamSecurityEvents.push(input);
+        return;
+    }
     database.log?.emit?.(input);
+}
+export function flushTeamSecurityEvents(database, context) {
+    const events = context?.__teamSecurityEvents;
+    if (!Array.isArray(events))
+        return;
+    if (!context)
+        return;
+    delete context.__teamSecurityEvents;
+    for (const event of events)
+        database.log?.emit?.(event);
 }
 //# sourceMappingURL=teams-runtime.js.map
