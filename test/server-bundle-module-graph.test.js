@@ -210,6 +210,18 @@ export default capsule({
 });
 `;
 
+const TEAMS_CAPSULE_SOURCE = `
+import { capsule, query } from "sporades/server";
+
+export default capsule({
+  name: "bundle-teams",
+  schema: {},
+  queries: {
+    ownTeams: query((ctx) => ctx.teams.list()),
+  },
+});
+`;
+
 const CAPSULE_PUBLIC_ORIGIN = "https://capsule.example.com";
 
 function capsuleConfig(extra = {}) {
@@ -871,6 +883,56 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
         "nosuch.messagetype:m23",
       ],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle lazily lists the current linked user's singleton Team", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-teams-"));
+  try {
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverSourcePath: path.join(root, "server", "index.ts"),
+    });
+    const source = await buildBundle({
+      config: capsuleConfig({ name: "bundle-teams", auth: { providers: { anonymous: true, email: true } } }),
+      serverEnv: {},
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverModuleSource,
+    });
+    await writePublicTree(root, "<!doctype html><html><body><div id=\"app\"></div></body></html>");
+    const booted = await bootBundle({ source, dir: root });
+    const socket = await openBundleSocket(booted.baseUrl);
+    try {
+      socket.send({ id: "anonymous-teams", type: "teams.list" });
+      const denied = await socket.waitFor((message) => message.id === "anonymous-teams");
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.code, "UNAUTHENTICATED");
+
+      socket.send({ id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "bundle-teams@example.com", password: "correct horse battery staple", name: "Bundle Teams" } });
+      const signedUp = await socket.waitFor((message) => message.id === "signup");
+      assert.equal(signedUp.type, "auth.signUp.result");
+      assert.equal(signedUp.error, null, JSON.stringify(signedUp));
+
+      socket.send({ id: "teams-first", type: "teams.list" });
+      const first = await socket.waitFor((message) => message.id === "teams-first");
+      assert.equal(first.type, "teams.list.result");
+      assert.equal(first.error, null, JSON.stringify(first));
+      assert.equal(first.data.teams.length, 1);
+      assert.equal(first.data.teams[0].role, "admin");
+
+      socket.send({ id: "teams-query", type: "query.subscribe", query: "ownTeams" });
+      const trusted = await socket.waitFor((message) => message.id === "teams-query");
+      assert.deepEqual(trusted, { id: "teams-query", type: "query.result", query: "ownTeams", data: first.data, error: null });
+
+      socket.send({ id: "teams-repeat", type: "teams.list" });
+      const repeated = await socket.waitFor((message) => message.id === "teams-repeat");
+      assert.deepEqual(repeated.data, first.data);
+    } finally {
+      socket.close();
+      await booted.stop();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

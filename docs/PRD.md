@@ -149,11 +149,11 @@ The following work is intentionally deferred:
   contract without coupling `sshd` directly to Sporades runtime code. The spike
   remains in `.scratch/privileged-audit-event-contract/ssh-daemon-session-log-scanner-spike.md`.
 - Capsule roles:
-  a separate future planning track for Capsule-scoped user authorization labels
-  such as app-defined admin roles. Capsule roles are checked through normal ACL
-  rules over one Capsule's DB, files, and storage resources; they are not the
-  Privileged server role and must not become a global role on runtime-owned
-  Sporades auth users.
+  a non-Team role model requires a distinct demonstrated use case and separate
+  PRD. It must not compete with membership-scoped Team application roles,
+  which belong to the built-in Teams work in Tickets 09–10. Any such role model
+  remains separate from the Privileged server role and cannot become a global
+  role on runtime-owned Sporades auth users.
 - Vector storage:
   `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`.
 - Broader production platform work, multi-node hosting, DNS automation,

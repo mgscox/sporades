@@ -257,8 +257,8 @@ The Transaction boundary for one current-user preference update. The runtime rea
 _Avoid_: optimistic preference broadcast, partial preference update, localStorage preference write
 
 **Capsule role**:
-A Capsule-scoped authorization label associated with a Sporades user for one Capsule, such as an app-defined admin role. Capsule roles are for Capsule DB, file, and storage authorization through normal ACL rules; they are not the Privileged server role and do not grant platform/runtime authority outside the Capsule.
-_Avoid_: global admin, platform admin, root role, Privileged server role
+A non-Team Capsule-scoped authorization label is reserved for a distinct demonstrated use case and separate PRD. It must not compete with membership-scoped Team application roles, which belong to the built-in Teams work in Tickets 09–10. It is not the Privileged server role and does not grant platform/runtime authority outside the Capsule.
+_Avoid_: global admin, platform admin, root role, Privileged server role, duplicate Team application role
 
 ## Client transport
 

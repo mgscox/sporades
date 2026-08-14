@@ -841,6 +841,19 @@ test("roadmap distinguishes the delivered Teams listing foundation from deferred
   assert.doesNotMatch(roadmap, /\| Teams for ACL \| candidate/);
 });
 
+test("canonical role docs reserve Team application roles for Team membership", async () => {
+  const [prd, context] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("CONTEXT.md"),
+  ]);
+
+  for (const document of [prd, context]) {
+    assert.match(document, /must not compete with membership-scoped Team application roles/);
+    assert.match(document, /distinct demonstrated use case/);
+    assert.match(document, /separate\s+PRD/);
+  }
+});
+
 test("docs describe doctor diagnostics as read-only coordination", async () => {
   const [roadmap, userGuide] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
