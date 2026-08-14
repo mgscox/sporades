@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createWebSocketHub, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { endpoint, job, mutation, query } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 let trustedValidationCode = null;
 let trustedJoinCode = null;
+let observedFileAclTeams = null;
 
 const capsule = {
   name: "teams-test",
@@ -68,6 +69,21 @@ const rolesCapsule = {
   mutations: {
     ...capsule.mutations,
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+  },
+};
+
+const fileAclCapsule = {
+  ...rolesCapsule,
+  name: "teams-file-acl-test",
+  files: {
+    acl: {
+      read: ({ file, ctx }) => {
+        observedFileAclTeams = ctx.teams;
+        return ctx.acl.teams.isMember(file.path.split("/")[2]);
+      },
+      publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2]),
+      delete: ({ file, ctx }) => ctx.acl.teams.hasRole(file.path.split("/")[2], "author"),
+    },
   },
 };
 
@@ -923,6 +939,98 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
   }
 });
 
+test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs without leaking private URLs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-file-acl-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"), fileAclCapsule);
+  let owner;
+  let member;
+  let admin;
+  let author;
+  let crossTeamMember;
+  let anonymous;
+  try {
+    owner = await runtime.open();
+    member = await runtime.open();
+    admin = await runtime.open();
+    author = await runtime.open();
+    crossTeamMember = await runtime.open();
+    anonymous = await runtime.open();
+
+    const ownerSignUp = await signUp(owner, "file-owner", "file-owner@example.com", "Owner");
+    const memberSignUp = await signUp(member, "file-member", "file-member@example.com", "Member");
+    const adminSignUp = await signUp(admin, "file-admin", "file-admin@example.com", "Admin");
+    const authorSignUp = await signUp(author, "file-author", "file-author@example.com", "Author");
+    const crossTeamSignUp = await signUp(crossTeamMember, "file-cross-team", "file-cross-team@example.com", "Cross team");
+
+    const teamA = (await send(owner, { id: "file-team-a", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const teamB = (await send(owner, { id: "file-team-b", type: "teams.create", name: "Other team", sessionToken: ownerSignUp.data.sessionToken })).data.team;
+    const join = async (id, teamId, email, recipient, sessionToken) => {
+      const issued = await send(owner, { id: `${id}-issue`, type: "teams.createJoinLink", teamId, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(issued.error, null, JSON.stringify(issued.error));
+      const joined = await send(recipient, { id: `${id}-join`, type: "teams.join", code: new URL(issued.data.link).searchParams.get("code"), sessionToken });
+      assert.equal(joined.error, null, JSON.stringify(joined.error));
+    };
+    await join("file-member", teamA.id, "file-member@example.com", member, memberSignUp.data.sessionToken);
+    await join("file-admin", teamA.id, "file-admin@example.com", admin, adminSignUp.data.sessionToken);
+    await join("file-author", teamA.id, "file-author@example.com", author, authorSignUp.data.sessionToken);
+    await join("file-cross-team", teamB.id, "file-cross-team@example.com", crossTeamMember, crossTeamSignUp.data.sessionToken);
+
+    const promoted = await send(owner, { id: "file-promote", type: "teams.promote", teamId: teamA.id, userId: adminSignUp.data.auth.userId, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(promoted.error, null, JSON.stringify(promoted.error));
+    const assigned = await send(owner, { id: "file-author-role", type: "teams.updateApplicationRoles", teamId: teamA.id, userId: authorSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(assigned.error, null, JSON.stringify(assigned.error));
+
+    const upload = async (id, label) => {
+      const pathName = `/teams/${teamA.id}/${label}.txt`;
+      const negotiated = await send(owner, {
+        id: `${id}-upload`, type: "file.uploadUrl", sessionToken: ownerSignUp.data.sessionToken,
+        file: { name: `${label}.txt`, type: "text/plain", path: pathName, size: label.length },
+      });
+      assert.equal(negotiated.error, null, JSON.stringify(negotiated.error));
+      const completed = await fetch(new URL(negotiated.data.uploadUrl, runtime.baseUrl), { method: negotiated.data.method, body: label });
+      assert.equal(completed.status, 200);
+      const payload = await completed.json();
+      assert.equal(payload.ok, true, JSON.stringify(payload.error));
+      return payload.data.file;
+    };
+    const readable = await upload("member", "member");
+    const publishable = await upload("admin", "admin");
+    const deletable = await upload("author", "author");
+
+    const memberUrl = await send(member, { id: "member-url", type: "file.url", fileReference: readable.path, sessionToken: memberSignUp.data.sessionToken });
+    assert.equal(memberUrl.error, null, JSON.stringify(memberUrl.error));
+    assert.equal(observedFileAclTeams, undefined, "File ACL must not receive mutable Team management");
+    assert.doesNotMatch(memberUrl.data.url, /sessionToken|session-token/i);
+    const memberRead = await fetch(new URL(memberUrl.data.url, runtime.baseUrl), { headers: { "x-sporades-session-token": memberSignUp.data.sessionToken } });
+    assert.equal(memberRead.status, 200);
+    assert.equal(await memberRead.text(), "member");
+
+    const published = await send(admin, { id: "admin-public", type: "file.publicUrl.create", fileReference: publishable.path, options: { noExpiry: true }, sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(published.error, null, JSON.stringify(published.error));
+    assert.doesNotMatch(published.data.publicUrl.url, /sessionToken|session-token/i);
+    assert.equal((await fetch(new URL(published.data.publicUrl.url, runtime.baseUrl))).status, 200);
+
+    const deleted = await send(author, { id: "author-delete", type: "file.delete", fileReference: deletable.path, sessionToken: authorSignUp.data.sessionToken });
+    assert.equal(deleted.error, null, JSON.stringify(deleted.error));
+    assert.equal((await send(owner, { id: "owner-deleted", type: "file.url", fileReference: deletable.path, sessionToken: ownerSignUp.data.sessionToken })).error.message, "File not found.");
+
+    for (const [id, socket, sessionToken] of [
+      ["anonymous", anonymous, null],
+      ["cross-team", crossTeamMember, crossTeamSignUp.data.sessionToken],
+    ]) {
+      const denied = await send(socket, { id: `${id}-private`, type: "file.url", fileReference: readable.path, ...(sessionToken ? { sessionToken } : {}) });
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.message, "File not found.");
+      const direct = await fetch(new URL(memberUrl.data.url, runtime.baseUrl), { headers: sessionToken ? { "x-sporades-session-token": sessionToken } : {} });
+      assert.equal(direct.status, 404);
+    }
+  } finally {
+    owner?.close(); member?.close(); admin?.close(); author?.close(); crossTeamMember?.close(); anonymous?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function startRuntime(databasePath, capsuleDefinition = capsule) {
   const database = await openDevDatabase(databasePath, "", {}, {
     name: "teams-test",
@@ -931,7 +1039,7 @@ async function startRuntime(databasePath, capsuleDefinition = capsule) {
   const hub = createWebSocketHub(() => database);
   const server = createServer();
   server.on("request", async (request, response) => {
-    if (!await routeEndpoint(database, request, response)) {
+    if (!await handleFileHttpRoute(database, request, response) && !await routeEndpoint(database, request, response)) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
     }

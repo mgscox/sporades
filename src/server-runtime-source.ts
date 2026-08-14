@@ -81,13 +81,13 @@ import {
   createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
   drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
   filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError,
-  normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
+  normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
   revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode,
 } from "./acl-runtime.js";
 import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
   createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
-  createStructuredFileError, deletePrivateFile, fileMetadataFromRow, fileRowForOwner,
+  createStructuredFileError, deletePrivateFile, fileMetadataFromRow,
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
@@ -422,6 +422,10 @@ export async function openDevDatabase(
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
+  if (capsuleDefinition?.files !== undefined && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
+    throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+  }
+  const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink: LooseRecord | undefined;
@@ -510,6 +514,7 @@ export async function openDevDatabase(
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
+    fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,

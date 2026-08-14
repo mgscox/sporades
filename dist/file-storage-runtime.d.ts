@@ -154,6 +154,7 @@ export declare function revokePublicFileUrl(database: LooseRecord, auth: LooseRe
 }>;
 export declare function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
 export declare function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any): Promise<any>;
+export declare function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any): Promise<any>;
 export declare function fileMetadataFromRow(row: LooseRecord): {
     id: any;
     bucket: any;

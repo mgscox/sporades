@@ -113,6 +113,7 @@
 // sees only builtins behind `kind: "dynamic-import"` — which is the one external ADR-0041 allows,
 // and the route the SMTP transport has always taken.
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
+import { applyFileAcl } from "./acl-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/file-storage-runtime.js` loaded as an ES module, and the
 // esbuild IIFE the emitted-list bundle splices into a deployed Capsule.
@@ -665,7 +666,7 @@ export async function completePendingFileUpload(database, uploadId, request, web
     }
 }
 export async function getPrivateFileUrl(database, auth, fileReference) {
-    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+    const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
     if (!resolved.ok) {
         return resolved;
     }
@@ -692,7 +693,7 @@ export async function createPublicFileUrl(database, auth, fileReference, options
     }
     return await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-        const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+        const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
         if (!resolved.ok) {
             return resolved;
         }
@@ -747,7 +748,7 @@ export async function deletePrivateFile(database, auth, fileReference) {
     const now = new Date().toISOString();
     const result = await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-        const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+        const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
         if (!resolved.ok) {
             return resolved;
         }
@@ -758,7 +759,7 @@ export async function deletePrivateFile(database, auth, fileReference) {
                 error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
             };
         }
-        await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+        await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
         await sqlite.deleteFileUploadsForPath(row.path);
         await sqlite.markFileDeleted(row.id, now);
         await sqlite.revokePublicFileUrlsForFile(row.id, now);
@@ -822,6 +823,10 @@ export async function fileRowForOwner(database, fileId, ownerId) {
         return resolved.ok ? resolved.row : null;
     }
     return await database.adapter.fileRowForOwner(reference, ownerId);
+}
+export async function fileRowForActor(database, auth, fileReference) {
+    const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+    return resolved.ok ? resolved.row : null;
 }
 export function fileMetadataFromRow(row) {
     return {
@@ -930,6 +935,15 @@ async function resolveLiveFileReference(database, ownerId, reference) {
         return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
     }
     return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+async function resolveAccessibleFileReference(database, auth, reference, operation) {
+    const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+    if (!resolved.ok || !resolved.row)
+        return resolved;
+    if (resolved.row.ownerId === auth?.userId)
+        return resolved;
+    const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+    return { ok: true, row: allowed ? resolved.row : null };
 }
 export async function resolvePrivilegedLiveFileReference(database, reference) {
     const value = String(reference ?? "");

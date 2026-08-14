@@ -73,6 +73,19 @@ import { auth, createHooks, createInfernoAdapters, createLitControllers, createS
 const app = capsule({
   name: "typed island",
   teams: { appRoles: ["author", "reviewer"] },
+  files: {
+    acl: {
+      read: ({ file, ctx }) => {
+        file.path.toUpperCase();
+        const permitted = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        // @ts-expect-error File ACL contexts expose constrained decisions, not mutable Team management.
+        ctx.teams.list();
+        return permitted;
+      },
+      publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2] ?? ""),
+      delete: ({ file, ctx }) => ctx.acl.teams.hasRole(file.path.split("/")[2] ?? "", "author"),
+    },
+  },
   journey: { enabled: true, ttlSeconds: 30, capture: { navigation: true, focus: false } },
   emailEvents: emailEvent(async (ctx, event) => {
     ctx.log.info("email event", event.provider, event.kind, event.providerEventId, event.occurredAt);

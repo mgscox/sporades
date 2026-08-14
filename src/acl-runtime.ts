@@ -516,6 +516,46 @@ export function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefi
   return normalized;
 }
 
+export function normalizeFileAcl(aclRules: LooseRecord | undefined) {
+  const supportedOperations = new Set(["read", "publicUrl", "delete"]);
+  if (aclRules === undefined) {
+    return {
+      resolve() {
+        return undefined;
+      },
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      "Invalid Capsule File ACL.",
+      "Declare files as { acl: { read?, publicUrl?, delete? } }.",
+      "INVALID_FILE_ACL",
+    );
+  }
+  const normalized: LooseRecord = {};
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule File ACL operation: ${operation}.`,
+        "Supported File ACL operations are read, publicUrl, and delete.",
+        "INVALID_FILE_ACL",
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule File ACL: ${operation}.`,
+        "File ACL rules must be functions.",
+        "INVALID_FILE_ACL",
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation: any) {
+    return this[operation];
+  };
+  return normalized;
+}
+
 function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: boolean; resolve?: (operation: any) => any; write?: any; }, operation: string) {
   if (!aclRules || typeof aclRules !== "object") {
     return undefined;
@@ -535,6 +575,38 @@ export function createTableAclContext(context: any, database: any) {
     ...aclContext,
     acl: createAclHelpers(database, context),
   };
+}
+
+export function createFileAclContext(auth: LooseRecord, database: LooseRecord) {
+  // A File request has no trusted Capsule handler context. Its policy gets the
+  // same constrained, read-only ACL decisions as a table rule, but only the
+  // authenticated actor: no db API, mutable Teams API, request, or privileged
+  // capability can cross this boundary.
+  const context = { auth: Object.freeze({ ...auth }) };
+  return Object.freeze({
+    auth: context.auth,
+    acl: createAclHelpers(database, context),
+  });
+}
+
+export function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord) {
+  const rule = database.fileAcl?.resolve?.(operation);
+  if (!rule) return false;
+  const context = createFileAclContext(auth, database);
+  const input = Object.freeze({
+    ctx: context,
+    operation,
+    file: Object.freeze(aclStorageMetadataFromFileRow(row)),
+  });
+  const deny = () => {
+    emitFileAclDeniedLog(database, { context, operation, row });
+    return false;
+  };
+  const result = rule(input);
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny()));
 }
 
 function privilegedDbAccessContextSet() {
@@ -888,6 +960,26 @@ export function emitAclDeniedLog(database: LooseRecord, details: LooseRecord) {
     level: "warn",
     message: "ACL denied table operation.",
     data: details.data ?? createAclDenialLogData(details),
+  });
+}
+
+function emitFileAclDeniedLog(database: LooseRecord, { context, operation, row }: LooseRecord) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied File operation.",
+    data: {
+      resource: { kind: "file", id: row?.id ?? null },
+      operation,
+      rule: { category: "file", declaredOperation: operation },
+      actor: {
+        userId: context?.auth?.userId ?? null,
+        provider: context?.auth?.provider ?? null,
+        isAuthenticated: context?.auth?.isAuthenticated ?? null,
+        isGuest: context?.auth?.isGuest ?? null,
+      },
+    },
   });
 }
 

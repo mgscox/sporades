@@ -5821,8 +5821,1357 @@ function chainMaybePromise(steps) {
   return pending ?? void 0;
 }
 
-// src/file-storage-runtime.ts
+// src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var RESERVED_JOB_NAME_PREFIX = "_sporades";
+function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
+  const schedules = [];
+  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError2(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
+    if (schedules.some((candidate) => candidate.name === name)) throw commandError2(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
+    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError2(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
+    const expression = parseScheduleExpression(definition.expression);
+    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
+    const payload = definition.payload === void 0 ? null : definition.payload;
+    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    const retry = normalizeJobRetry(definition.retry);
+    const missedRun = definition.missedRun ?? "skip";
+    if (missedRun !== "skip" && missedRun !== "latest") throw commandError2(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
+    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError2(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
+    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
+    const enabled = definition.enabled ?? true;
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
+    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+  }
+  return schedules;
+}
+function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
+  const scheduling = config.scheduling;
+  if (scheduling === void 0) return 3e4;
+  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
+    throw commandError2("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+    throw commandError2("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  return seconds * 1e3;
+}
+function parseScheduleExpression(value) {
+  if (typeof value !== "string") throw commandError2("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 5) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
+  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+  const fields = parts.map((part, index) => {
+    const values = /* @__PURE__ */ new Set();
+    for (const item of part.split(",")) {
+      const [base, stepText] = item.split("/");
+      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
+      const step = stepText === void 0 ? 1 : Number(stepText);
+      let start, end;
+      if (base === "*") [start, end] = ranges[index];
+      else if (/^\d+$/.test(base)) start = end = Number(base);
+      else {
+        const match = /^(\d+)-(\d+)$/.exec(base);
+        if (!match) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
+        start = Number(match[1]);
+        end = Number(match[2]);
+      }
+      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError2(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
+      for (let current = start; current <= end; current += step) values.add(index === 4 && current === 7 ? 0 : current);
+    }
+    return values;
+  });
+  fields.restricted = parts.map((part) => part !== "*");
+  return fields;
+}
+function resolveScheduleTimezone(value) {
+  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError2("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
+  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
+  } catch {
+    throw commandError2(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
+  }
+}
+function scheduleWallClockParts(formatter, instant) {
+  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
+  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
+}
+function nextScheduleOccurrence(fields, after, timezone) {
+  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: timezone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  const candidate = new Date(after.getTime());
+  candidate.setUTCSeconds(0, 0);
+  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
+    const local = scheduleWallClockParts(formatter, candidate);
+    const dom = fields[2].has(local.day);
+    const dow = fields[4].has(local.weekday);
+    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
+    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
+    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
+  }
+  throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
+}
+async function ensureScheduleStorage(sqlite) {
+  const sql = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
+    )
+  );
+}
+async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
+  const scheduledFor = occurrence.toISOString();
+  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+  const completedAt = database.clock.now().toISOString();
+  const code = "SCHEDULE_ENQUEUE_FAILED";
+  const sql = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
+  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+  definition.nextOccurrence = next;
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
+}
+function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
+  return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
+}
+async function acquireSchedulePayloadFactorySlot(database) {
+  if (database.schedulePayloadFactoryActive >= 4) await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
+  database.schedulePayloadFactoryActive += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    database.schedulePayloadFactoryActive -= 1;
+    database.schedulePayloadFactoryWaiters.shift()?.();
+  };
+}
+async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
+  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
+  let unlock = () => {
+  };
+  const current = new Promise((resolve) => {
+    unlock = resolve;
+  });
+  database.schedulePayloadFactoryLanes.set(scheduleName, current);
+  if (previous) await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unlock();
+    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
+  };
+}
+async function resolveSchedulePayload(database, definition, scheduledFor, context) {
+  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
+  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+  let releaseSlot;
+  const controller = new AbortController();
+  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
+  controllers.add(controller);
+  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
+  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
+  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
+  let timeout;
+  try {
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
+    const timeoutFailure = new Promise((_resolve, reject) => {
+      timeout = database.clock.setTimer(() => {
+        controller.abort();
+        const error = new Error("Schedule payload factory timed out.");
+        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
+        reject(error);
+      }, database.schedulePayloadFactoryTimeoutMs);
+    });
+    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
+      const error = new Error("Schedule payload factory aborted.");
+      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+      reject(error);
+    }, { once: true }));
+    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
+    database.clock.clearTimer(timeout);
+    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    return { ok: true, value };
+  } catch (error) {
+    database.clock.clearTimer(timeout);
+    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
+    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
+    return { ok: false };
+  } finally {
+    controllers.delete(controller);
+    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
+    releaseSlot?.();
+    releaseLane();
+  }
+}
+function abortSchedulePayloadFactories(database) {
+  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
+}
+function createRuntimeClock(clock) {
+  if (clock) return clock;
+  return {
+    now: () => /* @__PURE__ */ new Date(),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer)
+  };
+}
+function runtimeOwnedJobHandlers(runtime) {
+  return [
+    {
+      name: PASSWORD_RESET_MAIL_JOB,
+      handler: async (ctx, payload) => {
+        return await ctx.mail.send({
+          to: payload.to,
+          subject: payload.subject,
+          textBody: payload.textBody,
+          htmlBody: payload.htmlBody
+        });
+      }
+    },
+    {
+      name: PASSWORD_RESET_REQUEST_JOB,
+      handler: async (ctx, payload) => {
+        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
+        if (!delivery) return;
+        return await ctx.mail.send(delivery);
+      }
+    }
+  ];
+}
+function isReservedJobName(name) {
+  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
+}
+function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
+  const handlers = [];
+  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
+      throw commandError2("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    if (isReservedJobName(name)) {
+      throw commandError2(
+        `Reserved Job handler name: ${name}`,
+        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
+        "RESERVED_JOB_NAME"
+      );
+    }
+    if (handlers.some((handler) => handler.name === name)) {
+      throw commandError2(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
+    }
+    handlers.push({ name, handler: definition.handler });
+  }
+  return handlers;
+}
+async function ensureJobStorage(sqlite) {
+  const sql = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
+    )
+  );
+  await sqlite.exec(
+    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
+  );
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  await sqlite.exec(
+    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
+  );
+}
+async function scheduleSummary(sqlite, row) {
+  const invalid = (field) => {
+    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
+    error.scheduleName = typeof row?.name === "string" ? row.name : null;
+    error.field = field;
+    return error;
+  };
+  if (typeof row.name !== "string" || !row.name) throw invalid("name");
+  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
+  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
+  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
+  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
+  const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
+  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
+  let latestOccurrence = null;
+  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
+  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome === "enqueued") {
+    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
+    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
+    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
+    if (!job) throw invalid("latestOccurrence.jobId");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
+  } else if (latestOutcome === "payload-failed") {
+    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
+    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
+    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
+  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
+  return {
+    name: String(row.name),
+    expression: String(row.expression),
+    timezone: String(row.effectiveTimezone),
+    missedRun: String(row.missedRunPolicy),
+    enabled: Boolean(row.enabled),
+    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
+    latestOccurrence
+  };
+}
+function assertJobScheduleProvenance(row, expected) {
+  if (!expected) return;
+  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
+    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
+  }
+}
+function jobError(code, message, hint) {
+  const error = new Error(message);
+  error.code = code;
+  error.hint = hint;
+  return error;
+}
+function boundedJobJson(value, limit, code, label) {
+  let serialized;
+  try {
+    assertJsonCompatible(value);
+    serialized = JSON.stringify(value);
+  } catch {
+    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
+  return serialized;
+}
+function jobState(row, includeDetail) {
+  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
+  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
+  if (includeDetail && row.result) state.result = JSON.parse(row.result);
+  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
+  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
+  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
+  return state;
+}
+function jobActorProvider(auth) {
+  const provider = auth?.provider;
+  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
+  return auth?.isGuest ? "anonymous" : "authenticated";
+}
+function normalizeJobRetry(value) {
+  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
+  if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs.");
+  return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
+}
+async function cancelJob(database, context, id) {
+  const sql = database.adapter.dialect.sql;
+  const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
+  if (!row) return null;
+  const now = database.clock.now().toISOString();
+  if (["queued", "delayed"].includes(row.status)) {
+    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
+    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
+  }
+  if (row.status === "running") {
+    database.__jobAbortControllers?.get(id)?.abort();
+    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
+    return jobState({ ...row, cancelRequestedAt: now }, true);
+  }
+  throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+}
+function jobSummary(row) {
+  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
+}
+function encodeJobCursor(row) {
+  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
+}
+function decodeJobCursor(value) {
+  if (value === void 0) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
+    return cursor;
+  } catch {
+    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
+  }
+}
+function safeJobFailure(error) {
+  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
+  const messages = {
+    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
+    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
+    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
+    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    JOB_FAILED: "Job handler failed."
+  };
+  return { code, message: messages[code] };
+}
+
+// src/runtime-log-policy.ts
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+
+// src/stored-value-coding.ts
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
+}
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
+    }
+  }
+  return output;
+}
+function serializeFieldValue(field, value) {
+  if (value === void 0) {
+    return null;
+  }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
+  if (value === null) {
+    return null;
+  }
+  if (field?.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  if (field?.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
+  if (field?.kind === "Date") {
+    return normalizeDateValue(value, field.name);
+  }
+  if (field?.kind === "Reference") {
+    return String(value);
+  }
+  return String(value ?? "");
+}
+function normalizeDateValue(value, fieldName) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw dateValueError(fieldName);
+    }
+    return value.toISOString();
+  }
+  if (typeof value !== "string") {
+    throw dateValueError(fieldName);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw dateValueError(fieldName);
+  }
+  return parsed.toISOString();
+}
+function toSqlNumber(value, fieldName) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw commandError2(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
+  }
+  return value;
+}
+function dateValueError(fieldName) {
+  return commandError2(
+    `Invalid date value for field: ${fieldName}`,
+    "Pass an ISO 8601 date string or JavaScript Date value."
+  );
+}
+
+// src/acl-runtime.ts
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
+function createPrivilegedAuditEmitter(log) {
+  return {
+    emit(details) {
+      return emitPrivilegedAuditEvent(log, details);
+    }
+  };
+}
+function emitPrivilegedAuditEvent(target, details = {}) {
+  const log = target?.log?.emit ? target.log : target;
+  if (!log?.emit) {
+    throw new Error("Privileged audit events require a runtime log sink.");
+  }
+  return log.emit(createPrivilegedAuditLogInput(details));
+}
+async function emitPrivilegedRunAudit(database, context, details) {
+  const event = await database.audit.emit(details);
+  recordPrivilegedAuditEventForTransaction(context, event);
+  return event;
+}
+function recordPrivilegedAuditEventForTransaction(context, event) {
+  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
+    return;
+  }
+  if (!Array.isArray(context.__privilegedAuditEvents)) {
+    Object.defineProperty(context, "__privilegedAuditEvents", {
+      value: [],
+      enumerable: false,
+      configurable: true
+    });
+  }
+  context.__privilegedAuditEvents.push(event);
+}
+async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
+  const events = context?.__privilegedAuditEvents;
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+  for (const event of events) {
+    try {
+      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+        continue;
+      }
+      await database.adapter.insertLogIndexEvent(event);
+    } catch {
+      return;
+    }
+  }
+  try {
+    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
+  } catch {
+  }
+}
+async function privilegedAuditEventAlreadyIndexed(database, event) {
+  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
+}
+function samePrivilegedAuditLogEvent(left, right) {
+  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
+}
+function normalizePrivilegedRunSignal(value) {
+  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
+    return value;
+  }
+  return new AbortController().signal;
+}
+function createPrivilegedRunAbortError() {
+  return commandError2(
+    "Privileged run aborted.",
+    "Retry the privileged operation if cancellation was not intended.",
+    "ABORTED"
+  );
+}
+function createPrivilegedRunAuditDetails(context, options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
+  }
+  const operation = validatedPrivilegedOperation(options.operation);
+  const metadata = validatedPrivilegedMetadata(options.metadata);
+  return {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: auditString(options.surface ?? context?.kind, "server-handler"),
+    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
+    correlation: options.correlation ?? null,
+    request: options.request ?? null,
+    source: "runtime",
+    metadata
+  };
+}
+function validatedPrivilegedOperation(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
+  }
+  const operation = value.trim();
+  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
+    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
+  }
+  return operation;
+}
+function validatedPrivilegedMetadata(value) {
+  if (value === void 0) {
+    return {};
+  }
+  if (!isPlainPrivilegedMetadata(value)) {
+    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
+  }
+  return { ...value };
+}
+function isPlainPrivilegedMetadata(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (typeof value.then === "function") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function invalidPrivilegedRunMetadata(message) {
+  return commandError2(
+    message,
+    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
+    "INVALID_PRIVILEGED_RUN_METADATA"
+  );
+}
+function createPrivilegedRunPublicError(cause) {
+  const error = commandError2(
+    "Privileged run failed.",
+    "Check the privileged audit events and server logs before exposing a safe response.",
+    "PRIVILEGED_RUN_FAILED"
+  );
+  error.cause = cause;
+  return error;
+}
+function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
+  const error = commandError2(
+    "Privileged audit emission failed.",
+    "Check the server audit log configuration before retrying the privileged operation.",
+    "PRIVILEGED_AUDIT_EMISSION_FAILED"
+  );
+  error.cause = cause;
+  if (context) {
+    error.privilegedAuditContext = context;
+  }
+  return error;
+}
+function isPrivilegedAuditEmissionPublicError(error) {
+  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+}
+function createPrivilegedScheduleApi(database, contextGetter) {
+  const sqlite = () => (database.__rootDatabase ?? database).adapter;
+  return {
+    async get(name) {
+      assertActivePrivilegedJobAccess(contextGetter);
+      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
+      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
+      return row ? await scheduleSummary(sqlite(), row) : null;
+    },
+    async list() {
+      assertActivePrivilegedJobAccess(contextGetter);
+      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
+      const summaries = [];
+      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
+      return summaries;
+    }
+  };
+}
+function createPrivilegedFileApi(database, contextGetter) {
+  return Object.freeze({
+    async url(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      const row = resolved.row;
+      if (!row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+          file: {
+            ...fileMetadataFromRow(row),
+            ownerId: row.ownerId
+          }
+        },
+        error: null
+      };
+    },
+    async createPublicUrl(fileReference, options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
+    },
+    async delete(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
+    },
+    unsupported() {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        throw commandError2(
+          active.error?.message ?? "Privileged file access is no longer active.",
+          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
+          "PRIVILEGED_FILE_ACCESS_INACTIVE"
+        );
+      }
+      throw commandError2(
+        "Unsupported privileged file operation.",
+        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
+      );
+    }
+  });
+}
+function activePrivilegedFileAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "Privileged file access is no longer active.",
+      "Start a new ctx.privileged.run callback before using privileged file operations."
+    )
+  };
+}
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
+    data,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "errored") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
+  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "errored") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return text2.trim() ? text2 : fallback;
+}
+function normalizeTableAcl(tableName, aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
+  if (aclRules === void 0) {
+    return {
+      allowByDefault: true,
+      resolve(operation) {
+        return resolveEffectiveAclRule(this, operation);
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError2(
+      `Invalid Capsule table ACL: ${tableName}`,
+      "Pass an object with function rules for read, write, insert, update, and delete."
+    );
+  }
+  const normalized = {
+    allowByDefault: true
+  };
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError2(
+        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
+        "Supported ACL operations are read, write, insert, update, and delete."
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError2(
+        `Invalid Capsule table ACL: ${tableName}.${operation}`,
+        "ACL rules must be functions for read, write, insert, update, and delete."
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation) {
+    return resolveEffectiveAclRule(this, operation);
+  };
+  return normalized;
+}
+function normalizeFileAcl(aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "publicUrl", "delete"]);
+  if (aclRules === void 0) {
+    return {
+      resolve() {
+        return void 0;
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError2(
+      "Invalid Capsule File ACL.",
+      "Declare files as { acl: { read?, publicUrl?, delete? } }.",
+      "INVALID_FILE_ACL"
+    );
+  }
+  const normalized = {};
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError2(
+        `Unsupported Capsule File ACL operation: ${operation}.`,
+        "Supported File ACL operations are read, publicUrl, and delete.",
+        "INVALID_FILE_ACL"
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError2(
+        `Invalid Capsule File ACL: ${operation}.`,
+        "File ACL rules must be functions.",
+        "INVALID_FILE_ACL"
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation) {
+    return this[operation];
+  };
+  return normalized;
+}
+function resolveEffectiveAclRule(aclRules, operation) {
+  if (!aclRules || typeof aclRules !== "object") {
+    return void 0;
+  }
+  if (operation === "insert" || operation === "update" || operation === "delete") {
+    return aclRules[operation] ?? aclRules.write;
+  }
+  return aclRules[operation];
+}
+function createTableAclContext(context, database) {
+  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  return {
+    ...aclContext,
+    acl: createAclHelpers(database, context)
+  };
+}
+function createFileAclContext(auth, database) {
+  const context = { auth: Object.freeze({ ...auth }) };
+  return Object.freeze({
+    auth: context.auth,
+    acl: createAclHelpers(database, context)
+  });
+}
+function applyFileAcl(database, operation, row, auth) {
+  const rule = database.fileAcl?.resolve?.(operation);
+  if (!rule) return false;
+  const context = createFileAclContext(auth, database);
+  const input = Object.freeze({
+    ctx: context,
+    operation,
+    file: Object.freeze(aclStorageMetadataFromFileRow(row))
+  });
+  const deny = () => {
+    emitFileAclDeniedLog(database, { context, operation, row });
+    return false;
+  };
+  const result = rule(input);
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny());
+}
+function privilegedDbAccessContextSet() {
+  const holder = privilegedDbAccessContextSet;
+  if (!holder.contexts) {
+    Object.defineProperty(holder, "contexts", {
+      value: /* @__PURE__ */ new WeakSet(),
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return holder.contexts;
+}
+function grantPrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().add(context);
+  }
+  return context;
+}
+function revokePrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().delete(context);
+  }
+  return context;
+}
+function hasPrivilegedDbAccess(context) {
+  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
+}
+function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return write();
+  }
+  const rule = table.acl?.resolve?.(operation);
+  if (!rule) {
+    return write();
+  }
+  const context = contextGetter?.();
+  const denialLogData = createAclDenialLogData({
+    context,
+    table,
+    operation,
+    previous,
+    next
+  });
+  const deny = () => {
+    if (!context?.__pendingAclWrites) {
+      emitAclDeniedLog(database, { data: denialLogData });
+    }
+    throw createAclDeniedError(denialLogData);
+  };
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation,
+    table: table.name,
+    previous,
+    next
+  });
+  if (!isPromiseLike(result)) {
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  }
+  const pending = Promise.resolve(result).then((allowed) => {
+    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      deny();
+    }
+    return write();
+  });
+  context?.__pendingAclWrites?.push(pending);
+  return pending;
+}
+function applyReadAcl(database, table, row, context) {
+  if (hasPrivilegedDbAccess(context)) {
+    return true;
+  }
+  const rule = table.acl?.resolve?.("read");
+  if (!rule) {
+    return true;
+  }
+  const aclContext = createTableAclContext(context, database);
+  const result = rule({
+    ctx: aclContext,
+    operation: "read",
+    table: table.name,
+    row
+  });
+  const deny = () => {
+    emitAclDeniedLog(database, {
+      context,
+      table,
+      operation: "read",
+      row
+    });
+    return false;
+  };
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
+}
+function filterRowsByReadAcl(database, table, rows, context) {
+  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
+  if (decisions.some(isPromiseLike)) {
+    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
+  }
+  return rows.filter((_, index) => decisions[index]);
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+function createAclHelpers(database, context) {
+  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
+  const helpers = {
+    db: createAclDbHelpers(database, state),
+    storage: createAclStorageHelpers(database, state),
+    teams: createAclTeamHelpers(database, context, state)
+  };
+  Object.defineProperty(helpers, ACL_HELPER_STATE, {
+    value: state,
+    enumerable: false
+  });
+  return Object.freeze(helpers);
+}
+function createAclTeamHelpers(database, context, state) {
+  return Object.freeze({
+    isMember(teamId) {
+      const membership = readAclTeamMembership(database, context, state, teamId);
+      return membership?.role === "admin" || membership?.role === "member";
+    },
+    isAdmin(teamId) {
+      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+    },
+    hasRole(teamId, role) {
+      assertAclHelperReadAllowed(state);
+      if (!isActiveAclTeamApplicationRole(database, role)) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
+      )).get(teamId, actorUserId, role);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return selected?.role === role;
+    },
+    hasAnyRole(teamId, roles) {
+      assertAclHelperReadAllowed(state);
+      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
+      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
+      if (activeRoles.length !== roles.length) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const placeholders = activeRoles.map(() => "?").join(", ");
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
+      )).all(teamId, actorUserId, ...activeRoles);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+    }
+  });
+}
+function readAclTeamMembership(database, context, state, teamId) {
+  assertAclHelperReadAllowed(state);
+  const actorUserId = aclTeamActorUserId(context);
+  if (!actorUserId || !isAclTeamId(teamId)) return null;
+  const selected = database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, actorUserId);
+  if (markAsyncAclHelperRead(state, selected)) return null;
+  return selected ?? null;
+}
+function aclTeamActorUserId(context) {
+  const auth = context?.auth;
+  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
+  return auth.userId;
+}
+function isAclTeamId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+function isActiveAclTeamApplicationRole(database, role) {
+  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
+}
+function aclRuleTouchedAsyncHelperRead(aclContext) {
+  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
+}
+function markAsyncAclHelperRead(state, result) {
+  if (isPromiseLike(result)) {
+    state.touchedAsyncRead = true;
+    Promise.resolve(result).catch(() => {
+    });
+    return true;
+  }
+  return false;
+}
+function createAclDbHelpers(database, state) {
+  return Object.freeze({
+    get(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return null;
+      }
+      return selected ? deserializeRow(table, selected) : null;
+    },
+    exists(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = database.adapter.selectAppRowById(table, id);
+      if (markAsyncAclHelperRead(state, selected)) {
+        return false;
+      }
+      return Boolean(selected);
+    }
+  });
+}
+function createAclStorageHelpers(database, state) {
+  return Object.freeze({
+    get(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = resolveAclStorageFileReference(database, state, reference);
+        return row ? aclStorageMetadataFromFileRow(row) : null;
+      }
+      return null;
+    },
+    exists(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        return Boolean(resolveAclStorageFileReference(database, state, reference));
+      }
+      return false;
+    }
+  });
+}
+function resolveAclStorageFileReference(database, state, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path12;
+    try {
+      path12 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return null;
+    }
+    const selected2 = database.adapter.selectLiveFileByPath(path12);
+    if (markAsyncAclHelperRead(state, selected2)) {
+      return null;
+    }
+    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
+    return resolved?.ambiguous ? null : resolved;
+  }
+  const selected = database.adapter.selectFileById(value);
+  if (markAsyncAclHelperRead(state, selected)) {
+    return null;
+  }
+  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
+    return null;
+  }
+  return selected;
+}
+function assertAclHelperReadAllowed(state) {
+  state.readCount += 1;
+  if (state.readCount > state.maxReads) {
+    throw commandError2("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+  }
+}
+function resolveAclAppTable(database, tableName) {
+  const normalized = String(tableName ?? "");
+  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  if (!table) {
+    throw commandError2("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+  }
+  return table;
+}
+function resolveAclStorageResource(resourceName) {
+  const normalized = String(resourceName ?? "");
+  if (normalized === "files") {
+    return normalized;
+  }
+  throw commandError2("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+}
+function aclStorageMetadataFromFileRow(row) {
+  const metadata = fileMetadataFromRow(row);
+  return {
+    ...metadata,
+    originalName: row.name,
+    owner: row.ownerId,
+    ownerId: row.ownerId,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt ?? null
+  };
+}
+function emitAclDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied table operation.",
+    data: details.data ?? createAclDenialLogData(details)
+  });
+}
+function emitFileAclDeniedLog(database, { context, operation, row }) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied File operation.",
+    data: {
+      resource: { kind: "file", id: row?.id ?? null },
+      operation,
+      rule: { category: "file", declaredOperation: operation },
+      actor: {
+        userId: context?.auth?.userId ?? null,
+        provider: context?.auth?.provider ?? null,
+        isAuthenticated: context?.auth?.isAuthenticated ?? null,
+        isGuest: context?.auth?.isGuest ?? null
+      }
+    }
+  });
+}
+function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
+  return {
+    resource: {
+      kind: "table",
+      name: table.name
+    },
+    operation,
+    rule: {
+      category: "table",
+      declaredOperation: aclRuleDeclaredOperation(table, operation)
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null
+    },
+    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
+  };
+}
+function aclRuleDeclaredOperation(table, operation) {
+  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
+    return "write";
+  }
+  return operation;
+}
+function aclRowLogSnapshot(input) {
+  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
+    const previous = input.previous ?? null;
+    const next = input.next ?? null;
+    return {
+      previousId: previous?.id ?? null,
+      nextId: next?.id ?? null,
+      previousFields: aclVisibleFieldNames(previous),
+      nextFields: aclVisibleFieldNames(next),
+      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
+      previousPresent: Boolean(previous),
+      nextPresent: Boolean(next)
+    };
+  }
+  return {
+    id: input?.id ?? null,
+    fields: aclVisibleFieldNames(input)
+  };
+}
+function aclVisibleFieldNames(row) {
+  return Object.keys(row ?? {}).filter(
+    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
+  );
+}
+function createAclDeniedError(logData = null) {
+  const error = commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  if (logData) {
+    error.sporadesAclDenialLogData = logData;
+  }
+  return error;
+}
+function assertActivePrivilegedJobAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) return;
+  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
+}
+async function drainPendingAclWrites(context) {
+  let firstError = null;
+  while (context?.__pendingAclWrites?.length > 0) {
+    const pending = context.__pendingAclWrites.splice(0);
+    const results = await Promise.allSettled(pending);
+    for (const result of results) {
+      if (result.status === "rejected" && !firstError) {
+        firstError = result.reason;
+      }
+    }
+  }
+  if (firstError) {
+    throw firstError;
+  }
+}
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
   const path12 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
@@ -5863,7 +7212,7 @@ function createLocalFileStorageAdapter({ storagePath }) {
       const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
       const path12 = await import("node:path");
       const probeDirectory = path12.join(storagePath, ".sporades-health");
-      const probeFile = path12.join(probeDirectory, `${nodeCryptoModule.randomUUID()}.tmp`);
+      const probeFile = path12.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
         await writeFile8(probeFile, "");
@@ -6101,10 +7450,10 @@ function s3AmzDate(date) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 function s3Hmac(key, data) {
-  return nodeCryptoModule.createHmac("sha256", key).update(data).digest();
+  return nodeCryptoModule2.createHmac("sha256", key).update(data).digest();
 }
 function s3Sha256Hex(data) {
-  return nodeCryptoModule.createHash("sha256").update(data).digest("hex");
+  return nodeCryptoModule2.createHash("sha256").update(data).digest("hex");
 }
 function s3ObjectNotFoundError() {
   const error = new Error("S3-compatible file object not found.");
@@ -6238,9 +7587,9 @@ async function createPendingFileUpload(database, auth, message) {
       }
       const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
       const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule.randomUUID();
-      const uploadId = nodeCryptoModule.randomUUID();
-      const version = nodeCryptoModule.randomUUID();
+      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
+      const uploadId = nodeCryptoModule2.randomUUID();
+      const version = nodeCryptoModule2.randomUUID();
       const name = normalizeFileName(input.name, target.path);
       const type = String(input.type ?? "application/octet-stream");
       await sqlite.deleteFileUploadsForPath(target.path);
@@ -6365,7 +7714,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
   }
 }
 async function getPrivateFileUrl(database, auth, fileReference) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
   if (!resolved.ok) {
     return resolved;
   }
@@ -6392,7 +7741,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   }
   return await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
     }
@@ -6403,7 +7752,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
     }
-    const id = nodeCryptoModule.randomUUID();
+    const id = nodeCryptoModule2.randomUUID();
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await sqlite.insertPublicFileUrl({
       id,
@@ -6447,7 +7796,7 @@ async function deletePrivateFile(database, auth, fileReference) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
     if (!resolved.ok) {
       return resolved;
     }
@@ -6458,7 +7807,7 @@ async function deletePrivateFile(database, auth, fileReference) {
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
     }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
     await sqlite.deleteFileUploadsForPath(row.path);
     await sqlite.markFileDeleted(row.id, now);
     await sqlite.revokePublicFileUrlsForFile(row.id, now);
@@ -6518,13 +7867,9 @@ function validatePublicUrlExpiry(options) {
   }
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
-async function fileRowForOwner(database, fileId, ownerId) {
-  const reference = String(fileId ?? "");
-  if (isAbsoluteFilePath(reference)) {
-    const resolved = await resolveLiveFileReference(database, ownerId, reference);
-    return resolved.ok ? resolved.row : null;
-  }
-  return await database.adapter.fileRowForOwner(reference, ownerId);
+async function fileRowForActor(database, auth, fileReference) {
+  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+  return resolved.ok ? resolved.row : null;
 }
 function fileMetadataFromRow(row) {
   return {
@@ -6580,7 +7925,7 @@ async function resolveFileWriteTarget(database, ownerId, input, now) {
 async function ensureFileBucket(database, ownerId, name, now) {
   const existing = await database.adapter.findFileBucket(ownerId, name);
   if (existing) return existing;
-  const bucket = { id: nodeCryptoModule.randomUUID(), ownerId, name, createdAt: now };
+  const bucket = { id: nodeCryptoModule2.randomUUID(), ownerId, name, createdAt: now };
   try {
     await database.adapter.createFileBucket(bucket);
     return bucket;
@@ -6627,6 +7972,13 @@ async function resolveLiveFileReference(database, ownerId, reference) {
     return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
   }
   return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+async function resolveAccessibleFileReference(database, auth, reference, operation) {
+  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  if (resolved.row.ownerId === auth?.userId) return resolved;
+  const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+  return { ok: true, row: allowed ? resolved.row : null };
 }
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
@@ -7014,7 +8366,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
     const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    const row = await fileRowForActor(database, session.auth, privateMatch[1]);
     if (!row || row.version !== requestUrl.searchParams.get("v")) {
       writeNotFound(response);
       return true;
@@ -8032,7 +9384,7 @@ function flushTeamSecurityEvents(database, context, options = {}) {
 }
 
 // src/auth-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var PRIVILEGED_AUTH_USER_ID = "__privileged__";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
@@ -8147,7 +9499,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   return await withAuthTransaction(database, async (tx) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const userId = identity?.userId ?? nodeCryptoModule2.randomUUID();
+    const userId = identity?.userId ?? nodeCryptoModule3.randomUUID();
     if (identity) {
       await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
       await tx.updateAuthIdentity({
@@ -8170,7 +9522,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         provider: "anonymous"
       });
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule2.randomUUID(),
+        id: nodeCryptoModule3.randomUUID(),
         userId,
         provider,
         subject,
@@ -8570,7 +9922,7 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
   }
   let signingKey;
   try {
-    signingKey = nodeCryptoModule2.createPrivateKey(privateKey);
+    signingKey = nodeCryptoModule3.createPrivateKey(privateKey);
   } catch {
     throw commandError2(
       "Apple client credential is invalid.",
@@ -8593,7 +9945,7 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
     aud: "https://appleid.apple.com",
     sub: apple.clientId
   })).toString("base64url");
-  const signatureBytes = nodeCryptoModule2.sign(
+  const signatureBytes = nodeCryptoModule3.sign(
     "sha256",
     Buffer.from(`${header}.${claims}`),
     { key: signingKey, dsaEncoding: "ieee-p1363" }
@@ -8949,7 +10301,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule2.verify(
+    signatureValid = nodeCryptoModule3.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -9266,7 +10618,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule2.verify(
+    signatureValid = nodeCryptoModule3.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -9351,7 +10703,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule2.verify(
+    signatureValid = nodeCryptoModule3.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -9643,7 +10995,7 @@ function normalizePasswordResetPath(value) {
   return value;
 }
 function passwordResetCodeParts(database, requestedCode = null) {
-  const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule2.randomBytes(16).toString("base64url"), nodeCryptoModule2.randomBytes(32).toString("base64url")];
+  const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule3.randomBytes(16).toString("base64url"), nodeCryptoModule3.randomBytes(32).toString("base64url")];
   if (!selector || !verifier || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector) || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier)) {
     throw commandError2("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
   }
@@ -9656,7 +11008,7 @@ function passwordResetCodeParts(database, requestedCode = null) {
   };
 }
 function hashPasswordResetVerifier(verifier) {
-  return nodeCryptoModule2.createHash("sha256").update(verifier).digest("base64url");
+  return nodeCryptoModule3.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
   const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
@@ -9750,7 +11102,7 @@ async function readPasswordResetCode(database, code) {
   const row = await database.adapter.findPasswordResetCode(parts[0]);
   const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
   const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
-  const matches = actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
+  const matches = actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
   if (!row || !matches) {
     return null;
   }
@@ -9995,14 +11347,14 @@ function normalizeEmailCredentials(credentials) {
   return { ok: true, email, password, name };
 }
 function hashEmailPassword(password) {
-  const salt = nodeCryptoModule2.randomBytes(16).toString("base64url");
-  const hash = nodeCryptoModule2.scryptSync(password, salt, 64).toString("base64url");
+  const salt = nodeCryptoModule3.randomBytes(16).toString("base64url");
+  const hash = nodeCryptoModule3.scryptSync(password, salt, 64).toString("base64url");
   return { hash, salt };
 }
 function verifyEmailPassword(password, salt, expectedHash) {
-  const actual = nodeCryptoModule2.scryptSync(password, salt, 64);
+  const actual = nodeCryptoModule3.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHash, "base64url");
-  return actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
+  return actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
 }
 function emailAuthDisabledError() {
   return {
@@ -10018,7 +11370,7 @@ function isExpiredSession(row) {
   return Date.parse(row.expiresAt) <= Date.now();
 }
 function createSessionToken() {
-  return nodeCryptoModule2.randomBytes(32).toString("base64url");
+  return nodeCryptoModule3.randomBytes(32).toString("base64url");
 }
 async function refreshSessionOnAdapter(sqlite, token) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -10038,7 +11390,7 @@ async function resolveAnonymousSession(database, sessionToken) {
     }
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const userId = nodeCryptoModule2.randomUUID();
+  const userId = nodeCryptoModule3.randomUUID();
   const token = createSessionToken();
   await database.adapter.withTransaction(async (tx) => {
     await tx.insertAuthUser({
@@ -10380,7 +11732,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
       });
     } else {
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule2.randomUUID(),
+        id: nodeCryptoModule3.randomUUID(),
         userId: auth.userId,
         provider,
         subject,
@@ -10613,10 +11965,10 @@ async function beginOAuthSignIn(database, session, provider, options) {
   }
   const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
   const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = nodeCryptoModule2.randomBytes(32).toString("base64url");
-  const nonce = nodeCryptoModule2.randomBytes(32).toString("base64url");
-  const pkceVerifier = nodeCryptoModule2.randomBytes(48).toString("base64url");
-  const pkceChallenge = nodeCryptoModule2.createHash("sha256").update(pkceVerifier).digest("base64url");
+  const state = nodeCryptoModule3.randomBytes(32).toString("base64url");
+  const nonce = nodeCryptoModule3.randomBytes(32).toString("base64url");
+  const pkceVerifier = nodeCryptoModule3.randomBytes(48).toString("base64url");
+  const pkceChallenge = nodeCryptoModule3.createHash("sha256").update(pkceVerifier).digest("base64url");
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
   let started;
@@ -10751,15 +12103,6 @@ function ensureSessionProvenanceColumn(sqlite) {
       )
     )
   ]);
-}
-
-// src/runtime-log-policy.ts
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
 // src/inspection-sql.ts
@@ -11310,89 +12653,8 @@ function chainSchemaOperation(previous, operation) {
   return operation();
 }
 
-// src/stored-value-coding.ts
-function deserializeFieldValue(field, value) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
-function deserializeRow(table, row) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
-}
-function serializeFieldValue(field, value) {
-  if (value === void 0) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-function normalizeDateValue(value, fieldName) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-function toSqlNumber(value, fieldName) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError2(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
-  }
-  return value;
-}
-function dateValueError(fieldName) {
-  return commandError2(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value."
-  );
-}
-
 // src/database-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
   if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
@@ -12967,7 +14229,7 @@ function normalizeSchema(schema) {
   };
 }
 function hashSchema(schemaJson) {
-  return nodeCryptoModule3.createHash("sha256").update(schemaJson).digest("hex");
+  return nodeCryptoModule4.createHash("sha256").update(schemaJson).digest("hex");
 }
 function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
   const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
@@ -13170,1187 +14432,16 @@ function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
-// src/jobs-runtime.ts
-var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
-var RESERVED_JOB_NAME_PREFIX = "_sporades";
-function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
-  const schedules = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError2(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name)) throw commandError2(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError2(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
-    const expression = parseScheduleExpression(definition.expression);
-    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
-    const payload = definition.payload === void 0 ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    const retry = normalizeJobRetry(definition.retry);
-    const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError2(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError2(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
-    const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
-  }
-  return schedules;
-}
-function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
-  const scheduling = config.scheduling;
-  if (scheduling === void 0) return 3e4;
-  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError2("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError2("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  return seconds * 1e3;
-}
-function parseScheduleExpression(value) {
-  if (typeof value !== "string") throw commandError2("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
-  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
-  const fields = parts.map((part, index) => {
-    const values = /* @__PURE__ */ new Set();
-    for (const item of part.split(",")) {
-      const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
-      const step = stepText === void 0 ? 1 : Number(stepText);
-      let start, end;
-      if (base === "*") [start, end] = ranges[index];
-      else if (/^\d+$/.test(base)) start = end = Number(base);
-      else {
-        const match = /^(\d+)-(\d+)$/.exec(base);
-        if (!match) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
-        start = Number(match[1]);
-        end = Number(match[2]);
-      }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError2(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current = start; current <= end; current += step) values.add(index === 4 && current === 7 ? 0 : current);
-    }
-    return values;
-  });
-  fields.restricted = parts.map((part) => part !== "*");
-  return fields;
-}
-function resolveScheduleTimezone(value) {
-  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError2("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
-  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
-  } catch {
-    throw commandError2(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
-  }
-}
-function scheduleWallClockParts(formatter, instant) {
-  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
-}
-function nextScheduleOccurrence(fields, after, timezone) {
-  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone: timezone,
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
-  const candidate = new Date(after.getTime());
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
-    const local = scheduleWallClockParts(formatter, candidate);
-    const dom = fields[2].has(local.day);
-    const dow = fields[4].has(local.weekday);
-    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
-    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
-    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
-  }
-  throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
-}
-async function ensureScheduleStorage(sqlite) {
-  const sql = sqlite.dialect.sql;
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
-    )
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
-    )
-  );
-}
-async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
-  const scheduledFor = occurrence.toISOString();
-  const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const completedAt = database.clock.now().toISOString();
-  const code = "SCHEDULE_ENQUEUE_FAILED";
-  const sql = database.adapter.dialect.sql;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
-}
-function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
-  return nodeCryptoModule4.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
-}
-async function acquireSchedulePayloadFactorySlot(database) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
-  };
-}
-async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
-  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
-  let unlock = () => {
-  };
-  const current = new Promise((resolve) => {
-    unlock = resolve;
-  });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current);
-  if (previous) await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
-  };
-}
-async function resolveSchedulePayload(database, definition, scheduledFor, context) {
-  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
-  let releaseSlot;
-  const controller = new AbortController();
-  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
-  controllers.add(controller);
-  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
-  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
-  let timeout;
-  try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
-    const timeoutFailure = new Promise((_resolve, reject) => {
-      timeout = database.clock.setTimer(() => {
-        controller.abort();
-        const error = new Error("Schedule payload factory timed out.");
-        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
-        reject(error);
-      }, database.schedulePayloadFactoryTimeoutMs);
-    });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
-    database.clock.clearTimer(timeout);
-    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    return { ok: true, value };
-  } catch (error) {
-    database.clock.clearTimer(timeout);
-    const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
-    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
-    return { ok: false };
-  } finally {
-    controllers.delete(controller);
-    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
-    releaseSlot?.();
-    releaseLane();
-  }
-}
-function abortSchedulePayloadFactories(database) {
-  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
-}
-function createRuntimeClock(clock) {
-  if (clock) return clock;
-  return {
-    now: () => /* @__PURE__ */ new Date(),
-    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimer: (timer) => clearTimeout(timer)
-  };
-}
-function runtimeOwnedJobHandlers(runtime) {
-  return [
-    {
-      name: PASSWORD_RESET_MAIL_JOB,
-      handler: async (ctx, payload) => {
-        return await ctx.mail.send({
-          to: payload.to,
-          subject: payload.subject,
-          textBody: payload.textBody,
-          htmlBody: payload.htmlBody
-        });
-      }
-    },
-    {
-      name: PASSWORD_RESET_REQUEST_JOB,
-      handler: async (ctx, payload) => {
-        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
-        if (!delivery) return;
-        return await ctx.mail.send(delivery);
-      }
-    }
-  ];
-}
-function isReservedJobName(name) {
-  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
-}
-function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
-  const handlers = [];
-  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError2("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
-    }
-    if (isReservedJobName(name)) {
-      throw commandError2(
-        `Reserved Job handler name: ${name}`,
-        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
-        "RESERVED_JOB_NAME"
-      );
-    }
-    if (handlers.some((handler) => handler.name === name)) {
-      throw commandError2(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
-    }
-    handlers.push({ name, handler: definition.handler });
-  }
-  return handlers;
-}
-async function ensureJobStorage(sqlite) {
-  const sql = sqlite.dialect.sql;
-  await sqlite.exec(
-    sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
-    )
-  );
-  await sqlite.exec(
-    sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
-    )
-  );
-  await sqlite.exec(
-    sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
-  );
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
-  await sqlite.exec(
-    sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
-  );
-}
-async function scheduleSummary(sqlite, row) {
-  const invalid = (field) => {
-    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
-    error.scheduleName = typeof row?.name === "string" ? row.name : null;
-    error.field = field;
-    return error;
-  };
-  if (typeof row.name !== "string" || !row.name) throw invalid("name");
-  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
-  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
-  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
-  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
-  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
-  let latestOccurrence = null;
-  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
-  if (latestOutcome === "enqueued") {
-    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
-    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
-    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
-    if (!job) throw invalid("latestOccurrence.jobId");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
-  } else if (latestOutcome === "payload-failed") {
-    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
-    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
-    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
-  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
-  return {
-    name: String(row.name),
-    expression: String(row.expression),
-    timezone: String(row.effectiveTimezone),
-    missedRun: String(row.missedRunPolicy),
-    enabled: Boolean(row.enabled),
-    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
-    latestOccurrence
-  };
-}
-function assertJobScheduleProvenance(row, expected) {
-  if (!expected) return;
-  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
-    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
-  }
-}
-function jobError(code, message, hint) {
-  const error = new Error(message);
-  error.code = code;
-  error.hint = hint;
-  return error;
-}
-function boundedJobJson(value, limit, code, label) {
-  let serialized;
-  try {
-    assertJsonCompatible(value);
-    serialized = JSON.stringify(value);
-  } catch {
-    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
-  }
-  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized;
-}
-function jobState(row, includeDetail) {
-  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
-  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
-  if (includeDetail && row.result) state.result = JSON.parse(row.result);
-  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
-  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
-  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
-  return state;
-}
-function jobActorProvider(auth) {
-  const provider = auth?.provider;
-  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
-  return auth?.isGuest ? "anonymous" : "authenticated";
-}
-function normalizeJobRetry(value) {
-  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
-  if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs.");
-  return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
-}
-async function cancelJob(database, context, id) {
-  const sql = database.adapter.dialect.sql;
-  const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
-  if (!row) return null;
-  const now = database.clock.now().toISOString();
-  if (["queued", "delayed"].includes(row.status)) {
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
-  }
-  if (row.status === "running") {
-    database.__jobAbortControllers?.get(id)?.abort();
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, cancelRequestedAt: now }, true);
-  }
-  throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
-}
-function jobSummary(row) {
-  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
-}
-function encodeJobCursor(row) {
-  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
-}
-function decodeJobCursor(value) {
-  if (value === void 0) return null;
-  try {
-    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
-    return cursor;
-  } catch {
-    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
-  }
-}
-function safeJobFailure(error) {
-  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
-  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
-  const messages = {
-    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
-    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
-    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
-    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
-    JOB_FAILED: "Job handler failed."
-  };
-  return { code, message: messages[code] };
-}
-
-// src/acl-runtime.ts
-var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
-function createPrivilegedAuditEmitter(log) {
-  return {
-    emit(details) {
-      return emitPrivilegedAuditEvent(log, details);
-    }
-  };
-}
-function emitPrivilegedAuditEvent(target, details = {}) {
-  const log = target?.log?.emit ? target.log : target;
-  if (!log?.emit) {
-    throw new Error("Privileged audit events require a runtime log sink.");
-  }
-  return log.emit(createPrivilegedAuditLogInput(details));
-}
-async function emitPrivilegedRunAudit(database, context, details) {
-  const event = await database.audit.emit(details);
-  recordPrivilegedAuditEventForTransaction(context, event);
-  return event;
-}
-function recordPrivilegedAuditEventForTransaction(context, event) {
-  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
-    return;
-  }
-  if (!Array.isArray(context.__privilegedAuditEvents)) {
-    Object.defineProperty(context, "__privilegedAuditEvents", {
-      value: [],
-      enumerable: false,
-      configurable: true
-    });
-  }
-  context.__privilegedAuditEvents.push(event);
-}
-async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
-  const events = context?.__privilegedAuditEvents;
-  if (!Array.isArray(events) || events.length === 0) {
-    return;
-  }
-  for (const event of events) {
-    try {
-      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
-        continue;
-      }
-      await database.adapter.insertLogIndexEvent(event);
-    } catch {
-      return;
-    }
-  }
-  try {
-    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
-  } catch {
-  }
-}
-async function privilegedAuditEventAlreadyIndexed(database, event) {
-  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
-  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
-}
-function samePrivilegedAuditLogEvent(left, right) {
-  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
-}
-function normalizePrivilegedRunSignal(value) {
-  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
-    return value;
-  }
-  return new AbortController().signal;
-}
-function createPrivilegedRunAbortError() {
-  return commandError2(
-    "Privileged run aborted.",
-    "Retry the privileged operation if cancellation was not intended.",
-    "ABORTED"
-  );
-}
-function createPrivilegedRunAuditDetails(context, options) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
-  }
-  const operation = validatedPrivilegedOperation(options.operation);
-  const metadata = validatedPrivilegedMetadata(options.metadata);
-  return {
-    actorKind: "privileged-server-role",
-    operation,
-    surface: auditString(options.surface ?? context?.kind, "server-handler"),
-    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
-    correlation: options.correlation ?? null,
-    request: options.request ?? null,
-    source: "runtime",
-    metadata
-  };
-}
-function validatedPrivilegedOperation(value) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
-  }
-  const operation = value.trim();
-  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
-    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
-  }
-  return operation;
-}
-function validatedPrivilegedMetadata(value) {
-  if (value === void 0) {
-    return {};
-  }
-  if (!isPlainPrivilegedMetadata(value)) {
-    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
-  }
-  return { ...value };
-}
-function isPlainPrivilegedMetadata(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  if (typeof value.then === "function") {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-function invalidPrivilegedRunMetadata(message) {
-  return commandError2(
-    message,
-    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
-    "INVALID_PRIVILEGED_RUN_METADATA"
-  );
-}
-function createPrivilegedRunPublicError(cause) {
-  const error = commandError2(
-    "Privileged run failed.",
-    "Check the privileged audit events and server logs before exposing a safe response.",
-    "PRIVILEGED_RUN_FAILED"
-  );
-  error.cause = cause;
-  return error;
-}
-function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
-  const error = commandError2(
-    "Privileged audit emission failed.",
-    "Check the server audit log configuration before retrying the privileged operation.",
-    "PRIVILEGED_AUDIT_EMISSION_FAILED"
-  );
-  error.cause = cause;
-  if (context) {
-    error.privilegedAuditContext = context;
-  }
-  return error;
-}
-function isPrivilegedAuditEmissionPublicError(error) {
-  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
-}
-function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => (database.__rootDatabase ?? database).adapter;
-  return {
-    async get(name) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name);
-      return row ? await scheduleSummary(sqlite(), row) : null;
-    },
-    async list() {
-      assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
-      const summaries = [];
-      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
-      return summaries;
-    }
-  };
-}
-function createPrivilegedFileApi(database, contextGetter) {
-  return Object.freeze({
-    async url(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      const row = resolved.row;
-      if (!row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: {
-            ...fileMetadataFromRow(row),
-            ownerId: row.ownerId
-          }
-        },
-        error: null
-      };
-    },
-    async createPublicUrl(fileReference, options = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
-    },
-    async delete(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
-    },
-    unsupported() {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        throw commandError2(
-          active.error?.message ?? "Privileged file access is no longer active.",
-          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
-          "PRIVILEGED_FILE_ACCESS_INACTIVE"
-        );
-      }
-      throw commandError2(
-        "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
-        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
-      );
-    }
-  });
-}
-function activePrivilegedFileAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "Privileged file access is no longer active.",
-      "Start a new ctx.privileged.run callback before using privileged file operations."
-    )
-  };
-}
-function createPrivilegedAuditLogInput(details = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
-  };
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
-    data,
-    request: details.request ?? null,
-    release,
-    correlation
-  };
-}
-function normalizePrivilegedAuditActorKind(value) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
-  if (source === null || source === void 0 || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-function normalizePrivilegedAuditCorrelation(value) {
-  if (value === null || value === void 0) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-function auditString(value, fallback) {
-  const text2 = value === null || value === void 0 ? "" : String(value);
-  return text2.trim() ? text2 : fallback;
-}
-function normalizeTableAcl(tableName, aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === void 0) {
-    return {
-      allowByDefault: true,
-      resolve(operation) {
-        return resolveEffectiveAclRule(this, operation);
-      }
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError2(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete."
-    );
-  }
-  const normalized = {
-    allowByDefault: true
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError2(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete."
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError2(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete."
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve(operation) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-function resolveEffectiveAclRule(aclRules, operation) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return void 0;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
-}
-function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
-  return {
-    ...aclContext,
-    acl: createAclHelpers(database, context)
-  };
-}
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: /* @__PURE__ */ new WeakSet(),
-      enumerable: false,
-      configurable: false
-    });
-  }
-  return holder.contexts;
-}
-function grantPrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().add(context);
-  }
-  return context;
-}
-function revokePrivilegedDbAccess(context) {
-  if (context && typeof context === "object") {
-    privilegedDbAccessContextSet().delete(context);
-  }
-  return context;
-}
-function hasPrivilegedDbAccess(context) {
-  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
-}
-function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context,
-    table,
-    operation,
-    previous,
-    next
-  });
-  const deny = () => {
-    if (!context?.__pendingAclWrites) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next
-  });
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      deny();
-    }
-    return write();
-  });
-  context?.__pendingAclWrites?.push(pending);
-  return pending;
-}
-function applyReadAcl(database, table, row, context) {
-  if (hasPrivilegedDbAccess(context)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context, database);
-  const result = rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row
-  });
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context,
-      table,
-      operation: "read",
-      row
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    return result && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny();
-  }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny());
-}
-function filterRowsByReadAcl(database, table, rows, context) {
-  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
-  }
-  return rows.filter((_, index) => decisions[index]);
-}
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-function createAclHelpers(database, context) {
-  const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state),
-    teams: createAclTeamHelpers(database, context, state)
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false
-  });
-  return Object.freeze(helpers);
-}
-function createAclTeamHelpers(database, context, state) {
-  return Object.freeze({
-    isMember(teamId) {
-      const membership = readAclTeamMembership(database, context, state, teamId);
-      return membership?.role === "admin" || membership?.role === "member";
-    },
-    isAdmin(teamId) {
-      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
-    },
-    hasRole(teamId, role) {
-      assertAclHelperReadAllowed(state);
-      if (!isActiveAclTeamApplicationRole(database, role)) return false;
-      const actorUserId = aclTeamActorUserId(context);
-      if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
-      )).get(teamId, actorUserId, role);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return selected?.role === role;
-    },
-    hasAnyRole(teamId, roles) {
-      assertAclHelperReadAllowed(state);
-      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
-      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
-      if (activeRoles.length !== roles.length) return false;
-      const actorUserId = aclTeamActorUserId(context);
-      if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const placeholders = activeRoles.map(() => "?").join(", ");
-      const selected = database.adapter.prepare(database.adapter.dialect.sql(
-        `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
-      )).all(teamId, actorUserId, ...activeRoles);
-      if (markAsyncAclHelperRead(state, selected)) return false;
-      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
-    }
-  });
-}
-function readAclTeamMembership(database, context, state, teamId) {
-  assertAclHelperReadAllowed(state);
-  const actorUserId = aclTeamActorUserId(context);
-  if (!actorUserId || !isAclTeamId(teamId)) return null;
-  const selected = database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, actorUserId);
-  if (markAsyncAclHelperRead(state, selected)) return null;
-  return selected ?? null;
-}
-function aclTeamActorUserId(context) {
-  const auth = context?.auth;
-  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
-  return auth.userId;
-}
-function isAclTeamId(value) {
-  return typeof value === "string" && value.length > 0 && value.length <= 128;
-}
-function isActiveAclTeamApplicationRole(database, role) {
-  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
-}
-function aclRuleTouchedAsyncHelperRead(aclContext) {
-  return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
-}
-function markAsyncAclHelperRead(state, result) {
-  if (isPromiseLike(result)) {
-    state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {
-    });
-    return true;
-  }
-  return false;
-}
-function createAclDbHelpers(database, state) {
-  return Object.freeze({
-    get(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return null;
-      }
-      return selected ? deserializeRow(table, selected) : null;
-    },
-    exists(tableName, id) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = database.adapter.selectAppRowById(table, id);
-      if (markAsyncAclHelperRead(state, selected)) {
-        return false;
-      }
-      return Boolean(selected);
-    }
-  });
-}
-function createAclStorageHelpers(database, state) {
-  return Object.freeze({
-    get(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = resolveAclStorageFileReference(database, state, reference);
-        return row ? aclStorageMetadataFromFileRow(row) : null;
-      }
-      return null;
-    },
-    exists(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        return Boolean(resolveAclStorageFileReference(database, state, reference));
-      }
-      return false;
-    }
-  });
-}
-function resolveAclStorageFileReference(database, state, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path12;
-    try {
-      path12 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected2 = database.adapter.selectLiveFileByPath(path12);
-    if (markAsyncAclHelperRead(state, selected2)) {
-      return null;
-    }
-    const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
-    return resolved?.ambiguous ? null : resolved;
-  }
-  const selected = database.adapter.selectFileById(value);
-  if (markAsyncAclHelperRead(state, selected)) {
-    return null;
-  }
-  if (!selected || selected.deletedAt !== null || selected.status !== "uploaded") {
-    return null;
-  }
-  return selected;
-}
-function assertAclHelperReadAllowed(state) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError2("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-function resolveAclAppTable(database, tableName) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
-  if (!table) {
-    throw commandError2("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-function resolveAclStorageResource(resourceName) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError2("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-function aclStorageMetadataFromFileRow(row) {
-  const metadata = fileMetadataFromRow(row);
-  return {
-    ...metadata,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null
-  };
-}
-function emitAclDeniedLog(database, details) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details)
-  });
-}
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation)
-    },
-    actor: {
-      userId: context?.auth?.userId ?? null,
-      provider: context?.auth?.provider ?? null,
-      isAuthenticated: context?.auth?.isAuthenticated ?? null,
-      isGuest: context?.auth?.isGuest ?? null
-    },
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
-  };
-}
-function aclRuleDeclaredOperation(table, operation) {
-  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-function aclRowLogSnapshot(input) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next)
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input)
-  };
-}
-function aclVisibleFieldNames(row) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
-  );
-}
-function createAclDeniedError(logData = null) {
-  const error = commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
-function assertActivePrivilegedJobAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-async function drainPendingAclWrites(context) {
-  let firstError = null;
-  while (context?.__pendingAclWrites?.length > 0) {
-    const pending = context.__pendingAclWrites.splice(0);
-    const results = await Promise.allSettled(pending);
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
-  }
-}
-
 // src/server-runtime-source.ts
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
+  if (capsuleDefinition?.files !== void 0 && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
+    throw commandError2("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+  }
+  const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path12 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
@@ -14431,6 +14522,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
+    fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,

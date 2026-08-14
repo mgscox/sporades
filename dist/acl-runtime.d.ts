@@ -93,7 +93,47 @@ export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
 };
 export declare function safePrivilegedAuditErrorCode(value: any, outcome?: string): string | null;
 export declare function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined): LooseRecord;
+export declare function normalizeFileAcl(aclRules: LooseRecord | undefined): LooseRecord;
 export declare function createTableAclContext(context: any, database: any): any;
+export declare function createFileAclContext(auth: LooseRecord, database: LooseRecord): Readonly<{
+    auth: Readonly<{
+        [x: string]: any;
+    }>;
+    acl: Readonly<{
+        db: Readonly<{
+            get(tableName: any, id: any): {
+                [x: string]: any;
+            } | null;
+            exists(tableName: any, id: any): boolean;
+        }>;
+        storage: Readonly<{
+            get(resourceName: any, reference: any): {
+                originalName: any;
+                owner: any;
+                ownerId: any;
+                status: any;
+                createdAt: any;
+                updatedAt: any;
+                deletedAt: any;
+                id: any;
+                bucket: any;
+                size: number;
+                type: any;
+                name: any;
+                path: any;
+                version: any;
+            } | null;
+            exists(resourceName: any, reference: any): boolean;
+        }>;
+        teams: Readonly<{
+            isMember(teamId: any): boolean;
+            isAdmin(teamId: any): boolean;
+            hasRole(teamId: any, role: any): boolean;
+            hasAnyRole(teamId: any, roles: any): boolean;
+        }>;
+    }>;
+}>;
+export declare function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord): boolean | Promise<boolean>;
 export declare function grantPrivilegedDbAccess(context: any): any;
 export declare function revokePrivilegedDbAccess(context: any): any;
 export declare function runTableWriteWithAcl(database: any, table: LooseRecord, operation: string, previous: any, next: any, contextGetter: any, write: () => any): any;

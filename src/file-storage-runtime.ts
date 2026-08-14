@@ -118,6 +118,7 @@ import type { BinaryLike, KeyObject } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
+import { applyFileAcl } from "./acl-runtime.js";
 import type { HelperError } from "./runtime-errors.js";
 
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
@@ -795,7 +796,7 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
 }
 
 export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any) {
-  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
+  const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read");
   if (!resolved.ok) {
     return resolved;
   }
@@ -823,7 +824,7 @@ export async function createPublicFileUrl(database: LooseRecord, auth: LooseReco
   }
   return await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
     if (!resolved.ok) {
       return resolved;
     }
@@ -880,7 +881,7 @@ export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord
   const now = new Date().toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    const resolved: any = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
     if (!resolved.ok) {
       return resolved;
     }
@@ -891,7 +892,7 @@ export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
       };
     }
-    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
     await sqlite.deleteFileUploadsForPath(row.path);
     await sqlite.markFileDeleted(row.id, now);
     await sqlite.revokePublicFileUrlsForFile(row.id, now);
@@ -961,6 +962,11 @@ export async function fileRowForOwner(database: LooseRecord, fileId: string, own
     return resolved.ok ? resolved.row : null;
   }
   return await database.adapter.fileRowForOwner(reference, ownerId);
+}
+
+export async function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any) {
+  const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+  return resolved.ok ? resolved.row : null;
 }
 
 export function fileMetadataFromRow(row: LooseRecord) {
@@ -1071,6 +1077,14 @@ async function resolveLiveFileReference(database: LooseRecord, ownerId: any, ref
     return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
   }
   return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+
+async function resolveAccessibleFileReference(database: LooseRecord, auth: LooseRecord, reference: string, operation: string) {
+  const resolved: any = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  if (resolved.row.ownerId === auth?.userId) return resolved;
+  const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+  return { ok: true, row: allowed ? resolved.row : null };
 }
 
 export async function resolvePrivilegedLiveFileReference(database: LooseRecord, reference: any) {

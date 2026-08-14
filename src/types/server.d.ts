@@ -137,6 +137,40 @@ export type TableAclRule<Row extends Record<string, unknown> = Record<string, un
   input: TableAclRuleInput<Row>,
 ) => MaybePromise<boolean>;
 
+/** File operations that a Capsule may deliberately share beyond the file owner. */
+export type FileAclOperation = "read" | "publicUrl" | "delete";
+
+/**
+ * Read-only context available while evaluating a File ACL rule.
+ *
+ * Unlike a trusted Capsule handler this never exposes `ctx.teams`, `ctx.db`,
+ * request state, or Privileged server role. Use `ctx.acl.teams` with an
+ * explicit Team ID stored in the Capsule's own File-policy model.
+ */
+export type FileAclContext = {
+  auth: AuthContext;
+  acl: AclHelpers;
+};
+
+/** Stable File metadata supplied to a File ACL rule; it never includes bytes or storage credentials. */
+export type FileAclRuleInput = {
+  ctx: FileAclContext;
+  operation: FileAclOperation;
+  file: AclStorageFileMetadata;
+};
+
+export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
+
+/**
+ * Optional rules that extend normal File ownership with explicit Capsule ACL.
+ * Owner access remains unchanged; absent rules never widen File access.
+ */
+export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
+
+export type CapsuleFilesDefinition = {
+  acl?: FileAclRules;
+};
+
 /**
  * Per-operation table ACL rules.
  *
@@ -764,6 +798,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: { appRoles?: readonly string[] };
+  /** Optional File ACL rules for deliberate non-owner access to normal File operations. */
+  files?: CapsuleFilesDefinition;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];
