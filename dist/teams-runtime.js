@@ -2,21 +2,24 @@
 // storage, never in a Capsule schema or the normal ctx.db API.
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "./auth-runtime.js";
+import { chainMaybePromise } from "./maybe-promise.js";
 const INITIAL_TEAM_NAME = "My Team";
 const TEAM_NAME_MAX_BYTES = 80;
 const TEAM_MEMBER_COUNT_MAX = 99;
 const TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 export function createTeamTables(adapter) {
     const sql = adapter.dialect.sql;
-    return Promise.all([
-        adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_teams] (" +
+    // Runtime storage DDL is ordered for every adapter, matching auth and file
+    // storage bootstrap: a later table is never attempted after an earlier error.
+    return chainMaybePromise([
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_teams] (" +
             "[id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL" +
             ")")),
-        adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_memberships] (" +
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_memberships] (" +
             "[teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, " +
             "PRIMARY KEY ([teamId], [userId])" +
             ")")),
-        adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] (" +
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] (" +
             "[userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
             ")")),
     ]);

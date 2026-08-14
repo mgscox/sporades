@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signUpWithEmail } from "../dist/server-runtime-source.js";
-import { listCurrentUserTeams } from "../dist/teams-runtime.js";
+import { createTeamTables, listCurrentUserTeams } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -19,6 +19,41 @@ test("Capsules cannot adopt runtime-owned Team tables through ctx.db schema", as
       (error) => error?.code === "RESERVED_TABLE_NAME",
     );
   });
+});
+
+test("Capsules cannot bypass the complete runtime Team namespace with case or future names", async () => {
+  for (const name of ["SPORADES_TEAMS", "SPORADES_TEAM_BOOTSTRAP", "sporades_teamfuture"]) {
+    await withDatabase(async (databasePath) => {
+      await assert.rejects(
+        () => openDevDatabase(databasePath, "", {}, { name: "teams-isolation" }, {
+          name: "teams-isolation",
+          schema: { [name]: table({ leaked: String() }) },
+        }),
+        (error) => error?.code === "RESERVED_TABLE_NAME",
+        name,
+      );
+    });
+  }
+});
+
+test("Team runtime DDL runs in deterministic table order", async () => {
+  const calls = [];
+  let releaseFirst;
+  const adapter = {
+    dialect: { sql: (statement) => statement },
+    exec(statement) {
+      calls.push(statement);
+      if (calls.length === 1) return new Promise((resolve) => { releaseFirst = resolve; });
+    },
+  };
+  const created = createTeamTables(adapter);
+  assert.equal(calls.length, 1, "the second DDL statement waits for the first");
+  releaseFirst();
+  await created;
+  assert.equal(calls.length, 3);
+  assert.match(calls[0], /sporades_teams/);
+  assert.match(calls[1], /sporades_team_memberships/);
+  assert.match(calls[2], /sporades_team_bootstrap/);
 });
 
 test("concurrent initial Team listing shares one SQLite bootstrap transaction", async () => {

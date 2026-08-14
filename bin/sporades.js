@@ -9746,14 +9746,14 @@ var TEAM_MEMBER_COUNT_MAX = 99;
 var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 function createTeamTables(adapter) {
   const sql = adapter.dialect.sql;
-  return Promise.all([
-    adapter.exec(sql(
+  return chainMaybePromise([
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
     )),
-    adapter.exec(sql(
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
     )),
-    adapter.exec(sql(
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     ))
   ]);
@@ -14038,10 +14038,10 @@ function schemaTableFromCapsuleTable(name, table) {
   };
 }
 function assertNotReservedTeamTableName(name) {
-  if (name === "sporades_teams" || name.startsWith("sporades_team_")) {
+  if (name.toLowerCase().startsWith("sporades_team")) {
     throw commandError2(
       `Reserved runtime table name: ${name}`,
-      "Choose a Capsule table name outside the sporades_team_ runtime namespace.",
+      "Choose a Capsule table name outside the sporades_team runtime namespace.",
       "RESERVED_TABLE_NAME"
     );
   }

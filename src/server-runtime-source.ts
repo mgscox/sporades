@@ -1152,10 +1152,10 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
 }
 
 function assertNotReservedTeamTableName(name: string) {
-  if (name === "sporades_teams" || name.startsWith("sporades_team_")) {
+  if (name.toLowerCase().startsWith("sporades_team")) {
     throw commandError(
       `Reserved runtime table name: ${name}`,
-      "Choose a Capsule table name outside the sporades_team_ runtime namespace.",
+      "Choose a Capsule table name outside the sporades_team runtime namespace.",
       "RESERVED_TABLE_NAME",
     );
   }

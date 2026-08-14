@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 import { requireAuth } from "./auth-runtime.js";
+import { chainMaybePromise } from "./maybe-promise.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -13,19 +14,21 @@ const TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 
 export function createTeamTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
-  return Promise.all([
-    adapter.exec(sql(
+  // Runtime storage DDL is ordered for every adapter, matching auth and file
+  // storage bootstrap: a later table is never attempted after an earlier error.
+  return chainMaybePromise([
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_teams] (" +
       "[id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL" +
       ")",
     )),
-    adapter.exec(sql(
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] (" +
       "[teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, " +
       "PRIMARY KEY ([teamId], [userId])" +
       ")",
     )),
-    adapter.exec(sql(
+    () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] (" +
       "[userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
       ")",

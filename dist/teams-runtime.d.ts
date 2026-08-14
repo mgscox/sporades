@@ -1,5 +1,5 @@
 type LooseRecord = Record<string, any>;
-export declare function createTeamTables(adapter: LooseRecord): Promise<[any, any, any]>;
+export declare function createTeamTables(adapter: LooseRecord): any;
 export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseRecord): {
     list(): Promise<{
         teams: any;
