@@ -9743,6 +9743,7 @@ import { randomUUID } from "node:crypto";
 var INITIAL_TEAM_NAME = "My Team";
 var TEAM_NAME_MAX_BYTES = 80;
 var TEAM_MEMBER_COUNT_MAX = 99;
+var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 function createTeamTables(adapter) {
   const sql = adapter.dialect.sql;
   return Promise.all([
@@ -9790,13 +9791,31 @@ async function ensureInitialTeam(database, auth) {
   root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
   const running = root.__teamBootstrapByUser.get(auth.userId);
   if (running) return running;
-  const work = database.adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth));
+  root.__teamBootstrapQueue = work;
   root.__teamBootstrapByUser.set(auth.userId, work);
   try {
     return await work;
   } finally {
     if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
   }
+}
+async function bootstrapWithRetry(adapter, auth) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+    } catch (error) {
+      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+function isTransientTeamBootstrapError(error) {
+  const text2 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 async function ensureInitialTeamOnAdapter(tx, auth) {
   const sql = tx.dialect.sql;

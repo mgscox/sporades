@@ -27,6 +27,9 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_log_events",
   "sporades_schedule_occurrences",
   "sporades_schedules",
+  "sporades_team_bootstrap",
+  "sporades_team_memberships",
+  "sporades_teams",
   "sporades_user_preferences",
 ];
 

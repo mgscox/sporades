@@ -9,6 +9,7 @@ type LooseRecord = Record<string, any>;
 const INITIAL_TEAM_NAME = "My Team";
 const TEAM_NAME_MAX_BYTES = 80;
 const TEAM_MEMBER_COUNT_MAX = 99;
+const TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 
 export function createTeamTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
@@ -68,19 +69,40 @@ async function ensureInitialTeam(database: LooseRecord, auth: LooseRecord) {
     return ensureInitialTeamOnAdapter(database.adapter, auth);
   }
   // node:sqlite has one connection, so two simultaneous BEGIN calls fail
-  // before the durable bootstrap uniqueness claim can arbitrate. Coalesce only
-  // this user on this runtime; the database key remains the cross-runtime guard.
+  // before the durable bootstrap uniqueness claim can arbitrate. Queue every
+  // bootstrap on this runtime; the database key remains the cross-runtime guard.
   const root = database.__rootDatabase ?? database;
   root.__teamBootstrapByUser ??= new Map();
   const running = root.__teamBootstrapByUser.get(auth.userId);
   if (running) return running;
-  const work = database.adapter.withTransaction((tx: LooseRecord) => ensureInitialTeamOnAdapter(tx, auth));
+  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
+  const work = previous.catch(() => undefined).then(() => bootstrapWithRetry(database.adapter, auth));
+  root.__teamBootstrapQueue = work;
   root.__teamBootstrapByUser.set(auth.userId, work);
   try {
     return await work;
   } finally {
     if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
   }
+}
+
+async function bootstrapWithRetry(adapter: LooseRecord, auth: LooseRecord) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction((tx: LooseRecord) => ensureInitialTeamOnAdapter(tx, auth));
+    } catch (error) {
+      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+
+function isTransientTeamBootstrapError(error: any) {
+  const text = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") &&
+    (text.includes("locked") || text.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 
 async function ensureInitialTeamOnAdapter(tx: LooseRecord, auth: LooseRecord) {
