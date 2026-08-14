@@ -13043,7 +13043,7 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database)

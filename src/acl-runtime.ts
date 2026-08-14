@@ -527,7 +527,10 @@ function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: 
 }
 
 export function createTableAclContext(context: any, database: any) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  // ACL evaluation is deliberately read-only. Current-user Teams can lazily
+  // bootstrap durable state, so Ticket 10 must introduce a constrained helper
+  // rather than exposing the normal Team API to policy callbacks.
+  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database),

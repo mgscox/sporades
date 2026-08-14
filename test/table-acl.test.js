@@ -106,6 +106,42 @@ test("missing ACL rules allow operations by default", async () => {
   });
 });
 
+test("table ACL callbacks do not receive the mutable current-user Teams API", async () => {
+  await withTempDir(async (dir) => {
+    let observedTeams;
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({ title: String() }).acl({
+          read: ({ ctx }) => {
+            observedTeams = ctx.teams;
+            return !Object.hasOwn(ctx, "teams");
+          },
+        }),
+      },
+      queries: { notes: query((ctx) => ctx.db.notes.all()) },
+    });
+
+    try {
+      database.adapter.insertAppRow(database.schema.tables[0], {
+        id: "note-1",
+        title: "ACL-safe",
+        createdAt: "2026-08-14T00:00:00.000Z",
+        updatedAt: "2026-08-14T00:00:00.000Z",
+      });
+      const result = await runQuery(database, {
+        ...auth("linked-user"),
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "email",
+      }, "notes");
+      assert.equal(observedTeams, undefined);
+      assert.deepEqual(result.data.map((row) => row.title), ["ACL-safe"]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("invalid ACL declarations fail with structured Capsule errors", async () => {
   await withTempDir(async (dir) => {
     await assert.rejects(
