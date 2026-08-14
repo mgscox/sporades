@@ -86,6 +86,9 @@ export const teams = {
   validateJoinLink(code) {
     return connect().teamsValidateJoinLink(code);
   },
+  join(code) {
+    return connect().teamsJoin(code);
+  },
 };
 
 export const journey = {
@@ -1102,6 +1105,7 @@ function createConnection() {
     teamsRevokeJoinLink(teamId, joinLinkId) { return request("teams.revokeJoinLink", { teamId, joinLinkId }); },
     teamsInspectJoinLink(code) { return request("teams.inspectJoinLink", { code }); },
     teamsValidateJoinLink(code) { return request("teams.validateJoinLink", { code }); },
+    teamsJoin(code) { return request("teams.join", { code }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -7128,6 +7132,9 @@ function createTeamTables(adapter) {
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_counters] ([teamId] TEXT PRIMARY KEY, [activeCount] INTEGER NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_redemptions] ([joinLinkId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     ))
   ]);
 }
@@ -7166,6 +7173,9 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
     },
     async validateJoinLink(code) {
       return validateTeamJoinLink(database, auth, code);
+    },
+    async join(code) {
+      return joinCurrentUserTeam(database, auth, code, contextGetter?.());
     }
   };
 }
@@ -7303,6 +7313,84 @@ async function validateTeamJoinLink(database, auth, code) {
   const valid = attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail);
   return { valid };
 }
+async function joinCurrentUserTeam(database, auth, code, eventContext) {
+  let joined;
+  try {
+    requireAuth({ auth }, { linked: true });
+    const parsed = parseTeamJoinCode(code);
+    if (!parsed) throw invalidTeamJoinLink();
+    joined = await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      const row = await tx.prepare(sql(
+        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+      )).get(parsed.selector);
+      const secretRow = await tx.prepare(sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+      const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+      const expectedSignature = Buffer.from(
+        row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"),
+        "base64url"
+      );
+      const actualSignature = Buffer.from(parsed.signature, "base64url");
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      const expiresAt = Date.parse(row?.expiresAt ?? "");
+      if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now)) throw invalidTeamJoinLink();
+      const team = await tx.prepare(sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+      if (!team) throw invalidTeamJoinLink();
+      const attachedEmails = await tx.prepare(sql(
+        "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
+      )).all(auth.userId, auth.userId);
+      const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
+      if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) throw invalidTeamJoinLink();
+      const redemption = await tx.prepare(sql(
+        "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
+      )).get(row.id);
+      if (row.consumedAt) {
+        if (redemption?.userId !== auth.userId) throw invalidTeamJoinLink();
+        const membership2 = await tx.prepare(sql(
+          "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+        )).get(row.teamId, auth.userId);
+        if (!membership2) throw invalidTeamJoinLink();
+        const count2 = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+        return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
+      }
+      if (redemption) throw invalidTeamJoinLink();
+      const consumed = await tx.prepare(sql(
+        "UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
+      )).run(now, row.id, now);
+      if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
+      await tx.prepare(sql(
+        "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
+      )).run(row.id, row.teamId, auth.userId, now);
+      let membership = await tx.prepare(sql(
+        "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+      )).get(row.teamId, auth.userId);
+      if (!membership) {
+        await ensureMembershipCounterOnAdapter(tx, auth.userId);
+        const claim = await tx.prepare(sql(
+          "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
+        )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
+        if (Number(claim?.changes ?? 0) !== 1) {
+          throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
+        }
+        await tx.prepare(sql(
+          "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
+        )).run(row.teamId, auth.userId, now);
+        membership = { role: "member" };
+      }
+      await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
+      const count = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+      return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, null, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
+  return { team: joined };
+}
 function normalizeTeamJoinEmail(email) {
   const normalized = String(email ?? "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
@@ -7396,6 +7484,9 @@ function teamJoinLinkThrottleError() {
 }
 function teamJoinLinkLimitError() {
   return commandError2("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED");
+}
+function invalidTeamJoinLink() {
+  return commandError2("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
 }
 async function listCurrentUserTeams(database, auth) {
   requireAuth({ auth }, { linked: true });
@@ -7615,8 +7706,8 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
     category: "audit",
     event,
     level: "info",
-    message: event === "teams.created" ? "Team created." : event === "teams.renamed" ? "Team renamed." : event === "teams.joinLink.created" ? "Team Join link created." : event === "teams.joinLink.revoked" ? "Team Join link revoked." : "Team Join link operation denied.",
-    data: { operation: event === "teams.created" ? "teams.create" : event === "teams.renamed" ? "teams.rename" : event === "teams.joinLink.created" ? "teams.createJoinLink" : event === "teams.joinLink.revoked" ? "teams.revokeJoinLink" : event === "teams.joinLink.create" ? "teams.createJoinLink" : "teams.revokeJoinLink", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
+    message: event === "teams.created" ? "Team created." : event === "teams.renamed" ? "Team renamed." : event === "teams.joined" ? "Joined Team." : event === "teams.joinLink.created" ? "Team Join link created." : event === "teams.joinLink.revoked" ? "Team Join link revoked." : "Team Join link operation denied.",
+    data: { operation: event === "teams.created" ? "teams.create" : event === "teams.renamed" ? "teams.rename" : event === "teams.joined" || event === "teams.joinLink.join" ? "teams.join" : event === "teams.joinLink.created" ? "teams.createJoinLink" : event === "teams.joinLink.revoked" ? "teams.revokeJoinLink" : event === "teams.joinLink.create" ? "teams.createJoinLink" : "teams.revokeJoinLink", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
     request: null,
     release: null,
     correlation: null
@@ -16121,6 +16212,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "teams.validateJoinLink") {
       const data = await validateTeamJoinLink(database, client.session.auth, message.code);
       sendJson(client, { id: message.id ?? null, type: "teams.validateJoinLink.result", data, error: null });
+      return;
+    }
+    if (message.type === "teams.join") {
+      try {
+        const data = await joinCurrentUserTeam(database, client.session.auth, message.code);
+        sendJson(client, { id: message.id ?? null, type: "teams.join.result", data, error: null });
+      } catch (error) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not join this Team.", hint: error?.hint ?? "Use a current Join link for this linked account." } });
+      }
       return;
     }
     if (message.type === "journey.enable") {

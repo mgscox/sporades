@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createTeamJoinLink, createTeamTables, inspectTeamJoinLink, listCurrentUserTeams, revokeTeamJoinLink } from "../dist/teams-runtime.js";
+import { createTeamJoinLink, createTeamTables, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, revokeTeamJoinLink } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -52,7 +52,7 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.equal(calls.length, 1, "the second DDL statement waits for the first");
   releaseFirst();
   await created;
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 9);
   assert.match(calls[0], /sporades_teams/);
   assert.match(calls[1], /sporades_team_memberships/);
   assert.match(calls[2], /sporades_team_bootstrap/);
@@ -61,6 +61,7 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.match(calls[5], /sporades_team_join_links/);
   assert.match(calls[6], /sporades_team_join_link_throttles/);
   assert.match(calls[7], /sporades_team_join_link_counters/);
+  assert.match(calls[8], /sporades_team_join_link_redemptions/);
 });
 
 test("Join-link capacity and admin throttle admit only their final guarded slots across concurrent runtime adapters", async () => {
@@ -543,6 +544,54 @@ test("different SQLite runtimes retry concurrent initial Team bootstraps", async
       assert.notEqual(listed[0].teams[0].id, listed[1].teams[0].id);
     } finally {
       await Promise.all([firstRuntime.close(), secondRuntime.close()]);
+    }
+  });
+});
+
+test("Join redemption revalidates its capability and identity, commits one member, and safely retries", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-join-redemption", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "teams-join-redemption", schema: {} });
+    try {
+      const ownerSession = await resolveAnonymousSession(database, null);
+      const owner = await signUpWithEmail(database, ownerSession, "email", {
+        email: "owner@example.com", password: "password-123", name: "Owner",
+      });
+      const recipientSession = await resolveAnonymousSession(database, null);
+      const recipient = await signUpWithEmail(database, recipientSession, "email", {
+        email: "recipient@example.com", password: "password-123", name: "Recipient",
+      });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, " Recipient@Example.com ", { ttlSeconds: 300 });
+      const code = new URL(issued.link).searchParams.get("code");
+
+      const joined = await joinCurrentUserTeam(database, recipient.auth, code);
+      assert.deepEqual(joined, {
+        team: { id: team.id, name: team.name, role: "member", applicationRoles: [], memberCount: 2 },
+      });
+      assert.deepEqual(await joinCurrentUserTeam(database, recipient.auth, code), joined, "the consuming user may retry without a duplicate membership or role grant");
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").get(team.id, recipient.auth.userId).count, 1);
+      assert.equal(database.adapter.prepare("SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?").get(issued.id).userId, recipient.auth.userId);
+
+      const sameEmailSession = await resolveAnonymousSession(database, null);
+      const sameEmailUser = await signUpWithEmail(database, sameEmailSession, "email", {
+        email: "other@example.com", password: "password-123", name: "Other",
+      });
+      const now = new Date().toISOString();
+      await database.adapter.insertAuthIdentity({
+        id: "same-email-oauth", userId: sameEmailUser.auth.userId, provider: "google", subject: "same-email-subject",
+        email: "recipient@example.com", displayName: "Other", picture: null, createdAt: now, updatedAt: now,
+      });
+      await assert.rejects(() => joinCurrentUserTeam(database, sameEmailUser.auth, code), (error) => error?.code === "INVALID_JOIN_LINK");
+
+      const anonymous = await resolveAnonymousSession(database, null);
+      const unused = await createTeamJoinLink(database, owner.auth, team.id, "anonymous@example.com", { ttlSeconds: 300 });
+      const unusedCode = new URL(unused.link).searchParams.get("code");
+      await assert.rejects(() => joinCurrentUserTeam(database, anonymous.auth, unusedCode), (error) => error?.code === "UNAUTHENTICATED");
+      assert.equal(database.adapter.prepare("SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [id] = ?").get(unused.id).consumedAt, null);
+    } finally {
+      await database.close();
     }
   });
 });

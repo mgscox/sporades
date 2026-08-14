@@ -23,6 +23,7 @@ export const CONFORMANCE_SURFACE = {
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_join_links]"), 0);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_throttles]"), 0);
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_counters]"), 0);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_redemptions]"), 0);
 
         const sql = adapter.dialect.sql;
         await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run("team-one", "My Team", NOW, "user-one");

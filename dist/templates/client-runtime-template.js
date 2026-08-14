@@ -63,6 +63,9 @@ export const teams = {
   validateJoinLink(code) {
     return connect().teamsValidateJoinLink(code);
   },
+  join(code) {
+    return connect().teamsJoin(code);
+  },
 };
 
 export const journey = {
@@ -1079,6 +1082,7 @@ function createConnection() {
     teamsRevokeJoinLink(teamId, joinLinkId) { return request("teams.revokeJoinLink", { teamId, joinLinkId }); },
     teamsInspectJoinLink(code) { return request("teams.inspectJoinLink", { code }); },
     teamsValidateJoinLink(code) { return request("teams.validateJoinLink", { code }); },
+    teamsJoin(code) { return request("teams.join", { code }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

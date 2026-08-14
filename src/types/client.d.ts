@@ -305,6 +305,8 @@ export type TeamsApi = {
   inspectJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkInspection>>;
   /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
   validateJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkValidation>>;
+  /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
+  join(code: string): Promise<SporadesResult<TeamMutationResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */

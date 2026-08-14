@@ -350,6 +350,8 @@ export type CurrentUserTeamsApi = {
   inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
   /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
   validateJoinLink(code: string): Promise<TeamJoinLinkValidation>;
+  /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
+  join(code: string): Promise<{ team: TeamSummary }>;
 };
 
 /** Copy overrides for the built-in password reset message. */

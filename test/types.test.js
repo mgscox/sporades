@@ -177,7 +177,8 @@ const app = capsule({
       const renamed = await ctx.teams.rename(created.team.id, "Renamed Typed Team");
       const members = await ctx.teams.listMembers(renamed.team.id);
       const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
-      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid");
+      const joined = await ctx.teams.join("opaque-join-code");
+      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role);
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
@@ -370,6 +371,7 @@ teams.create("Browser Team").then((result) => result.data?.team.id);
 teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
 teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
 teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
+teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
 // @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
 teams.list("current-team");
 // @ts-expect-error Team names must be strings.
@@ -382,6 +384,8 @@ teams.listMembers();
 teams.listMembers({ teamId: "not-a-string" });
 // @ts-expect-error Join codes must be strings.
 teams.validateJoinLink({ code: "not-a-string" });
+// @ts-expect-error Join codes must be strings.
+teams.join({ code: "not-a-string" });
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
