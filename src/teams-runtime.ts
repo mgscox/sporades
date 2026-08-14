@@ -320,11 +320,6 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
         throw invalidTeamJoinLink();
       }
 
-      // Legacy linked accounts have no bootstrap record yet. Do this only
-      // after every non-mutating Join capability and identity check succeeds;
-      // it then commits or rolls back with the redemption as one unit.
-      await ensureInitialTeamOnAdapter(tx, auth.userId);
-
       const redemption = await tx.prepare(sql(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?",
       )).get(row.id);
@@ -334,6 +329,7 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
           "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
         )).get(row.teamId, auth.userId);
         if (!membership) throw invalidTeamJoinLink();
+        await ensureInitialTeamOnAdapter(tx, auth.userId);
         const count = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
         return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
       }
@@ -348,6 +344,10 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
       await tx.prepare(sql(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)",
       )).run(row.id, row.teamId, auth.userId, now);
+
+      // Legacy linked accounts bootstrap only after this caller owns the
+      // committed redemption; all resulting writes remain one transaction.
+      await ensureInitialTeamOnAdapter(tx, auth.userId);
 
       let membership = await tx.prepare(sql(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",

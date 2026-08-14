@@ -7348,7 +7348,6 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         deniedTeamId = String(team.id);
         throw invalidTeamJoinLink();
       }
-      await ensureInitialTeamOnAdapter(tx, auth.userId);
       const redemption = await tx.prepare(sql(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
       )).get(row.id);
@@ -7358,6 +7357,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
           "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
         )).get(row.teamId, auth.userId);
         if (!membership2) throw invalidTeamJoinLink();
+        await ensureInitialTeamOnAdapter(tx, auth.userId);
         const count2 = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
         return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
       }
@@ -7369,6 +7369,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       await tx.prepare(sql(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(row.id, row.teamId, auth.userId, now);
+      await ensureInitialTeamOnAdapter(tx, auth.userId);
       let membership = await tx.prepare(sql(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
       )).get(row.teamId, auth.userId);

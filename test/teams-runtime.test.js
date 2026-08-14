@@ -634,13 +634,31 @@ test("Join redemption bootstraps legacy users only after validation and records 
       await assert.rejects(() => joinCurrentUserTeam(database, legacy, "not-a-link"), (error) => error?.code === "INVALID_JOIN_LINK");
       assert.equal(teamCountForUser(database, legacy.userId), 0, "invalid redemption must not bootstrap a legacy account");
 
+      const legacyDenied = { userId: "legacy-consumed-link-user", displayName: "Legacy denied", email: "legacy-consumed@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "google" };
+      await database.adapter.withTransaction(async (tx) => {
+        await tx.insertAuthUser({ id: legacyDenied.userId, createdAt: now, displayName: legacyDenied.displayName, email: legacyDenied.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: legacyDenied.provider });
+        await tx.insertAuthIdentity({ id: "legacy-consumed-link-identity", userId: legacyDenied.userId, provider: "google", subject: "legacy-consumed-link-subject", email: legacyDenied.email, displayName: legacyDenied.displayName, picture: null, createdAt: now, updatedAt: now });
+      });
+      const consumer = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+        email: "legacy-consumer@example.com", password: "password-123", name: "Consumer",
+      });
+      await database.adapter.insertAuthIdentity({
+        id: "legacy-consumer-identity", userId: consumer.auth.userId, provider: "google", subject: "legacy-consumer-subject",
+        email: legacyDenied.email, displayName: "Consumer", picture: null, createdAt: now, updatedAt: now,
+      });
+      const consumedByOther = await createTeamJoinLink(database, owner.auth, team.id, legacyDenied.email, { ttlSeconds: 300 });
+      const consumedByOtherCode = new URL(consumedByOther.link).searchParams.get("code");
+      await joinCurrentUserTeam(database, consumer.auth, consumedByOtherCode);
+      await assert.rejects(() => joinCurrentUserTeam(database, legacyDenied, consumedByOtherCode), (error) => error?.code === "INVALID_JOIN_LINK");
+      assert.equal(teamCountForUser(database, legacyDenied.userId), 0, "a consumed Join link owned by another user must not bootstrap a legacy account");
+
       const issued = await createTeamJoinLink(database, owner.auth, team.id, legacy.email, { ttlSeconds: 300 });
       const code = new URL(issued.link).searchParams.get("code");
       const joined = await joinCurrentUserTeam(database, legacy, code);
       assert.equal(joined.team.role, "member");
       assert.equal(teamCountForUser(database, legacy.userId), 1, "valid redemption atomically creates the initial singleton Team");
       assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [userId] = ?").get(legacy.userId).count, 2);
-      const audit = (await database.log.tail(20)).find((event) => event.event === "teams.joined");
+      const audit = (await database.log.tail(20)).find((event) => event.event === "teams.joined" && event.data.actorUserId === legacy.userId);
       assert.deepEqual(audit.data, { operation: "teams.join", outcome: "succeeded", code: "TEAM_JOINED", actorUserId: legacy.userId, teamId: team.id });
       assert.doesNotMatch(JSON.stringify(audit), /legacy@example\.com|v1\./i);
 
