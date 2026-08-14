@@ -8,8 +8,8 @@
 | 02 — Bootstrap during account linking | done | 01 merged | `06760a9` | `codex/swarm-teams-02` / final review `ACCEPT` | `1319d42` | ACCEPT | `7a11833` | Integration: build/typecheck/generated-bin; OAuth/public/bundle 62 pass/1 configured PG skip | worker worktree retained |
 | 03 — Create and rename Teams | done | 01 merged | `ece42f2` | `codex/swarm-teams-03` / final review `ACCEPT` | `9b77809` | ACCEPT | `169c29c` | Integration: build/typecheck/docs; focused 99 pass/1 configured PG skip | worker worktree retained |
 | 04 — List Team memberships | done | 03 merged | `bbdf347` | `codex/swarm-teams-04` / final review `ACCEPT` | `34281d5` | ACCEPT | `96d6d0e` | Integration: build/typecheck; focused 43 pass/1 configured PG skip | worker worktree retained |
-| 05 — Email-bound Join links | ready | 03 merged | — | — | — | — | — | — |
-| 06 — Validate Join links | blocked | 02, 05 | — | — | — | — | — | — | — |
+| 05 — Email-bound Join links | done | 03 merged | `0561f31` | `codex/swarm-teams-05` / final review `ACCEPT` | `f6078b9` | ACCEPT | `a8029b9` | Integration: build/typecheck/docs; focused 69 pass/1 configured PG skip | worker worktree retained |
+| 06 — Validate Join links | ready | 02, 05 merged | — | — | — | — | — | — |
 | 07 — Join through link | blocked | 04, 06 | — | — | — | — | — | — | — |
 | 08 — Team-admin lifecycle | blocked | 07 | — | — | — | — | — | — | — |
 | 09 — Membership application roles | blocked | 07 | — | — | — | — | — | — | — |

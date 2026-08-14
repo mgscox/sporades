@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Create and rename additional Teams.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Only a current admin of the named Team can create a Join link for it through the browser or trusted server Team interface.
 - [ ] Join-link creation requires a syntactically valid email normalized consistently with existing Sporades email auth.
