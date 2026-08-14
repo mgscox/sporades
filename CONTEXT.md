@@ -398,7 +398,7 @@ An authorization policy declared in Capsule definition code and applied invisibl
 _Avoid_: permission helper, manual auth check, database filter
 
 **ACL context**:
-A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, and `ctx.acl.storage.exists()` so database and storage ACL rules can check each other's stable resources without exposing normal runtime APIs or allowing writes.
+A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, `ctx.acl.storage.exists()`, and explicit-Team `ctx.acl.teams` membership, admin, and declared application-role decisions so database and storage ACL rules can check stable resources without exposing normal runtime APIs or allowing writes. Team helpers never choose a current Team, enumerate memberships, or manage membership state.
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:

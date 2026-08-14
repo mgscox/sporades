@@ -92,9 +92,22 @@ export type AclStorageHelpers = {
   exists(resourceName: "files", reference: string): boolean;
 };
 
+/** Read-only Team decisions available only while evaluating a table ACL rule. */
+export type AclTeamHelpers = {
+  /** True when the current linked actor belongs to the explicitly identified Team. */
+  isMember(teamId: string): boolean;
+  /** True when the current linked actor is an admin of the explicitly identified Team. */
+  isAdmin(teamId: string): boolean;
+  /** True when the current linked actor holds this currently declared application role in the explicitly identified Team. */
+  hasRole(teamId: string, role: string): boolean;
+  /** True when the current linked actor holds any role in this non-empty, bounded (32 maximum) declared-role set for the explicitly identified Team. */
+  hasAnyRole(teamId: string, roles: readonly string[]): boolean;
+};
+
 export type AclHelpers = {
   db: AclDatabaseHelpers;
   storage: AclStorageHelpers;
+  teams: AclTeamHelpers;
 };
 
 /** Runtime context available while evaluating table ACL rules. */

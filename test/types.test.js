@@ -128,6 +128,16 @@ const app = capsule({
         const file = ctx.acl.storage.get("files", "/avatars/profile.png");
         const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
         const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
+        const teamMember = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        const teamAdmin = ctx.acl.teams.isAdmin("00000000-0000-4000-8000-000000000000");
+        const teamAuthor = ctx.acl.teams.hasRole("00000000-0000-4000-8000-000000000000", "author");
+        const teamReviewer = ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", ["author", "reviewer"]);
+        // @ts-expect-error Team ACL helpers are decisions, not the mutable Team management API.
+        ctx.acl.teams.create("not available in ACL");
+        // @ts-expect-error Team ACL role sets must be arrays.
+        ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", "author");
+        // @ts-expect-error ACL contexts do not expose the mutable current-user Teams API.
+        ctx.teams.list();
         // @ts-expect-error ACL policy contexts cannot start privileged server-role work.
         ctx.privileged.run({ operation: "acl.bad", targetResourceKind: "capsule-db" }, () => true);
         // @ts-expect-error ACL policy contexts cannot send mail.
@@ -139,7 +149,7 @@ const app = capsule({
         }
         // @ts-expect-error ACL helper reads are synchronous at the policy boundary, not Promise-returning.
         ctx.acl.storage.exists("files", "/avatars/profile.png").then(() => true);
-        return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/");
+        return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/") && !teamMember && !teamAdmin && !teamAuthor && !teamReviewer;
       },
       write: async ({ next, previous, ctx }) => {
         await Promise.resolve();

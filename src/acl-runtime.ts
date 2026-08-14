@@ -528,12 +528,12 @@ function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: 
 
 export function createTableAclContext(context: any, database: any) {
   // ACL evaluation is deliberately read-only. Current-user Teams can lazily
-  // bootstrap durable state, so Ticket 10 must introduce a constrained helper
-  // rather than exposing the normal Team API to policy callbacks.
+  // bootstrap durable state, so policy callbacks receive only constrained
+  // membership decisions rather than the normal Team management API.
   const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
-    acl: createAclHelpers(database),
+    acl: createAclHelpers(database, context),
   };
 }
 
@@ -679,17 +679,84 @@ export function filterRowsByReadAcl(database: any, table: any, rows: any[], cont
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
-function createAclHelpers(database: any) {
+function createAclHelpers(database: any, context: any) {
   const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
+    teams: createAclTeamHelpers(database, context, state),
   };
   Object.defineProperty(helpers, ACL_HELPER_STATE, {
     value: state,
     enumerable: false,
   });
   return Object.freeze(helpers);
+}
+
+function createAclTeamHelpers(database: LooseRecord, context: LooseRecord, state: LooseRecord) {
+  return Object.freeze({
+    isMember(teamId: any) {
+      const membership = readAclTeamMembership(database, context, state, teamId);
+      return membership?.role === "admin" || membership?.role === "member";
+    },
+    isAdmin(teamId: any) {
+      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+    },
+    hasRole(teamId: any, role: any) {
+      assertAclHelperReadAllowed(state);
+      if (!isActiveAclTeamApplicationRole(database, role)) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+        "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?",
+      )).get(teamId, actorUserId, role);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return selected?.role === role;
+    },
+    hasAnyRole(teamId: any, roles: any) {
+      assertAclHelperReadAllowed(state);
+      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
+      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
+      if (activeRoles.length !== roles.length) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const placeholders = activeRoles.map(() => "?").join(", ");
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+        `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`,
+      )).all(teamId, actorUserId, ...activeRoles);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+    },
+  });
+}
+
+function readAclTeamMembership(database: LooseRecord, context: LooseRecord, state: LooseRecord, teamId: any) {
+  assertAclHelperReadAllowed(state);
+  const actorUserId = aclTeamActorUserId(context);
+  if (!actorUserId || !isAclTeamId(teamId)) return null;
+  const selected = database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+  )).get(teamId, actorUserId);
+  if (markAsyncAclHelperRead(state, selected)) return null;
+  return selected ?? null;
+}
+
+function aclTeamActorUserId(context: LooseRecord) {
+  const auth = context?.auth;
+  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
+  return auth.userId;
+}
+
+function isAclTeamId(value: any) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function isActiveAclTeamApplicationRole(database: LooseRecord, role: any) {
+  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
 }
 
 function aclRuleTouchedAsyncHelperRead(aclContext: any) {

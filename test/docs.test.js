@@ -825,7 +825,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.doesNotMatch(apiClient, /JobApi/);
 });
 
-test("roadmap distinguishes delivered Team membership roles from deferred Team ACL", async () => {
+test("roadmap records delivered explicit-Team ACL decisions without claiming automatic data partitioning", async () => {
   const roadmap = await readProjectFile("docs/ROADMAP.md");
 
   assert.match(roadmap, /Built-in Teams foundation \| implemented/);
@@ -834,9 +834,11 @@ test("roadmap distinguishes delivered Team membership roles from deferred Team A
   assert.match(roadmap, /singleton Team/);
   assert.match(roadmap, /Capsule roles[\s\S]*must not compete with membership-scoped Team application roles/);
   assert.match(roadmap, /A non-Team role model requires a distinct demonstrated use case/);
-  assert.match(roadmap, /Tickets 01–09 record these delivered slices/);
-  assert.match(roadmap, /\| Team ACL \| candidate \|[\s\S]*membership application roles are implemented through Ticket 09[\s\S]*Team ACL remains intentionally deferred to Ticket 10/);
-  assert.match(roadmap, /issues\/10-authorize-capsule-resources-through-team-acl\.md/);
+  assert.match(roadmap, /Tickets 01–10 record these delivered slices/);
+  assert.match(roadmap, /ACL rules can make constrained explicit-Team membership, admin, and declared-role decisions through `ctx\.acl\.teams`/);
+  assert.match(roadmap, /no current-Team state or automatic Capsule data authorization exists/);
+  assert.doesNotMatch(roadmap, /\| Team ACL \| candidate \|/);
+  assert.doesNotMatch(roadmap, /Team ACL remains intentionally deferred/);
   assert.doesNotMatch(roadmap, /issues\/09-declare-and-assign-membership-application-roles\.md/);
   assert.doesNotMatch(roadmap, /Team administration, Join links, application roles, and Team ACL \| candidate/);
   assert.doesNotMatch(roadmap, /\| Teams for ACL \| candidate/);

@@ -143,7 +143,10 @@ The repository currently includes:
   atomically add/revoke declared roles through the
   browser or trusted API. Management `admin`/`member` stays separate, stored
   assignments for undeclared roles fail closed but survive a declaration
-  rollback, and audits are redacted. Team ACL remains separate future work.
+  rollback, and audits are redacted. Table ACL rules may make explicit-Team
+  membership, Team-admin, and declared application-role decisions through the
+  constrained read-only `ctx.acl.teams` helpers; Teams never select a current
+  Team or automatically partition Capsule data.
 
 ### Future scope
 

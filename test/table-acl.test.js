@@ -142,6 +142,189 @@ test("table ACL callbacks do not receive the mutable current-user Teams API", as
   });
 });
 
+test("Team ACL membership decisions authorize only the current linked member of the explicit Team", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({ title: String(), teamId: String() }).acl({
+          read: ({ row, ctx }) => ctx.acl.teams.isMember(row.teamId),
+        }),
+      },
+      queries: { notes: query((ctx) => ctx.db.notes.orderBy("title").all()) },
+    });
+
+    try {
+      const now = "2026-08-14T00:00:00.000Z";
+      const teamId = "11111111-1111-4111-8111-111111111111";
+      const otherTeamId = "22222222-2222-4222-8222-222222222222";
+      await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)").run(teamId, "Authors", now, "member");
+      await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)").run(otherTeamId, "Other", now, "other");
+      await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(teamId, "member", "member", now);
+
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Member note", teamId });
+      db.notes.insert({ title: "Other Team note", teamId: otherTeamId });
+
+      const linkedMember = {
+        ...auth("member"),
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "email",
+      };
+      const memberResult = await runQuery(database, linkedMember, "notes");
+      const anonymousResult = await runQuery(database, auth("member"), "notes");
+
+      assert.deepEqual(memberResult.data.map((row) => row.title), ["Member note"]);
+      assert.deepEqual(anonymousResult.data, []);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("Team ACL keeps administration and declared application-role authority separate across DB and storage metadata", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "team-acl", auth: { providers: { anonymous: true, email: true } } }, {
+      name: "team-acl",
+      teams: { appRoles: ["author", "reviewer"] },
+      schema: {
+        documents: table({ title: String(), teamId: String(), policy: String() }).acl({
+          read: ({ row, ctx }) => {
+            if (row.policy === "member") return ctx.acl.teams.isMember(row.teamId);
+            if (row.policy === "admin") return ctx.acl.teams.isAdmin(row.teamId);
+            if (row.policy === "author") return ctx.acl.teams.hasRole(row.teamId, "author");
+            if (row.policy === "any-role") return ctx.acl.teams.hasAnyRole(row.teamId, ["reviewer", "author"]);
+            if (row.policy === "oversized") return ctx.acl.teams.hasAnyRole(row.teamId, Array.from({ length: 33 }, () => "author"));
+            return ctx.acl.teams.hasRole(row.teamId, "retired-role");
+          },
+          insert: ({ next, ctx }) => ctx.acl.teams.isMember(next.teamId),
+        }),
+        attachments: table({ title: String(), teamId: String(), fileRef: String() }).acl({
+          read: ({ row, ctx }) => ctx.acl.teams.hasRole(row.teamId, "author") && ctx.acl.storage.exists("files", row.fileRef),
+        }),
+      },
+      queries: {
+        documents: query((ctx) => ctx.db.documents.orderBy("title").all()),
+        attachments: query((ctx) => ctx.db.attachments.orderBy("title").all()),
+      },
+      mutations: {
+        addDocument: mutation((ctx, title, teamId) => ctx.db.documents.insert({ title, teamId, policy: "member" })),
+      },
+    });
+
+    try {
+      const now = "2026-08-14T00:00:00.000Z";
+      const teamId = "33333333-3333-4333-8333-333333333333";
+      const otherTeamId = "44444444-4444-4444-8444-444444444444";
+      const unjoinedTeamId = "55555555-5555-4555-8555-555555555555";
+      for (const [id, name] of [[teamId, "Editorial"], [otherTeamId, "Other editorial"]]) {
+        await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)").run(id, name, now, "admin-user");
+      }
+      for (const [memberTeamId, userId, role] of [[teamId, "admin-user", "admin"], [teamId, "author-user", "member"], [otherTeamId, "author-user", "member"]]) {
+        await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(memberTeamId, userId, role, now);
+      }
+      for (const [roleTeamId, userId, role] of [[teamId, "author-user", "author"], [teamId, "author-user", "retired-role"]]) {
+        await database.adapter.prepare("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(roleTeamId, userId, role, now);
+      }
+      database.adapter.insertFileRow({
+        id: "team-acl-file", ownerId: "author-user", bucketId: "default", bucketName: "default", path: "/editorial/draft.txt", name: "draft.txt", type: "text/plain", size: 5, version: "v1", status: "uploaded", createdAt: now, updatedAt: now,
+      });
+
+      const documentsTable = database.schema.tables.find((candidate) => candidate.name === "documents");
+      const attachmentsTable = database.schema.tables.find((candidate) => candidate.name === "attachments");
+      for (const [title, policy, rowTeamId] of [
+        ["Admin only", "admin", teamId],
+        ["Any declared role", "any-role", teamId],
+        ["Author only", "author", teamId],
+        ["Inactive role", "inactive", teamId],
+        ["Members", "member", teamId],
+        ["Other Team author", "author", otherTeamId],
+        ["Oversized role set", "oversized", teamId],
+      ]) database.adapter.insertAppRow(documentsTable, { id: title, title, policy, teamId: rowTeamId, createdAt: now, updatedAt: now });
+      database.adapter.insertAppRow(attachmentsTable, { id: "author-file", title: "Author file", teamId, fileRef: "team-acl-file", createdAt: now, updatedAt: now });
+
+      const linked = (userId) => ({ ...auth(userId), isAuthenticated: true, isGuest: false, provider: "email" });
+      const authorDocuments = await runQuery(database, linked("author-user"), "documents");
+      const adminDocuments = await runQuery(database, linked("admin-user"), "documents");
+      const outsiderDocuments = await runQuery(database, linked("outsider"), "documents");
+      const authorAttachments = await runQuery(database, linked("author-user"), "attachments");
+      const allowedWrite = await runMutation(database, linked("author-user"), "addDocument", ["Member write", teamId]);
+      const deniedWrite = await runMutation(database, linked("author-user"), "addDocument", ["Cross-Team write", unjoinedTeamId]);
+
+      assert.deepEqual(authorDocuments.data.map((row) => row.title), ["Any declared role", "Author only", "Members"]);
+      assert.deepEqual(adminDocuments.data.map((row) => row.title), ["Admin only", "Members"]);
+      assert.deepEqual(outsiderDocuments.data, []);
+      assert.deepEqual(authorAttachments.data.map((row) => row.title), ["Author file"]);
+      assert.equal(allowedWrite.ok, true);
+      assert.equal(deniedWrite.ok, false);
+      assert.deepEqual(deniedWrite.error, { code: "DENIED", message: "Denied.", hint: "The current user is not allowed to perform this operation." });
+      assert.equal((await database.log.tail(10)).some((entry) => entry.event === "acl.denied" && entry.data.operation === "insert"), true);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("Team ACL reads committed membership state after restart, rollback, cache reuse, and async adapter reads", async () => {
+  await withTempDir(async (dir) => {
+    const databasePath = path.join(dir, "data.db");
+    const capsule = {
+      name: "team-acl-live-state",
+      teams: { appRoles: ["author"] },
+      schema: {
+        notes: table({ title: String(), teamId: String() }).acl({
+          read: ({ row, ctx }) => ctx.acl.teams.hasRole(row.teamId, "author"),
+        }),
+      },
+      queries: { notes: query((ctx) => ctx.db.notes.all()) },
+    };
+    const linkedAuthor = { ...auth("author-user"), isAuthenticated: true, isGuest: false, provider: "email" };
+    const teamId = "66666666-6666-4666-8666-666666666666";
+    const now = "2026-08-14T00:00:00.000Z";
+    let database = await openDevDatabase(databasePath, "", {}, { name: "team-acl-live-state" }, capsule);
+
+    try {
+      await database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)").run(teamId, "Live", now, "author-user");
+      await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(teamId, "author-user", "member", now);
+      await database.adapter.prepare("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(teamId, "author-user", "author", now);
+      database.adapter.insertAppRow(database.schema.tables[0], { id: "live-note", title: "Live", teamId, createdAt: now, updatedAt: now });
+      assert.deepEqual((await runQuery(database, linkedAuthor, "notes")).data.map((row) => row.title), ["Live"]);
+
+      database.close();
+      database = await openDevDatabase(databasePath, "", {}, { name: "team-acl-live-state" }, capsule);
+      assert.deepEqual((await runQuery(database, linkedAuthor, "notes")).data.map((row) => row.title), ["Live"], "restart reads persisted Team state");
+
+      await assert.rejects(
+        () => database.adapter.withTransaction(async (tx) => {
+          await tx.prepare("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?").run(teamId, "author-user", "author");
+          throw new Error("rollback Team ACL role change");
+        }),
+        /rollback Team ACL role change/,
+      );
+      assert.deepEqual((await runQuery(database, linkedAuthor, "notes")).data.map((row) => row.title), ["Live"], "rolled-back Team changes never affect ACL decisions");
+
+      await database.adapter.prepare("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?").run(teamId, "author-user", "author");
+      assert.deepEqual((await runQuery(database, linkedAuthor, "notes")).data, [], "committed role removal overrides the cached app-row result immediately");
+      await database.adapter.prepare("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(teamId, "author-user", "author", now);
+      await database.adapter.prepare("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").run(teamId, "author-user");
+      assert.deepEqual((await runQuery(database, linkedAuthor, "notes")).data, [], "committed membership removal overrides the cached app-row result immediately");
+
+      await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(teamId, "author-user", "member", now);
+      const prepare = database.adapter.prepare.bind(database.adapter);
+      database.adapter.prepare = (statement) => {
+        const prepared = prepare(statement);
+        if (!globalThis.String(statement).includes("sporades_team_membership_application_roles")) return prepared;
+        return { ...prepared, get: async (...values) => prepared.get(...values) };
+      };
+      const asyncRead = await runQuery(database, linkedAuthor, "notes");
+      assert.equal(asyncRead.error, null, "async Team helper reads remain an opaque filtered read");
+      assert.deepEqual(asyncRead.data, [], "async Team helper reads fail closed rather than returning a promise to policy code");
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("invalid ACL declarations fail with structured Capsule errors", async () => {
   await withTempDir(async (dir) => {
     await assert.rejects(
@@ -599,6 +782,11 @@ test("ACL user guide documents policy behavior and storage helper boundaries", a
   assert.match(guide, /insert receives `previous = null`/);
   assert.match(guide, /resolved by File ID or absolute File path/);
   assert.match(guide, /do not\s+expose filesystem paths, object keys, Object buckets, runtime table names, or\s+generated read URLs/);
+  assert.match(guide, /`ctx\.acl\.teams` adds read-only, explicit-Team decisions/);
+  assert.match(guide, /`isMember\(teamId\)`,\s+`isAdmin\(teamId\)`, `hasRole\(teamId, role\)`, and\s+`hasAnyRole\(teamId, roles\)`/);
+  assert.match(guide, /never select a current Team, bootstrap a Team, enumerate memberships, or\s+expose `ctx\.teams`/);
+  assert.match(guide, /inactive or undeclared assignments fail closed/);
+  assert.match(guide, /Team admins do not receive application-role authority unless the ACL checks\s+`isAdmin` explicitly/);
   assert.match(guide, /`sporades doctor` may later warn about missing ACLs or\s+open-to-the-world data/);
 });
 
