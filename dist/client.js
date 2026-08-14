@@ -3,6 +3,7 @@ const runtime = await import(`data:text/javascript,${encodeURIComponent(createCl
 export const auth = runtime.auth;
 export const files = runtime.files;
 export const preferences = runtime.preferences;
+export const teams = runtime.teams;
 export const journey = runtime.journey;
 export const mutations = runtime.mutations;
 export const queries = runtime.queries;

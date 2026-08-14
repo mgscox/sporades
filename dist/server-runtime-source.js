@@ -18,6 +18,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
+import { createCurrentUserTeamsApi, listCurrentUserTeams } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -491,6 +492,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await sqlite.ensureSystemTable();
     await sqlite.ensureAuthStorage(database.authConfig);
     await sqlite.ensureUserPreferencesStorage();
+    await sqlite.ensureTeamsStorage();
     await ensureJobStorage(sqlite);
     await ensureScheduleStorage(sqlite);
     await sqlite.ensureFileStorage();
@@ -1663,6 +1665,7 @@ function createEndpointContext(database, endpointRequest, session) {
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = database.mail;
+    context.teams = createCurrentUserTeamsApi(database, auth);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -2530,6 +2533,27 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             });
             return;
         }
+        if (message.type === "teams.list") {
+            try {
+                const data = await listCurrentUserTeams(database, client.session.auth);
+                sendJson(client, { id: message.id ?? null, type: "teams.list.result", data, error: null });
+            }
+            catch (error) {
+                if (error?.sporadesAuthDenialLogData)
+                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        ...(error?.code ? { code: error.code } : {}),
+                        message: error?.message ?? "Could not list Teams.",
+                        hint: error?.hint ?? "Sign in and retry the request.",
+                    },
+                });
+            }
+            return;
+        }
         if (message.type === "journey.enable") {
             const policy = database.journeyPolicy;
             if (!policy) {
@@ -3238,6 +3262,7 @@ function createMutationContext(database, auth) {
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
     context.mail = database.mail;
+    context.teams = createCurrentUserTeamsApi(database, auth);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);

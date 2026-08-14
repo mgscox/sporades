@@ -35,6 +35,12 @@ export const preferences = {
   },
 };
 
+export const teams = {
+  list() {
+    return connect().teamsList();
+  },
+};
+
 export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
@@ -1040,6 +1046,7 @@ function createConnection() {
         return result.data.preferences;
       });
     },
+    teamsList() { return request("teams.list"); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

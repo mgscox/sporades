@@ -312,6 +312,18 @@ export type ServerAuthApi = {
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };
 
+/** Safe current-user Team presentation; membership enumeration is not exposed here. */
+export type TeamSummary = {
+  id: string;
+  name: string;
+  role: "admin" | "member";
+  applicationRoles: string[];
+  memberCount: number;
+};
+export type CurrentUserTeamsApi = {
+  list(): Promise<{ teams: TeamSummary[] }>;
+};
+
 /** Copy overrides for the built-in password reset message. */
 export type PasswordResetMailOptions = {
   subject?: string;
@@ -462,6 +474,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   mail: MailApi;
   /** Server-only auth management (e.g. password reset). */
   serverAuth: ServerAuthApi;
+  /** Runtime-owned current-user Teams with normal linked-user authorization. */
+  teams: CurrentUserTeamsApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */

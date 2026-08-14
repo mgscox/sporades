@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -170,6 +170,10 @@ const app = capsule({
     asyncTodos: query(async (ctx) => {
       await Promise.resolve();
       return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
+    }),
+    ownTeams: query(async (ctx) => {
+      const result = await ctx.teams.list();
+      return result.teams.map((team) => team.id);
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
@@ -355,6 +359,9 @@ preferences.get().then((result) => result.data?.preferences.theme);
 preferences.update({ theme: "dark", sidebar: { collapsed: true } }).then((result) => result.data?.preferences.sidebar);
 // @ts-expect-error preferences.update accepts a JSON object patch.
 preferences.update(null);
+teams.list().then((result) => result.data?.teams.map((team) => team.memberCount));
+// @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
+teams.list("current-team");
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));

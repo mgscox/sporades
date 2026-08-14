@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+
+const NOW = "2026-08-14T12:00:00.000Z";
+
+async function count(adapter, statement, ...values) {
+  const row = await adapter.prepare(adapter.dialect.sql(statement)).get(...values);
+  return Number(row?.count ?? 0);
+}
+
+export const CONFORMANCE_SURFACE = {
+  title: "Database adapter conformance (runtime Team storage)",
+  appTableNames: [],
+  cases: [
+    {
+      name: "ensureTeamsStorage creates empty writable runtime tables and preserves existing Team history",
+      async run(adapter) {
+        await adapter.ensureTeamsStorage();
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_teams]"), 0);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships]"), 0);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_bootstrap]"), 0);
+
+        const sql = adapter.dialect.sql;
+        await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run("team-one", "My Team", NOW, "user-one");
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)")).run("team-one", "user-one", "admin", NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?)")).run("user-one", "team-one", NOW);
+
+        await adapter.ensureTeamsStorage();
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [id] = ?", "team-one"), 1);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?", "team-one", "user-one"), 1);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_bootstrap] WHERE [userId] = ? AND [teamId] = ?", "user-one", "team-one"), 1);
+      },
+    },
+  ],
+};

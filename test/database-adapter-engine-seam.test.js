@@ -228,6 +228,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // module" and "an honest edit folded a helper away", and 4 is the value that still fails if either
   // of the two functions holding the SQL and the validation stopped being collected.
   { file: "user-preferences-runtime.js", atLeast: 4, sentinel: "createPreferencesError" },
+  // Runtime-owned Team state uses the configured adapter directly. Its private
+  // bootstrap writer is the atomic history/membership foundation, so retaining
+  // it in the census prevents a generated Capsule from carrying only the API shell.
+  { file: "teams-runtime.js", atLeast: 3, sentinel: "ensureInitialTeamOnAdapter" },
   // Batch 6: file and object storage, 51 declarations of which 27 are private. The sentinel is
   // private for the sixth time running. `resolveLiveFileReference` is the one every ownership-scoped
   // File lookup passes through — `createPendingFileUpload`, `getPrivateFileUrl`, `createPublicFileUrl`,

@@ -258,6 +258,21 @@ export type PreferencesApi<Preferences extends JsonObject = JsonObject> = {
   update<Patch extends Partial<Preferences> & JsonObject>(patch: Patch): Promise<SporadesResult<PreferencesResult<Preferences & Patch>>>;
 };
 
+/** A safe current-user Team presentation. Team names never grant authority. */
+export type TeamSummary = {
+  id: string;
+  name: string;
+  role: "admin" | "member";
+  applicationRoles: string[];
+  /** Capped at 99 so a Team list remains bounded. */
+  memberCount: number;
+};
+export type TeamsListResult = { teams: TeamSummary[] };
+/** Built-in current-user Team operations over the standard client transport. */
+export type TeamsApi = {
+  list(): Promise<SporadesResult<TeamsListResult>>;
+};
+
 /** Hook state returned by `useQuery()`. */
 export type QueryState<Data = unknown> = {
   data: Data | null;
@@ -459,6 +474,8 @@ export const auth: AuthApi;
 export const files: FilesApi;
 /** Runtime-owned current-user preferences commands. */
 export const preferences: PreferencesApi;
+/** Runtime-owned Teams for the current linked user. */
+export const teams: TeamsApi;
 /** Explicit, page-runtime User journey publication lifecycle; server sessions are created lazily by accepted publications. */
 export const journey: JourneyApi;
 /** Framework-neutral query state subscriptions. */

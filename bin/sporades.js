@@ -58,6 +58,12 @@ export const preferences = {
   },
 };
 
+export const teams = {
+  list() {
+    return connect().teamsList();
+  },
+};
+
 export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
@@ -1063,6 +1069,7 @@ function createConnection() {
         return result.data.preferences;
       });
     },
+    teamsList() { return request("teams.list"); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -3991,7 +3998,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash3, randomBytes as randomBytes4, randomUUID } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes4, randomUUID as randomUUID2 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -9731,6 +9738,77 @@ function ensureSessionProvenanceColumn(sqlite) {
   ]);
 }
 
+// src/teams-runtime.ts
+import { randomUUID } from "node:crypto";
+var INITIAL_TEAM_NAME = "My Team";
+var TEAM_NAME_MAX_BYTES = 80;
+var TEAM_MEMBER_COUNT_MAX = 99;
+function createTeamTables(adapter) {
+  const sql = adapter.dialect.sql;
+  return Promise.all([
+    adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
+    )),
+    adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
+    )),
+    adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    ))
+  ]);
+}
+function createCurrentUserTeamsApi(database, auth) {
+  return {
+    async list() {
+      requireAuth({ auth }, { linked: true });
+      return listCurrentUserTeams(database, auth);
+    }
+  };
+}
+async function listCurrentUserTeams(database, auth) {
+  requireAuth({ auth }, { linked: true });
+  await ensureInitialTeam(database, auth);
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
+  )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
+  return {
+    teams: rows.map((row) => ({
+      id: String(row.id),
+      name: safeTeamName(row.name),
+      role: row.role === "admin" ? "admin" : "member",
+      applicationRoles: [],
+      memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
+    }))
+  };
+}
+async function ensureInitialTeam(database, auth) {
+  if (database.__transactionActive) {
+    return ensureInitialTeamOnAdapter(database.adapter, auth);
+  }
+  return database.adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+}
+async function ensureInitialTeamOnAdapter(tx, auth) {
+  const sql = tx.dialect.sql;
+  const id = randomUUID();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const claim = await tx.prepare(sql(
+    "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
+  )).run(auth.userId, id, now);
+  if (Number(claim?.changes ?? 0) === 0) {
+    const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(auth.userId);
+    if (existing?.teamId) return String(existing.teamId);
+    throw new Error("Team bootstrap claim was not committed.");
+  }
+  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, auth.userId);
+  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, auth.userId, now);
+  return id;
+}
+function safeTeamName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  return Buffer.byteLength(name, "utf8") <= TEAM_NAME_MAX_BYTES && name.length > 0 ? name : INITIAL_TEAM_NAME;
+}
+
 // src/runtime-log-policy.ts
 function logIndexLimit(config = {}) {
   const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
@@ -10746,6 +10824,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);
+    },
+    ensureTeamsStorage() {
+      return createTeamTables(this);
     },
     readUserPreferences(userId) {
       return this.prepare(
@@ -13407,6 +13488,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
+  await sqlite.ensureTeamsStorage();
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite);
   await sqlite.ensureFileStorage();
@@ -13522,7 +13604,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID();
+  const token = randomUUID2();
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + 3e4).toISOString();
@@ -13799,7 +13881,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID(),
+      id: input.request.id ?? randomUUID2(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -14526,6 +14608,7 @@ function createEndpointContext(database, endpointRequest, session) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.teams = createCurrentUserTeamsApi(database, auth);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -14617,7 +14700,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID(),
+        id: randomUUID2(),
         createdAt: now,
         updatedAt: now
       };
@@ -15356,6 +15439,25 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       });
       return;
     }
+    if (message.type === "teams.list") {
+      try {
+        const data = await listCurrentUserTeams(database, client.session.auth);
+        sendJson(client, { id: message.id ?? null, type: "teams.list.result", data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not list Teams.",
+            hint: error?.hint ?? "Sign in and retry the request."
+          }
+        });
+      }
+      return;
+    }
     if (message.type === "journey.enable") {
       const policy = database.journeyPolicy;
       if (!policy) {
@@ -15655,7 +15757,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID(),
+    randomUUID2(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -16044,6 +16146,7 @@ function createMutationContext(database, auth) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.teams = createCurrentUserTeamsApi(database, auth);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -16361,7 +16464,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID(),
+    id: randomUUID2(),
     createdAt: now,
     updatedAt: now
   };
