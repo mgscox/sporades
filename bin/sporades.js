@@ -5736,6 +5736,9 @@ function createPreferencesError(message, hint, code) {
   return { code, message, hint };
 }
 
+// src/teams-runtime.ts
+import { randomUUID } from "node:crypto";
+
 // src/maybe-promise.ts
 function isPromiseLike(value) {
   return value && typeof value === "object" && typeof value.then === "function";
@@ -5756,6 +5759,108 @@ function chainMaybePromise(steps) {
     }
   }
   return pending ?? void 0;
+}
+
+// src/teams-runtime.ts
+var INITIAL_TEAM_NAME = "My Team";
+var TEAM_NAME_MAX_BYTES = 80;
+var TEAM_MEMBER_COUNT_MAX = 99;
+var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
+function createTeamTables(adapter) {
+  const sql = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    ))
+  ]);
+}
+function createCurrentUserTeamsApi(database, auth) {
+  return {
+    async list() {
+      requireAuth({ auth }, { linked: true });
+      return listCurrentUserTeams(database, auth);
+    }
+  };
+}
+async function listCurrentUserTeams(database, auth) {
+  requireAuth({ auth }, { linked: true });
+  await ensureInitialTeam(database, auth);
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
+  )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
+  return {
+    teams: rows.map((row) => ({
+      id: String(row.id),
+      name: safeTeamName(row.name),
+      role: row.role === "admin" ? "admin" : "member",
+      applicationRoles: [],
+      memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
+    }))
+  };
+}
+async function ensureInitialTeam(database, auth) {
+  if (database.__transactionActive) {
+    return ensureInitialTeamOnAdapter(database.adapter, auth.userId);
+  }
+  const root = database.__rootDatabase ?? database;
+  root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
+  const running = root.__teamBootstrapByUser.get(auth.userId);
+  if (running) return running;
+  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth.userId));
+  root.__teamBootstrapQueue = work;
+  root.__teamBootstrapByUser.set(auth.userId, work);
+  try {
+    return await work;
+  } finally {
+    if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
+  }
+}
+async function bootstrapWithRetry(adapter, userId) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, userId));
+    } catch (error) {
+      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+function isTransientTeamBootstrapError(error) {
+  const text2 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
+}
+async function bootstrapInitialTeamForLinkedUser(tx, userId) {
+  return ensureInitialTeamOnAdapter(tx, userId);
+}
+async function ensureInitialTeamOnAdapter(tx, userId) {
+  const sql = tx.dialect.sql;
+  const id = randomUUID();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const claim = await tx.prepare(sql(
+    "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
+  )).run(userId, id, now);
+  if (Number(claim?.changes ?? 0) === 0) {
+    const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
+    if (existing?.teamId) return String(existing.teamId);
+    throw new Error("Team bootstrap claim was not committed.");
+  }
+  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, userId);
+  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now);
+  return id;
+}
+function safeTeamName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  return Buffer.byteLength(name, "utf8") <= TEAM_NAME_MAX_BYTES && name.length > 0 ? name : INITIAL_TEAM_NAME;
 }
 
 // src/file-storage-runtime.ts
@@ -9273,7 +9378,7 @@ async function signUpWithEmail(database, session, provider, credentials) {
     isGuest: false,
     provider: "email"
   };
-  return await database.adapter.withTransaction(async (tx) => {
+  return await withAuthTransaction(database, async (tx) => {
     await tx.insertEmailCredential({
       email: normalized.email,
       userId: auth.userId,
@@ -9290,6 +9395,7 @@ async function signUpWithEmail(database, session, provider, credentials) {
       isGuest: 0,
       provider: "email"
     });
+    await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -9320,7 +9426,7 @@ async function signInWithEmail(database, session, credentials) {
     isGuest: Boolean(row.isGuest),
     provider: "email"
   };
-  return await database.adapter.withTransaction(async (tx) => ({
+  return await withAuthTransaction(database, async (tx) => ({
     ok: true,
     sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
     auth
@@ -9339,8 +9445,9 @@ async function linkProviderIdentity(database, session, provider, profile) {
       }
     };
   }
-  return await database.adapter.withTransaction(async (tx) => {
+  return await withAuthTransaction(database, async (tx) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
@@ -9418,6 +9525,9 @@ async function linkProviderIdentity(database, session, provider, profile) {
       isGuest: 0,
       provider
     });
+    if (bootstrapInitialTeam) {
+      await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
+    }
     if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
       await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
     } else {
@@ -9426,6 +9536,18 @@ async function linkProviderIdentity(database, session, provider, profile) {
     }
     return { ok: true, auth };
   });
+}
+async function withAuthTransaction(database, fn) {
+  if (database.__transactionActive) return await fn(database.adapter);
+  const root = database.__rootDatabase ?? database;
+  const previous = root.__authTransactionQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => database.adapter.withTransaction(fn));
+  root.__authTransactionQueue = work;
+  try {
+    return await work;
+  } finally {
+    if (root.__authTransactionQueue === work) root.__authTransactionQueue = null;
+  }
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -9736,106 +9858,6 @@ function ensureSessionProvenanceColumn(sqlite) {
       )
     )
   ]);
-}
-
-// src/teams-runtime.ts
-import { randomUUID } from "node:crypto";
-var INITIAL_TEAM_NAME = "My Team";
-var TEAM_NAME_MAX_BYTES = 80;
-var TEAM_MEMBER_COUNT_MAX = 99;
-var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
-function createTeamTables(adapter) {
-  const sql = adapter.dialect.sql;
-  return chainMaybePromise([
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    ))
-  ]);
-}
-function createCurrentUserTeamsApi(database, auth) {
-  return {
-    async list() {
-      requireAuth({ auth }, { linked: true });
-      return listCurrentUserTeams(database, auth);
-    }
-  };
-}
-async function listCurrentUserTeams(database, auth) {
-  requireAuth({ auth }, { linked: true });
-  await ensureInitialTeam(database, auth);
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql(
-    "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
-  )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
-  return {
-    teams: rows.map((row) => ({
-      id: String(row.id),
-      name: safeTeamName(row.name),
-      role: row.role === "admin" ? "admin" : "member",
-      applicationRoles: [],
-      memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
-    }))
-  };
-}
-async function ensureInitialTeam(database, auth) {
-  if (database.__transactionActive) {
-    return ensureInitialTeamOnAdapter(database.adapter, auth);
-  }
-  const root = database.__rootDatabase ?? database;
-  root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
-  const running = root.__teamBootstrapByUser.get(auth.userId);
-  if (running) return running;
-  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
-  const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth));
-  root.__teamBootstrapQueue = work;
-  root.__teamBootstrapByUser.set(auth.userId, work);
-  try {
-    return await work;
-  } finally {
-    if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
-    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
-  }
-}
-async function bootstrapWithRetry(adapter, auth) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
-    } catch (error) {
-      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
-    }
-  }
-}
-function isTransientTeamBootstrapError(error) {
-  const text2 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
-  const code = String(error?.code ?? "").toUpperCase();
-  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
-}
-async function ensureInitialTeamOnAdapter(tx, auth) {
-  const sql = tx.dialect.sql;
-  const id = randomUUID();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const claim = await tx.prepare(sql(
-    "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
-  )).run(auth.userId, id, now);
-  if (Number(claim?.changes ?? 0) === 0) {
-    const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(auth.userId);
-    if (existing?.teamId) return String(existing.teamId);
-    throw new Error("Team bootstrap claim was not committed.");
-  }
-  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, auth.userId);
-  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, auth.userId, now);
-  return id;
-}
-function safeTeamName(value) {
-  const name = typeof value === "string" ? value.trim() : "";
-  return Buffer.byteLength(name, "utf8") <= TEAM_NAME_MAX_BYTES && name.length > 0 ? name : INITIAL_TEAM_NAME;
 }
 
 // src/runtime-log-policy.ts

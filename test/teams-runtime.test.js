@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signUpWithEmail } from "../dist/server-runtime-source.js";
+import {
+  linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail,
+} from "../dist/server-runtime-source.js";
 import { createTeamTables, listCurrentUserTeams } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
@@ -67,12 +69,133 @@ test("concurrent initial Team listing shares one SQLite bootstrap transaction", 
       const linked = await signUpWithEmail(database, anonymous, "email", {
         email: "owner@example.com", password: "password-123", name: "Owner",
       });
+      assert.equal(
+        database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?").get(linked.auth.userId).count,
+        1,
+        "email account linking commits the initial Team before a Team-interface call",
+      );
       const results = await Promise.all([
         listCurrentUserTeams(database, linked.auth),
         listCurrentUserTeams(database, linked.auth),
       ]);
       assert.equal(results[0].teams.length, 1);
       assert.deepEqual(results[0], results[1]);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("email and every OAuth linking provider commit one initial Team while returning accounts remain unchanged", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-linking-seams",
+      auth: { providers: { anonymous: true, email: true, google: true, microsoft: true, apple: true, facebook: true } },
+    }, { name: "teams-linking-seams", schema: {} });
+    try {
+      const emailAnonymous = await resolveAnonymousSession(database, null);
+      assert.equal(teamCount(database), 0, "ordinary anonymous browsing creates no Team rows");
+      const emailLinked = await signUpWithEmail(database, emailAnonymous, "email", {
+        email: "email@example.com", password: "password-123", name: "Email Owner",
+      });
+      assert.equal(emailLinked.ok, true);
+      assert.equal(teamCountForUser(database, emailLinked.auth.userId), 1);
+      const emailSignInAnonymous = await resolveAnonymousSession(database, null);
+      const emailSignIn = await signInWithEmail(database, emailSignInAnonymous, {
+        email: "email@example.com", password: "password-123", name: "Ignored",
+      });
+      assert.equal(emailSignIn.ok, true);
+      assert.equal(teamCountForUser(database, emailLinked.auth.userId), 1, "email sign-in does not duplicate the initial Team");
+
+      for (const provider of ["google", "microsoft", "apple", "facebook"]) {
+        const firstAnonymous = await resolveAnonymousSession(database, null);
+        const linked = await linkProviderIdentity(database, firstAnonymous, provider, {
+          subject: `${provider}-new-user`, email: `${provider}@example.com`, displayName: `${provider} Owner`,
+        });
+        assert.equal(linked.ok, true, provider);
+        assert.equal(teamCountForUser(database, linked.auth.userId), 1, `${provider} linking commits one Team`);
+        assert.equal((await listCurrentUserTeams(database, linked.auth)).teams.length, 1, `${provider} caller immediately sees its Team`);
+
+        const returningAnonymous = await resolveAnonymousSession(database, null);
+        const returned = await linkProviderIdentity(database, returningAnonymous, provider, {
+          subject: `${provider}-new-user`, email: `${provider}@example.com`, displayName: `${provider} Owner`,
+        });
+        assert.equal(returned.ok, true, `${provider} existing-account sign-in`);
+        assert.equal(returned.auth.userId, linked.auth.userId, `${provider} returns the original account`);
+        assert.equal(teamCountForUser(database, linked.auth.userId), 1, `${provider} sign-in does not duplicate the Team`);
+      }
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("a Team-bootstrap failure rolls back new email linking and retains the anonymous Session", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-linking-rollback", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "teams-linking-rollback", schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const anonymous = await resolveAnonymousSession(database, null);
+      database.adapter = failTeamBootstrapMembershipInsert(baseAdapter, new Error("team membership exploded"));
+      await assert.rejects(
+        () => signUpWithEmail(database, anonymous, "email", {
+          email: "rollback@example.com", password: "password-123", name: "Rollback",
+        }),
+        /team membership exploded/,
+      );
+      assert.equal(baseAdapter.emailCredentialExists("rollback@example.com"), false);
+      assert.equal(teamCount(baseAdapter), 0);
+      const preserved = baseAdapter.readAuthSessionWithUser(anonymous.token);
+      assert.equal(preserved.userId, anonymous.auth.userId);
+      assert.equal(preserved.provider, "anonymous");
+      assert.equal(preserved.isGuest, 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("retried concurrent OAuth completions share one committed initial Team", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-linking-concurrency", auth: { providers: { anonymous: true, google: true } },
+    }, { name: "teams-linking-concurrency", schema: {} });
+    try {
+      const anonymous = await resolveAnonymousSession(database, null);
+      const profile = { subject: "concurrent-google-user", email: "concurrent@example.com", displayName: "Concurrent" };
+      const results = await Promise.all([
+        linkProviderIdentity(database, anonymous, "google", profile),
+        linkProviderIdentity(database, anonymous, "google", profile),
+      ]);
+      assert.equal(results[0].ok, true);
+      assert.equal(results[1].ok, true);
+      assert.equal(results[0].auth.userId, results[1].auth.userId);
+      assert.equal(teamCountForUser(database, results[0].auth.userId), 1);
+      assert.equal((await listCurrentUserTeams(database, results[0].auth)).teams.length, 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("a linked user from before Team bootstrap still receives the initial Team lazily", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-legacy-lazy", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "teams-legacy-lazy", schema: {} });
+    try {
+      const anonymous = await resolveAnonymousSession(database, null);
+      const auth = { ...anonymous.auth, displayName: "Legacy", email: "legacy@example.com", isAuthenticated: true, isGuest: false, provider: "email" };
+      await database.adapter.withTransaction((tx) => tx.linkAuthUser({
+        id: auth.userId, displayName: auth.displayName, email: auth.email, picture: null,
+        isAuthenticated: 1, isGuest: 0, provider: "email",
+      }));
+      assert.equal(teamCountForUser(database, auth.userId), 0);
+      const teams = await listCurrentUserTeams(database, auth);
+      assert.equal(teams.teams.length, 1);
+      assert.equal(teamCountForUser(database, auth.userId), 1);
     } finally {
       await database.close();
     }
@@ -189,6 +312,36 @@ test("a Capsule that never uses Teams retains auth, query, mutation, file, and A
 
 function linkedAuth(userId) {
   return { userId, displayName: "Owner", email: "owner@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
+}
+
+function teamCount(adapterOrDatabase) {
+  const adapter = adapterOrDatabase.adapter ?? adapterOrDatabase;
+  return Number(adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams]").get().count);
+}
+
+function teamCountForUser(database, userId) {
+  return Number(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?").get(userId).count);
+}
+
+function failTeamBootstrapMembershipInsert(adapter, error) {
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => {
+          const withTransaction = Reflect.get(currentTarget, property, receiver);
+          return await withTransaction.call(currentTarget, async (transactionAdapter) => await fn(wrap(transactionAdapter)));
+        };
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (!`${statement}`.includes("sporades_team_memberships")) return prepared;
+        return { ...prepared, run() { throw error; } };
+      };
+    },
+  });
+  return wrap(adapter);
 }
 
 async function withDatabase(fn) {

@@ -53,7 +53,7 @@ export async function listCurrentUserTeams(database, auth) {
 }
 async function ensureInitialTeam(database, auth) {
     if (database.__transactionActive) {
-        return ensureInitialTeamOnAdapter(database.adapter, auth);
+        return ensureInitialTeamOnAdapter(database.adapter, auth.userId);
     }
     // node:sqlite has one connection, so two simultaneous BEGIN calls fail
     // before the durable bootstrap uniqueness claim can arbitrate. Queue every
@@ -64,7 +64,7 @@ async function ensureInitialTeam(database, auth) {
     if (running)
         return running;
     const previous = root.__teamBootstrapQueue ?? Promise.resolve();
-    const work = previous.catch(() => undefined).then(() => bootstrapWithRetry(database.adapter, auth));
+    const work = previous.catch(() => undefined).then(() => bootstrapWithRetry(database.adapter, auth.userId));
     root.__teamBootstrapQueue = work;
     root.__teamBootstrapByUser.set(auth.userId, work);
     try {
@@ -77,10 +77,10 @@ async function ensureInitialTeam(database, auth) {
             root.__teamBootstrapQueue = null;
     }
 }
-async function bootstrapWithRetry(adapter, auth) {
+async function bootstrapWithRetry(adapter, userId) {
     for (let attempt = 0;; attempt += 1) {
         try {
-            return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+            return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, userId));
         }
         catch (error) {
             if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error))
@@ -95,7 +95,13 @@ function isTransientTeamBootstrapError(error) {
     return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") &&
         (text.includes("locked") || text.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
-async function ensureInitialTeamOnAdapter(tx, auth) {
+// Auth account-linking calls this inside its existing Auth transaction. Keeping
+// the transaction-aware primitive here gives email and every OAuth provider one
+// Team bootstrap implementation while Ticket 01's lazy path remains intact.
+export async function bootstrapInitialTeamForLinkedUser(tx, userId) {
+    return ensureInitialTeamOnAdapter(tx, userId);
+}
+async function ensureInitialTeamOnAdapter(tx, userId) {
     const sql = tx.dialect.sql;
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -104,15 +110,15 @@ async function ensureInitialTeamOnAdapter(tx, auth) {
     // `DO NOTHING` matters on Postgres: catching a uniqueness exception would
     // leave that transaction aborted before it could read the winner's Team.
     const claim = await tx.prepare(sql("INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) " +
-        "ON CONFLICT ([userId]) DO NOTHING")).run(auth.userId, id, now);
+        "ON CONFLICT ([userId]) DO NOTHING")).run(userId, id, now);
     if (Number(claim?.changes ?? 0) === 0) {
-        const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(auth.userId);
+        const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
         if (existing?.teamId)
             return String(existing.teamId);
         throw new Error("Team bootstrap claim was not committed.");
     }
-    await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, auth.userId);
-    await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, auth.userId, now);
+    await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, userId);
+    await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now);
     return id;
 }
 function safeTeamName(value) {

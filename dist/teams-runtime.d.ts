@@ -8,5 +8,6 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
 export declare function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord): Promise<{
     teams: any;
 }>;
+export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
 export {};
 //# sourceMappingURL=teams-runtime.d.ts.map

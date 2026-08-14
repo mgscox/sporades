@@ -78,6 +78,7 @@ import { commandError } from "./runtime-errors.js";
 // functions at the end of this file inside the monolith after batch 3. The dependency runs one way
 // — user preferences imports `runtime-errors.js` and nothing else — so this introduces no cycle.
 import { migrateAnonymousPreferences } from "./user-preferences-runtime.js";
+import { bootstrapInitialTeamForLinkedUser } from "./teams-runtime.js";
 // Batch 9. The sync/async bridge every step of the auth storage bootstrap at the end of this file
 // chains through: on a synchronous engine that is the order the statements already ran in, and on an
 // asynchronous one it is the difference between a sequence and a race.
@@ -2770,7 +2771,7 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
     isGuest: false,
     provider: "email",
   };
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+  return await withAuthTransaction(database, async (tx: LooseRecord) => {
     await tx.insertEmailCredential({
       email: normalized.email,
       userId: auth.userId,
@@ -2787,6 +2788,7 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
       isGuest: 0,
       provider: "email",
     });
+    await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -2822,7 +2824,7 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
     isGuest: Boolean(row.isGuest),
     provider: "email",
   };
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => ({
+  return await withAuthTransaction(database, async (tx: LooseRecord) => ({
     ok: true,
     sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
     auth,
@@ -2845,8 +2847,9 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
     };
   }
 
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+  return await withAuthTransaction(database, async (tx: LooseRecord) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
@@ -2924,6 +2927,9 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
       isGuest: 0,
       provider,
     });
+    if (bootstrapInitialTeam) {
+      await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
+    }
     if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
       await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
     } else {
@@ -2932,6 +2938,23 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
     }
     return { ok: true, auth };
   });
+}
+
+// Auth links and Session rotation are one transaction. SQLite permits only one
+// active transaction per runtime connection, so serialize top-level Auth
+// transactions here; persistent identity/bootstrap uniqueness remains the
+// cross-runtime guard. A caller already inside a runtime transaction joins it.
+async function withAuthTransaction(database: LooseRecord, fn: (tx: LooseRecord) => any) {
+  if (database.__transactionActive) return await fn(database.adapter);
+  const root = database.__rootDatabase ?? database;
+  const previous = root.__authTransactionQueue ?? Promise.resolve();
+  const work = previous.catch(() => undefined).then(() => database.adapter.withTransaction(fn));
+  root.__authTransactionQueue = work;
+  try {
+    return await work;
+  } finally {
+    if (root.__authTransactionQueue === work) root.__authTransactionQueue = null;
+  }
 }
 
 async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {

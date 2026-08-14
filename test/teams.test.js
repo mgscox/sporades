@@ -18,7 +18,7 @@ const capsule = {
   },
 };
 
-test("a linked caller lazily receives one persistent singleton Team through public and trusted current-user seams", async () => {
+test("a newly linked caller immediately receives one persistent singleton Team through public and trusted current-user seams", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-"));
   const databasePath = path.join(dir, "data.db");
   let runtime = await startRuntime(databasePath);
@@ -37,6 +37,11 @@ test("a linked caller lazily receives one persistent singleton Team through publ
       credentials: { email: "owner@example.com", password: "password-123", name: "Owner" },
     });
     assert.equal(signedUp.error, null, JSON.stringify(signedUp.error));
+    assert.equal(
+      runtime.database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?").get(signedUp.data.auth.userId).count,
+      1,
+      "email account linking commits the initial Team before any Team-interface call",
+    );
 
     linked = await runtime.open();
     const [first, concurrent] = await Promise.all([
