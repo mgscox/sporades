@@ -1816,8 +1816,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         transactionDatabase.rowCache.clear();
       }
     });
-    await flushPendingJobEnqueues(context);
     flushTeamSecurityEvents(database, context);
+    await flushPendingJobEnqueues(context);
     return result;
   } catch (error) {
     await flushPendingJobEnqueues(context);
@@ -3418,8 +3418,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
 
       return result;
     });
-    await flushPendingJobEnqueues(context);
     flushTeamSecurityEvents(database, context);
+    await flushPendingJobEnqueues(context);
     return committed;
   } catch (error: any) {
     await flushPendingJobEnqueues(context);
@@ -3517,8 +3517,8 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       }
       return { data: result ?? null, error: null as any };
     });
-    await flushPendingJobEnqueues(context);
     flushTeamSecurityEvents(database, context);
+    await flushPendingJobEnqueues(context);
     return response;
   } catch (error: any) {
     await flushPendingJobEnqueues(context);

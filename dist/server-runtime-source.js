@@ -1624,8 +1624,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                 transactionDatabase.rowCache.clear();
             }
         });
-        await flushPendingJobEnqueues(context);
         flushTeamSecurityEvents(database, context);
+        await flushPendingJobEnqueues(context);
         return result;
     }
     catch (error) {
@@ -3151,8 +3151,8 @@ export async function runMutation(database, auth, mutationName, args) {
             }
             return result;
         });
-        await flushPendingJobEnqueues(context);
         flushTeamSecurityEvents(database, context);
+        await flushPendingJobEnqueues(context);
         return committed;
     }
     catch (error) {
@@ -3243,8 +3243,8 @@ export async function runAppMessage(database, auth, messageName, data, options =
             }
             return { data: result ?? null, error: null };
         });
-        await flushPendingJobEnqueues(context);
         flushTeamSecurityEvents(database, context);
+        await flushPendingJobEnqueues(context);
         return response;
     }
     catch (error) {
