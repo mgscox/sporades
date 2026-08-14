@@ -11,6 +11,7 @@ import {
   completePendingFileUpload,
   createPublicFileUrl,
   createLocalFileStorageAdapter,
+  createPostgresDatabaseAdapter,
   createRuntimeFileStorageAdapter,
   createS3CompatibleFileStorageAdapter,
   createPendingFileUpload,
@@ -43,6 +44,7 @@ import {
 } from "../dist/server-runtime-source.js";
 import {
   POSTGRES_SKIP_REASON,
+  postgresTestUrl,
   withLibsqlAdapter,
   withPostgresAdapter,
   withSqliteAdapter,
@@ -1450,6 +1452,41 @@ test(
         error: null,
       });
     }, { appTableNames: ["notes"] });
+  },
+);
+
+test(
+  "Postgres concurrent OAuth links converge on one provider identity and initial Team",
+  { skip: POSTGRES_SKIP_REASON },
+  async () => {
+    await withPostgresAdapter(async (firstAdapter) => {
+      const secondAdapter = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
+      try {
+        await firstAdapter.ensureAuthStorage();
+        await firstAdapter.ensureUserPreferencesStorage();
+        await firstAdapter.ensureTeamsStorage();
+        const firstDatabase = { adapter: firstAdapter };
+        const secondDatabase = { adapter: secondAdapter };
+        const firstGuest = await resolveAnonymousSession(firstDatabase, null);
+        const secondGuest = await resolveAnonymousSession(secondDatabase, null);
+        const profile = {
+          subject: "postgres-concurrent-subject", email: "postgres-concurrent@example.com", displayName: "Postgres Concurrent",
+        };
+        const [first, second] = await Promise.all([
+          linkProviderIdentity(firstDatabase, firstGuest, "google", profile),
+          linkProviderIdentity(secondDatabase, secondGuest, "google", profile),
+        ]);
+        assert.equal(first.ok, true);
+        assert.equal(second.ok, true);
+        assert.equal(first.auth.userId, second.auth.userId);
+        const count = await firstAdapter.prepare(
+          'SELECT COUNT(*) AS "count" FROM "sporades_teams" WHERE "createdByUserId" = ?',
+        ).get(first.auth.userId);
+        assert.equal(Number(count.count), 1);
+      } finally {
+        await secondAdapter.close();
+      }
+    });
   },
 );
 

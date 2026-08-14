@@ -258,6 +258,71 @@ export type PreferencesApi<Preferences extends JsonObject = JsonObject> = {
   update<Patch extends Partial<Preferences> & JsonObject>(patch: Patch): Promise<SporadesResult<PreferencesResult<Preferences & Patch>>>;
 };
 
+/** A safe current-user Team presentation. Team names never grant authority. */
+export type TeamSummary = {
+  id: string;
+  name: string;
+  role: "admin" | "member";
+  applicationRoles: string[];
+  /** Capped at 99 so a Team list remains bounded. */
+  memberCount: number;
+};
+/** Safe member presentation for an exact-Team administrator. */
+export type TeamMemberSummary = {
+  userId: string;
+  displayName: string;
+  picture: string | null;
+  role: "admin" | "member";
+  applicationRoles: string[];
+};
+export type TeamsListResult = { teams: TeamSummary[] };
+export type TeamMutationResult = { team: TeamSummary };
+export type TeamMembersListResult = { members: TeamMemberSummary[] };
+/** Admin-only Join-link metadata. The link capability is never recoverable from this view. */
+export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinkCreateResult = { id: string; link: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinksListResult = { links: TeamJoinLink[] };
+/** Safe pre-auth Join-link presentation. It intentionally omits the target email and creator. */
+export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
+/** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
+export type TeamJoinLinkValidation = { valid: boolean };
+/** Atomic membership-scoped application-role reconciliation. */
+export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
+/** Built-in current-user Team operations over the standard client transport. */
+export type TeamsApi = {
+  list(): Promise<SporadesResult<TeamsListResult>>;
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  create(name: string): Promise<SporadesResult<TeamMutationResult>>;
+  /** Renames an explicitly identified Team administered by the current user. */
+  rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;
+  /** Lists a bounded safe membership directory for one Team the caller currently administers. */
+  listMembers(teamId: string): Promise<SporadesResult<TeamMembersListResult>>;
+  /** Atomically adds and removes declared application roles for a member of one administered Team. */
+  updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<SporadesResult<{ updated: true }>>;
+  /** Creates a short-lived, email-bound Join link. Sporades returns it but never sends it. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
+  createJoinLink(teamId: string, email: string, options?: { ttlSeconds?: number }): Promise<SporadesResult<TeamJoinLinkCreateResult>>;
+  /** Lists active Join-link management metadata without capability codes or URLs. */
+  listJoinLinks(teamId: string): Promise<SporadesResult<TeamJoinLinksListResult>>;
+  /** Idempotently revokes one unused Join link in an administered Team. */
+  revokeJoinLink(teamId: string, joinLinkId: string): Promise<SporadesResult<{ revoked: true }>>;
+  /** Safely inspects a Join link before authentication without consuming it. */
+  inspectJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkInspection>>;
+  /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
+  validateJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkValidation>>;
+  /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
+  join(code: string): Promise<SporadesResult<TeamMutationResult>>;
+  /** Promotes an ordinary member in an explicitly identified Team the caller currently administers. */
+  promote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
+  /** Demotes an admin only when another committed Team admin remains. */
+  demote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
+  /** Removes another Team member and their runtime-owned membership authority. Self-removal uses leave(). */
+  removeMember(teamId: string, userId: string): Promise<SporadesResult<{ removed: true }>>;
+  /** Leaves an explicitly identified Team only while the caller is an ordinary member. */
+  leave(teamId: string): Promise<SporadesResult<{ left: true }>>;
+  /** Deletes a Team only when the caller is its sole remaining admin member. */
+  delete(teamId: string): Promise<SporadesResult<{ deleted: true }>>;
+};
+
 /** Hook state returned by `useQuery()`. */
 export type QueryState<Data = unknown> = {
   data: Data | null;
@@ -459,6 +524,8 @@ export const auth: AuthApi;
 export const files: FilesApi;
 /** Runtime-owned current-user preferences commands. */
 export const preferences: PreferencesApi;
+/** Runtime-owned Teams for the current linked user. */
+export const teams: TeamsApi;
 /** Explicit, page-runtime User journey publication lifecycle; server sessions are created lazily by accepted publications. */
 export const journey: JourneyApi;
 /** Framework-neutral query state subscriptions. */

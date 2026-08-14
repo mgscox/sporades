@@ -38,6 +38,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
     "services",
     "ssh",
     "template",
+    "teams",
 ]);
 export async function readProjectConfig(projectDir) {
     const configPath = path.join(projectDir, "sporades.json");
@@ -55,6 +56,7 @@ export async function readProjectConfig(projectDir) {
     if (config.mail !== undefined)
         config.mail = validateMailConfig(config.mail);
     validatePasswordResetConfig(config.auth);
+    validateTeamsConfig(config.teams);
     validateCapsuleServicesConfig(config.services);
     return config;
 }
@@ -95,6 +97,28 @@ function isSameOriginResetPath(value) {
     if (value.includes("\\") || value.includes("?") || value.includes("#"))
         return false;
     return !value.split("/").includes("..");
+}
+/** Team Join pages stay on the Capsule origin; only their absolute path is configurable. */
+export function validateTeamsConfig(teams) {
+    if (teams === undefined)
+        return;
+    const fail = (message, hint) => {
+        const error = new Error(message);
+        error.code = "INVALID_TEAMS_CONFIG";
+        error.hint = hint;
+        throw error;
+    };
+    if (!teams || typeof teams !== "object" || Array.isArray(teams) || Object.keys(teams).some((key) => key !== "join")) {
+        fail("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
+    }
+    if (teams.join === undefined)
+        return;
+    if (!teams.join || typeof teams.join !== "object" || Array.isArray(teams.join) || Object.keys(teams.join).some((key) => key !== "path")) {
+        fail("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
+    }
+    if (teams.join.path !== undefined && !isSameOriginResetPath(teams.join.path)) {
+        fail("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
+    }
 }
 export function validateClientConfig(client) {
     if (client === undefined)

@@ -166,6 +166,7 @@ import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import { normalizeDateValue } from "./stored-value-coding.js";
 import { createUserPreferencesTables } from "./user-preferences-runtime.js";
+import { createTeamTables } from "./teams-runtime.js";
 // Synchronous access to two Node builtins without an import — see the header, and ADR-0042. `process`
 // is a global in both places this module runs: `dist/database-runtime.js` loaded as an ES module, and
 // the esbuild IIFE the emitted-list bundle splices into a deployed Capsule. Bound as namespaces and
@@ -533,6 +534,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         ensureUserPreferencesStorage() {
             return createUserPreferencesTables(this);
+        },
+        ensureTeamsStorage() {
+            return createTeamTables(this);
         },
         readUserPreferences(userId) {
             return this.prepare(sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")).get(userId) ?? null;
@@ -1282,7 +1286,14 @@ function postgresErrorFromBody(body) {
         fields[type] = body.subarray(offset, end).toString("utf8");
         offset = end + 1;
     }
-    return new Error(fields.M ?? "Postgres query failed.");
+    const error = new Error(fields.M ?? "Postgres query failed.");
+    // SQLSTATE and constraint name are operational metadata: callers use them
+    // only to retry a known idempotent race, never as a browser-facing error.
+    if (fields.C)
+        error.code = fields.C;
+    if (fields.n)
+        error.constraint = fields.n;
+    return error;
 }
 // `?` placeholders replaced with literals, skipping the ones inside strings and comments.
 //

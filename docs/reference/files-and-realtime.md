@@ -50,8 +50,38 @@ const blob = await files.download(file.path);
 ```
 
 File operations that identify an existing file accept a File reference: either
-the stable File ID or the absolute File path. The reference must resolve to one
-live file owned by the current user.
+the stable File ID or the absolute File path. By default, the reference must
+resolve to one live file owned by the current user. A Capsule may deliberately
+extend normal File access with `files.acl` rules for `read`, `publicUrl`, and
+`delete`; the File owner keeps its existing access in all cases.
+
+File ACL rules receive stable File metadata plus the restricted ACL context.
+They can use `ctx.acl.teams` with an explicit Team ID carried in the Capsule's
+own File-policy model; they cannot access bytes, storage implementation,
+mutable Team management, the normal database API, request data, or Privileged
+server authority. A membership or active application-role change is evaluated
+again for subsequent private URL requests, including a previously returned
+private URL.
+
+For example, a Capsule can share files whose paths carry an explicit Team ID:
+
+```ts
+export default capsule({
+  name: "Team files",
+  teams: { appRoles: ["editor", "reviewer"] },
+  files: {
+    acl: {
+      read: ({ file, ctx }) => ctx.acl.teams.isMember(file.path.split("/")[2]),
+      publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2]),
+      delete: ({ file, ctx }) => ctx.acl.teams.hasAnyRole(file.path.split("/")[2], ["editor", "reviewer"]),
+    },
+  },
+});
+```
+
+This is Capsule policy rather than automatic Team data partitioning: Files do
+not gain Team IDs and Team membership alone grants no File access. Rules that
+deny access receive the normal opaque File-not-found result.
 
 Create public URLs explicitly:
 
@@ -66,7 +96,13 @@ Revoke public URLs when they should no longer work:
 await files.revokePublicUrl(publicUrl.id);
 ```
 
-Delete uploaded files when the current user owns them:
+Creating a public URL through a File ACL authorizes the creation only; it does
+not transfer the File or its capability. The public URL is stored for the File
+owner, so the owner can revoke it even when an ACL-approved Team collaborator
+created it.
+
+Delete uploaded files when the current user owns them, or when a declared File
+ACL explicitly permits the deletion:
 
 ```tsx
 await files.delete(file.id);

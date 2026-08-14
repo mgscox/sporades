@@ -54,6 +54,16 @@ Tables, queries, mutations, authorization, Server env, mail, middleware, actors,
 #### [Choosing a server actor](../reference/server-runtime.md#choosing-a-server-actor) {#choosing-a-server-actor}
 ### [Custom HTTP Endpoints](../reference/server-runtime.md#custom-http-endpoints) {#custom-http-endpoints}
 
+## Built-in Teams
+
+Runtime-owned Teams, membership application roles, email-bound Join links, and explicit Team ACL decisions.
+
+### [Team model and compatibility](../reference/teams.md#team-model-and-compatibility) {#team-model-and-compatibility}
+### [Manage Teams from a Capsule](../reference/teams.md#manage-teams-from-a-capsule) {#manage-teams-from-a-capsule}
+### [Email-bound Join links](../reference/teams.md#email-bound-join-links) {#email-bound-join-links}
+### [Authorize explicit Team resources](../reference/teams.md#authorize-explicit-team-resources) {#authorize-explicit-team-resources}
+### [Security, storage, and audit boundaries](../reference/teams.md#security-storage-and-audit-boundaries) {#security-storage-and-audit-boundaries}
+
 ## Jobs and Schedules
 
 Durable background work, Schedule declarations, runtime behavior, and CLI inspection.

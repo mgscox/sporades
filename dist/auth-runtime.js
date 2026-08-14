@@ -70,6 +70,7 @@ import { commandError } from "./runtime-errors.js";
 // functions at the end of this file inside the monolith after batch 3. The dependency runs one way
 // — user preferences imports `runtime-errors.js` and nothing else — so this introduces no cycle.
 import { migrateAnonymousPreferences } from "./user-preferences-runtime.js";
+import { bootstrapInitialTeamForLinkedUser } from "./teams-runtime.js";
 // Batch 9. The sync/async bridge every step of the auth storage bootstrap at the end of this file
 // chains through: on a synchronous engine that is the order the statements already ran in, and on an
 // asynchronous one it is the difference between a sequence and a race.
@@ -115,6 +116,7 @@ export const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
 export const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
 export const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 export const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+const AUTH_TRANSACTION_RETRY_LIMIT = 5;
 // Kept for queued work from before reset requests became durable Jobs of their own.
 export const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 export const PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
@@ -210,7 +212,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
     const picture = normalizeSimulatedText(options.picture);
     const now = new Date().toISOString();
     const token = createSessionToken();
-    return await database.adapter.withTransaction(async (tx) => {
+    return await withAuthTransaction(database, async (tx) => {
         const subject = `local:${email}`;
         const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
         const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
@@ -247,6 +249,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
                 createdAt: now,
                 updatedAt: now,
             });
+            await bootstrapInitialTeamForLinkedUser(tx, userId);
         }
         await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
         const auth = {
@@ -2463,7 +2466,7 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         isGuest: false,
         provider: "email",
     };
-    return await database.adapter.withTransaction(async (tx) => {
+    return await withAuthTransaction(database, async (tx) => {
         await tx.insertEmailCredential({
             email: normalized.email,
             userId: auth.userId,
@@ -2480,6 +2483,7 @@ export async function signUpWithEmail(database, session, provider, credentials) 
             isGuest: 0,
             provider: "email",
         });
+        await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
         return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
     });
 }
@@ -2510,7 +2514,7 @@ export async function signInWithEmail(database, session, credentials) {
         isGuest: Boolean(row.isGuest),
         provider: "email",
     };
-    return await database.adapter.withTransaction(async (tx) => ({
+    return await withAuthTransaction(database, async (tx) => ({
         ok: true,
         sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
         auth,
@@ -2531,7 +2535,7 @@ export async function linkProviderIdentity(database, session, provider, profile)
             },
         };
     }
-    return await database.adapter.withTransaction(async (tx) => {
+    return await withAuthTransaction(database, async (tx) => {
         let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
         const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
         if (!identity && email && provider === "google") {
@@ -2558,6 +2562,9 @@ export async function linkProviderIdentity(database, session, provider, profile)
             }
             identity = legacyIdentities[0] ?? null;
         }
+        // Decide only after legacy recovery. A pre-Teams Google account is already
+        // linked even when its old identity must be recovered by verified email.
+        const bootstrapInitialTeam = !identity && session.auth.isGuest;
         if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
             return {
                 ok: false,
@@ -2611,6 +2618,9 @@ export async function linkProviderIdentity(database, session, provider, profile)
             isGuest: 0,
             provider,
         });
+        if (bootstrapInitialTeam) {
+            await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
+        }
         if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
             await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
         }
@@ -2620,6 +2630,46 @@ export async function linkProviderIdentity(database, session, provider, profile)
         }
         return { ok: true, auth };
     });
+}
+// Auth links and Session rotation are one transaction. SQLite permits only one
+// active transaction per runtime connection, so serialize top-level Auth
+// transactions here; persistent identity/bootstrap uniqueness remains the
+// cross-runtime guard. A caller already inside a runtime transaction joins it.
+async function withAuthTransaction(database, fn) {
+    if (database.__transactionActive)
+        return await fn(database.adapter);
+    const root = database.__rootDatabase ?? database;
+    const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
+    const work = previous.catch(() => undefined).then(() => withAuthTransactionRetry(database.adapter, fn));
+    root.__runtimeTransactionQueue = work;
+    try {
+        return await work;
+    }
+    finally {
+        if (root.__runtimeTransactionQueue === work)
+            root.__runtimeTransactionQueue = null;
+    }
+}
+async function withAuthTransactionRetry(adapter, fn) {
+    for (let attempt = 0;; attempt += 1) {
+        try {
+            return await adapter.withTransaction(fn);
+        }
+        catch (error) {
+            if (attempt >= AUTH_TRANSACTION_RETRY_LIMIT - 1 || !isTransientAuthTransactionError(error))
+                throw error;
+            await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+        }
+    }
+}
+function isTransientAuthTransactionError(error) {
+    const text = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+    const code = String(error?.code ?? "").toUpperCase();
+    if (code === "23505" && error?.constraint === "sporades_auth_identities_provider_subject_key") {
+        return true;
+    }
+    return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") &&
+        (text.includes("locked") || text.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
     const now = new Date().toISOString();

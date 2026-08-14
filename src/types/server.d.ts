@@ -92,9 +92,22 @@ export type AclStorageHelpers = {
   exists(resourceName: "files", reference: string): boolean;
 };
 
+/** Read-only Team decisions available while evaluating table and File ACL rules. */
+export type AclTeamHelpers = {
+  /** True when the current linked actor belongs to the explicitly identified Team. */
+  isMember(teamId: string): boolean;
+  /** True when the current linked actor is an admin of the explicitly identified Team. */
+  isAdmin(teamId: string): boolean;
+  /** True when the current linked actor holds this currently declared application role in the explicitly identified Team. */
+  hasRole(teamId: string, role: string): boolean;
+  /** True when the current linked actor holds any role in this non-empty, bounded (32 maximum) declared-role set for the explicitly identified Team. */
+  hasAnyRole(teamId: string, roles: readonly string[]): boolean;
+};
+
 export type AclHelpers = {
   db: AclDatabaseHelpers;
   storage: AclStorageHelpers;
+  teams: AclTeamHelpers;
 };
 
 /** Runtime context available while evaluating table ACL rules. */
@@ -123,6 +136,41 @@ export type TableAclRuleInput<Row extends Record<string, unknown> = Record<strin
 export type TableAclRule<Row extends Record<string, unknown> = Record<string, unknown>> = (
   input: TableAclRuleInput<Row>,
 ) => MaybePromise<boolean>;
+
+/** File operations that a Capsule may deliberately share beyond the file owner. */
+export type FileAclOperation = "read" | "publicUrl" | "delete";
+
+/**
+ * Read-only context available while evaluating a File ACL rule.
+ *
+ * Unlike a trusted Capsule handler this never exposes `ctx.teams`, `ctx.db`,
+ * request state, or Privileged server role. Use `ctx.acl.teams` with an
+ * explicit Team ID stored in the Capsule's own File-policy model.
+ */
+export type FileAclContext = {
+  auth: AuthContext;
+  acl: AclHelpers;
+};
+
+/** Stable File metadata supplied to a File ACL rule; it never includes bytes or storage credentials. */
+export type FileAclRuleInput = {
+  ctx: FileAclContext;
+  operation: FileAclOperation;
+  file: AclStorageFileMetadata;
+};
+
+export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
+
+/**
+ * Optional rules that extend normal File ownership with explicit Capsule ACL.
+ * Owner access and public-URL revocation remain with the File owner; absent
+ * rules never widen File access.
+ */
+export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
+
+export type CapsuleFilesDefinition = {
+  acl?: FileAclRules;
+};
 
 /**
  * Per-operation table ACL rules.
@@ -312,6 +360,62 @@ export type ServerAuthApi = {
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };
 
+/** Safe current-user Team presentation; membership enumeration is not exposed here. */
+export type TeamSummary = {
+  id: string;
+  name: string;
+  role: "admin" | "member";
+  applicationRoles: string[];
+  memberCount: number;
+};
+/** Safe member presentation for an exact-Team administrator. */
+export type TeamMemberSummary = {
+  userId: string;
+  displayName: string;
+  picture: string | null;
+  role: "admin" | "member";
+  applicationRoles: string[];
+};
+export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
+/** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
+export type TeamJoinLinkValidation = { valid: boolean };
+/** Atomic membership-scoped application-role reconciliation. Management role is never included. */
+export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
+export type CurrentUserTeamsApi = {
+  list(): Promise<{ teams: TeamSummary[] }>;
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  create(name: string): Promise<{ team: TeamSummary }>;
+  /** Renames an explicitly identified Team administered by the current user. */
+  rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
+  /** Lists a bounded safe membership directory for one Team the caller currently administers. */
+  listMembers(teamId: string): Promise<{ members: TeamMemberSummary[] }>;
+  /** Atomically adds and removes declared application roles for a member of one administered Team. */
+  updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<{ updated: true }>;
+  /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
+  createJoinLink(teamId: string, email: string, options?: { ttlSeconds?: number }): Promise<{ id: string; link: string; createdAt: string; expiresAt: string }>;
+  /** Lists active Join-link management metadata without recovering a capability. */
+  listJoinLinks(teamId: string): Promise<{ links: TeamJoinLink[] }>;
+  /** Idempotently revokes an unused Join link scoped to one administered Team. */
+  revokeJoinLink(teamId: string, joinLinkId: string): Promise<{ revoked: true }>;
+  /** Safely inspects a Join link without authentication or consumption. */
+  inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
+  /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
+  validateJoinLink(code: string): Promise<TeamJoinLinkValidation>;
+  /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
+  join(code: string): Promise<{ team: TeamSummary }>;
+  /** Promotes an ordinary member in an explicitly identified Team the caller currently administers. */
+  promote(teamId: string, userId: string): Promise<{ updated: true }>;
+  /** Demotes an admin only when another committed Team admin remains. */
+  demote(teamId: string, userId: string): Promise<{ updated: true }>;
+  /** Removes another Team member; callers leave through leave(). */
+  removeMember(teamId: string, userId: string): Promise<{ removed: true }>;
+  /** Leaves an explicitly identified Team only while the caller is an ordinary member. */
+  leave(teamId: string): Promise<{ left: true }>;
+  /** Deletes a Team only when the caller is its sole remaining admin member. */
+  delete(teamId: string): Promise<{ deleted: true }>;
+};
+
 /** Copy overrides for the built-in password reset message. */
 export type PasswordResetMailOptions = {
   subject?: string;
@@ -423,7 +527,7 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "privileged"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "privileged" | "teams"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
@@ -462,6 +566,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   mail: MailApi;
   /** Server-only auth management (e.g. password reset). */
   serverAuth: ServerAuthApi;
+  /** Runtime-owned current-user Teams with normal linked-user authorization. */
+  teams: CurrentUserTeamsApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */
@@ -691,6 +797,10 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
+  /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
+  teams?: { appRoles?: readonly string[] };
+  /** Optional File ACL rules for deliberate non-owner access to normal File operations. File ownership and public-URL revocation remain with the File owner. */
+  files?: CapsuleFilesDefinition;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];

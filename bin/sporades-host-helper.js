@@ -163,27 +163,13 @@ function validatePublicTreeFileSet(files) {
 // src/server-runtime-source.ts
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
-// src/file-storage-runtime.ts
+// src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
-
-// src/auth-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
-var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
-var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
-var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
-var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 
 // src/runtime-log-policy.ts
 function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
-
-// src/database-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
-var nodeFsModule = process.getBuiltinModule("node:fs");
-
-// src/jobs-runtime.ts
-var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
@@ -257,6 +243,25 @@ function auditString(value, fallback) {
   return text.trim() ? text : fallback;
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+
+// src/teams-runtime.ts
+var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
+var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
+var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+// src/auth-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+
+// src/database-runtime.ts
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
+var nodeFsModule = process.getBuiltinModule("node:fs");
 
 // src/server-runtime-source.ts
 function logPayloadMaxBytes(config = {}) {
@@ -413,7 +418,7 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.7.1";
+var CLI_VERSION = "0.7.2";
 
 // src/cli/schedule-inspection-envelope.ts
 function sanitizeScheduleInspectionEnvelope(envelope, invalid) {

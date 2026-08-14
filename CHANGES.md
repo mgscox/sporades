@@ -1,22 +1,17 @@
 # Changes
 
-## Unreleased - 2026-08-12
+## Unreleased - 2026-08-13
 
-Changes since v0.7.0.
-
-### 🚀 Features
-
-- Adapt Mailgun email events (66d4291).
-- Adapt Postmark email events (d30efa2).
-- Adapt SMTP2GO email events (8d39237).
-- Dispatch verified email provider events (d818b6d).
-- Trust required native installers (c0a539c).
+Changes since v0.7.1.
 
 ### 📝 Documentation
 
-- Clarify provider callback responses (7fde2ae).
-- Document Mailjet SMTP configuration (e710ba2).
+- Require current password to change email credentials (bfba651).
 
-### 🧪 Tests
+### ✨ Built-in Teams
 
-- Cover Mailgun non-delivery retries (c5e566e).
+- Add runtime-owned Teams for Capsule collaboration: multi-Team memberships,
+  admin lifecycle, email-bound Join links, membership application roles, and
+  explicit Team decisions in table and File ACLs. Teams are built in but do
+  not select a current Team or automatically partition Capsule data; Sporades
+  never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).

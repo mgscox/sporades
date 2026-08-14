@@ -101,7 +101,7 @@ import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerR
 import type { HelperError } from "./runtime-errors.js";
 import { resolveAnonymousSession } from "./auth-runtime.js";
 import {
-  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForOwner,
+  checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor,
 } from "./file-storage-runtime.js";
 
 // Redeclared rather than imported, as every migrated module redeclares them: they are erased by
@@ -472,7 +472,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
     const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
-    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    const row = await fileRowForActor(database, session.auth, privateMatch[1]);
     if (!row || row.version !== requestUrl.searchParams.get("v")) {
       writeNotFound(response);
       return true;

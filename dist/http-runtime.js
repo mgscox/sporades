@@ -97,7 +97,7 @@
 // This module reaches no Node builtin, so ADR-0042's `process.getBuiltinModule` accessor does not
 // appear in it. `Buffer` and `URL` are globals.
 import { resolveAnonymousSession } from "./auth-runtime.js";
-import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForOwner, } from "./file-storage-runtime.js";
+import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
     "INVALID_JSON_REQUEST",
     "OAUTH_INVALID_CALLBACK",
@@ -416,7 +416,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
     if (privateMatch && request.method === "GET") {
         const token = request.headers["x-sporades-session-token"];
         const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
-        const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
+        const row = await fileRowForActor(database, session.auth, privateMatch[1]);
         if (!row || row.version !== requestUrl.searchParams.get("v")) {
             writeNotFound(response);
             return true;

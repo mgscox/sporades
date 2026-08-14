@@ -210,6 +210,22 @@ export default capsule({
 });
 `;
 
+const TEAMS_CAPSULE_SOURCE = `
+import { capsule, mutation, query } from "sporades/server";
+
+export default capsule({
+  name: "bundle-teams",
+  schema: {},
+  teams: { appRoles: ["author", "reviewer"] },
+  queries: {
+    ownTeams: query((ctx) => ctx.teams.list()),
+  },
+  mutations: {
+    updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+  },
+});
+`;
+
 const CAPSULE_PUBLIC_ORIGIN = "https://capsule.example.com";
 
 function capsuleConfig(extra = {}) {
@@ -501,7 +517,7 @@ async function readConnectionToken(baseUrl) {
 // The Capsule declares a public origin, so the transport requires an `Origin` it recognises: a
 // handshake without one is refused outright. Sending the configured origin is what a browser on the
 // Capsule's own page does.
-async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN) {
+async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN, requestHost = null) {
   const connectionToken = await readConnectionToken(baseUrl);
   const url = new URL("/__sporades/ws", baseUrl);
   url.searchParams.set("connectionToken", connectionToken);
@@ -548,7 +564,7 @@ async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN) {
     socket.on("connect", () => {
       socket.write([
         `GET ${url.pathname}${url.search} HTTP/1.1`,
-        `Host: ${url.host}`,
+        `Host: ${requestHost ?? url.host}`,
         "Upgrade: websocket",
         "Connection: Upgrade",
         `Origin: ${origin}`,
@@ -872,6 +888,176 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
       ],
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle lazily lists the current linked user's singleton Team", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-teams-"));
+  try {
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverSourcePath: path.join(root, "server", "index.ts"),
+    });
+    const source = await buildBundle({
+      config: capsuleConfig({ name: "bundle-teams", auth: { providers: { anonymous: true, email: true } } }),
+      serverEnv: {},
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverModuleSource,
+    });
+    await writePublicTree(root, "<!doctype html><html><body><div id=\"app\"></div></body></html>");
+    const booted = await bootBundle({ source, dir: root });
+    const socket = await openBundleSocket(booted.baseUrl);
+    let recipient;
+    try {
+      socket.send({ id: "anonymous-teams", type: "teams.list" });
+      const denied = await socket.waitFor((message) => message.id === "anonymous-teams");
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.code, "UNAUTHENTICATED");
+
+      socket.send({ id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "bundle-teams@example.com", password: "correct horse battery staple", name: "Bundle Teams" } });
+      const signedUp = await socket.waitFor((message) => message.id === "signup");
+      assert.equal(signedUp.type, "auth.signUp.result");
+      assert.equal(signedUp.error, null, JSON.stringify(signedUp));
+
+      socket.send({ id: "teams-first", type: "teams.list" });
+      const first = await socket.waitFor((message) => message.id === "teams-first");
+      assert.equal(first.type, "teams.list.result");
+      assert.equal(first.error, null, JSON.stringify(first));
+      assert.equal(first.data.teams.length, 1);
+      assert.equal(first.data.teams[0].role, "admin");
+
+      socket.send({ id: "role-join-link", type: "teams.createJoinLink", teamId: first.data.teams[0].id, email: "bundle-role-member@example.com", ttlSeconds: 300 });
+      const roleJoinLink = await socket.waitFor((message) => message.id === "role-join-link");
+      assert.equal(roleJoinLink.error, null, JSON.stringify(roleJoinLink));
+      const roleJoinCode = new URL(roleJoinLink.data.link).searchParams.get("code");
+      recipient = await openBundleSocket(booted.baseUrl);
+      recipient.send({ id: "role-member-signup", type: "auth.signUp", provider: "email", credentials: { email: "bundle-role-member@example.com", password: "correct horse battery staple", name: "Bundle Role Member" } });
+      const roleMemberSignUp = await recipient.waitFor((message) => message.id === "role-member-signup");
+      assert.equal(roleMemberSignUp.error, null, JSON.stringify(roleMemberSignUp));
+      recipient.send({ id: "role-member-join", type: "teams.join", code: roleJoinCode });
+      const roleMemberJoin = await recipient.waitFor((message) => message.id === "role-member-join");
+      assert.equal(roleMemberJoin.error, null, JSON.stringify(roleMemberJoin));
+      socket.send({ id: "role-members", type: "teams.listMembers", teamId: first.data.teams[0].id });
+      const roleMembers = await socket.waitFor((message) => message.id === "role-members");
+      const roleMember = roleMembers.data.members.find((member) => member.userId === roleMemberSignUp.data.auth.userId);
+      assert.ok(roleMember);
+      socket.send({ id: "role-trusted-add", type: "mutation.run", mutation: "updateMemberRoles", args: [first.data.teams[0].id, roleMember.userId, { add: ["author"], remove: [] }] });
+      const roleTrustedAdd = await socket.waitFor((message) => message.id === "role-trusted-add");
+      assert.deepEqual(roleTrustedAdd, { id: "role-trusted-add", type: "mutation.result", data: { updated: true }, error: null, mutation: "updateMemberRoles" });
+      socket.send({ id: "role-browser-mixed", type: "teams.updateApplicationRoles", teamId: first.data.teams[0].id, userId: roleMember.userId, add: ["reviewer"], remove: ["author"] });
+      const roleBrowserMixed = await socket.waitFor((message) => message.id === "role-browser-mixed");
+      assert.deepEqual(roleBrowserMixed, { id: "role-browser-mixed", type: "teams.updateApplicationRoles.result", data: { updated: true }, error: null }, "the generated bundle preserves the public mixed add/remove operation");
+      recipient.send({ id: "role-member-own", type: "teams.list" });
+      const roleMemberOwn = await recipient.waitFor((message) => message.id === "role-member-own");
+      assert.deepEqual(roleMemberOwn.data.teams.find((team) => team.id === first.data.teams[0].id).applicationRoles, ["reviewer"]);
+
+      socket.send({ id: "teams-members", type: "teams.listMembers", teamId: first.data.teams[0].id });
+      const members = await socket.waitFor((message) => message.id === "teams-members");
+      assert.equal(members.type, "teams.listMembers.result");
+      assert.equal(members.error, null, JSON.stringify(members));
+      assert.deepEqual(Object.keys(members.data.members[0]).sort(), ["applicationRoles", "displayName", "picture", "role", "userId"]);
+      assert.equal(JSON.stringify(members.data).includes("bundle-teams@example.com"), false, "generated bundles keep emails out of member results");
+
+      socket.send({ id: "teams-create", type: "teams.create", name: "Generated Team" });
+      const created = await socket.waitFor((message) => message.id === "teams-create");
+      assert.equal(created.type, "teams.create.result");
+      assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "teams-rename", type: "teams.rename", teamId: created.data.team.id, name: "Generated Renamed Team" });
+      const renamed = await socket.waitFor((message) => message.id === "teams-rename");
+      assert.equal(renamed.type, "teams.rename.result");
+      assert.equal(renamed.data.team.name, "Generated Renamed Team");
+
+      socket.send({ id: "teams-query", type: "query.subscribe", query: "ownTeams" });
+      const trusted = await socket.waitFor((message) => message.id === "teams-query");
+      assert.equal(trusted.type, "query.result");
+      assert.equal(trusted.error, null, JSON.stringify(trusted));
+      assert.equal(trusted.data.teams.some((team) => team.id === created.data.team.id && team.name === "Generated Renamed Team"), true);
+
+      socket.send({ id: "teams-repeat", type: "teams.list" });
+      const repeated = await socket.waitFor((message) => message.id === "teams-repeat");
+      assert.equal(repeated.data.teams.some((team) => team.id === created.data.team.id && team.name === "Generated Renamed Team"), true);
+    } finally {
+      recipient?.close();
+      socket.close();
+      await booted.stop();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle completes an OAuth callback and immediately lists the linked user's Team", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-teams-oauth-"));
+  const provider = createServer((request, response) => {
+    if (request.method === "POST" && request.url === "/token") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "bundle-facebook-token" }));
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/v23.0/me?")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "bundle-facebook-subject", name: "Bundle Facebook", email: "bundle-facebook@example.com",
+        picture: { data: { url: "https://example.com/bundle-facebook.png" } },
+      }));
+      return;
+    }
+    response.writeHead(404); response.end();
+  });
+  await new Promise((resolve, reject) => {
+    provider.once("error", reject);
+    provider.listen(0, "127.0.0.1", resolve);
+  });
+  const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
+  let booted;
+  let socket;
+  try {
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverSourcePath: path.join(root, "server", "index.ts"),
+    });
+    const source = await buildBundle({
+      config: capsuleConfig({
+        name: "bundle-teams-oauth",
+        auth: { providers: {
+          anonymous: true,
+          facebook: { enabled: true, clientIdEnv: "FACEBOOK_CLIENT_ID", clientSecretEnv: "FACEBOOK_CLIENT_SECRET", graphVersion: "v23.0" },
+        } },
+      }),
+      serverEnv: { FACEBOOK_CLIENT_ID: "bundle-facebook-id", FACEBOOK_CLIENT_SECRET: "bundle-facebook-secret" },
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverModuleSource,
+    });
+    await writePublicTree(root, "<!doctype html><html><body><div id=\"app\"></div></body></html>");
+    booted = await bootBundle({
+      source,
+      dir: root,
+      env: {
+        SPORADES_FACEBOOK_TOKEN_URL: `${providerOrigin}/token`,
+        SPORADES_FACEBOOK_GRAPH_URL: `${providerOrigin}/v23.0/me`,
+        SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK: "1",
+      },
+    });
+    socket = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+    socket.send({ id: "oauth-start", type: "auth.signIn", provider: "facebook", returnTo: `${CAPSULE_PUBLIC_ORIGIN}/after` });
+    const started = await socket.waitFor((message) => message.id === "oauth-start");
+    assert.equal(started.type, "auth.redirect", JSON.stringify(started));
+    const state = new URL(started.data.url).searchParams.get("state");
+    const callback = await fetch(`${booted.baseUrl}/__sporades/auth/facebook/callback?code=bundle-code&state=${state}`, { redirect: "manual" });
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get("location"), `${CAPSULE_PUBLIC_ORIGIN}/after`);
+
+    socket.send({ id: "oauth-teams", type: "teams.list" });
+    const teams = await socket.waitFor((message) => message.id === "oauth-teams");
+    assert.equal(teams.type, "teams.list.result");
+    assert.equal(teams.error, null, JSON.stringify(teams));
+    assert.equal(teams.data.teams.length, 1);
+    assert.equal(teams.data.teams[0].role, "admin");
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await new Promise((resolve) => provider.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
 });

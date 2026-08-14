@@ -82,6 +82,25 @@ status, timestamps, size, MIME type, original name, and version; they do not
 expose filesystem paths, object keys, Object buckets, runtime table names, or
 generated read URLs.
 
+`ctx.acl.teams` adds read-only, explicit-Team decisions for Team-aware
+Capsule rows and File metadata policies: `isMember(teamId)`,
+`isAdmin(teamId)`, `hasRole(teamId, role)`, and
+`hasAnyRole(teamId, roles)`. These helpers require the current linked actor
+and never select a current Team, bootstrap a Team, enumerate memberships, or
+expose `ctx.teams`. `hasRole` and `hasAnyRole` authorize only currently
+declared application roles; inactive or undeclared assignments fail closed.
+Team admins do not receive application-role authority unless the ACL checks
+`isAdmin` explicitly. The role-set form accepts a non-empty set of at most 32
+declared roles.
+
+```ts
+documents: table({ teamId: String(), body: String() }).acl({
+  read: ({ row, ctx }) => ctx.acl.teams.hasAnyRole(row.teamId, ["author", "reviewer"]),
+  write: ({ next, previous, ctx }) =>
+    ctx.acl.teams.isAdmin((next ?? previous).teamId),
+})
+```
+
 When an ACL denies a write, clients receive an opaque `DENIED` error rather than
 policy internals. Sporades writes structured internal `acl.denied` log events
 with table name, operation, declared rule, actor shape, row IDs, and non-secret

@@ -1,6 +1,7 @@
 export declare const auth: any;
 export declare const files: any;
 export declare const preferences: any;
+export declare const teams: any;
 export declare const journey: any;
 export declare const mutations: any;
 export declare const queries: any;

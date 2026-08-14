@@ -35,6 +35,57 @@ export const preferences = {
   },
 };
 
+export const teams = {
+  list() {
+    return connect().teamsList();
+  },
+  create(name) {
+    return connect().teamsCreate(name);
+  },
+  rename(teamId, name) {
+    return connect().teamsRename(teamId, name);
+  },
+  listMembers(teamId) {
+    return connect().teamsListMembers(teamId);
+  },
+  updateApplicationRoles(teamId, userId, changes) {
+    return connect().teamsUpdateApplicationRoles(teamId, userId, changes);
+  },
+  createJoinLink(teamId, email, options = {}) {
+    return connect().teamsCreateJoinLink(teamId, email, options);
+  },
+  listJoinLinks(teamId) {
+    return connect().teamsListJoinLinks(teamId);
+  },
+  revokeJoinLink(teamId, joinLinkId) {
+    return connect().teamsRevokeJoinLink(teamId, joinLinkId);
+  },
+  inspectJoinLink(code) {
+    return connect().teamsInspectJoinLink(code);
+  },
+  validateJoinLink(code) {
+    return connect().teamsValidateJoinLink(code);
+  },
+  join(code) {
+    return connect().teamsJoin(code);
+  },
+  promote(teamId, userId) {
+    return connect().teamsPromote(teamId, userId);
+  },
+  demote(teamId, userId) {
+    return connect().teamsDemote(teamId, userId);
+  },
+  removeMember(teamId, userId) {
+    return connect().teamsRemoveMember(teamId, userId);
+  },
+  leave(teamId) {
+    return connect().teamsLeave(teamId);
+  },
+  delete(teamId) {
+    return connect().teamsDelete(teamId);
+  },
+};
+
 export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
@@ -1040,6 +1091,22 @@ function createConnection() {
         return result.data.preferences;
       });
     },
+    teamsList() { return request("teams.list"); },
+    teamsCreate(name) { return request("teams.create", { name }); },
+    teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
+    teamsListMembers(teamId) { return request("teams.listMembers", { teamId }); },
+    teamsUpdateApplicationRoles(teamId, userId, changes) { return request("teams.updateApplicationRoles", { teamId, userId, add: changes?.add, remove: changes?.remove }); },
+    teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
+    teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },
+    teamsRevokeJoinLink(teamId, joinLinkId) { return request("teams.revokeJoinLink", { teamId, joinLinkId }); },
+    teamsInspectJoinLink(code) { return request("teams.inspectJoinLink", { code }); },
+    teamsValidateJoinLink(code) { return request("teams.validateJoinLink", { code }); },
+    teamsJoin(code) { return request("teams.join", { code }); },
+    teamsPromote(teamId, userId) { return request("teams.promote", { teamId, userId }); },
+    teamsDemote(teamId, userId) { return request("teams.demote", { teamId, userId }); },
+    teamsRemoveMember(teamId, userId) { return request("teams.removeMember", { teamId, userId }); },
+    teamsLeave(teamId) { return request("teams.leave", { teamId }); },
+    teamsDelete(teamId) { return request("teams.delete", { teamId }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

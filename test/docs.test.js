@@ -119,6 +119,24 @@ test("README documentation links resolve from the npm package page", async () =>
   assert.match(readme, /https:\/\/mgscox\.github\.io\/sporades\/llms\.txt/);
 });
 
+test("Built-in Teams is discoverable without overstating its authorization model", async () => {
+  const [changes, readme, userGuide, reference, nav] = await Promise.all([
+    readProjectFile("CHANGES.md"),
+    readProjectFile("README.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/reference/teams.md"),
+    readProjectFile("docs/.vitepress/config.mts"),
+  ]);
+
+  assert.match(changes, /Built-in Teams[\s\S]*email-bound Join links[\s\S]*never sends Join-link email/);
+  assert.match(changes, /https:\/\/mgscox\.github\.io\/sporades\/reference\/teams/);
+  assert.match(readme, /Built-in collaboration[\s\S]*explicit Team ACL/);
+  assert.match(readme, /https:\/\/mgscox\.github\.io\/sporades\/reference\/teams/);
+  assert.match(userGuide, /Use Built-in Teams for explicit collaboration/);
+  assert.match(reference, /never automatically partition Capsule data/);
+  assert.match(nav, /\{ text: "Built-in Teams", link: "\/reference\/teams" \}/);
+});
+
 test("canonical docs describe the implemented platform scope", async () => {
   const [prd, context, endpointAdr, envAdr, fieldBuilderAdr, authAdr, scaffoldTemplate] = await Promise.all([
     readProjectFile("docs/PRD.md"),
@@ -823,6 +841,41 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(apiJobApi, /get/);
   assert.match(apiJobApi, /list/);
   assert.doesNotMatch(apiClient, /JobApi/);
+});
+
+test("roadmap records delivered explicit-Team ACL decisions without claiming automatic data partitioning", async () => {
+  const roadmap = await readProjectFile("docs/ROADMAP.md");
+
+  assert.match(roadmap, /Built-in Teams foundation \| implemented/);
+  assert.match(roadmap, /Capsules declare bounded `teams\.appRoles`/);
+  assert.match(roadmap, /exact-Team admins atomically reconcile membership-scoped assignments/);
+  assert.match(roadmap, /singleton Team/);
+  assert.match(roadmap, /Capsule roles[\s\S]*must not compete with membership-scoped Team application roles/);
+  assert.match(roadmap, /A non-Team role model requires a distinct demonstrated use case/);
+  assert.match(roadmap, /Tickets 01–10 record these delivered slices/);
+  assert.match(roadmap, /ACL rules can make constrained explicit-Team membership, admin, and declared-role decisions through `ctx\.acl\.teams`/);
+  assert.match(roadmap, /no current-Team state or automatic Capsule data authorization exists/);
+  assert.doesNotMatch(roadmap, /\| Team ACL \| candidate \|/);
+  assert.doesNotMatch(roadmap, /Team ACL remains intentionally deferred/);
+  assert.doesNotMatch(roadmap, /issues\/09-declare-and-assign-membership-application-roles\.md/);
+  assert.doesNotMatch(roadmap, /Team administration, Join links, application roles, and Team ACL \| candidate/);
+  assert.doesNotMatch(roadmap, /\| Teams for ACL \| candidate/);
+});
+
+test("canonical role docs reserve Team application roles for Team membership", async () => {
+  const [prd, context] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("CONTEXT.md"),
+  ]);
+
+  for (const document of [prd, context]) {
+    assert.match(document, /must not compete with membership-scoped Team application roles/);
+    assert.match(document, /distinct demonstrated use case/);
+    assert.match(document, /separate\s+PRD/);
+    assert.match(document, /\^\[a-z\]\[a-z0-9-\]\{0,31\}\$/);
+    assert.match(document, /maximum 32 characters/i);
+    assert.match(document, /`admin`[\s/,]*`member`[\s\S]*`sporades-\*`[\s\S]*reserved/i);
+  }
 });
 
 test("docs describe doctor diagnostics as read-only coordination", async () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { validatePasswordResetConfig } from "../dist/cli/project-config.js";
+import { validatePasswordResetConfig, validateTeamsConfig } from "../dist/cli/project-config.js";
 
 function reject(passwordReset, label) {
   assert.throws(
@@ -34,4 +34,12 @@ test("the reset code lifetime is accepted only inside its supported bounds", asy
 
 test("unknown password reset keys are rejected rather than silently ignored", async () => {
   reject({ continueUrl: "https://example.com/done" }, "the reset flow has no caller-supplied continue target");
+});
+
+test("the Team Join page is accepted only as a same-origin absolute path", async () => {
+  assert.doesNotThrow(() => validateTeamsConfig(undefined));
+  assert.doesNotThrow(() => validateTeamsConfig({ join: { path: "/invite/join" } }));
+  for (const path of ["https://evil.example/join", "//evil.example/join", "join", "/join?next=https://evil.example", "/join/../admin"]) {
+    assert.throws(() => validateTeamsConfig({ join: { path } }), (error) => error.code === "INVALID_TEAMS_CONFIG", path);
+  }
 });

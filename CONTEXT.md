@@ -257,8 +257,15 @@ The Transaction boundary for one current-user preference update. The runtime rea
 _Avoid_: optimistic preference broadcast, partial preference update, localStorage preference write
 
 **Capsule role**:
-A Capsule-scoped authorization label associated with a Sporades user for one Capsule, such as an app-defined admin role. Capsule roles are for Capsule DB, file, and storage authorization through normal ACL rules; they are not the Privileged server role and do not grant platform/runtime authority outside the Capsule.
-_Avoid_: global admin, platform admin, root role, Privileged server role
+A non-Team Capsule-scoped authorization label is reserved for a distinct demonstrated use case and separate PRD. It must not compete with membership-scoped Team application roles, which belong to the built-in Teams work in Tickets 09–10. It is not the Privileged server role and does not grant platform/runtime authority outside the Capsule.
+_Avoid_: global admin, platform admin, root role, Privileged server role, duplicate Team application role
+
+**Team application role**:
+A Capsule-declared, membership-scoped domain label. Each identifier must match
+`^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and the
+`sporades-*` prefix are runtime-reserved. It is neither a Team management role
+nor Privileged server authority.
+_Avoid_: global user role, Team admin, Privileged server role
 
 ## Client transport
 
@@ -391,7 +398,7 @@ An authorization policy declared in Capsule definition code and applied invisibl
 _Avoid_: permission helper, manual auth check, database filter
 
 **ACL context**:
-A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, and `ctx.acl.storage.exists()` so database and storage ACL rules can check each other's stable resources without exposing normal runtime APIs or allowing writes.
+A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, `ctx.acl.storage.exists()`, and explicit-Team `ctx.acl.teams` membership, admin, and declared application-role decisions so database and storage ACL rules can check stable resources without exposing normal runtime APIs or allowing writes. Team helpers never choose a current Team, enumerate memberships, or manage membership state.
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:

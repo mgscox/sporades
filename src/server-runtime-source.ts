@@ -45,6 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -80,13 +81,13 @@ import {
   createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi,
   drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit,
   filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError,
-  normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
+  normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback,
   revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode,
 } from "./acl-runtime.js";
 import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, createFileStorageTables,
   createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter,
-  createStructuredFileError, deletePrivateFile, fileMetadataFromRow, fileRowForOwner,
+  createStructuredFileError, deletePrivateFile, fileMetadataFromRow,
   getPrivateFileUrl, isAbsoluteFilePath, normalizeAbsoluteFilePath, resolvePrivilegedLiveFileReference,
   revokePublicFileUrl,
 } from "./file-storage-runtime.js";
@@ -417,6 +418,14 @@ export async function openDevDatabase(
   capsuleDefinition: any = null,
   options: LooseRecord = {},
 ) {
+  if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
+    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
+  }
+  const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
+  if (capsuleDefinition?.files !== undefined && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
+    throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+  }
+  const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink: LooseRecord | undefined;
@@ -503,6 +512,9 @@ export async function openDevDatabase(
     mail,
     authConfig: authStatus(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
+    teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
+    teamApplicationRoles,
+    fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -568,6 +580,7 @@ export async function openDevDatabase(
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
+  await sqlite.ensureTeamsStorage();
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite);
   await sqlite.ensureFileStorage();
@@ -953,6 +966,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       provider: "privileged-server-role",
     },
   };
+  // Teams are current-user authority, never a Privileged server capability.
+  delete privilegedContext.teams;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -1132,6 +1147,7 @@ export function schemaFromCapsuleDefinition(definition: any) {
 }
 
 function schemaTableFromCapsuleTable(name: string, table: any) {
+  assertNotReservedTeamTableName(name);
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
     throw commandError(
       `Invalid Capsule table: ${name}`,
@@ -1144,6 +1160,16 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
     acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
   };
+}
+
+function assertNotReservedTeamTableName(name: string) {
+  if (name.toLowerCase().startsWith("sporades_team")) {
+    throw commandError(
+      `Reserved runtime table name: ${name}`,
+      "Choose a Capsule table name outside the sporades_team runtime namespace.",
+      "RESERVED_TABLE_NAME",
+    );
+  }
 }
 function schemaFieldFromCapsuleField(name: string, field: any) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
@@ -1217,8 +1243,10 @@ function extractSchema(serverSource: string) {
     }
     const argsSource = serverSource.slice(tablePattern.lastIndex, argsEnd).trim();
     const fieldsSource = argsSource.startsWith("{") && argsSource.endsWith("}") ? argsSource.slice(1, -1) : argsSource;
+    const name = match[1];
+    assertNotReservedTeamTableName(name);
     tables.push({
-      name: match[1],
+      name,
       fields: extractFields(fieldsSource),
     });
     tablePattern.lastIndex = argsEnd + 1;
@@ -1799,9 +1827,11 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         transactionDatabase.rowCache.clear();
       }
     });
+    flushTeamSecurityEvents(database, context);
     await flushPendingJobEnqueues(context);
     return result;
   } catch (error) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     throw error;
   }
@@ -1854,6 +1884,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -2760,6 +2791,166 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return;
     }
 
+    if (message.type === "teams.list") {
+      try {
+        const data = await listCurrentUserTeams(database, client.session.auth);
+        sendJson(client, { id: message.id ?? null, type: "teams.list.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not list Teams.",
+            hint: error?.hint ?? "Sign in and retry the request.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teams.create") {
+      try {
+        const data = await createAdditionalTeam(database, client.session.auth, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.create.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not create Team.",
+            hint: error?.hint ?? "Sign in and retry the request.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teams.rename") {
+      try {
+        const data = await renameCurrentUserTeam(database, client.session.auth, message.teamId, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.rename.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not rename Team.",
+            hint: error?.hint ?? "Sign in and retry the request.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teams.listMembers") {
+      try {
+        const data = await listTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not list Team members.",
+            hint: error?.hint ?? "Sign in with a Team administrator account and retry.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teams.updateApplicationRoles") {
+      try {
+        const data = await updateTeamMemberApplicationRoles(database, client.session.auth, message.teamId, message.userId, { add: message.add, remove: message.remove });
+        sendJson(client, { id: message.id ?? null, type: "teams.updateApplicationRoles.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not update Team application roles.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.createJoinLink") {
+      try {
+        const data = await createTeamJoinLink(database, client.session.auth, message.teamId, message.email, { ttlSeconds: message.ttlSeconds });
+        sendJson(client, { id: message.id ?? null, type: "teams.createJoinLink.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not create Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.listJoinLinks") {
+      try {
+        const data = await listTeamJoinLinks(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listJoinLinks.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not list Join links.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.revokeJoinLink") {
+      try {
+        const data = await revokeTeamJoinLink(database, client.session.auth, message.teamId, message.joinLinkId);
+        sendJson(client, { id: message.id ?? null, type: "teams.revokeJoinLink.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not revoke Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.inspectJoinLink") {
+      const data = await inspectTeamJoinLink(database, message.code);
+      sendJson(client, { id: message.id ?? null, type: "teams.inspectJoinLink.result", data, error: null });
+      return;
+    }
+
+    if (message.type === "teams.validateJoinLink") {
+      const data = await validateTeamJoinLink(database, client.session.auth, message.code);
+      sendJson(client, { id: message.id ?? null, type: "teams.validateJoinLink.result", data, error: null });
+      return;
+    }
+
+    if (message.type === "teams.join") {
+      try {
+        const data = await joinCurrentUserTeam(database, client.session.auth, message.code);
+        sendJson(client, { id: message.id ?? null, type: "teams.join.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not join this Team.", hint: error?.hint ?? "Use a current Join link for this linked account." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
+      try {
+        const data = message.type === "teams.promote"
+          ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+          : message.type === "teams.demote"
+            ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+            : message.type === "teams.removeMember"
+              ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId)
+              : message.type === "teams.leave"
+                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId)
+                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not update Team membership.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
     if (message.type === "journey.enable") {
       const policy = database.journeyPolicy;
       if (!policy) { sendJson(client, journeyError(message.id)); return; }
@@ -3339,9 +3530,11 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
 
       return result;
     });
+    flushTeamSecurityEvents(database, context);
     await flushPendingJobEnqueues(context);
     return committed;
   } catch (error: any) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
@@ -3437,9 +3630,11 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       }
       return { data: result ?? null, error: null as any };
     });
+    flushTeamSecurityEvents(database, context);
     await flushPendingJobEnqueues(context);
     return response;
   } catch (error: any) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -3523,6 +3718,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);

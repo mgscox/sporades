@@ -68,10 +68,24 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
+  teams: { appRoles: ["author", "reviewer"] },
+  files: {
+    acl: {
+      read: ({ file, ctx }) => {
+        file.path.toUpperCase();
+        const permitted = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        // @ts-expect-error File ACL contexts expose constrained decisions, not mutable Team management.
+        ctx.teams.list();
+        return permitted;
+      },
+      publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2] ?? ""),
+      delete: ({ file, ctx }) => ctx.acl.teams.hasRole(file.path.split("/")[2] ?? "", "author"),
+    },
+  },
   journey: { enabled: true, ttlSeconds: 30, capture: { navigation: true, focus: false } },
   emailEvents: emailEvent(async (ctx, event) => {
     ctx.log.info("email event", event.provider, event.kind, event.providerEventId, event.occurredAt);
@@ -127,6 +141,16 @@ const app = capsule({
         const file = ctx.acl.storage.get("files", "/avatars/profile.png");
         const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
         const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
+        const teamMember = ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
+        const teamAdmin = ctx.acl.teams.isAdmin("00000000-0000-4000-8000-000000000000");
+        const teamAuthor = ctx.acl.teams.hasRole("00000000-0000-4000-8000-000000000000", "author");
+        const teamReviewer = ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", ["author", "reviewer"]);
+        // @ts-expect-error Team ACL helpers are decisions, not the mutable Team management API.
+        ctx.acl.teams.create("not available in ACL");
+        // @ts-expect-error Team ACL role sets must be arrays.
+        ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", "author");
+        // @ts-expect-error ACL contexts do not expose the mutable current-user Teams API.
+        ctx.teams.list();
         // @ts-expect-error ACL policy contexts cannot start privileged server-role work.
         ctx.privileged.run({ operation: "acl.bad", targetResourceKind: "capsule-db" }, () => true);
         // @ts-expect-error ACL policy contexts cannot send mail.
@@ -138,7 +162,7 @@ const app = capsule({
         }
         // @ts-expect-error ACL helper reads are synchronous at the policy boundary, not Promise-returning.
         ctx.acl.storage.exists("files", "/avatars/profile.png").then(() => true);
-        return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/");
+        return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/") && !teamMember && !teamAdmin && !teamAuthor && !teamReviewer;
       },
       write: async ({ next, previous, ctx }) => {
         await Promise.resolve();
@@ -171,6 +195,21 @@ const app = capsule({
       await Promise.resolve();
       return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
     }),
+    ownTeams: query(async (ctx) => {
+      const result = await ctx.teams.list();
+      const created = await ctx.teams.create("Typed Team");
+      const renamed = await ctx.teams.rename(created.team.id, "Renamed Typed Team");
+      const members = await ctx.teams.listMembers(renamed.team.id);
+      const roleUpdate = await ctx.teams.updateApplicationRoles(renamed.team.id, members.members[0]?.userId ?? "", { add: ["author"], remove: [] });
+      const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
+      const joined = await ctx.teams.join("opaque-join-code");
+      const promoted = await ctx.teams.promote(renamed.team.id, members.members[0]?.userId ?? "");
+      const demoted = await ctx.teams.demote(renamed.team.id, members.members[0]?.userId ?? "");
+      const removed = await ctx.teams.removeMember(renamed.team.id, members.members[0]?.userId ?? "");
+      const left = await ctx.teams.leave(renamed.team.id);
+      const deleted = await ctx.teams.delete(renamed.team.id);
+      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, roleUpdate.updated ? "roles" : "", promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
+    }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
         operation: "todos.maintenance.read",
@@ -178,6 +217,8 @@ const app = capsule({
         metadata: { reason: "type-test" },
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
+        // @ts-expect-error Privileged server role must not inherit a caller's Team capability.
+        privilegedCtx.teams.list();
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
         await privilegedCtx.mail.send({
@@ -355,6 +396,44 @@ preferences.get().then((result) => result.data?.preferences.theme);
 preferences.update({ theme: "dark", sidebar: { collapsed: true } }).then((result) => result.data?.preferences.sidebar);
 // @ts-expect-error preferences.update accepts a JSON object patch.
 preferences.update(null);
+teams.list().then((result) => result.data?.teams.map((team) => team.memberCount));
+teams.create("Browser Team").then((result) => result.data?.team.id);
+teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
+teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"], remove: ["reviewer"] }).then((result) => result.data?.updated.valueOf());
+teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
+teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
+teams.promote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.updated.valueOf());
+teams.demote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.updated.valueOf());
+teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.removed.valueOf());
+teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
+teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
+// @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
+teams.list("current-team");
+// @ts-expect-error Team names must be strings.
+teams.create({ name: "not a string" });
+// @ts-expect-error Team renames always require an explicit Team ID.
+teams.rename("Renamed Browser Team");
+// @ts-expect-error membership directories always require an explicit Team ID.
+teams.listMembers();
+// @ts-expect-error application-role changes require both bounded add and remove arrays.
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"] });
+// @ts-expect-error application-role changes are not an arbitrary browser payload.
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: "author", remove: [] });
+// @ts-expect-error application-role updates require explicit string Team and user IDs.
+teams.updateApplicationRoles({ teamId: "not-a-string" }, "00000000-0000-4000-8000-000000000000", { add: [], remove: [] });
+// @ts-expect-error Team IDs must be strings.
+teams.listMembers({ teamId: "not-a-string" });
+// @ts-expect-error Join codes must be strings.
+teams.validateJoinLink({ code: "not-a-string" });
+// @ts-expect-error Join codes must be strings.
+teams.join({ code: "not-a-string" });
+// @ts-expect-error Team lifecycle IDs must be strings.
+teams.promote("00000000-0000-4000-8000-000000000000", { userId: "not-a-string" });
+// @ts-expect-error removeMember requires an explicit target user ID.
+teams.removeMember("00000000-0000-4000-8000-000000000000");
+// @ts-expect-error leave requires an explicit Team ID.
+teams.leave();
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));

@@ -516,6 +516,46 @@ export function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefi
   return normalized;
 }
 
+export function normalizeFileAcl(aclRules: LooseRecord | undefined) {
+  const supportedOperations = new Set(["read", "publicUrl", "delete"]);
+  if (aclRules === undefined) {
+    return {
+      resolve() {
+        return undefined;
+      },
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      "Invalid Capsule File ACL.",
+      "Declare files as { acl: { read?, publicUrl?, delete? } }.",
+      "INVALID_FILE_ACL",
+    );
+  }
+  const normalized: LooseRecord = {};
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule File ACL operation: ${operation}.`,
+        "Supported File ACL operations are read, publicUrl, and delete.",
+        "INVALID_FILE_ACL",
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule File ACL: ${operation}.`,
+        "File ACL rules must be functions.",
+        "INVALID_FILE_ACL",
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation: any) {
+    return this[operation];
+  };
+  return normalized;
+}
+
 function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: boolean; resolve?: (operation: any) => any; write?: any; }, operation: string) {
   if (!aclRules || typeof aclRules !== "object") {
     return undefined;
@@ -527,11 +567,46 @@ function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: 
 }
 
 export function createTableAclContext(context: any, database: any) {
-  const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  // ACL evaluation is deliberately read-only. Current-user Teams can lazily
+  // bootstrap durable state, so policy callbacks receive only constrained
+  // membership decisions rather than the normal Team management API.
+  const { db, privileged, jobs, mail, request, teams, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
-    acl: createAclHelpers(database),
+    acl: createAclHelpers(database, context),
   };
+}
+
+export function createFileAclContext(auth: LooseRecord, database: LooseRecord) {
+  // A File request has no trusted Capsule handler context. Its policy gets the
+  // same constrained, read-only ACL decisions as a table rule, but only the
+  // authenticated actor: no db API, mutable Teams API, request, or privileged
+  // capability can cross this boundary.
+  const context = { auth: Object.freeze({ ...auth }) };
+  return Object.freeze({
+    auth: context.auth,
+    acl: createAclHelpers(database, context),
+  });
+}
+
+export function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord) {
+  const rule = database.fileAcl?.resolve?.(operation);
+  if (!rule) return false;
+  const context = createFileAclContext(auth, database);
+  const input = Object.freeze({
+    ctx: context,
+    operation,
+    file: Object.freeze(aclStorageMetadataFromFileRow(row)),
+  });
+  const deny = () => {
+    emitFileAclDeniedLog(database, { context, operation, row });
+    return false;
+  };
+  const result = rule(input);
+  if (!isPromiseLike(result)) {
+    return result && !aclRuleTouchedAsyncHelperRead(context) ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(context) ? true : deny()));
 }
 
 function privilegedDbAccessContextSet() {
@@ -676,17 +751,84 @@ export function filterRowsByReadAcl(database: any, table: any, rows: any[], cont
 // the two had come apart is a disagreement in that limb rather than a silent fail-open.
 export const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
-function createAclHelpers(database: any) {
+function createAclHelpers(database: any, context: any) {
   const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
+    teams: createAclTeamHelpers(database, context, state),
   };
   Object.defineProperty(helpers, ACL_HELPER_STATE, {
     value: state,
     enumerable: false,
   });
   return Object.freeze(helpers);
+}
+
+function createAclTeamHelpers(database: LooseRecord, context: LooseRecord, state: LooseRecord) {
+  return Object.freeze({
+    isMember(teamId: any) {
+      const membership = readAclTeamMembership(database, context, state, teamId);
+      return membership?.role === "admin" || membership?.role === "member";
+    },
+    isAdmin(teamId: any) {
+      return readAclTeamMembership(database, context, state, teamId)?.role === "admin";
+    },
+    hasRole(teamId: any, role: any) {
+      assertAclHelperReadAllowed(state);
+      if (!isActiveAclTeamApplicationRole(database, role)) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+        "WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?",
+      )).get(teamId, actorUserId, role);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return selected?.role === role;
+    },
+    hasAnyRole(teamId: any, roles: any) {
+      assertAclHelperReadAllowed(state);
+      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
+      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
+      if (activeRoles.length !== roles.length) return false;
+      const actorUserId = aclTeamActorUserId(context);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const placeholders = activeRoles.map(() => "?").join(", ");
+      const selected = database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] " +
+        "JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] " +
+        `WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`,
+      )).all(teamId, actorUserId, ...activeRoles);
+      if (markAsyncAclHelperRead(state, selected)) return false;
+      return Array.isArray(selected) && selected.some((row) => activeRoles.includes(row?.role));
+    },
+  });
+}
+
+function readAclTeamMembership(database: LooseRecord, context: LooseRecord, state: LooseRecord, teamId: any) {
+  assertAclHelperReadAllowed(state);
+  const actorUserId = aclTeamActorUserId(context);
+  if (!actorUserId || !isAclTeamId(teamId)) return null;
+  const selected = database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+  )).get(teamId, actorUserId);
+  if (markAsyncAclHelperRead(state, selected)) return null;
+  return selected ?? null;
+}
+
+function aclTeamActorUserId(context: LooseRecord) {
+  const auth = context?.auth;
+  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
+  return auth.userId;
+}
+
+function isAclTeamId(value: any) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function isActiveAclTeamApplicationRole(database: LooseRecord, role: any) {
+  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
 }
 
 function aclRuleTouchedAsyncHelperRead(aclContext: any) {
@@ -818,6 +960,26 @@ export function emitAclDeniedLog(database: LooseRecord, details: LooseRecord) {
     level: "warn",
     message: "ACL denied table operation.",
     data: details.data ?? createAclDenialLogData(details),
+  });
+}
+
+function emitFileAclDeniedLog(database: LooseRecord, { context, operation, row }: LooseRecord) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied File operation.",
+    data: {
+      resource: { kind: "file", id: row?.id ?? null },
+      operation,
+      rule: { category: "file", declaredOperation: operation },
+      actor: {
+        userId: context?.auth?.userId ?? null,
+        provider: context?.auth?.provider ?? null,
+        isAuthenticated: context?.auth?.isAuthenticated ?? null,
+        isGuest: context?.auth?.isGuest ?? null,
+      },
+    },
   });
 }
 
