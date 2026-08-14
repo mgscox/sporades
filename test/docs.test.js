@@ -825,6 +825,20 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.doesNotMatch(apiClient, /JobApi/);
 });
 
+test("roadmap distinguishes the delivered Teams listing foundation from deferred Team work", async () => {
+  const roadmap = await readProjectFile("docs/ROADMAP.md");
+
+  assert.match(roadmap, /Built-in Teams foundation \| implemented/);
+  assert.match(roadmap, /`teams\.list\(\)`/);
+  assert.match(roadmap, /`ctx\.teams\.list\(\)`/);
+  assert.match(roadmap, /singleton Team/);
+  assert.match(roadmap, /Team administration, Join links, application roles, and Team ACL \| candidate/);
+  for (const ticket of ["03-create-and-rename-additional-teams", "04-list-team-memberships-within-admin-scope", "05-create-and-manage-email-bound-join-links", "06-validate-join-links-after-authentication", "07-join-a-team-through-a-validated-link", "08-manage-the-team-admin-lifecycle", "09-declare-and-assign-membership-application-roles", "10-authorize-capsule-resources-through-team-acl"]) {
+    assert.match(roadmap, new RegExp(`issues/${ticket}\\.md`));
+  }
+  assert.doesNotMatch(roadmap, /\| Teams for ACL \| candidate/);
+});
+
 test("docs describe doctor diagnostics as read-only coordination", async () => {
   const [roadmap, userGuide] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
