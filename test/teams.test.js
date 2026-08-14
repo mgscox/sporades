@@ -10,6 +10,7 @@ import { endpoint, job, mutation } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 let trustedValidationCode = null;
+let trustedJoinCode = null;
 
 const capsule = {
   name: "teams-test",
@@ -34,6 +35,7 @@ const capsule = {
   mutations: {
     createAdditionalTeam: mutation((ctx, name) => ctx.teams.create(name)),
     renameAdditionalTeam: mutation((ctx, teamId, name) => ctx.teams.rename(teamId, name)),
+    joinOwnTeam: mutation((ctx) => ctx.teams.join(trustedJoinCode)),
     createAndQueue: mutation(async (ctx, name) => {
       const created = await ctx.teams.create(name);
       await ctx.jobs.enqueue("queued", {}, { idempotencyKey: "teams-audit-flush" });
@@ -422,6 +424,49 @@ test("linked users validate their email-bound Join links without consuming them 
   } finally {
     trustedValidationCode = null;
     owner?.close(); recipient?.close(); anonymous?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a linked recipient redeems a Join link through browser and trusted Team seams", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-join-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let recipient;
+  try {
+    owner = await runtime.open();
+    const ownerSignUp = await signUp(owner, "join-owner", "join-owner@example.com", "Join Owner");
+    const team = (await send(owner, { id: "join-owner-teams", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const issued = await send(owner, {
+      id: "join-issue", type: "teams.createJoinLink", teamId: team.id,
+      email: "recipient@example.com", ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    const code = new URL(issued.data.link).searchParams.get("code");
+
+    recipient = await runtime.open();
+    const recipientSignUp = await signUp(recipient, "join-recipient", "recipient@example.com", "Recipient");
+    const browser = await send(recipient, {
+      id: "join-browser", type: "teams.join", code, sessionToken: recipientSignUp.data.sessionToken,
+    });
+    assert.equal(browser.error, null, JSON.stringify(browser.error));
+    assert.deepEqual(browser.data, {
+      team: { id: team.id, name: team.name, role: "member", applicationRoles: [], memberCount: 2 },
+    });
+
+    trustedJoinCode = code;
+    assert.deepEqual(
+      await runMutation(runtime.database, recipientSignUp.data.auth, "joinOwnTeam"),
+      { data: browser.data, error: null },
+      "a same-user retry is idempotent through the trusted current-user API",
+    );
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    ).get(team.id, recipientSignUp.data.auth.userId).role, "member");
+  } finally {
+    trustedJoinCode = null;
+    owner?.close(); recipient?.close();
     await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }

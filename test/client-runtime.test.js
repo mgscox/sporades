@@ -19,10 +19,11 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
-test("browser client runtime exposes opaque non-consuming Team Join validation", async () => {
+test("browser client runtime exposes opaque Team Join validation and redemption", async () => {
   const runtime = await importClientRuntime();
 
   assert.equal(typeof runtime.teams.validateJoinLink, "function");
+  assert.equal(typeof runtime.teams.join, "function");
 });
 
 test("Vue composables expose complete reactive state and dispose shared subscriptions", async () => {
