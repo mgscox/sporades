@@ -284,6 +284,8 @@ export type TeamJoinLinkCreateResult = { id: string; link: string; createdAt: st
 export type TeamJoinLinksListResult = { links: TeamJoinLink[] };
 /** Safe pre-auth Join-link presentation. It intentionally omits the target email and creator. */
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
+/** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
+export type TeamJoinLinkValidation = { valid: boolean };
 /** Built-in current-user Team operations over the standard client transport. */
 export type TeamsApi = {
   list(): Promise<SporadesResult<TeamsListResult>>;
@@ -301,6 +303,8 @@ export type TeamsApi = {
   revokeJoinLink(teamId: string, joinLinkId: string): Promise<SporadesResult<{ revoked: true }>>;
   /** Safely inspects a Join link before authentication without consuming it. */
   inspectJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkInspection>>;
+  /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
+  validateJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkValidation>>;
 };
 
 /** Hook state returned by `useQuery()`. */

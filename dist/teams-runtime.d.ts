@@ -40,6 +40,9 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         expiresAt: string;
         usable: boolean;
     }>;
+    validateJoinLink(code: any): Promise<{
+        valid: any;
+    }>;
 };
 export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     path: string;
@@ -67,6 +70,9 @@ export declare function inspectTeamJoinLink(database: LooseRecord, code: any): P
     };
     expiresAt: string;
     usable: boolean;
+}>;
+export declare function validateTeamJoinLink(database: LooseRecord, auth: LooseRecord, code: any): Promise<{
+    valid: any;
 }>;
 export declare function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord): Promise<{
     teams: any;

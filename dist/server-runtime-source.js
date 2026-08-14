@@ -18,7 +18,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, flushTeamSecurityEvents, inspectTeamJoinLink, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, flushTeamSecurityEvents, inspectTeamJoinLink, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, validateTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -2663,6 +2663,11 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         if (message.type === "teams.inspectJoinLink") {
             const data = await inspectTeamJoinLink(database, message.code);
             sendJson(client, { id: message.id ?? null, type: "teams.inspectJoinLink.result", data, error: null });
+            return;
+        }
+        if (message.type === "teams.validateJoinLink") {
+            const data = await validateTeamJoinLink(database, client.session.auth, message.code);
+            sendJson(client, { id: message.id ?? null, type: "teams.validateJoinLink.result", data, error: null });
             return;
         }
         if (message.type === "journey.enable") {

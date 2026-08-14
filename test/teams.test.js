@@ -9,6 +9,8 @@ import { createWebSocketHub, openDevDatabase, routeEndpoint, runMutation, runQue
 import { endpoint, job, mutation } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
+let trustedValidationCode = null;
+
 const capsule = {
   name: "teams-test",
   schema: {},
@@ -23,6 +25,10 @@ const capsule = {
         const { teams } = await ctx.teams.list();
         return ctx.teams.listMembers(teams[0].id);
       },
+    },
+    validateOwnJoinLink: {
+      kind: "query",
+      handler: (ctx) => ctx.teams.validateJoinLink(trustedValidationCode),
     },
   },
   mutations: {
@@ -345,6 +351,77 @@ test("Team admins create, inspect, list, and revoke email-bound Join links witho
     assert.deepEqual(afterRevoke.data, { team: null, expiresAt: null, usable: false });
   } finally {
     owner?.close(); stranger?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("linked users validate their email-bound Join links without consuming them through browser and trusted seams", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-validation-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let recipient;
+  let anonymous;
+  try {
+    owner = await runtime.open();
+    recipient = await runtime.open();
+    anonymous = await runtime.open();
+    const ownerSignUp = await signUp(owner, "validate-owner", "validate-owner@example.com", "Validate Owner");
+    const recipientSignUp = await signUp(recipient, "validate-recipient", "  Recipient@Example.com  ", "Validate Recipient");
+    const teamId = (await send(owner, { id: "validate-owner-teams", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0].id;
+    const create = async (id, email, ttlSeconds = 3600) => {
+      const created = await send(owner, { id, type: "teams.createJoinLink", teamId, email, ttlSeconds, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(created.error, null, JSON.stringify(created.error));
+      return { id: created.data.id, code: new URL(created.data.link).searchParams.get("code") };
+    };
+    const matching = await create("validate-matching-create", "recipient@example.com");
+
+    const before = runtime.database.adapter.prepare("SELECT [consumedAt], [revokedAt], [expiresAt] FROM [sporades_team_join_links] WHERE [id] = ?").get(matching.id);
+    const browser = await send(recipient, { id: "validate-matching-browser", type: "teams.validateJoinLink", code: matching.code, sessionToken: recipientSignUp.data.sessionToken });
+    assert.equal(browser.error, null, JSON.stringify(browser.error));
+    assert.deepEqual(browser.data, { valid: true });
+    trustedValidationCode = matching.code;
+    const trusted = await runQuery(runtime.database, recipientSignUp.data.auth, "validateOwnJoinLink");
+    assert.deepEqual(trusted, { data: { valid: true }, error: null });
+    assert.deepEqual(runtime.database.adapter.prepare("SELECT [consumedAt], [revokedAt], [expiresAt] FROM [sporades_team_join_links] WHERE [id] = ?").get(matching.id), before, "validation neither reserves nor consumes a valid link");
+    assert.deepEqual(await send(recipient, { id: "validate-matching-repeat", type: "teams.validateJoinLink", code: matching.code, sessionToken: recipientSignUp.data.sessionToken }).then((result) => result.data), { valid: true }, "a valid link remains repeatably checkable");
+
+    const anonymousResult = await send(anonymous, { id: "validate-anonymous", type: "teams.validateJoinLink", code: matching.code });
+    assert.equal(anonymousResult.error, null, JSON.stringify(anonymousResult.error));
+    assert.deepEqual(anonymousResult.data, { valid: false });
+    const mismatch = await create("validate-mismatch-create", "other@example.com");
+    const malformed = "not-a-join-link";
+    for (const [id, code] of [["validate-mismatch", mismatch.code], ["validate-malformed", malformed], ["validate-unknown", matching.code.replace(/^v1\.[^.]+/, "v1.aaaaaaaaaaaaaaaa")]]) {
+      const result = await send(recipient, { id, type: "teams.validateJoinLink", code, sessionToken: recipientSignUp.data.sessionToken });
+      assert.equal(result.error, null, JSON.stringify(result.error));
+      assert.deepEqual(result.data, { valid: false });
+    }
+
+    const revoked = await create("validate-revoked-create", "recipient@example.com");
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ?").run(new Date().toISOString(), revoked.id);
+    const consumed = await create("validate-consumed-create", "recipient@example.com");
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ?").run(new Date().toISOString(), consumed.id);
+    const expired = await create("validate-expired-create", "recipient@example.com", 300);
+    await runtime.database.adapter.prepare("UPDATE [sporades_team_join_links] SET [expiresAt] = ? WHERE [id] = ?").run(new Date(Date.now() - 1_000).toISOString(), expired.id);
+    for (const [id, code] of [["validate-revoked", revoked.code], ["validate-consumed", consumed.code], ["validate-expired", expired.code]]) {
+      const result = await send(recipient, { id, type: "teams.validateJoinLink", code, sessionToken: recipientSignUp.data.sessionToken });
+      assert.equal(result.error, null, JSON.stringify(result.error));
+      assert.deepEqual(result.data, { valid: false });
+    }
+
+    const identityTarget = await create("validate-identity-create", " identity@example.com ");
+    const now = new Date().toISOString();
+    await runtime.database.adapter.insertAuthIdentity({ id: "validate-identity", userId: recipientSignUp.data.auth.userId, provider: "google", subject: "identity-subject", email: " Identity@Example.com ", displayName: null, picture: null, createdAt: now, updatedAt: now });
+    await runtime.database.adapter.insertAuthIdentity({ id: "validate-email-less-identity", userId: recipientSignUp.data.auth.userId, provider: "microsoft", subject: "email-less-subject", email: null, displayName: null, picture: null, createdAt: now, updatedAt: now });
+    const identityBrowser = await send(recipient, { id: "validate-identity-browser", type: "teams.validateJoinLink", code: identityTarget.code, sessionToken: recipientSignUp.data.sessionToken });
+    assert.deepEqual(identityBrowser.data, { valid: true }, "any attached provider email can match without a provider-specific call or verified-email policy");
+    trustedValidationCode = identityTarget.code;
+    assert.deepEqual(await runQuery(runtime.database, recipientSignUp.data.auth, "validateOwnJoinLink"), { data: { valid: true }, error: null });
+    assertNoTeamLeak(identityBrowser.data, ["recipient@example.com", "identity@example.com", "identity-subject", identityTarget.code]);
+    assert.equal((await runtime.database.log.tail(100)).filter((event) => event.event.includes("joinLink") && event.event.includes("validate")).length, 0, "validation logs no capability or identity details");
+  } finally {
+    trustedValidationCode = null;
+    owner?.close(); recipient?.close(); anonymous?.close();
     await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }

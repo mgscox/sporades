@@ -90,6 +90,9 @@ export function createCurrentUserTeamsApi(database, auth, contextGetter) {
         async inspectJoinLink(code) {
             return inspectTeamJoinLink(database, code);
         },
+        async validateJoinLink(code) {
+            return validateTeamJoinLink(database, auth, code);
+        },
     };
 }
 export function resolveTeamJoinLinkConfig(config) {
@@ -197,12 +200,47 @@ export async function inspectTeamJoinLink(database, code) {
         return { team: null, expiresAt: null, usable: false };
     return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
 }
+// Post-auth validation is deliberately read-only. It proves only that this
+// current linked user owns an attached email matching an active capability;
+// Ticket 07 owns membership creation and capability consumption.
+export async function validateTeamJoinLink(database, auth, code) {
+    if (!auth?.isAuthenticated || auth?.isGuest || typeof auth.userId !== "string" || !auth.userId)
+        return { valid: false };
+    const parsed = parseTeamJoinCode(code);
+    if (!parsed)
+        return { valid: false };
+    const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [teamId], [verifierHash], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?")).get(parsed.selector);
+    const secretRow = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+    const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+    const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+    const expectedSignature = Buffer.from(row && secretRow
+        ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt))
+        : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
+    const actualSignature = Buffer.from(parsed.signature, "base64url");
+    const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
+    const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+    const now = (database.clock?.now?.() ?? new Date()).getTime();
+    const expiresAt = Date.parse(row?.expiresAt ?? "");
+    if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now)
+        return { valid: false };
+    const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+    if (!team)
+        return { valid: false };
+    const attachedEmails = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? " +
+        "UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL")).all(auth.userId, auth.userId);
+    const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
+    const valid = attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail);
+    return { valid };
+}
 function normalizeTeamJoinEmail(email) {
     const normalized = String(email ?? "").trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
         throw commandError("Email address is invalid.", "Provide a valid email address for the Join link.", "INVALID_EMAIL");
     }
     return normalized;
+}
+function normalizeTeamJoinIdentityEmail(email) {
+    return String(email ?? "").trim().toLowerCase();
 }
 function normalizeTeamJoinTtl(value) {
     if (value === undefined)

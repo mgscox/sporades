@@ -330,6 +330,8 @@ export type TeamMemberSummary = {
 };
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
+/** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
+export type TeamJoinLinkValidation = { valid: boolean };
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
@@ -346,6 +348,8 @@ export type CurrentUserTeamsApi = {
   revokeJoinLink(teamId: string, joinLinkId: string): Promise<{ revoked: true }>;
   /** Safely inspects a Join link without authentication or consumption. */
   inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
+  /** Checks whether the current linked user's attached emails match an active Join link without consuming it. */
+  validateJoinLink(code: string): Promise<TeamJoinLinkValidation>;
 };
 
 /** Copy overrides for the built-in password reset message. */
