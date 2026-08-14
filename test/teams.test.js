@@ -802,8 +802,9 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
   let admin;
   let member;
   let stranger;
+  let anonymous;
   try {
-    admin = await runtime.open(); member = await runtime.open(); stranger = await runtime.open();
+    admin = await runtime.open(); member = await runtime.open(); stranger = await runtime.open(); anonymous = await runtime.open();
     const adminSignUp = await signUp(admin, "roles-admin", "roles-admin@example.com", "Admin");
     const memberSignUp = await signUp(member, "roles-member", "roles-member@example.com", "Member");
     const strangerSignUp = await signUp(stranger, "roles-stranger", "roles-stranger@example.com", "Stranger");
@@ -835,10 +836,44 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
     assert.deepEqual(scoped.data.teams.find((entry) => entry.id === team.id).applicationRoles, ["reviewer"], "the first membership retains its distinct role");
     assert.deepEqual(scoped.data.teams.find((entry) => entry.id === second.data.team.id).applicationRoles, ["author"], "the same user has a different role in a second Team");
 
+    const unauthenticated = await send(anonymous, {
+      id: "roles-unauthenticated",
+      type: "teams.updateApplicationRoles",
+      teamId: team.id,
+      userId: memberSignUp.data.auth.userId,
+      add: ["author"],
+      remove: [],
+    });
+    assert.equal(unauthenticated.type, "error");
+    assert.equal(unauthenticated.data, null);
+    assert.equal(unauthenticated.error.code, "UNAUTHENTICATED");
+    assertNoTeamLeak(unauthenticated, [team.id, memberSignUp.data.auth.userId, "roles-member@example.com", "Member", "author", "reviewer"]);
+
     const rejected = await send(admin, { id: "roles-overlap", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: ["author"], sessionToken: adminSignUp.data.sessionToken });
     assert.equal(rejected.error.code, "INVALID_APPLICATION_ROLES");
+    const malformedPatches = [
+      { id: "roles-missing-remove", add: ["author"] },
+      { id: "roles-non-array-add", add: "author", remove: [] },
+    ];
+    for (const malformed of malformedPatches) {
+      const response = await send(admin, {
+        ...malformed,
+        type: "teams.updateApplicationRoles",
+        teamId: team.id,
+        userId: memberSignUp.data.auth.userId,
+        sessionToken: adminSignUp.data.sessionToken,
+      });
+      assert.equal(response.type, "error");
+      assert.equal(response.data, null);
+      assert.deepEqual(response.error, {
+        code: "INVALID_APPLICATION_ROLES",
+        message: "Invalid Team application-role update.",
+        hint: "Use non-overlapping add and remove arrays of at most 16 declared roles.",
+      }, "malformed raw payloads receive the same generic rejection");
+      assertNoTeamLeak(response, [team.id, memberSignUp.data.auth.userId, "roles-member@example.com", "Member", "author", "reviewer"]);
+    }
     const afterRejected = await send(admin, { id: "roles-after-rejected", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
-    assert.deepEqual(afterRejected.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"], "invalid atomic patch has no partial write");
+    assert.deepEqual(afterRejected.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"], "unauthenticated and malformed browser patches leave no partial writes");
     const undeclared = await send(admin, { id: "roles-undeclared", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["unknown"], remove: [], sessionToken: adminSignUp.data.sessionToken });
     assert.equal(undeclared.error.code, "INVALID_APPLICATION_ROLES");
     const unknownTeam = await send(admin, { id: "roles-unknown-team", type: "teams.updateApplicationRoles", teamId: "00000000-0000-4000-8000-000000000000", userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: adminSignUp.data.sessionToken });
@@ -856,7 +891,7 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
     const afterAdminChange = await send(admin, { id: "roles-admin-change", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
     assert.deepEqual(afterAdminChange.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"], "management-role changes never alter application roles");
   } finally {
-    admin?.close(); member?.close(); stranger?.close();
+    admin?.close(); member?.close(); stranger?.close(); anonymous?.close();
     await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }
