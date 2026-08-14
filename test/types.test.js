@@ -178,7 +178,12 @@ const app = capsule({
       const members = await ctx.teams.listMembers(renamed.team.id);
       const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
       const joined = await ctx.teams.join("opaque-join-code");
-      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role);
+      const promoted = await ctx.teams.promote(renamed.team.id, members.members[0]?.userId ?? "");
+      const demoted = await ctx.teams.demote(renamed.team.id, members.members[0]?.userId ?? "");
+      const removed = await ctx.teams.removeMember(renamed.team.id, members.members[0]?.userId ?? "");
+      const left = await ctx.teams.leave(renamed.team.id);
+      const deleted = await ctx.teams.delete(renamed.team.id);
+      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
@@ -372,6 +377,11 @@ teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").the
 teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
 teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
 teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
+teams.promote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.updated.valueOf());
+teams.demote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.updated.valueOf());
+teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.removed.valueOf());
+teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
+teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
 // @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
 teams.list("current-team");
 // @ts-expect-error Team names must be strings.
@@ -386,6 +396,12 @@ teams.listMembers({ teamId: "not-a-string" });
 teams.validateJoinLink({ code: "not-a-string" });
 // @ts-expect-error Join codes must be strings.
 teams.join({ code: "not-a-string" });
+// @ts-expect-error Team lifecycle IDs must be strings.
+teams.promote("00000000-0000-4000-8000-000000000000", { userId: "not-a-string" });
+// @ts-expect-error removeMember requires an explicit target user ID.
+teams.removeMember("00000000-0000-4000-8000-000000000000");
+// @ts-expect-error leave requires an explicit Team ID.
+teams.leave();
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));

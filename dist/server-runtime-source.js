@@ -18,7 +18,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, validateTeamJoinLink } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, validateTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -2677,6 +2677,24 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             catch (error) {
                 sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not join this Team.", hint: error?.hint ?? "Use a current Join link for this linked account." } });
+            }
+            return;
+        }
+        if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
+            try {
+                const data = message.type === "teams.promote"
+                    ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+                    : message.type === "teams.demote"
+                        ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+                        : message.type === "teams.removeMember"
+                            ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId)
+                            : message.type === "teams.leave"
+                                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId)
+                                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+                sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
+            }
+            catch (error) {
+                sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not update Team membership.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
             }
             return;
         }

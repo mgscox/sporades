@@ -133,6 +133,12 @@ The repository currently includes:
   creation, and revocation.
 - App messages over the existing client transport through SDK-level send and
   subscribe/filter APIs.
+- Built-in Team management through browser `teams` and trusted `ctx.teams`:
+  explicit Team creation, rename, admin-scoped membership listing, email-bound
+  Join links and joining, plus transactional admin promotion/demotion, member
+  removal, ordinary-member leave, and sole-member deletion. Team lifecycle
+  audits are redacted and application roles/Team ACL remain separate future
+  work.
 
 ### Future scope
 

@@ -352,6 +352,16 @@ export type CurrentUserTeamsApi = {
   validateJoinLink(code: string): Promise<TeamJoinLinkValidation>;
   /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
   join(code: string): Promise<{ team: TeamSummary }>;
+  /** Promotes an ordinary member in an explicitly identified Team the caller currently administers. */
+  promote(teamId: string, userId: string): Promise<{ updated: true }>;
+  /** Demotes an admin only when another committed Team admin remains. */
+  demote(teamId: string, userId: string): Promise<{ updated: true }>;
+  /** Removes another Team member; callers leave through leave(). */
+  removeMember(teamId: string, userId: string): Promise<{ removed: true }>;
+  /** Leaves an explicitly identified Team only while the caller is an ordinary member. */
+  leave(teamId: string): Promise<{ left: true }>;
+  /** Deletes a Team only when the caller is its sole remaining admin member. */
+  delete(teamId: string): Promise<{ deleted: true }>;
 };
 
 /** Copy overrides for the built-in password reset message. */

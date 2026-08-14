@@ -307,6 +307,16 @@ export type TeamsApi = {
   validateJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkValidation>>;
   /** Redeems a current matching Join link atomically. New memberships are ordinary members with no application roles. */
   join(code: string): Promise<SporadesResult<TeamMutationResult>>;
+  /** Promotes an ordinary member in an explicitly identified Team the caller currently administers. */
+  promote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
+  /** Demotes an admin only when another committed Team admin remains. */
+  demote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
+  /** Removes another Team member and their runtime-owned membership authority. Self-removal uses leave(). */
+  removeMember(teamId: string, userId: string): Promise<SporadesResult<{ removed: true }>>;
+  /** Leaves an explicitly identified Team only while the caller is an ordinary member. */
+  leave(teamId: string): Promise<SporadesResult<{ left: true }>>;
+  /** Deletes a Team only when the caller is its sole remaining admin member. */
+  delete(teamId: string): Promise<SporadesResult<{ deleted: true }>>;
 };
 
 /** Hook state returned by `useQuery()`. */

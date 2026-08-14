@@ -35,6 +35,9 @@ const capsule = {
   mutations: {
     createAdditionalTeam: mutation((ctx, name) => ctx.teams.create(name)),
     renameAdditionalTeam: mutation((ctx, teamId, name) => ctx.teams.rename(teamId, name)),
+    promoteTeamMember: mutation((ctx, teamId, userId) => ctx.teams.promote(teamId, userId)),
+    demoteTeamMember: mutation((ctx, teamId, userId) => ctx.teams.demote(teamId, userId)),
+    deleteOwnedTeam: mutation((ctx, teamId) => ctx.teams.delete(teamId)),
     joinOwnTeam: mutation((ctx) => ctx.teams.join(trustedJoinCode)),
     createAndQueue: mutation(async (ctx, name) => {
       const created = await ctx.teams.create(name);
@@ -472,6 +475,52 @@ test("a linked recipient redeems a Join link through browser and trusted Team se
   }
 });
 
+test("Team admins manage promotion, demotion, removal, leaving, and sole-member deletion through browser and trusted seams", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-lifecycle-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let firstMember;
+  let secondMember;
+  try {
+    owner = await runtime.open();
+    firstMember = await runtime.open();
+    secondMember = await runtime.open();
+    const ownerSignUp = await signUp(owner, "lifecycle-owner", "lifecycle-owner@example.com", "Lifecycle Owner");
+    const firstSignUp = await signUp(firstMember, "lifecycle-first", "lifecycle-first@example.com", "First Member");
+    const secondSignUp = await signUp(secondMember, "lifecycle-second", "lifecycle-second@example.com", "Second Member");
+    const team = (await send(owner, { id: "lifecycle-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+
+    for (const [id, email, token] of [["lifecycle-first-link", "lifecycle-first@example.com", firstSignUp.data.sessionToken], ["lifecycle-second-link", "lifecycle-second@example.com", secondSignUp.data.sessionToken]]) {
+      const issued = await send(owner, { id, type: "teams.createJoinLink", teamId: team.id, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+      const recipient = email === "lifecycle-first@example.com" ? firstMember : secondMember;
+      const joined = await send(recipient, { id: `${id}-join`, type: "teams.join", code: new URL(issued.data.link).searchParams.get("code"), sessionToken: token });
+      assert.equal(joined.error, null, JSON.stringify(joined.error));
+    }
+
+    const promoted = await sendWithTimeout(owner, { id: "lifecycle-promote", type: "teams.promote", teamId: team.id, userId: firstSignUp.data.auth.userId });
+    assert.deepEqual(promoted, { id: "lifecycle-promote", type: "teams.promote.result", data: { updated: true }, error: null });
+    assert.deepEqual(await runMutation(runtime.database, firstSignUp.data.auth, "demoteTeamMember", [team.id, ownerSignUp.data.auth.userId]), { ok: true, data: { updated: true }, error: null });
+
+    const removed = await send(secondMember, { id: "lifecycle-removed", type: "teams.removeMember", teamId: team.id, userId: secondSignUp.data.auth.userId, sessionToken: secondSignUp.data.sessionToken });
+    assert.equal(removed.error.code, "DENIED", "ordinary members cannot remove themselves or others");
+    const removedByAdmin = await send(firstMember, { id: "lifecycle-remove", type: "teams.removeMember", teamId: team.id, userId: secondSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(removedByAdmin, { id: "lifecycle-remove", type: "teams.removeMember.result", data: { removed: true }, error: null });
+
+    const left = await send(owner, { id: "lifecycle-leave", type: "teams.leave", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.deepEqual(left, { id: "lifecycle-leave", type: "teams.leave.result", data: { left: true }, error: null });
+    const lastAdminDemotion = await send(firstMember, { id: "lifecycle-last-demotion", type: "teams.demote", teamId: team.id, userId: firstSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
+    assert.equal(lastAdminDemotion.error.code, "DENIED");
+    const lastAdminLeave = await send(firstMember, { id: "lifecycle-last-leave", type: "teams.leave", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.equal(lastAdminLeave.error.code, "DENIED");
+    assert.deepEqual(await runMutation(runtime.database, firstSignUp.data.auth, "deleteOwnedTeam", [team.id]), { ok: true, data: { deleted: true }, error: null });
+    assert.deepEqual((await send(firstMember, { id: "lifecycle-after-delete", type: "teams.list", sessionToken: firstSignUp.data.sessionToken })).data, { teams: [] }, "bootstrap history prevents deleted singleton Team recreation");
+  } finally {
+    owner?.close(); firstMember?.close(); secondMember?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a valid Join link with a mismatched email stays publicly generic while its denied audit retains the Team ID", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-mismatch-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
@@ -754,6 +803,13 @@ function send(ws, message) {
     ws.addEventListener("message", listener);
     ws.send(JSON.stringify(message));
   });
+}
+
+function sendWithTimeout(ws, message) {
+  return Promise.race([
+    send(ws, message),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out awaiting ${message.type}`)), 250)),
+  ]);
 }
 
 async function signUp(ws, id, email, name) {

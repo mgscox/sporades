@@ -89,6 +89,21 @@ export const teams = {
   join(code) {
     return connect().teamsJoin(code);
   },
+  promote(teamId, userId) {
+    return connect().teamsPromote(teamId, userId);
+  },
+  demote(teamId, userId) {
+    return connect().teamsDemote(teamId, userId);
+  },
+  removeMember(teamId, userId) {
+    return connect().teamsRemoveMember(teamId, userId);
+  },
+  leave(teamId) {
+    return connect().teamsLeave(teamId);
+  },
+  delete(teamId) {
+    return connect().teamsDelete(teamId);
+  },
 };
 
 export const journey = {
@@ -1106,6 +1121,11 @@ function createConnection() {
     teamsInspectJoinLink(code) { return request("teams.inspectJoinLink", { code }); },
     teamsValidateJoinLink(code) { return request("teams.validateJoinLink", { code }); },
     teamsJoin(code) { return request("teams.join", { code }); },
+    teamsPromote(teamId, userId) { return request("teams.promote", { teamId, userId }); },
+    teamsDemote(teamId, userId) { return request("teams.demote", { teamId, userId }); },
+    teamsRemoveMember(teamId, userId) { return request("teams.removeMember", { teamId, userId }); },
+    teamsLeave(teamId) { return request("teams.leave", { teamId }); },
+    teamsDelete(teamId) { return request("teams.delete", { teamId }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -7176,6 +7196,26 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
     },
     async join(code) {
       return joinCurrentUserTeam(database, auth, code, contextGetter?.());
+    },
+    async promote(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return promoteTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async demote(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return demoteTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async removeMember(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return removeTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async leave(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return leaveCurrentUserTeam(database, auth, teamId, contextGetter?.());
+    },
+    async delete(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return deleteCurrentUserTeam(database, auth, teamId, contextGetter?.());
     }
   };
 }
@@ -7437,6 +7477,23 @@ async function currentTeamAdmin(tx, teamId, userId) {
   const membership = await tx.prepare(tx.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
   return membership?.role === "admin";
 }
+async function countTeamAdmins(tx, teamId) {
+  const row = await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'"
+  )).get(teamId);
+  return Number(row?.count ?? 0);
+}
+async function lockTeamLifecycle(tx, teamId) {
+  const claimed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?"
+  )).run(teamId);
+  if (Number(claimed?.changes ?? 0) !== 1) throw teamDenied();
+}
+async function releaseTeamMembershipSlot(tx, userId) {
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] - 1 WHERE [userId] = ? AND [membershipCount] > 0"
+  )).run(userId);
+}
 async function pruneExpiredTeamJoinLinks(tx, now) {
   const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now, TEAM_JOIN_LINK_PRUNE_LIMIT);
   for (const row of rows) {
@@ -7566,6 +7623,108 @@ async function renameCurrentUserTeam(database, auth, teamId, name, eventContext)
   });
   emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
+}
+async function promoteTeamMember(database, auth, teamId, userId, eventContext) {
+  return changeTeamMemberRole(database, auth, teamId, userId, "admin", eventContext);
+}
+async function demoteTeamMember(database, auth, teamId, userId, eventContext) {
+  return changeTeamMemberRole(database, auth, teamId, userId, "member", eventContext);
+}
+async function changeTeamMemberRole(database, auth, teamId, userId, role, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  const operation = role === "admin" ? "teams.promote" : "teams.demote";
+  const event = role === "admin" ? "teams.promoted" : "teams.demoted";
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      if (role === "member" && target.role === "admin") {
+        const admins = await countTeamAdmins(tx, teamId);
+        if (admins < 2) throw teamDenied();
+      }
+      await tx.prepare(sql("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, operation, auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, event, auth.userId, teamId, "succeeded", role === "admin" ? "TEAM_MEMBER_PROMOTED" : "TEAM_MEMBER_DEMOTED");
+  return { updated: true };
+}
+async function removeTeamMember(database, auth, teamId, userId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId) || userId === auth.userId) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
+      const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.removeMember", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.memberRemoved", auth.userId, teamId, "succeeded", "TEAM_MEMBER_REMOVED");
+  return { removed: true };
+}
+async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      const membership = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+      if (!membership || membership.role === "admin") throw teamDenied();
+      const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, auth.userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.leave", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.left", auth.userId, teamId, "succeeded", "TEAM_LEFT");
+  return { left: true };
+}
+async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const members = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
+      if (Number(members?.count ?? 0) !== 1) throw teamDenied();
+      const links = await tx.prepare(sql("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
+      for (const link of links) {
+        await tx.prepare(sql("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link.id);
+      }
+      await tx.prepare(sql("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      const deleted = await tx.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+      if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, auth.userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.delete", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.deleted", auth.userId, teamId, "succeeded", "TEAM_DELETED");
+  return { deleted: true };
 }
 async function listTeamMembers(database, auth, teamId) {
   requireAuth({ auth }, { linked: true });
@@ -7712,8 +7871,8 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
     category: "audit",
     event,
     level: "info",
-    message: event === "teams.created" ? "Team created." : event === "teams.renamed" ? "Team renamed." : event === "teams.joined" ? "Joined Team." : event === "teams.joinLink.created" ? "Team Join link created." : event === "teams.joinLink.revoked" ? "Team Join link revoked." : "Team Join link operation denied.",
-    data: { operation: event === "teams.created" ? "teams.create" : event === "teams.renamed" || event === "teams.rename" ? "teams.rename" : event === "teams.joined" || event === "teams.joinLink.join" ? "teams.join" : event === "teams.joinLink.created" ? "teams.createJoinLink" : event === "teams.joinLink.revoked" ? "teams.revokeJoinLink" : event === "teams.joinLink.create" ? "teams.createJoinLink" : "teams.revokeJoinLink", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
+    message: teamSecurityMessage(event, outcome),
+    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
     request: null,
     release: null,
     correlation: null
@@ -7724,6 +7883,32 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
     return;
   }
   database.log?.emit?.(input);
+}
+function teamSecurityOperation(event) {
+  if (event === "teams.created") return "teams.create";
+  if (event === "teams.renamed" || event === "teams.rename") return "teams.rename";
+  if (event === "teams.joined" || event === "teams.joinLink.join") return "teams.join";
+  if (event === "teams.joinLink.created" || event === "teams.joinLink.create") return "teams.createJoinLink";
+  if (event === "teams.joinLink.revoked" || event === "teams.joinLink.revoke") return "teams.revokeJoinLink";
+  if (event === "teams.promoted" || event === "teams.promote") return "teams.promote";
+  if (event === "teams.demoted" || event === "teams.demote") return "teams.demote";
+  if (event === "teams.memberRemoved" || event === "teams.removeMember") return "teams.removeMember";
+  if (event === "teams.left" || event === "teams.leave") return "teams.leave";
+  return "teams.delete";
+}
+function teamSecurityMessage(event, outcome) {
+  if (outcome === "denied") return "Team lifecycle operation denied.";
+  if (event === "teams.created") return "Team created.";
+  if (event === "teams.renamed") return "Team renamed.";
+  if (event === "teams.joined") return "Joined Team.";
+  if (event === "teams.joinLink.created") return "Team Join link created.";
+  if (event === "teams.joinLink.revoked") return "Team Join link revoked.";
+  if (event === "teams.promoted") return "Team member promoted.";
+  if (event === "teams.demoted") return "Team admin demoted.";
+  if (event === "teams.memberRemoved") return "Team member removed.";
+  if (event === "teams.left") return "Left Team.";
+  if (event === "teams.deleted") return "Team deleted.";
+  return "Team operation completed.";
 }
 function flushTeamSecurityEvents(database, context, options = {}) {
   const events = context?.__teamSecurityEvents;
@@ -16226,6 +16411,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         sendJson(client, { id: message.id ?? null, type: "teams.join.result", data, error: null });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not join this Team.", hint: error?.hint ?? "Use a current Join link for this linked account." } });
+      }
+      return;
+    }
+    if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
+      try {
+        const data = message.type === "teams.promote" ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.demote" ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.removeMember" ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId) : message.type === "teams.leave" ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId) : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
+      } catch (error) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not update Team membership.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
       return;
     }

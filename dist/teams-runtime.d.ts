@@ -46,6 +46,21 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
     join(code: any): Promise<{
         team: any;
     }>;
+    promote(teamId: any, userId: any): Promise<{
+        updated: boolean;
+    }>;
+    demote(teamId: any, userId: any): Promise<{
+        updated: boolean;
+    }>;
+    removeMember(teamId: any, userId: any): Promise<{
+        removed: boolean;
+    }>;
+    leave(teamId: any): Promise<{
+        left: boolean;
+    }>;
+    delete(teamId: any): Promise<{
+        deleted: boolean;
+    }>;
 };
 export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     path: string;
@@ -88,6 +103,26 @@ export declare function createAdditionalTeam(database: LooseRecord, auth: LooseR
 }>;
 export declare function renameCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, name: any, eventContext?: LooseRecord): Promise<{
     team: any;
+}>;
+/**
+ * Team-admin lifecycle mutations deliberately re-read both the actor and
+ * target inside one adapter transaction. A browser's old membership list is
+ * presentation only; it never authorizes a later role or removal write.
+ */
+export declare function promoteTeamMember(database: LooseRecord, auth: LooseRecord, teamId: any, userId: any, eventContext?: LooseRecord): Promise<{
+    updated: boolean;
+}>;
+export declare function demoteTeamMember(database: LooseRecord, auth: LooseRecord, teamId: any, userId: any, eventContext?: LooseRecord): Promise<{
+    updated: boolean;
+}>;
+export declare function removeTeamMember(database: LooseRecord, auth: LooseRecord, teamId: any, userId: any, eventContext?: LooseRecord): Promise<{
+    removed: boolean;
+}>;
+export declare function leaveCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, eventContext?: LooseRecord): Promise<{
+    left: boolean;
+}>;
+export declare function deleteCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, eventContext?: LooseRecord): Promise<{
+    deleted: boolean;
 }>;
 export declare function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
 export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
