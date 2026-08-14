@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import {
-  linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail,
+  linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
 import { createTeamTables, listCurrentUserTeams } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
@@ -228,6 +228,50 @@ test("a pre-Teams Google legacy account remains lazy when a guest restores it", 
       assert.equal(restored.auth.userId, legacySession.auth.userId);
       assert.equal(teamCountForUser(database, restored.auth.userId), 0, "legacy restoration must retain Ticket 01 lazy bootstrap");
       assert.equal((await listCurrentUserTeams(database, restored.auth)).teams.length, 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("new simulated identities bootstrap transactionally while existing simulated identities retain lazy Team history", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-simulated-linking", auth: { providers: { anonymous: true, email: true, google: true } },
+    }, { name: "teams-simulated-linking", schema: {} });
+    try {
+      for (const provider of ["email", "google"]) {
+        const simulated = await simulateLocalIdentitySession(database, {
+          provider, email: `${provider}-simulated@example.com`, displayName: `${provider} Simulated`,
+        });
+        assert.equal(simulated.ok, true);
+        assert.equal(teamCountForUser(database, simulated.data.auth.userId), 1, `${provider} simulated link commits its Team`);
+        const repeated = await simulateLocalIdentitySession(database, {
+          provider, email: `${provider}-simulated@example.com`, displayName: `${provider} Simulated`,
+        });
+        assert.equal(repeated.ok, true);
+        assert.equal(repeated.data.auth.userId, simulated.data.auth.userId);
+        assert.equal(teamCountForUser(database, simulated.data.auth.userId), 1, `${provider} simulated retry does not duplicate`);
+      }
+
+      const now = new Date().toISOString();
+      await database.adapter.withTransaction(async (tx) => {
+        await tx.insertAuthUser({
+          id: "legacy-simulated-user", createdAt: now, displayName: "Legacy Simulated", email: "legacy-simulated@example.com",
+          picture: null, isAuthenticated: 1, isGuest: 0, provider: "anonymous",
+        });
+        await tx.insertAuthIdentity({
+          id: "legacy-simulated-identity", userId: "legacy-simulated-user", provider: "email", subject: "local:legacy-simulated@example.com",
+          email: "legacy-simulated@example.com", displayName: "Legacy Simulated", picture: null, createdAt: now, updatedAt: now,
+        });
+      });
+      const legacy = await simulateLocalIdentitySession(database, {
+        provider: "email", email: "legacy-simulated@example.com", displayName: "Legacy Simulated",
+      });
+      assert.equal(legacy.ok, true);
+      assert.equal(legacy.data.auth.userId, "legacy-simulated-user");
+      assert.equal(teamCountForUser(database, legacy.data.auth.userId), 0);
+      assert.equal((await listCurrentUserTeams(database, legacy.data.auth)).teams.length, 1);
     } finally {
       await database.close();
     }

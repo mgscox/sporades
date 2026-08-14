@@ -7307,6 +7307,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         createdAt: now,
         updatedAt: now
       });
+      await bootstrapInitialTeamForLinkedUser(tx, userId);
     }
     await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
     const auth = {
