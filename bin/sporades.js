@@ -7712,7 +7712,7 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
     event,
     level: "info",
     message: event === "teams.created" ? "Team created." : event === "teams.renamed" ? "Team renamed." : event === "teams.joined" ? "Joined Team." : event === "teams.joinLink.created" ? "Team Join link created." : event === "teams.joinLink.revoked" ? "Team Join link revoked." : "Team Join link operation denied.",
-    data: { operation: event === "teams.created" ? "teams.create" : event === "teams.renamed" ? "teams.rename" : event === "teams.joined" || event === "teams.joinLink.join" ? "teams.join" : event === "teams.joinLink.created" ? "teams.createJoinLink" : event === "teams.joinLink.revoked" ? "teams.revokeJoinLink" : event === "teams.joinLink.create" ? "teams.createJoinLink" : "teams.revokeJoinLink", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
+    data: { operation: event === "teams.created" ? "teams.create" : event === "teams.renamed" || event === "teams.rename" ? "teams.rename" : event === "teams.joined" || event === "teams.joinLink.join" ? "teams.join" : event === "teams.joinLink.created" ? "teams.createJoinLink" : event === "teams.joinLink.revoked" ? "teams.revokeJoinLink" : event === "teams.joinLink.create" ? "teams.createJoinLink" : "teams.revokeJoinLink", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
     request: null,
     release: null,
     correlation: null

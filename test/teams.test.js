@@ -457,8 +457,8 @@ test("a linked recipient redeems a Join link through browser and trusted Team se
 
     trustedJoinCode = code;
     assert.deepEqual(
-      await runMutation(runtime.database, recipientSignUp.data.auth, "joinOwnTeam"),
-      { data: browser.data, error: null },
+      await runMutation(runtime.database, recipientSignUp.data.auth, "joinOwnTeam", []),
+      { ok: true, data: browser.data, error: null },
       "a same-user retry is idempotent through the trusted current-user API",
     );
     assert.equal(runtime.database.adapter.prepare(
