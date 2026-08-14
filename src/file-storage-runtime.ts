@@ -840,7 +840,11 @@ export async function createPublicFileUrl(database: LooseRecord, auth: LooseReco
     await sqlite.insertPublicFileUrl({
       id,
       fileId: row.id,
-      ownerId: auth.userId,
+      // A File ACL permits the operation; it does not transfer the File or
+      // create an independent public capability. Keep revocation with the
+      // File owner so a collaborating Team member cannot strand a URL that
+      // the owner is unable to revoke.
+      ownerId: row.ownerId,
       version: row.version,
       expiresAt: expiry.expiresAt,
       createdAt: now,

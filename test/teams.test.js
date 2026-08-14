@@ -79,7 +79,10 @@ const fileAclCapsule = {
     acl: {
       read: ({ file, ctx }) => {
         observedFileAclTeams = ctx.teams;
-        return ctx.acl.teams.isMember(file.path.split("/")[2]);
+        const teamId = file.path.split("/")[2];
+        if (file.name === "any-role.txt") return ctx.acl.teams.hasAnyRole(teamId, ["author", "reviewer"]);
+        if (file.name === "inactive-role.txt") return ctx.acl.teams.hasRole(teamId, "retired");
+        return ctx.acl.teams.isMember(teamId);
       },
       publicUrl: ({ file, ctx }) => ctx.acl.teams.isAdmin(file.path.split("/")[2]),
       delete: ({ file, ctx }) => ctx.acl.teams.hasRole(file.path.split("/")[2], "author"),
@@ -994,8 +997,13 @@ test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs 
       return payload.data.file;
     };
     const readable = await upload("member", "member");
+    const anyRole = await upload("any-role", "any-role");
+    const inactiveRole = await upload("inactive-role", "inactive-role");
     const publishable = await upload("admin", "admin");
     const deletable = await upload("author", "author");
+
+    const ownerUrl = await send(owner, { id: "owner-url", type: "file.url", fileReference: readable.path, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(ownerUrl.error, null, JSON.stringify(ownerUrl.error));
 
     const memberUrl = await send(member, { id: "member-url", type: "file.url", fileReference: readable.path, sessionToken: memberSignUp.data.sessionToken });
     assert.equal(memberUrl.error, null, JSON.stringify(memberUrl.error));
@@ -1005,14 +1013,60 @@ test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs 
     assert.equal(memberRead.status, 200);
     assert.equal(await memberRead.text(), "member");
 
+    for (const [id, type, fileReference, options] of [
+      ["member-publish", "file.publicUrl.create", publishable.path, { noExpiry: true }],
+      ["member-delete", "file.delete", readable.path, undefined],
+    ]) {
+      const denied = await send(member, { id, type, fileReference, ...(options ? { options } : {}), sessionToken: memberSignUp.data.sessionToken });
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.message, "File not found.");
+    }
+
+    const anyRoleUrl = await send(author, { id: "author-any-role-url", type: "file.url", fileReference: anyRole.path, sessionToken: authorSignUp.data.sessionToken });
+    assert.equal(anyRoleUrl.error, null, JSON.stringify(anyRoleUrl.error));
+    assert.equal((await fetch(new URL(anyRoleUrl.data.url, runtime.baseUrl), { headers: { "x-sporades-session-token": authorSignUp.data.sessionToken } })).status, 200);
+
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'retired', ?)",
+    ).run(teamA.id, memberSignUp.data.auth.userId, new Date().toISOString());
+    const inactive = await send(member, { id: "inactive-role-url", type: "file.url", fileReference: inactiveRole.path, sessionToken: memberSignUp.data.sessionToken });
+    assert.equal(inactive.type, "error");
+    assert.equal(inactive.error.message, "File not found.");
+    assertNoTeamLeak(inactive, [teamA.id, inactiveRole.path, "retired"]);
+
     const published = await send(admin, { id: "admin-public", type: "file.publicUrl.create", fileReference: publishable.path, options: { noExpiry: true }, sessionToken: adminSignUp.data.sessionToken });
     assert.equal(published.error, null, JSON.stringify(published.error));
     assert.doesNotMatch(published.data.publicUrl.url, /sessionToken|session-token/i);
     assert.equal((await fetch(new URL(published.data.publicUrl.url, runtime.baseUrl))).status, 200);
+    assert.equal(
+      runtime.database.adapter.prepare("SELECT [ownerId] FROM [sporades_file_public_urls] WHERE [id] = ?").get(published.data.publicUrl.id).ownerId,
+      ownerSignUp.data.auth.userId,
+      "an ACL-approved collaborator creates a URL revocable by the File owner",
+    );
+    const adminCannotRevoke = await send(admin, { id: "admin-revoke-public", type: "file.publicUrl.revoke", publicUrlId: published.data.publicUrl.id, sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(adminCannotRevoke.type, "error");
+    assert.equal(adminCannotRevoke.error.message, "Public file URL not found.");
+    const ownerRevoked = await send(owner, { id: "owner-revoke-public", type: "file.publicUrl.revoke", publicUrlId: published.data.publicUrl.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(ownerRevoked.error, null, JSON.stringify(ownerRevoked.error));
+    assert.equal((await fetch(new URL(published.data.publicUrl.url, runtime.baseUrl))).status, 404);
 
     const deleted = await send(author, { id: "author-delete", type: "file.delete", fileReference: deletable.path, sessionToken: authorSignUp.data.sessionToken });
     assert.equal(deleted.error, null, JSON.stringify(deleted.error));
     assert.equal((await send(owner, { id: "owner-deleted", type: "file.url", fileReference: deletable.path, sessionToken: ownerSignUp.data.sessionToken })).error.message, "File not found.");
+
+    const roleRemoved = await send(owner, { id: "remove-author-role", type: "teams.updateApplicationRoles", teamId: teamA.id, userId: authorSignUp.data.auth.userId, add: [], remove: ["author"], sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(roleRemoved.error, null, JSON.stringify(roleRemoved.error));
+    const roleLost = await send(author, { id: "author-role-lost", type: "file.url", fileReference: anyRole.path, sessionToken: authorSignUp.data.sessionToken });
+    assert.equal(roleLost.type, "error");
+    assert.equal(roleLost.error.message, "File not found.");
+    assert.equal((await fetch(new URL(anyRoleUrl.data.url, runtime.baseUrl), { headers: { "x-sporades-session-token": authorSignUp.data.sessionToken } })).status, 404, "a private HTTP URL is re-authorized after application-role removal");
+
+    const memberRemoved = await send(owner, { id: "remove-file-member", type: "teams.removeMember", teamId: teamA.id, userId: memberSignUp.data.auth.userId, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(memberRemoved.error, null, JSON.stringify(memberRemoved.error));
+    const memberLost = await send(member, { id: "member-removed-url", type: "file.url", fileReference: readable.path, sessionToken: memberSignUp.data.sessionToken });
+    assert.equal(memberLost.type, "error");
+    assert.equal(memberLost.error.message, "File not found.");
+    assert.equal((await fetch(new URL(memberUrl.data.url, runtime.baseUrl), { headers: { "x-sporades-session-token": memberSignUp.data.sessionToken } })).status, 404, "a private HTTP URL is re-authorized after membership removal");
 
     for (const [id, socket, sessionToken] of [
       ["anonymous", anonymous, null],
@@ -1021,6 +1075,12 @@ test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs 
       const denied = await send(socket, { id: `${id}-private`, type: "file.url", fileReference: readable.path, ...(sessionToken ? { sessionToken } : {}) });
       assert.equal(denied.type, "error");
       assert.equal(denied.error.message, "File not found.");
+      const publishDenied = await send(socket, { id: `${id}-publish`, type: "file.publicUrl.create", fileReference: publishable.path, options: { noExpiry: true }, ...(sessionToken ? { sessionToken } : {}) });
+      assert.equal(publishDenied.type, "error");
+      assert.equal(publishDenied.error.message, "File not found.");
+      const deleteDenied = await send(socket, { id: `${id}-delete`, type: "file.delete", fileReference: readable.path, ...(sessionToken ? { sessionToken } : {}) });
+      assert.equal(deleteDenied.type, "error");
+      assert.equal(deleteDenied.error.message, "File not found.");
       const direct = await fetch(new URL(memberUrl.data.url, runtime.baseUrl), { headers: sessionToken ? { "x-sporades-session-token": sessionToken } : {} });
       assert.equal(direct.status, 404);
     }

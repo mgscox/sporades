@@ -163,7 +163,8 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 
 /**
  * Optional rules that extend normal File ownership with explicit Capsule ACL.
- * Owner access remains unchanged; absent rules never widen File access.
+ * Owner access and public-URL revocation remain with the File owner; absent
+ * rules never widen File access.
  */
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
@@ -798,7 +799,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: { appRoles?: readonly string[] };
-  /** Optional File ACL rules for deliberate non-owner access to normal File operations. */
+  /** Optional File ACL rules for deliberate non-owner access to normal File operations. File ownership and public-URL revocation remain with the File owner. */
   files?: CapsuleFilesDefinition;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
