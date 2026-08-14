@@ -328,6 +328,8 @@ export type TeamMemberSummary = {
   role: "admin" | "member";
   applicationRoles: string[];
 };
+export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
@@ -336,6 +338,14 @@ export type CurrentUserTeamsApi = {
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
   listMembers(teamId: string): Promise<{ members: TeamMemberSummary[] }>;
+  /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
+  createJoinLink(teamId: string, email: string, options?: { ttlSeconds?: number }): Promise<{ id: string; link: string; createdAt: string; expiresAt: string }>;
+  /** Lists active Join-link management metadata without recovering a capability. */
+  listJoinLinks(teamId: string): Promise<{ links: TeamJoinLink[] }>;
+  /** Idempotently revokes an unused Join link scoped to one administered Team. */
+  revokeJoinLink(teamId: string, joinLinkId: string): Promise<{ revoked: true }>;
+  /** Safely inspects a Join link without authentication or consumption. */
+  inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
 };
 
 /** Copy overrides for the built-in password reset message. */

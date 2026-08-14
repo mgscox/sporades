@@ -48,6 +48,18 @@ export const teams = {
   listMembers(teamId) {
     return connect().teamsListMembers(teamId);
   },
+  createJoinLink(teamId, email, options = {}) {
+    return connect().teamsCreateJoinLink(teamId, email, options);
+  },
+  listJoinLinks(teamId) {
+    return connect().teamsListJoinLinks(teamId);
+  },
+  revokeJoinLink(teamId, joinLinkId) {
+    return connect().teamsRevokeJoinLink(teamId, joinLinkId);
+  },
+  inspectJoinLink(code) {
+    return connect().teamsInspectJoinLink(code);
+  },
 };
 
 export const journey = {
@@ -1059,6 +1071,10 @@ function createConnection() {
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     teamsListMembers(teamId) { return request("teams.listMembers", { teamId }); },
+    teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
+    teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },
+    teamsRevokeJoinLink(teamId, joinLinkId) { return request("teams.revokeJoinLink", { teamId, joinLinkId }); },
+    teamsInspectJoinLink(code) { return request("teams.inspectJoinLink", { code }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

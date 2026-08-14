@@ -52,11 +52,14 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.equal(calls.length, 1, "the second DDL statement waits for the first");
   releaseFirst();
   await created;
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 7);
   assert.match(calls[0], /sporades_teams/);
   assert.match(calls[1], /sporades_team_memberships/);
   assert.match(calls[2], /sporades_team_bootstrap/);
   assert.match(calls[3], /sporades_team_membership_counters/);
+  assert.match(calls[4], /sporades_team_join_link_secrets/);
+  assert.match(calls[5], /sporades_team_join_links/);
+  assert.match(calls[6], /sporades_team_join_link_throttles/);
 });
 
 test("concurrent initial Team listing shares one SQLite bootstrap transaction", async () => {

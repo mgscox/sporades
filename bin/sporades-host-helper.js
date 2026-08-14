@@ -166,6 +166,11 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 // src/file-storage-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 
+// src/teams-runtime.ts
+var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
+var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
+var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+
 // src/auth-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;

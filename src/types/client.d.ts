@@ -278,6 +278,12 @@ export type TeamMemberSummary = {
 export type TeamsListResult = { teams: TeamSummary[] };
 export type TeamMutationResult = { team: TeamSummary };
 export type TeamMembersListResult = { members: TeamMemberSummary[] };
+/** Admin-only Join-link metadata. The link capability is never recoverable from this view. */
+export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinkCreateResult = { id: string; link: string; createdAt: string; expiresAt: string };
+export type TeamJoinLinksListResult = { links: TeamJoinLink[] };
+/** Safe pre-auth Join-link presentation. It intentionally omits the target email and creator. */
+export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Built-in current-user Team operations over the standard client transport. */
 export type TeamsApi = {
   list(): Promise<SporadesResult<TeamsListResult>>;
@@ -287,6 +293,14 @@ export type TeamsApi = {
   rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
   listMembers(teamId: string): Promise<SporadesResult<TeamMembersListResult>>;
+  /** Creates a short-lived, email-bound Join link. Sporades returns it but never sends it. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
+  createJoinLink(teamId: string, email: string, options?: { ttlSeconds?: number }): Promise<SporadesResult<TeamJoinLinkCreateResult>>;
+  /** Lists active Join-link management metadata without capability codes or URLs. */
+  listJoinLinks(teamId: string): Promise<SporadesResult<TeamJoinLinksListResult>>;
+  /** Idempotently revokes one unused Join link in an administered Team. */
+  revokeJoinLink(teamId: string, joinLinkId: string): Promise<SporadesResult<{ revoked: true }>>;
+  /** Safely inspects a Join link before authentication without consuming it. */
+  inspectJoinLink(code: string): Promise<SporadesResult<TeamJoinLinkInspection>>;
 };
 
 /** Hook state returned by `useQuery()`. */

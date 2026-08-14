@@ -284,6 +284,64 @@ test("linked users create and rename explicit additional Teams through browser a
   }
 });
 
+test("Team admins create, inspect, list, and revoke email-bound Join links without exposing a capability", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-links-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let stranger;
+  try {
+    owner = await runtime.open();
+    stranger = await runtime.open();
+    const ownerSignUp = await signUp(owner, "join-owner-signup", "join-owner@example.com", "Join Owner");
+    const strangerSignUp = await signUp(stranger, "join-stranger-signup", "join-stranger@example.com", "Join Stranger");
+    const ownerTeams = await send(owner, { id: "join-owner-teams", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken });
+    const teamId = ownerTeams.data.teams[0].id;
+
+    const created = await send(owner, {
+      id: "join-create",
+      type: "teams.createJoinLink",
+      teamId,
+      email: "  Recipient@Example.com  ",
+      ttlSeconds: 3600,
+    });
+    assert.equal(created.error, null, JSON.stringify(created.error));
+    assert.equal(created.type, "teams.createJoinLink.result");
+    const url = new URL(created.data.link);
+    assert.equal(url.origin, "http://localhost:4000", "the configured Capsule origin, not a request header, owns the link");
+    assert.equal(url.pathname, "/join");
+    const code = url.searchParams.get("code");
+    assert.match(code, /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    const inspected = await send(stranger, { id: "join-inspect", type: "teams.inspectJoinLink", code });
+    assert.deepEqual(Object.keys(inspected.data).sort(), ["expiresAt", "team", "usable"]);
+    assert.equal(inspected.data.usable, true);
+    assert.equal(inspected.data.team.id, teamId);
+    assertNoTeamLeak(inspected.data, ["Recipient@Example.com", "recipient@example.com", ownerSignUp.data.auth.userId]);
+
+    const listed = await send(owner, { id: "join-list", type: "teams.listJoinLinks", teamId });
+    assert.equal(listed.error, null, JSON.stringify(listed.error));
+    assert.deepEqual(listed.data.links, [{
+      id: created.data.id,
+      email: "recipient@example.com",
+      createdAt: created.data.createdAt,
+      expiresAt: created.data.expiresAt,
+    }]);
+    assertNoTeamLeak(listed.data, [code, created.data.link]);
+
+    const denied = await send(stranger, { id: "join-cross-team-revoke", type: "teams.revokeJoinLink", teamId, joinLinkId: created.data.id, sessionToken: strangerSignUp.data.sessionToken });
+    assert.equal(denied.error.code, "DENIED");
+    const revoked = await send(owner, { id: "join-revoke", type: "teams.revokeJoinLink", teamId, joinLinkId: created.data.id });
+    assert.equal(revoked.error, null, JSON.stringify(revoked.error));
+    assert.deepEqual(revoked.data, { revoked: true });
+    const afterRevoke = await send(stranger, { id: "join-reinspect", type: "teams.inspectJoinLink", code });
+    assert.deepEqual(afterRevoke.data, { team: null, expiresAt: null, usable: false });
+  } finally {
+    owner?.close(); stranger?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("trusted endpoint and app-message Team rename denials emit one redacted audit each", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-trusted-denials-"));
   const databasePath = path.join(dir, "data.db");

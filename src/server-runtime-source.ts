@@ -45,7 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, flushTeamSecurityEvents, listCurrentUserTeams, listTeamMembers, renameCurrentUserTeam } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, flushTeamSecurityEvents, inspectTeamJoinLink, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -504,6 +504,7 @@ export async function openDevDatabase(
     mail,
     authConfig: authStatus(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
+    teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -2857,6 +2858,42 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
           },
         });
       }
+      return;
+    }
+
+    if (message.type === "teams.createJoinLink") {
+      try {
+        const data = await createTeamJoinLink(database, client.session.auth, message.teamId, message.email, { ttlSeconds: message.ttlSeconds });
+        sendJson(client, { id: message.id ?? null, type: "teams.createJoinLink.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not create Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.listJoinLinks") {
+      try {
+        const data = await listTeamJoinLinks(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listJoinLinks.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not list Join links.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.revokeJoinLink") {
+      try {
+        const data = await revokeTeamJoinLink(database, client.session.auth, message.teamId, message.joinLinkId);
+        sendJson(client, { id: message.id ?? null, type: "teams.revokeJoinLink.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not revoke Join link.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
+      }
+      return;
+    }
+
+    if (message.type === "teams.inspectJoinLink") {
+      const data = await inspectTeamJoinLink(database, message.code);
+      sendJson(client, { id: message.id ?? null, type: "teams.inspectJoinLink.result", data, error: null });
       return;
     }
 
