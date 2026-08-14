@@ -5813,15 +5813,15 @@ async function ensureInitialTeam(database, auth) {
   root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
   const running = root.__teamBootstrapByUser.get(auth.userId);
   if (running) return running;
-  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
   const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth.userId));
-  root.__teamBootstrapQueue = work;
+  root.__runtimeTransactionQueue = work;
   root.__teamBootstrapByUser.set(auth.userId, work);
   try {
     return await work;
   } finally {
     if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
-    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
   }
 }
 async function bootstrapWithRetry(adapter, userId) {
@@ -9542,13 +9542,13 @@ async function linkProviderIdentity(database, session, provider, profile) {
 async function withAuthTransaction(database, fn) {
   if (database.__transactionActive) return await fn(database.adapter);
   const root = database.__rootDatabase ?? database;
-  const previous = root.__authTransactionQueue ?? Promise.resolve();
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
   const work = previous.catch(() => void 0).then(() => withAuthTransactionRetry(database.adapter, fn));
-  root.__authTransactionQueue = work;
+  root.__runtimeTransactionQueue = work;
   try {
     return await work;
   } finally {
-    if (root.__authTransactionQueue === work) root.__authTransactionQueue = null;
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
   }
 }
 async function withAuthTransactionRetry(adapter, fn) {

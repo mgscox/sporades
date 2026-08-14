@@ -86,6 +86,39 @@ test("concurrent initial Team listing shares one SQLite bootstrap transaction", 
   });
 });
 
+test("a new email link and a legacy Team list share the same SQLite transaction queue", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-auth-and-lazy-queue", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "teams-auth-and-lazy-queue", schema: {} });
+    try {
+      const signupGuest = await resolveAnonymousSession(database, null);
+      const legacySession = await resolveAnonymousSession(database, null);
+      const legacyAuth = {
+        ...legacySession.auth, displayName: "Legacy Queue", email: "legacy-queue@example.com",
+        isAuthenticated: true, isGuest: false, provider: "email",
+      };
+      await database.adapter.withTransaction((tx) => tx.linkAuthUser({
+        id: legacyAuth.userId, displayName: legacyAuth.displayName, email: legacyAuth.email, picture: null,
+        isAuthenticated: 1, isGuest: 0, provider: "email",
+      }));
+
+      const [signedUp, legacyTeams] = await Promise.all([
+        signUpWithEmail(database, signupGuest, "email", {
+          email: "queued-link@example.com", password: "password-123", name: "Queued Link",
+        }),
+        listCurrentUserTeams(database, legacyAuth),
+      ]);
+      assert.equal(signedUp.ok, true);
+      assert.equal(teamCountForUser(database, signedUp.auth.userId), 1);
+      assert.equal(legacyTeams.teams.length, 1);
+      assert.equal(teamCountForUser(database, legacyAuth.userId), 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
 test("email and every OAuth linking provider commit one initial Team while returning accounts remain unchanged", async () => {
   await withDatabase(async (databasePath) => {
     const database = await openDevDatabase(databasePath, "", {}, {

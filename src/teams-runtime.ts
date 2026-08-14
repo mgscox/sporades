@@ -73,20 +73,21 @@ async function ensureInitialTeam(database: LooseRecord, auth: LooseRecord) {
   }
   // node:sqlite has one connection, so two simultaneous BEGIN calls fail
   // before the durable bootstrap uniqueness claim can arbitrate. Queue every
-  // bootstrap on this runtime; the database key remains the cross-runtime guard.
+  // bootstrap and Auth links on this runtime; the database key remains the
+  // cross-runtime guard.
   const root = database.__rootDatabase ?? database;
   root.__teamBootstrapByUser ??= new Map();
   const running = root.__teamBootstrapByUser.get(auth.userId);
   if (running) return running;
-  const previous = root.__teamBootstrapQueue ?? Promise.resolve();
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
   const work = previous.catch(() => undefined).then(() => bootstrapWithRetry(database.adapter, auth.userId));
-  root.__teamBootstrapQueue = work;
+  root.__runtimeTransactionQueue = work;
   root.__teamBootstrapByUser.set(auth.userId, work);
   try {
     return await work;
   } finally {
     if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
-    if (root.__teamBootstrapQueue === work) root.__teamBootstrapQueue = null;
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
   }
 }
 

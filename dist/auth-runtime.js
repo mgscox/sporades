@@ -2639,15 +2639,15 @@ async function withAuthTransaction(database, fn) {
     if (database.__transactionActive)
         return await fn(database.adapter);
     const root = database.__rootDatabase ?? database;
-    const previous = root.__authTransactionQueue ?? Promise.resolve();
+    const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
     const work = previous.catch(() => undefined).then(() => withAuthTransactionRetry(database.adapter, fn));
-    root.__authTransactionQueue = work;
+    root.__runtimeTransactionQueue = work;
     try {
         return await work;
     }
     finally {
-        if (root.__authTransactionQueue === work)
-            root.__authTransactionQueue = null;
+        if (root.__runtimeTransactionQueue === work)
+            root.__runtimeTransactionQueue = null;
     }
 }
 async function withAuthTransactionRetry(adapter, fn) {
