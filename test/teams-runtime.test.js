@@ -278,6 +278,49 @@ test("new simulated identities bootstrap transactionally while existing simulate
   });
 });
 
+test("same-runtime concurrent simulated identity creation commits one Team", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-simulated-concurrency", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "teams-simulated-concurrency", schema: {} });
+    try {
+      const options = { provider: "email", email: "concurrent-simulated@example.com", displayName: "Concurrent Simulated" };
+      const [first, second] = await Promise.all([
+        simulateLocalIdentitySession(database, options),
+        simulateLocalIdentitySession(database, options),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      assert.equal(first.data.auth.userId, second.data.auth.userId);
+      assert.equal(teamCountForUser(database, first.data.auth.userId), 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("separate SQLite runtimes retry concurrent simulated identity creation without duplicate Teams", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "teams-simulated-cross-runtime", auth: { providers: { anonymous: true, google: true } } };
+    const capsule = { name: "teams-simulated-cross-runtime", schema: {} };
+    const firstRuntime = await openDevDatabase(databasePath, "", {}, config, capsule);
+    const secondRuntime = await openDevDatabase(databasePath, "", {}, config, capsule);
+    try {
+      const options = { provider: "google", email: "cross-runtime-simulated@example.com", displayName: "Cross Runtime Simulated" };
+      const [first, second] = await Promise.all([
+        simulateLocalIdentitySession(firstRuntime, options),
+        simulateLocalIdentitySession(secondRuntime, options),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      assert.equal(first.data.auth.userId, second.data.auth.userId);
+      assert.equal(teamCountForUser(firstRuntime, first.data.auth.userId), 1);
+    } finally {
+      await Promise.all([firstRuntime.close(), secondRuntime.close()]);
+    }
+  });
+});
+
 test("separate SQLite runtimes retry a concurrent OAuth account link without duplicate Teams", async () => {
   await withDatabase(async (databasePath) => {
     const config = { name: "teams-linking-cross-runtime", auth: { providers: { anonymous: true, google: true } } };

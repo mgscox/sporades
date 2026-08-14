@@ -260,7 +260,7 @@ export async function simulateLocalIdentitySession(database: LooseRecord, option
   const now = new Date().toISOString();
   const token = createSessionToken();
 
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+  return await withAuthTransaction(database, async (tx: LooseRecord) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const userId = identity?.userId ?? nodeCryptoModule.randomUUID();
