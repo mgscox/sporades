@@ -851,6 +851,9 @@ test("canonical role docs reserve Team application roles for Team membership", a
     assert.match(document, /must not compete with membership-scoped Team application roles/);
     assert.match(document, /distinct demonstrated use case/);
     assert.match(document, /separate\s+PRD/);
+    assert.match(document, /\^\[a-z\]\[a-z0-9-\]\{0,31\}\$/);
+    assert.match(document, /maximum 32 characters/i);
+    assert.match(document, /`admin`[\s/,]*`member`[\s\S]*`sporades-\*`[\s\S]*reserved/i);
   }
 });
 

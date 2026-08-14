@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
+import { createAdditionalTeam, createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -91,6 +91,62 @@ test("Team role declarations validate at Capsule load and retained assignments f
     database = await openDevDatabase(databasePath, "", {}, config, { name: "restored-roles", teams: { appRoles: ["author"] }, schema: {} });
     assert.deepEqual((await listTeamMembers(database, owner.auth, team.id)).members.find((entry) => entry.userId === member.auth.userId).applicationRoles, ["author"], "reintroduction restores the retained assignment without migration");
     await database.close();
+  });
+});
+
+test("membership removal, leave, and eligible Team deletion clear active and inactive application-role rows", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "team-role-cleanup", auth: { providers: { anonymous: true, email: true } } };
+    const database = await openDevDatabase(databasePath, "", {}, config, { name: "team-role-cleanup", teams: { appRoles: ["author"] }, schema: {} });
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "cleanup-owner@example.com", password: "password-123", name: "Owner" });
+      const removedUser = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "cleanup-removed@example.com", password: "password-123", name: "Removed" });
+      const leavingUser = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "cleanup-leaving@example.com", password: "password-123", name: "Leaving" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const now = new Date().toISOString();
+      for (const user of [removedUser, leavingUser]) {
+        await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, user.auth.userId, now);
+        for (const role of ["author", "retired-role"]) await database.adapter.prepare("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(team.id, user.auth.userId, role, now);
+      }
+
+      await removeTeamMember(database, owner.auth, team.id, removedUser.auth.userId);
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?").get(team.id, removedUser.auth.userId).count, 0, "remove clears both declared and inactive role rows");
+      await leaveCurrentUserTeam(database, leavingUser.auth, team.id);
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?").get(team.id, leavingUser.auth.userId).count, 0, "leave clears both declared and inactive role rows");
+
+      const deletable = (await createAdditionalTeam(database, owner.auth, "Role cleanup deletion")).team;
+      for (const role of ["author", "retired-role"]) await database.adapter.prepare("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)").run(deletable.id, owner.auth.userId, role, now);
+      await deleteCurrentUserTeam(database, owner.auth, deletable.id);
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?").get(deletable.id).count, 0, "eligible deletion clears all active and inactive role rows");
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("a failed role write rolls the complete mixed add/remove update back", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "team-role-write-rollback", auth: { providers: { anonymous: true, email: true } } };
+    const database = await openDevDatabase(databasePath, "", {}, config, { name: "team-role-write-rollback", teams: { appRoles: ["author", "reviewer"] }, schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "rollback-role-owner@example.com", password: "password-123", name: "Owner" });
+      const member = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "rollback-role-member@example.com", password: "password-123", name: "Member" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      await baseAdapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, member.auth.userId, new Date().toISOString());
+      await updateTeamMemberApplicationRoles(database, owner.auth, team.id, member.auth.userId, { add: ["author"], remove: [] });
+
+      database.adapter = failTeamApplicationRoleInsert(baseAdapter, new Error("role insert exploded"));
+      await assert.rejects(
+        () => updateTeamMemberApplicationRoles(database, owner.auth, team.id, member.auth.userId, { add: ["reviewer"], remove: ["author"] }),
+        /role insert exploded/,
+      );
+      database.adapter = baseAdapter;
+      assert.deepEqual((await listTeamMembers(database, owner.auth, team.id)).members.find((entry) => entry.userId === member.auth.userId).applicationRoles, ["author"], "the earlier removal is rolled back with the failed insert");
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
   });
 });
 
@@ -908,6 +964,29 @@ function teamCount(adapterOrDatabase) {
 
 function teamCountForUser(database, userId) {
   return Number(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?").get(userId).count);
+}
+
+function failTeamApplicationRoleInsert(adapter, error) {
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (!`${statement}`.includes("INSERT INTO") || !`${statement}`.includes("sporades_team_membership_application_roles")) return prepared;
+        return new Proxy(prepared, {
+          get(preparedTarget, preparedProperty, preparedReceiver) {
+            if (preparedProperty === "run") return () => { throw error; };
+            return Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+          },
+        });
+      };
+    },
+  });
+  return wrap(adapter);
 }
 
 function failTeamBootstrapMembershipInsert(adapter, error) {

@@ -260,6 +260,13 @@ _Avoid_: optimistic preference broadcast, partial preference update, localStorag
 A non-Team Capsule-scoped authorization label is reserved for a distinct demonstrated use case and separate PRD. It must not compete with membership-scoped Team application roles, which belong to the built-in Teams work in Tickets 09–10. It is not the Privileged server role and does not grant platform/runtime authority outside the Capsule.
 _Avoid_: global admin, platform admin, root role, Privileged server role, duplicate Team application role
 
+**Team application role**:
+A Capsule-declared, membership-scoped domain label. Each identifier must match
+`^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and the
+`sporades-*` prefix are runtime-reserved. It is neither a Team management role
+nor Privileged server authority.
+_Avoid_: global user role, Team admin, Privileged server role
+
 ## Client transport
 
 Sporades is client-framework-agnostic at its internal transport seam, which owns the WebSocket connection, query subscriptions, mutation sending, auth state, and current-user preferences. The public `sporades/client` surface currently exposes that query and mutation behavior through `createHooks`, a React/Preact adapter that takes compatible primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). Direct framework-neutral query subscriptions are not yet public. Frameworks with different reactivity models require native adapters over the internal transport seam rather than emulating React hooks.

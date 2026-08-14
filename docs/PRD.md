@@ -137,8 +137,10 @@ The repository currently includes:
   explicit Team creation, rename, admin-scoped membership listing, email-bound
   Join links and joining, plus transactional admin promotion/demotion, member
   removal, ordinary-member leave, and sole-member deletion. Capsules may
-  declare up to 32 lowercase membership application roles under
-  `teams.appRoles`; exact-Team admins atomically add/revoke them through the
+  declare up to 32 membership application roles under `teams.appRoles`. Each
+  role must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`,
+  `member`, and the `sporades-*` prefix are reserved. Exact-Team admins
+  atomically add/revoke declared roles through the
   browser or trusted API. Management `admin`/`member` stays separate, stored
   assignments for undeclared roles fail closed but survive a declaration
   rollback, and audits are redacted. Team ACL remains separate future work.

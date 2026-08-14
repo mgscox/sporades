@@ -211,13 +211,17 @@ export default capsule({
 `;
 
 const TEAMS_CAPSULE_SOURCE = `
-import { capsule, query } from "sporades/server";
+import { capsule, mutation, query } from "sporades/server";
 
 export default capsule({
   name: "bundle-teams",
   schema: {},
+  teams: { appRoles: ["author", "reviewer"] },
   queries: {
     ownTeams: query((ctx) => ctx.teams.list()),
+  },
+  mutations: {
+    updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
   },
 });
 `;
@@ -904,6 +908,7 @@ test("a generated server bundle lazily lists the current linked user's singleton
     await writePublicTree(root, "<!doctype html><html><body><div id=\"app\"></div></body></html>");
     const booted = await bootBundle({ source, dir: root });
     const socket = await openBundleSocket(booted.baseUrl);
+    let recipient;
     try {
       socket.send({ id: "anonymous-teams", type: "teams.list" });
       const denied = await socket.waitFor((message) => message.id === "anonymous-teams");
@@ -921,6 +926,31 @@ test("a generated server bundle lazily lists the current linked user's singleton
       assert.equal(first.error, null, JSON.stringify(first));
       assert.equal(first.data.teams.length, 1);
       assert.equal(first.data.teams[0].role, "admin");
+
+      socket.send({ id: "role-join-link", type: "teams.createJoinLink", teamId: first.data.teams[0].id, email: "bundle-role-member@example.com", ttlSeconds: 300 });
+      const roleJoinLink = await socket.waitFor((message) => message.id === "role-join-link");
+      assert.equal(roleJoinLink.error, null, JSON.stringify(roleJoinLink));
+      const roleJoinCode = new URL(roleJoinLink.data.link).searchParams.get("code");
+      recipient = await openBundleSocket(booted.baseUrl);
+      recipient.send({ id: "role-member-signup", type: "auth.signUp", provider: "email", credentials: { email: "bundle-role-member@example.com", password: "correct horse battery staple", name: "Bundle Role Member" } });
+      const roleMemberSignUp = await recipient.waitFor((message) => message.id === "role-member-signup");
+      assert.equal(roleMemberSignUp.error, null, JSON.stringify(roleMemberSignUp));
+      recipient.send({ id: "role-member-join", type: "teams.join", code: roleJoinCode });
+      const roleMemberJoin = await recipient.waitFor((message) => message.id === "role-member-join");
+      assert.equal(roleMemberJoin.error, null, JSON.stringify(roleMemberJoin));
+      socket.send({ id: "role-members", type: "teams.listMembers", teamId: first.data.teams[0].id });
+      const roleMembers = await socket.waitFor((message) => message.id === "role-members");
+      const roleMember = roleMembers.data.members.find((member) => member.userId === roleMemberSignUp.data.auth.userId);
+      assert.ok(roleMember);
+      socket.send({ id: "role-trusted-add", type: "mutation.run", mutation: "updateMemberRoles", args: [first.data.teams[0].id, roleMember.userId, { add: ["author"], remove: [] }] });
+      const roleTrustedAdd = await socket.waitFor((message) => message.id === "role-trusted-add");
+      assert.deepEqual(roleTrustedAdd, { id: "role-trusted-add", type: "mutation.result", data: { updated: true }, error: null, mutation: "updateMemberRoles" });
+      socket.send({ id: "role-browser-mixed", type: "teams.updateApplicationRoles", teamId: first.data.teams[0].id, userId: roleMember.userId, add: ["reviewer"], remove: ["author"] });
+      const roleBrowserMixed = await socket.waitFor((message) => message.id === "role-browser-mixed");
+      assert.deepEqual(roleBrowserMixed, { id: "role-browser-mixed", type: "teams.updateApplicationRoles.result", data: { updated: true }, error: null }, "the generated bundle preserves the public mixed add/remove operation");
+      recipient.send({ id: "role-member-own", type: "teams.list" });
+      const roleMemberOwn = await recipient.waitFor((message) => message.id === "role-member-own");
+      assert.deepEqual(roleMemberOwn.data.teams.find((team) => team.id === first.data.teams[0].id).applicationRoles, ["reviewer"]);
 
       socket.send({ id: "teams-members", type: "teams.listMembers", teamId: first.data.teams[0].id });
       const members = await socket.waitFor((message) => message.id === "teams-members");
@@ -948,6 +978,7 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const repeated = await socket.waitFor((message) => message.id === "teams-repeat");
       assert.equal(repeated.data.teams.some((team) => team.id === created.data.team.id && team.name === "Generated Renamed Team"), true);
     } finally {
+      recipient?.close();
       socket.close();
       await booted.stop();
     }

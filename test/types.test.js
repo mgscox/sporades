@@ -377,6 +377,7 @@ teams.list().then((result) => result.data?.teams.map((team) => team.memberCount)
 teams.create("Browser Team").then((result) => result.data?.team.id);
 teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
 teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"], remove: ["reviewer"] }).then((result) => result.data?.updated.valueOf());
 teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
 teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
 teams.promote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.updated.valueOf());
@@ -392,6 +393,12 @@ teams.create({ name: "not a string" });
 teams.rename("Renamed Browser Team");
 // @ts-expect-error membership directories always require an explicit Team ID.
 teams.listMembers();
+// @ts-expect-error application-role changes require both bounded add and remove arrays.
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"] });
+// @ts-expect-error application-role changes are not an arbitrary browser payload.
+teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: "author", remove: [] });
+// @ts-expect-error application-role updates require explicit string Team and user IDs.
+teams.updateApplicationRoles({ teamId: "not-a-string" }, "00000000-0000-4000-8000-000000000000", { add: [], remove: [] });
 // @ts-expect-error Team IDs must be strings.
 teams.listMembers({ teamId: "not-a-string" });
 // @ts-expect-error Join codes must be strings.

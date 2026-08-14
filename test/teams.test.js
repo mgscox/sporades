@@ -60,7 +60,10 @@ const rolesCapsule = {
   teams: { appRoles: ["author", "reviewer"] },
   queries: {
     ...capsule.queries,
-    roleMembers: query(async (ctx, teamId) => ctx.teams.listMembers(teamId)),
+    roleMembers: query(async (ctx) => {
+      const { teams } = await ctx.teams.list();
+      return ctx.teams.listMembers(teams[0].id);
+    }),
   },
   mutations: {
     ...capsule.mutations,
@@ -814,20 +817,44 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
     assert.deepEqual(members.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"]);
     const own = await send(member, { id: "roles-own", type: "teams.list", sessionToken: memberSignUp.data.sessionToken });
     assert.deepEqual(own.data.teams.find((entry) => entry.id === team.id).applicationRoles, ["author", "reviewer"]);
-    assert.deepEqual((await runQuery(runtime.database, adminSignUp.data.auth, "roleMembers", [team.id])).data, members.data, "trusted Team listing projects the same active roles");
+    assert.deepEqual((await runQuery(runtime.database, adminSignUp.data.auth, "roleMembers")).data, members.data, "trusted Team listing projects the same active roles");
+
+    const trustedRemoval = await runMutation(runtime.database, adminSignUp.data.auth, "updateMemberRoles", [team.id, memberSignUp.data.auth.userId, { add: [], remove: ["reviewer"] }]);
+    assert.deepEqual(trustedRemoval, { ok: true, data: { updated: true }, error: null }, "trusted handlers use the same transactional role operation");
+    const mixed = await send(admin, { id: "roles-mixed", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["reviewer"], remove: ["author"], sessionToken: adminSignUp.data.sessionToken });
+    assert.deepEqual(mixed, { id: "roles-mixed", type: "teams.updateApplicationRoles.result", data: { updated: true }, error: null }, "the browser seam accepts one successful mixed add/remove patch");
+    const afterMixed = await send(admin, { id: "roles-after-mixed", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
+    assert.deepEqual(afterMixed.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"]);
+
+    const second = await send(admin, { id: "roles-second-team", type: "teams.create", name: "Role Scope Two", sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(second.error, null, JSON.stringify(second.error));
+    await runtime.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(second.data.team.id, memberSignUp.data.auth.userId, new Date().toISOString());
+    const secondAssignment = await send(admin, { id: "roles-second-assignment", type: "teams.updateApplicationRoles", teamId: second.data.team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(secondAssignment.error, null, JSON.stringify(secondAssignment.error));
+    const scoped = await send(member, { id: "roles-scoped-own", type: "teams.list", sessionToken: memberSignUp.data.sessionToken });
+    assert.deepEqual(scoped.data.teams.find((entry) => entry.id === team.id).applicationRoles, ["reviewer"], "the first membership retains its distinct role");
+    assert.deepEqual(scoped.data.teams.find((entry) => entry.id === second.data.team.id).applicationRoles, ["author"], "the same user has a different role in a second Team");
 
     const rejected = await send(admin, { id: "roles-overlap", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: ["author"], sessionToken: adminSignUp.data.sessionToken });
     assert.equal(rejected.error.code, "INVALID_APPLICATION_ROLES");
     const afterRejected = await send(admin, { id: "roles-after-rejected", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
-    assert.deepEqual(afterRejected.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"], "invalid atomic patch has no partial write");
+    assert.deepEqual(afterRejected.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"], "invalid atomic patch has no partial write");
+    const undeclared = await send(admin, { id: "roles-undeclared", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["unknown"], remove: [], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(undeclared.error.code, "INVALID_APPLICATION_ROLES");
+    const unknownTeam = await send(admin, { id: "roles-unknown-team", type: "teams.updateApplicationRoles", teamId: "00000000-0000-4000-8000-000000000000", userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(unknownTeam.error.code, "DENIED");
+    const nonMember = await send(admin, { id: "roles-non-member", type: "teams.updateApplicationRoles", teamId: team.id, userId: strangerSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(nonMember.error.code, "DENIED");
+    const ordinarySelf = await send(member, { id: "roles-ordinary-self", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: memberSignUp.data.sessionToken });
+    assert.equal(ordinarySelf.error.code, "DENIED");
     const denied = await send(stranger, { id: "roles-denied", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: strangerSignUp.data.sessionToken });
-    assert.equal(denied.error.code, "DENIED");
+    assert.equal(denied.error.code, "DENIED", "an admin of a different Team cannot change this Team");
     assertNoTeamLeak(denied, [team.id, memberSignUp.data.auth.userId, "roles-member@example.com"]);
 
     const promoted = await send(admin, { id: "roles-promote", type: "teams.promote", teamId: team.id, userId: memberSignUp.data.auth.userId, sessionToken: adminSignUp.data.sessionToken });
     assert.equal(promoted.error, null, JSON.stringify(promoted.error));
     const afterAdminChange = await send(admin, { id: "roles-admin-change", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
-    assert.deepEqual(afterAdminChange.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"], "management-role changes never alter application roles");
+    assert.deepEqual(afterAdminChange.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["reviewer"], "management-role changes never alter application roles");
   } finally {
     admin?.close(); member?.close(); stranger?.close();
     await runtime.close();
