@@ -40,6 +40,7 @@ That is the complete starting loop. Everything below extends it.
 - [Build the browser client](./guide/client.md)
 - [Add authentication](./guide/auth.md)
 - [Upload and publish files](./guide/files.md)
+- [Use Built-in Teams for explicit collaboration](./reference/teams.md)
 - [Add realtime activity or App messages](./guide/realtime.md)
 - [Run Jobs and Schedules](./guide/background-work.md)
 - [Configure security, Server env, preferences, and services](./guide/configuration.md)

@@ -51,6 +51,9 @@ sporades host push --restart
   logs, database inspection, and non-interactive commands are first-class.
 - **Comprehensive SDK**: built-in authentication, database, user preferences,
   and storage.
+- **Built-in collaboration, explicitly authorized**: runtime-owned Teams,
+  email-bound Join links, membership application roles, and explicit Team ACL
+  decisions—without a hidden current Team or automatic data partitioning.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation
@@ -59,6 +62,8 @@ sporades host push --restart
   preferences, files, endpoints, messages, and common workflows.
 - [Feature reference](https://mgscox.github.io/sporades/guide/reference): exhaustive contracts and
   command lookup, split into focused topic pages.
+- [Built-in Teams](https://mgscox.github.io/sporades/reference/teams): collaboration model, Join
+  links, application roles, and explicit Team ACL decisions.
 - [LLM documentation manifest](https://mgscox.github.io/sporades/llms.txt): release-matched Markdown
   sources for agents and other documentation tools.
 - [Architecture](https://mgscox.github.io/sporades/architecture): platform model, runtime modes, Host
