@@ -14,7 +14,7 @@
 | 08 — Team-admin lifecycle | done | 07 merged | `10f7d93` | `codex/swarm-teams-08` / final review `ACCEPT` | `8cf8bee` | ACCEPT | `da1c076` | Integration: runtime 28/28; client/types 49/49; typecheck/generated-bin/docs | worker worktree retained |
 | 09 — Membership application roles | done | 07 merged | `d3a161b` | `codex/swarm-teams-09` / final review `ACCEPT` | `eebe5e3` | ACCEPT | `0c88d3e` | Integration: Node22 docs 30/30; Teams 15/15; runtime 31/31; typecheck/bundle | worker worktree retained |
 | 10 — Team ACL | done | 09 merged | `c12505a` | `codex/teams-ticket-10-file-acl` / final review `ACCEPT` | `ed06932` | ACCEPT | `27aaa6d` | Integration: Node22 focused 77/77; bundle 16/16 + 1 configured PG skip; typecheck/generated-bin | worker worktree retained |
-| 11 — Complete Teams contract | ready | 08, 10 merged | — | — | — | — | — | — | — |
+| 11 — Complete Teams contract | done | 08, 10 merged | `96da214` | `codex/swarm-teams-11` / final review `ACCEPT` | `3d8e407` | ACCEPT | `3d8e407` | Node22 full contract 148 pass/2 configured Postgres skips; docs/type/generated parity | worker worktree retained |
 
 ## Preflight
 
