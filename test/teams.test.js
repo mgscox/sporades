@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createWebSocketHub, openDevDatabase, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { mutation } from "../dist/server.js";
+import { job, mutation } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 const capsule = {
@@ -21,7 +21,13 @@ const capsule = {
   mutations: {
     createAdditionalTeam: mutation((ctx, name) => ctx.teams.create(name)),
     renameAdditionalTeam: mutation((ctx, teamId, name) => ctx.teams.rename(teamId, name)),
+    createAndQueue: mutation(async (ctx, name) => {
+      const created = await ctx.teams.create(name);
+      await ctx.jobs.enqueue("queued", {}, { idempotencyKey: "teams-audit-flush" });
+      return created;
+    }),
   },
+  jobs: { queued: job(() => null) },
 };
 
 test("a newly linked caller immediately receives one persistent singleton Team through public and trusted current-user seams", async () => {
@@ -250,6 +256,25 @@ test("the durable Team membership claim holds the limit across concurrent runtim
   }
 });
 
+test("a committed Team audit flushes before a later pending Job enqueue failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-audit-flush-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
+  const baseAdapter = runtime.database.adapter;
+  try {
+    await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ ...auth, isAuthenticated: 1, isGuest: 0 }));
+    runtime.database.adapter = failPendingJobInsert(baseAdapter);
+    const result = await runMutation(runtime.database, auth, "createAndQueue", ["Committed before queue failure"]);
+    assert.equal(result.ok, false);
+    assert.equal(countTeams(baseAdapter), 2, "the initial and additional Teams committed before the Job failure");
+    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 1);
+  } finally {
+    runtime.database.adapter = baseAdapter;
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function startRuntime(databasePath) {
   const database = await openDevDatabase(databasePath, "", {}, {
     name: "teams-test",
@@ -294,4 +319,19 @@ function countTeams(adapter) {
 
 function countMemberships(adapter) {
   return Number(adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships]").get().count);
+}
+
+function failPendingJobInsert(adapter) {
+  return new Proxy(adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(target, statement);
+        const text = String(statement?.text ?? statement);
+        if (!text.includes("INSERT INTO [sporades_jobs]")) return prepared;
+        return { ...prepared, run() { throw new Error("pending Job insert failed"); } };
+      };
+    },
+  });
 }
