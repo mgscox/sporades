@@ -7,7 +7,7 @@
 | 01 — Initial singleton Team | done | None | `34e6a0c` | `codex/swarm-teams-01` / final review `ACCEPT` | `7538f67` | ACCEPT | `e6dddd7` | Integration: build/typecheck; Teams 8/8; ACL/type/docs 58/58; bundle 15 pass/1 configured Postgres skip | worker worktree retained |
 | 02 — Bootstrap during account linking | done | 01 merged | `06760a9` | `codex/swarm-teams-02` / final review `ACCEPT` | `1319d42` | ACCEPT | `7a11833` | Integration: build/typecheck/generated-bin; OAuth/public/bundle 62 pass/1 configured PG skip | worker worktree retained |
 | 03 — Create and rename Teams | done | 01 merged | `ece42f2` | `codex/swarm-teams-03` / final review `ACCEPT` | `9b77809` | ACCEPT | `169c29c` | Integration: build/typecheck/docs; focused 99 pass/1 configured PG skip | worker worktree retained |
-| 04 — List Team memberships | ready | 03 merged | — | — | — | — | — | — |
+| 04 — List Team memberships | done | 03 merged | `bbdf347` | `codex/swarm-teams-04` / final review `ACCEPT` | `34281d5` | ACCEPT | `96d6d0e` | Integration: build/typecheck; focused 43 pass/1 configured PG skip | worker worktree retained |
 | 05 — Email-bound Join links | ready | 03 merged | — | — | — | — | — | — |
 | 06 — Validate Join links | blocked | 02, 05 | — | — | — | — | — | — | — |
 | 07 — Join through link | blocked | 04, 06 | — | — | — | — | — | — | — |

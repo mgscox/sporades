@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Create and rename additional Teams.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A linked user can read their own membership for each Team to which they belong.
 - [ ] Reading one's own membership reveals no other member records or Join-link state.
