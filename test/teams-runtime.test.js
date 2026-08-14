@@ -378,6 +378,29 @@ test("separate SQLite runtimes retry a concurrent OAuth account link without dup
   });
 });
 
+test("OAuth linking retries a recognized Postgres provider-identity unique conflict", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-postgres-identity-conflict", auth: { providers: { anonymous: true, google: true } },
+    }, { name: "teams-postgres-identity-conflict", schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const guest = await resolveAnonymousSession(database, null);
+      database.adapter = failFirstAuthTransaction(baseAdapter, Object.assign(new Error("duplicate provider identity"), {
+        code: "23505", constraint: "sporades_auth_identities_provider_subject_key",
+      }));
+      const linked = await linkProviderIdentity(database, guest, "google", {
+        subject: "postgres-conflict-subject", email: "postgres-conflict@example.com", displayName: "Postgres Conflict",
+      });
+      assert.equal(linked.ok, true);
+      assert.equal(teamCountForUser(database, linked.auth.userId), 1);
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
 test("different linked users can bootstrap Teams concurrently on one SQLite runtime", async () => {
   await withDatabase(async (databasePath) => {
     const database = await openDevDatabase(databasePath, "", {}, {
@@ -518,6 +541,22 @@ function failTeamBootstrapMembershipInsert(adapter, error) {
     },
   });
   return wrap(adapter);
+}
+
+function failFirstAuthTransaction(adapter, error) {
+  let first = true;
+  return new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property !== "withTransaction") return Reflect.get(target, property, receiver);
+      return async (fn) => {
+        if (first) {
+          first = false;
+          throw error;
+        }
+        return await target.withTransaction(fn);
+      };
+    },
+  });
 }
 
 async function withDatabase(fn) {

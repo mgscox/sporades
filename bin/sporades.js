@@ -9564,6 +9564,9 @@ async function withAuthTransactionRetry(adapter, fn) {
 function isTransientAuthTransactionError(error) {
   const text2 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
   const code = String(error?.code ?? "").toUpperCase();
+  if (code === "23505" && error?.constraint === "sporades_auth_identities_provider_subject_key") {
+    return true;
+  }
   return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
@@ -11738,7 +11741,10 @@ function postgresErrorFromBody(body) {
     fields[type] = body.subarray(offset, end).toString("utf8");
     offset = end + 1;
   }
-  return new Error(fields.M ?? "Postgres query failed.");
+  const error = new Error(fields.M ?? "Postgres query failed.");
+  if (fields.C) error.code = fields.C;
+  if (fields.n) error.constraint = fields.n;
+  return error;
 }
 function postgresInterpolate(sql, params = []) {
   let index = 0;

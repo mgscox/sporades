@@ -1612,7 +1612,12 @@ function postgresErrorFromBody(body: Buffer) {
     fields[type] = body.subarray(offset, end).toString("utf8");
     offset = end + 1;
   }
-  return new Error(fields.M ?? "Postgres query failed.");
+  const error: Error & { code?: string; constraint?: string } = new Error(fields.M ?? "Postgres query failed.");
+  // SQLSTATE and constraint name are operational metadata: callers use them
+  // only to retry a known idempotent race, never as a browser-facing error.
+  if (fields.C) error.code = fields.C;
+  if (fields.n) error.constraint = fields.n;
+  return error;
 }
 
 // `?` placeholders replaced with literals, skipping the ones inside strings and comments.

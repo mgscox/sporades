@@ -2976,6 +2976,9 @@ async function withAuthTransactionRetry(adapter: LooseRecord, fn: (tx: LooseReco
 function isTransientAuthTransactionError(error: any) {
   const text = String(error?.message ?? error?.errstr ?? "").toLowerCase();
   const code = String(error?.code ?? "").toUpperCase();
+  if (code === "23505" && error?.constraint === "sporades_auth_identities_provider_subject_key") {
+    return true;
+  }
   return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") &&
     (text.includes("locked") || text.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
