@@ -22,6 +22,6 @@ export declare function renameCurrentUserTeam(database: LooseRecord, auth: Loose
     team: any;
 }>;
 export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
-export declare function flushTeamSecurityEvents(database: LooseRecord, context: LooseRecord | undefined): void;
+export declare function flushTeamSecurityEvents(database: LooseRecord, context: LooseRecord | undefined, options?: LooseRecord): void;
 export {};
 //# sourceMappingURL=teams-runtime.d.ts.map

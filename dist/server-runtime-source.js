@@ -3156,6 +3156,7 @@ export async function runMutation(database, auth, mutationName, args) {
         return committed;
     }
     catch (error) {
+        flushTeamSecurityEvents(database, context, { deniedOnly: true });
         await flushPendingJobEnqueues(context);
         database.rowCache.clear();
         await reindexPrivilegedAuditEventsAfterRollback(database, context);

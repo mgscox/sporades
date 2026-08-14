@@ -178,6 +178,11 @@ test("linked users create and rename explicit additional Teams through browser a
     assert.equal(denied.error.code, "DENIED");
     assert.equal(denied.error.message, "Team operation denied.");
     assert.doesNotMatch(JSON.stringify(denied), /Product Team|Platform Team|additional-owner/);
+    const denialAuditCount = (await runtime.database.log.tail(20)).filter((event) => event.event === "teams.rename" && event.data.outcome === "denied").length;
+    const trustedDenied = await runMutation(runtime.database, strangerSignUp.data.auth, "renameAdditionalTeam", [created.data.team.id, "Still denied"]);
+    assert.equal(trustedDenied.ok, false);
+    assert.equal(trustedDenied.error.code, "DENIED");
+    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.rename" && event.data.outcome === "denied").length, denialAuditCount + 1);
     const malformed = await send(stranger, { id: "additional-malformed-rename", type: "teams.rename", teamId: { id: created.data.team.id }, name: "Nope" });
     assert.equal(malformed.error.code, "DENIED");
     const deniedAudit = (await runtime.database.log.tail(20)).find((event) => event.event === "teams.rename" && event.data.outcome === "denied");
@@ -268,7 +273,7 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
   const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: "https://example.com/audit.png", isAuthenticated: true, isGuest: false, provider: "email" };
   const baseAdapter = runtime.database.adapter;
   try {
-    await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ ...auth, isAuthenticated: 1, isGuest: 0 }));
+    await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ id: auth.userId, displayName: auth.displayName, email: auth.email, picture: auth.picture, isAuthenticated: 1, isGuest: 0, provider: auth.provider }));
     runtime.database.adapter = failPendingJobInsert(baseAdapter);
     const result = await runMutation(runtime.database, auth, "createAndQueue", ["Committed before queue failure"]);
     assert.equal(result.ok, false);

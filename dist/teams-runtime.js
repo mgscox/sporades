@@ -268,14 +268,17 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
     }
     database.log?.emit?.(input);
 }
-export function flushTeamSecurityEvents(database, context) {
+export function flushTeamSecurityEvents(database, context, options = {}) {
     const events = context?.__teamSecurityEvents;
     if (!Array.isArray(events))
         return;
     if (!context)
         return;
     delete context.__teamSecurityEvents;
-    for (const event of events)
+    for (const event of events) {
+        if (options.deniedOnly && event?.data?.outcome !== "denied")
+            continue;
         database.log?.emit?.(event);
+    }
 }
 //# sourceMappingURL=teams-runtime.js.map

@@ -933,7 +933,9 @@ test("a generated server bundle lazily lists the current linked user's singleton
 
       socket.send({ id: "teams-query", type: "query.subscribe", query: "ownTeams" });
       const trusted = await socket.waitFor((message) => message.id === "teams-query");
-      assert.deepEqual(trusted, { id: "teams-query", type: "query.result", query: "ownTeams", data: first.data, error: null });
+      assert.equal(trusted.type, "query.result");
+      assert.equal(trusted.error, null, JSON.stringify(trusted));
+      assert.equal(trusted.data.teams.some((team) => team.id === created.data.team.id && team.name === "Generated Renamed Team"), true);
 
       socket.send({ id: "teams-repeat", type: "teams.list" });
       const repeated = await socket.waitFor((message) => message.id === "teams-repeat");

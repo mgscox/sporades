@@ -6014,12 +6014,15 @@ function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamI
   }
   database.log?.emit?.(input);
 }
-function flushTeamSecurityEvents(database, context) {
+function flushTeamSecurityEvents(database, context, options = {}) {
   const events = context?.__teamSecurityEvents;
   if (!Array.isArray(events)) return;
   if (!context) return;
   delete context.__teamSecurityEvents;
-  for (const event of events) database.log?.emit?.(event);
+  for (const event of events) {
+    if (options.deniedOnly && event?.data?.outcome !== "denied") continue;
+    database.log?.emit?.(event);
+  }
 }
 
 // src/file-storage-runtime.ts
@@ -16266,6 +16269,7 @@ async function runMutation(database, auth, mutationName, args) {
     await flushPendingJobEnqueues(context);
     return committed;
   } catch (error) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);

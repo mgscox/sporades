@@ -3422,6 +3422,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     await flushPendingJobEnqueues(context);
     return committed;
   } catch (error: any) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
