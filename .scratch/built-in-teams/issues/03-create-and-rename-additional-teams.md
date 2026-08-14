@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — List the current user's initial singleton Team.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A linked user can create an additional Team through the browser Team interface and receives its committed Team and creator-admin membership.
 - [ ] The trusted server Team interface provides the same current-user Team creation behavior from supported handler contexts.
