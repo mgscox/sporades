@@ -2419,7 +2419,9 @@ async function startDevSession(options: LooseRecord) {
   const shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    process.stdout.write(`Stopping Sporades dev session...\n`);
+    // JSON mode is an event stream consumed by scripts and test harnesses; a
+    // human lifecycle line on stdout would corrupt that stream during SIGTERM.
+    if (!options.json) process.stdout.write(`Stopping Sporades dev session...\n`);
     for (const watcher of watchers) {
       watcher.close();
     }
