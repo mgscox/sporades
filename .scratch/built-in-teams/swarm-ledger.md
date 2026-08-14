@@ -12,8 +12,8 @@
 | 06 — Validate Join links | done | 02, 05 merged | `e0eea5f` | `codex/swarm-teams-06` / final review `ACCEPT` | `a37978b` | ACCEPT | `134d121` | Integration: build/typecheck; focused 71 pass | worker worktree retained |
 | 07 — Join through link | done | 04, 06 merged | `36c678a` | `codex/swarm-teams-07` / final review `ACCEPT` | `61fcc47` | ACCEPT | `8beb9cd` | Integration: build/typecheck/docs; focused Teams/client/runtime/type 85/85 | worker worktree retained |
 | 08 — Team-admin lifecycle | done | 07 merged | `10f7d93` | `codex/swarm-teams-08` / final review `ACCEPT` | `8cf8bee` | ACCEPT | `da1c076` | Integration: runtime 28/28; client/types 49/49; typecheck/generated-bin/docs | worker worktree retained |
-| 09 — Membership application roles | ready | 07 merged | — | — | — | — | — | — | — |
-| 10 — Team ACL | blocked | 09 | — | — | — | — | — | — | — |
+| 09 — Membership application roles | done | 07 merged | `d3a161b` | `codex/swarm-teams-09` / final review `ACCEPT` | `eebe5e3` | ACCEPT | `0c88d3e` | Integration: Node22 docs 30/30; Teams 15/15; runtime 31/31; typecheck/bundle | worker worktree retained |
+| 10 — Team ACL | ready | 09 merged | — | — | — | — | — | — | — |
 | 11 — Complete Teams contract | blocked | 08, 10 | — | — | — | — | — | — | — |
 
 ## Preflight
