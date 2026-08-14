@@ -52,6 +52,9 @@ export function createTeamTables(adapter) {
             "[teamId] TEXT NOT NULL, [adminUserId] TEXT NOT NULL, [windowStartedAt] TEXT NOT NULL, [count] INTEGER NOT NULL, " +
             "PRIMARY KEY ([teamId], [adminUserId])" +
             ")")),
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_join_link_counters] (" +
+            "[teamId] TEXT PRIMARY KEY, [activeCount] INTEGER NOT NULL" +
+            ")")),
     ]);
 }
 export function createCurrentUserTeamsApi(database, auth, contextGetter) {
@@ -107,33 +110,34 @@ export function normalizeTeamJoinPath(value) {
 }
 export async function createTeamJoinLink(database, auth, teamId, email, options = {}, eventContext) {
     requireAuth({ auth }, { linked: true });
-    if (!isOpaqueTeamId(teamId)) {
-        emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, null, "denied", "DENIED");
-        throw teamDenied();
-    }
-    const normalizedEmail = normalizeTeamJoinEmail(email);
-    const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
-    const created = await withTeamTransaction(database, async (tx) => {
-        if (!await currentTeamAdmin(tx, teamId, auth.userId)) {
-            emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, teamId, "denied", "DENIED");
+    let created;
+    try {
+        if (!isOpaqueTeamId(teamId))
             throw teamDenied();
-        }
-        const now = database.clock?.now?.() ?? new Date();
-        const nowIso = now.toISOString();
-        await pruneExpiredTeamJoinLinks(tx, nowIso);
-        await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso);
-        const outstanding = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL")).get(teamId, nowIso);
-        if (Number(outstanding?.count ?? 0) >= TEAM_JOIN_LINK_MAX_OUTSTANDING)
-            throw teamJoinLinkLimitError();
-        const secret = await teamJoinSigningSecret(tx, nowIso);
-        const id = randomUUID();
-        const selector = randomBytes(16).toString("base64url");
-        const verifier = randomBytes(32).toString("base64url");
-        const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
-        const signature = teamJoinSignature(secret, id, selector, verifier, expiresAt);
-        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)")).run(id, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso, expiresAt);
-        return { id, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso, expiresAt };
-    });
+        const normalizedEmail = normalizeTeamJoinEmail(email);
+        const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
+        created = await withTeamTransaction(database, async (tx) => {
+            if (!await currentTeamAdmin(tx, teamId, auth.userId))
+                throw teamDenied();
+            const now = database.clock?.now?.() ?? new Date();
+            const nowIso = now.toISOString();
+            await pruneExpiredTeamJoinLinks(tx, nowIso);
+            await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso);
+            await claimTeamJoinLinkCapacity(tx, teamId, nowIso);
+            const secret = await teamJoinSigningSecret(tx, nowIso);
+            const id = randomUUID();
+            const selector = randomBytes(16).toString("base64url");
+            const verifier = randomBytes(32).toString("base64url");
+            const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
+            const signature = teamJoinSignature(secret, id, selector, verifier, expiresAt);
+            await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)")).run(id, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso, expiresAt);
+            return { id, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso, expiresAt };
+        });
+    }
+    catch (error) {
+        emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+        throw error;
+    }
     const link = new URL(database.teamJoinLinkConfig.path, database.teamJoinLinkConfig.origin);
     link.searchParams.set("code", created.code);
     emitTeamSecurityEvent(database, eventContext, "teams.joinLink.created", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_CREATED");
@@ -164,7 +168,9 @@ export async function revokeTeamJoinLink(database, auth, teamId, joinLinkId, eve
             throw teamDenied();
         }
         const now = (database.clock?.now?.() ?? new Date()).toISOString();
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ? AND [teamId] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?")).run(now, joinLinkId, teamId, now);
+        const changed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ? AND [teamId] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?")).run(now, joinLinkId, teamId, now);
+        if (Number(changed?.changes ?? 0) === 1)
+            await releaseTeamJoinLinkCapacity(tx, teamId);
     });
     emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoked", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_REVOKED");
     return { revoked: true };
@@ -227,25 +233,29 @@ async function currentTeamAdmin(tx, teamId, userId) {
     return membership?.role === "admin";
 }
 async function pruneExpiredTeamJoinLinks(tx, now) {
-    const rows = await tx.prepare(tx.dialect.sql("SELECT [id] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now, TEAM_JOIN_LINK_PRUNE_LIMIT);
-    for (const row of rows)
-        await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [expiresAt] <= ?")).run(row.id, now);
+    const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now, TEAM_JOIN_LINK_PRUNE_LIMIT);
+    for (const row of rows) {
+        const deleted = await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [expiresAt] <= ?")).run(row.id, now);
+        if (Number(deleted?.changes ?? 0) === 1)
+            await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
+    }
 }
 async function claimTeamJoinLinkCreationSlot(tx, teamId, adminUserId, now) {
     const windowStart = new Date(Date.parse(now) - 60 * 60 * 1000).toISOString();
-    const existing = await tx.prepare(tx.dialect.sql("SELECT [windowStartedAt], [count] FROM [sporades_team_join_link_throttles] WHERE [teamId] = ? AND [adminUserId] = ?")).get(teamId, adminUserId);
-    if (existing && existing.windowStartedAt > windowStart && Number(existing.count) >= TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR) {
+    await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_throttles] ([teamId], [adminUserId], [windowStartedAt], [count]) VALUES (?, ?, ?, 0) ON CONFLICT ([teamId], [adminUserId]) DO NOTHING")).run(teamId, adminUserId, now);
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_throttles] SET [windowStartedAt] = ?, [count] = 0 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] <= ?")).run(now, teamId, adminUserId, windowStart);
+    const claimed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_throttles] SET [count] = [count] + 1 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] > ? AND [count] < ?")).run(teamId, adminUserId, windowStart, TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR);
+    if (Number(claimed?.changes ?? 0) !== 1)
         throw teamJoinLinkThrottleError();
-    }
-    if (!existing) {
-        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_throttles] ([teamId], [adminUserId], [windowStartedAt], [count]) VALUES (?, ?, ?, 1)")).run(teamId, adminUserId, now);
-        return;
-    }
-    if (existing.windowStartedAt <= windowStart) {
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_throttles] SET [windowStartedAt] = ?, [count] = 1 WHERE [teamId] = ? AND [adminUserId] = ?")).run(now, teamId, adminUserId);
-        return;
-    }
-    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_throttles] SET [count] = [count] + 1 WHERE [teamId] = ? AND [adminUserId] = ?")).run(teamId, adminUserId);
+}
+async function claimTeamJoinLinkCapacity(tx, teamId, now) {
+    await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING")).run(teamId, teamId, now);
+    const claimed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] + 1 WHERE [teamId] = ? AND [activeCount] < ?")).run(teamId, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    if (Number(claimed?.changes ?? 0) !== 1)
+        throw teamJoinLinkLimitError();
+}
+async function releaseTeamJoinLinkCapacity(tx, teamId) {
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] - 1 WHERE [teamId] = ? AND [activeCount] > 0")).run(teamId);
 }
 function teamJoinLinkThrottleError() { return commandError("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED"); }
 function teamJoinLinkLimitError() { return commandError("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED"); }

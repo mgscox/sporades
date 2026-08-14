@@ -328,6 +328,14 @@ test("Team admins create, inspect, list, and revoke email-bound Join links witho
     }]);
     assertNoTeamLeak(listed.data, [code, created.data.link]);
 
+    const invalidEmail = await send(owner, { id: "join-invalid-email", type: "teams.createJoinLink", teamId, email: "not an email" });
+    assert.equal(invalidEmail.error.code, "INVALID_EMAIL");
+    const invalidAudit = (await runtime.database.log.tail(20)).find((event) => event.event === "teams.joinLink.create" && event.data.code === "INVALID_EMAIL");
+    assert.deepEqual(invalidAudit.data, {
+      operation: "teams.createJoinLink", outcome: "denied", code: "INVALID_EMAIL", actorUserId: ownerSignUp.data.auth.userId, teamId,
+    });
+    assertNoTeamLeak(invalidAudit, ["not an email", "Recipient@Example.com", code, created.data.link, ownerSignUp.data.sessionToken]);
+
     const denied = await send(stranger, { id: "join-cross-team-revoke", type: "teams.revokeJoinLink", teamId, joinLinkId: created.data.id, sessionToken: strangerSignUp.data.sessionToken });
     assert.equal(denied.error.code, "DENIED");
     const revoked = await send(owner, { id: "join-revoke", type: "teams.revokeJoinLink", teamId, joinLinkId: created.data.id });

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createTeamTables, listCurrentUserTeams } from "../dist/teams-runtime.js";
+import { createTeamJoinLink, createTeamTables, inspectTeamJoinLink, listCurrentUserTeams, revokeTeamJoinLink } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -52,7 +52,7 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.equal(calls.length, 1, "the second DDL statement waits for the first");
   releaseFirst();
   await created;
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, 8);
   assert.match(calls[0], /sporades_teams/);
   assert.match(calls[1], /sporades_team_memberships/);
   assert.match(calls[2], /sporades_team_bootstrap/);
@@ -60,6 +60,73 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.match(calls[4], /sporades_team_join_link_secrets/);
   assert.match(calls[5], /sporades_team_join_links/);
   assert.match(calls[6], /sporades_team_join_link_throttles/);
+  assert.match(calls[7], /sporades_team_join_link_counters/);
+});
+
+test("Join-link capacity and admin throttle admit only their final guarded slots across concurrent runtime adapters", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-claims-"));
+  const databasePath = path.join(dir, "data.db");
+  const config = { name: "join-claims", auth: { providers: { anonymous: true, email: true } } };
+  const first = await openDevDatabase(databasePath, "", {}, config, { name: "join-claims", schema: {} });
+  const second = await openDevDatabase(databasePath, "", {}, config, { name: "join-claims", schema: {} });
+  try {
+    const session = await resolveAnonymousSession(first, null);
+    const linked = await signUpWithEmail(first, session, "email", { email: "claims-owner@example.com", password: "password-123", name: "Owner" });
+    const team = (await listCurrentUserTeams(first, linked.auth)).teams[0];
+    const admins = [linked.auth];
+    for (const index of [1, 2]) {
+      const extraSession = await resolveAnonymousSession(first, null);
+      const extra = await signUpWithEmail(first, extraSession, "email", { email: `claims-admin-${index}@example.com`, password: "password-123", name: `Admin ${index}` });
+      admins.push(extra.auth);
+      await first.adapter.prepare(first.adapter.dialect.sql(
+        "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)",
+      )).run(team.id, extra.auth.userId, new Date().toISOString());
+    }
+    const attempts = await Promise.all(Array.from({ length: 21 }, (_, index) =>
+      createTeamJoinLink(index % 2 ? first : second, admins[index % admins.length], team.id, `capacity-${index}@example.com`, { ttlSeconds: 300 })
+        .then(() => "created", (error) => error.code),
+    ));
+    assert.equal(attempts.filter((result) => result === "created").length, 20);
+    assert.deepEqual(attempts.filter((result) => result !== "created"), ["JOIN_LINK_LIMIT_REACHED"]);
+    assert.equal(first.adapter.prepare("SELECT [activeCount] FROM [sporades_team_join_link_counters] WHERE [teamId] = ?").get(team.id).activeCount, 20);
+
+    const secondTeam = await first.adapter.withTransaction(async (tx) => {
+      const id = "1b7d53ea-9f5c-4a61-bd13-a43dc489b811";
+      const now = new Date().toISOString();
+      await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, "Throttle", now, linked.auth.userId);
+      await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, linked.auth.userId, now);
+      return id;
+    });
+    const throttled = await Promise.all(Array.from({ length: 11 }, (_, index) =>
+      createTeamJoinLink(index % 2 ? first : second, linked.auth, secondTeam, `throttle-${index}@example.com`, { ttlSeconds: 300 })
+        .then(() => "created", (error) => error.code),
+    ));
+    assert.equal(throttled.filter((result) => result === "created").length, 10);
+    assert.deepEqual(throttled.filter((result) => result !== "created"), ["JOIN_LINK_THROTTLED"]);
+  } finally {
+    await second.close(); await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Join-link inspection rejects tampering, expiry, and revocation without recovering stored capability material", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "join-inspection", auth: { providers: { anonymous: true, email: true } } }, { name: "join-inspection", schema: {} });
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      const linked = await signUpWithEmail(database, session, "email", { email: "inspect-owner@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, linked.auth)).teams[0];
+      const created = await createTeamJoinLink(database, linked.auth, team.id, "recipient@example.com", { ttlSeconds: 300 });
+      const code = new URL(created.link).searchParams.get("code");
+      assert.equal((await inspectTeamJoinLink(database, `${code}x`)).usable, false, "HMAC tampering is invalid");
+      const stored = database.adapter.prepare("SELECT * FROM [sporades_team_join_links] WHERE [id] = ?").get(created.id);
+      assert.equal("code" in stored, false);
+      assert.equal("link" in stored, false);
+      assert.doesNotMatch(JSON.stringify(stored), new RegExp(code, "i"));
+      await revokeTeamJoinLink(database, linked.auth, team.id, created.id);
+      assert.equal((await inspectTeamJoinLink(database, code)).usable, false, "revocation invalidates inspection");
+    } finally { await database.close(); }
+  });
 });
 
 test("concurrent initial Team listing shares one SQLite bootstrap transaction", async () => {
