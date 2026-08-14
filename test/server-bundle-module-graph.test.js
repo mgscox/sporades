@@ -513,7 +513,7 @@ async function readConnectionToken(baseUrl) {
 // The Capsule declares a public origin, so the transport requires an `Origin` it recognises: a
 // handshake without one is refused outright. Sending the configured origin is what a browser on the
 // Capsule's own page does.
-async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN) {
+async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN, requestHost = null) {
   const connectionToken = await readConnectionToken(baseUrl);
   const url = new URL("/__sporades/ws", baseUrl);
   url.searchParams.set("connectionToken", connectionToken);
@@ -560,7 +560,7 @@ async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN) {
     socket.on("connect", () => {
       socket.write([
         `GET ${url.pathname}${url.search} HTTP/1.1`,
-        `Host: ${url.host}`,
+        `Host: ${requestHost ?? url.host}`,
         "Upgrade: websocket",
         "Connection: Upgrade",
         `Origin: ${origin}`,
@@ -934,6 +934,81 @@ test("a generated server bundle lazily lists the current linked user's singleton
       await booted.stop();
     }
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle completes an OAuth callback and immediately lists the linked user's Team", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-teams-oauth-"));
+  const provider = createServer((request, response) => {
+    if (request.method === "POST" && request.url === "/token") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "bundle-facebook-token" }));
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/v23.0/me?")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "bundle-facebook-subject", name: "Bundle Facebook", email: "bundle-facebook@example.com",
+        picture: { data: { url: "https://example.com/bundle-facebook.png" } },
+      }));
+      return;
+    }
+    response.writeHead(404); response.end();
+  });
+  await new Promise((resolve, reject) => {
+    provider.once("error", reject);
+    provider.listen(0, "127.0.0.1", resolve);
+  });
+  const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
+  let booted;
+  let socket;
+  try {
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverSourcePath: path.join(root, "server", "index.ts"),
+    });
+    const source = await buildBundle({
+      config: capsuleConfig({
+        name: "bundle-teams-oauth",
+        auth: { providers: {
+          anonymous: true,
+          facebook: { enabled: true, clientIdEnv: "FACEBOOK_CLIENT_ID", clientSecretEnv: "FACEBOOK_CLIENT_SECRET", graphVersion: "v23.0" },
+        } },
+      }),
+      serverEnv: { FACEBOOK_CLIENT_ID: "bundle-facebook-id", FACEBOOK_CLIENT_SECRET: "bundle-facebook-secret" },
+      serverSource: TEAMS_CAPSULE_SOURCE,
+      serverModuleSource,
+    });
+    await writePublicTree(root, "<!doctype html><html><body><div id=\"app\"></div></body></html>");
+    booted = await bootBundle({
+      source,
+      dir: root,
+      env: {
+        SPORADES_FACEBOOK_TOKEN_URL: `${providerOrigin}/token`,
+        SPORADES_FACEBOOK_GRAPH_URL: `${providerOrigin}/v23.0/me`,
+        SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK: "1",
+      },
+    });
+    socket = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+    socket.send({ id: "oauth-start", type: "auth.signIn", provider: "facebook", returnTo: `${CAPSULE_PUBLIC_ORIGIN}/after` });
+    const started = await socket.waitFor((message) => message.id === "oauth-start");
+    assert.equal(started.type, "auth.redirect", JSON.stringify(started));
+    const state = new URL(started.data.url).searchParams.get("state");
+    const callback = await fetch(`${booted.baseUrl}/__sporades/auth/facebook/callback?code=bundle-code&state=${state}`, { redirect: "manual" });
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get("location"), `${CAPSULE_PUBLIC_ORIGIN}/after`);
+
+    socket.send({ id: "oauth-teams", type: "teams.list" });
+    const teams = await socket.waitFor((message) => message.id === "oauth-teams");
+    assert.equal(teams.type, "teams.list.result");
+    assert.equal(teams.error, null, JSON.stringify(teams));
+    assert.equal(teams.data.teams.length, 1);
+    assert.equal(teams.data.teams[0].role, "admin");
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await new Promise((resolve) => provider.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
 });

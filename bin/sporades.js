@@ -7172,6 +7172,7 @@ var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 var PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+var AUTH_TRANSACTION_RETRY_LIMIT = 5;
 var PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 var PASSWORD_RESET_REQUEST_JOB = "_sporades_password_reset_request";
 function privilegedAuthUserId() {
@@ -9447,7 +9448,6 @@ async function linkProviderIdentity(database, session, provider, profile) {
   }
   return await withAuthTransaction(database, async (tx) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
@@ -9473,6 +9473,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
       }
       identity = legacyIdentities[0] ?? null;
     }
+    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
         ok: false,
@@ -9541,13 +9542,28 @@ async function withAuthTransaction(database, fn) {
   if (database.__transactionActive) return await fn(database.adapter);
   const root = database.__rootDatabase ?? database;
   const previous = root.__authTransactionQueue ?? Promise.resolve();
-  const work = previous.catch(() => void 0).then(() => database.adapter.withTransaction(fn));
+  const work = previous.catch(() => void 0).then(() => withAuthTransactionRetry(database.adapter, fn));
   root.__authTransactionQueue = work;
   try {
     return await work;
   } finally {
     if (root.__authTransactionQueue === work) root.__authTransactionQueue = null;
   }
+}
+async function withAuthTransactionRetry(adapter, fn) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction(fn);
+    } catch (error) {
+      if (attempt >= AUTH_TRANSACTION_RETRY_LIMIT - 1 || !isTransientAuthTransactionError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+function isTransientAuthTransactionError(error) {
+  const text2 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();

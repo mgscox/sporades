@@ -202,6 +202,62 @@ test("a linked user from before Team bootstrap still receives the initial Team l
   });
 });
 
+test("a pre-Teams Google legacy account remains lazy when a guest restores it", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-legacy-google", auth: { providers: { anonymous: true, google: true } },
+    }, { name: "teams-legacy-google", schema: {} });
+    try {
+      const legacySession = await resolveAnonymousSession(database, null);
+      await database.adapter.withTransaction(async (tx) => {
+        await tx.linkAuthUser({
+          id: legacySession.auth.userId, displayName: "Legacy Google", email: "legacy-google@example.com", picture: null,
+          isAuthenticated: 1, isGuest: 0, provider: "google",
+        });
+        await tx.insertAuthIdentity({
+          id: "legacy-google-identity", userId: legacySession.auth.userId, provider: "google", subject: "legacy:google-email",
+          email: "legacy-google@example.com", displayName: "Legacy Google", picture: null,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        });
+      });
+      const guest = await resolveAnonymousSession(database, null);
+      const restored = await linkProviderIdentity(database, guest, "google", {
+        subject: "google-restored-subject", email: "legacy-google@example.com", emailVerified: true, displayName: "Legacy Google",
+      });
+      assert.equal(restored.ok, true);
+      assert.equal(restored.auth.userId, legacySession.auth.userId);
+      assert.equal(teamCountForUser(database, restored.auth.userId), 0, "legacy restoration must retain Ticket 01 lazy bootstrap");
+      assert.equal((await listCurrentUserTeams(database, restored.auth)).teams.length, 1);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("separate SQLite runtimes retry a concurrent OAuth account link without duplicate Teams", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "teams-linking-cross-runtime", auth: { providers: { anonymous: true, google: true } } };
+    const capsule = { name: "teams-linking-cross-runtime", schema: {} };
+    const firstRuntime = await openDevDatabase(databasePath, "", {}, config, capsule);
+    const secondRuntime = await openDevDatabase(databasePath, "", {}, config, capsule);
+    try {
+      const firstGuest = await resolveAnonymousSession(firstRuntime, null);
+      const secondGuest = await resolveAnonymousSession(secondRuntime, null);
+      const profile = { subject: "cross-runtime-google", email: "cross-runtime@example.com", displayName: "Cross Runtime" };
+      const [first, second] = await Promise.all([
+        linkProviderIdentity(firstRuntime, firstGuest, "google", profile),
+        linkProviderIdentity(secondRuntime, secondGuest, "google", profile),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      assert.equal(first.auth.userId, second.auth.userId);
+      assert.equal(teamCountForUser(firstRuntime, first.auth.userId), 1);
+    } finally {
+      await Promise.all([firstRuntime.close(), secondRuntime.close()]);
+    }
+  });
+});
+
 test("different linked users can bootstrap Teams concurrently on one SQLite runtime", async () => {
   await withDatabase(async (databasePath) => {
     const database = await openDevDatabase(databasePath, "", {}, {

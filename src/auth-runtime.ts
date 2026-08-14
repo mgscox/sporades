@@ -144,6 +144,8 @@ export const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
 
+const AUTH_TRANSACTION_RETRY_LIMIT = 5;
+
 // Kept for queued work from before reset requests became durable Jobs of their own.
 export const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 
@@ -2849,7 +2851,6 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
 
   return await withAuthTransaction(database, async (tx: LooseRecord) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
@@ -2875,6 +2876,9 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
       }
       identity = legacyIdentities[0] ?? null;
     }
+    // Decide only after legacy recovery. A pre-Teams Google account is already
+    // linked even when its old identity must be recovered by verified email.
+    const bootstrapInitialTeam = !identity && session.auth.isGuest;
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {
         ok: false,
@@ -2948,13 +2952,31 @@ async function withAuthTransaction(database: LooseRecord, fn: (tx: LooseRecord) 
   if (database.__transactionActive) return await fn(database.adapter);
   const root = database.__rootDatabase ?? database;
   const previous = root.__authTransactionQueue ?? Promise.resolve();
-  const work = previous.catch(() => undefined).then(() => database.adapter.withTransaction(fn));
+  const work = previous.catch(() => undefined).then(() => withAuthTransactionRetry(database.adapter, fn));
   root.__authTransactionQueue = work;
   try {
     return await work;
   } finally {
     if (root.__authTransactionQueue === work) root.__authTransactionQueue = null;
   }
+}
+
+async function withAuthTransactionRetry(adapter: LooseRecord, fn: (tx: LooseRecord) => any) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction(fn);
+    } catch (error) {
+      if (attempt >= AUTH_TRANSACTION_RETRY_LIMIT - 1 || !isTransientAuthTransactionError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+
+function isTransientAuthTransactionError(error: any) {
+  const text = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") &&
+    (text.includes("locked") || text.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 
 async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
