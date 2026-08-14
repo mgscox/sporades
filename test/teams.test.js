@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createWebSocketHub, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { endpoint, job, mutation } from "../dist/server.js";
+import { endpoint, job, mutation, query } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 let trustedValidationCode = null;
@@ -52,6 +52,20 @@ const capsule = {
     })),
   },
   jobs: { queued: job(() => null) },
+};
+
+const rolesCapsule = {
+  ...capsule,
+  name: "teams-roles-test",
+  teams: { appRoles: ["author", "reviewer"] },
+  queries: {
+    ...capsule.queries,
+    roleMembers: query(async (ctx, teamId) => ctx.teams.listMembers(teamId)),
+  },
+  mutations: {
+    ...capsule.mutations,
+    updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+  },
 };
 
 test("a newly linked caller immediately receives one persistent singleton Team through public and trusted current-user seams", async () => {
@@ -779,6 +793,48 @@ test("the durable Team membership claim holds the limit across concurrent runtim
   }
 });
 
+test("declared application roles are membership-scoped, atomic, safe, and available through browser and trusted Team APIs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-roles-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"), rolesCapsule);
+  let admin;
+  let member;
+  let stranger;
+  try {
+    admin = await runtime.open(); member = await runtime.open(); stranger = await runtime.open();
+    const adminSignUp = await signUp(admin, "roles-admin", "roles-admin@example.com", "Admin");
+    const memberSignUp = await signUp(member, "roles-member", "roles-member@example.com", "Member");
+    const strangerSignUp = await signUp(stranger, "roles-stranger", "roles-stranger@example.com", "Stranger");
+    const team = (await send(admin, { id: "roles-list", type: "teams.list", sessionToken: adminSignUp.data.sessionToken })).data.teams[0];
+    await runtime.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, memberSignUp.data.auth.userId, new Date().toISOString());
+
+    const assigned = await send(admin, { id: "roles-assign", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author", "reviewer"], remove: [], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(assigned.error, null, JSON.stringify(assigned.error));
+    assert.deepEqual(assigned.data, { updated: true });
+    const members = await send(admin, { id: "roles-members", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
+    assert.deepEqual(members.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"]);
+    const own = await send(member, { id: "roles-own", type: "teams.list", sessionToken: memberSignUp.data.sessionToken });
+    assert.deepEqual(own.data.teams.find((entry) => entry.id === team.id).applicationRoles, ["author", "reviewer"]);
+    assert.deepEqual((await runQuery(runtime.database, adminSignUp.data.auth, "roleMembers", [team.id])).data, members.data, "trusted Team listing projects the same active roles");
+
+    const rejected = await send(admin, { id: "roles-overlap", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: ["author"], sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(rejected.error.code, "INVALID_APPLICATION_ROLES");
+    const afterRejected = await send(admin, { id: "roles-after-rejected", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
+    assert.deepEqual(afterRejected.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"], "invalid atomic patch has no partial write");
+    const denied = await send(stranger, { id: "roles-denied", type: "teams.updateApplicationRoles", teamId: team.id, userId: memberSignUp.data.auth.userId, add: ["author"], remove: [], sessionToken: strangerSignUp.data.sessionToken });
+    assert.equal(denied.error.code, "DENIED");
+    assertNoTeamLeak(denied, [team.id, memberSignUp.data.auth.userId, "roles-member@example.com"]);
+
+    const promoted = await send(admin, { id: "roles-promote", type: "teams.promote", teamId: team.id, userId: memberSignUp.data.auth.userId, sessionToken: adminSignUp.data.sessionToken });
+    assert.equal(promoted.error, null, JSON.stringify(promoted.error));
+    const afterAdminChange = await send(admin, { id: "roles-admin-change", type: "teams.listMembers", teamId: team.id, sessionToken: adminSignUp.data.sessionToken });
+    assert.deepEqual(afterAdminChange.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId).applicationRoles, ["author", "reviewer"], "management-role changes never alter application roles");
+  } finally {
+    admin?.close(); member?.close(); stranger?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a committed Team audit flushes before a later pending Job enqueue failure", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-audit-flush-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
@@ -799,11 +855,11 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
   }
 });
 
-async function startRuntime(databasePath) {
+async function startRuntime(databasePath, capsuleDefinition = capsule) {
   const database = await openDevDatabase(databasePath, "", {}, {
     name: "teams-test",
     auth: { providers: { anonymous: true, email: true } },
-  }, capsule);
+  }, capsuleDefinition);
   const hub = createWebSocketHub(() => database);
   const server = createServer();
   server.on("request", async (request, response) => {

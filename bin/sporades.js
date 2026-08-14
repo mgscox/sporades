@@ -71,6 +71,9 @@ export const teams = {
   listMembers(teamId) {
     return connect().teamsListMembers(teamId);
   },
+  updateApplicationRoles(teamId, userId, changes) {
+    return connect().teamsUpdateApplicationRoles(teamId, userId, changes);
+  },
   createJoinLink(teamId, email, options = {}) {
     return connect().teamsCreateJoinLink(teamId, email, options);
   },
@@ -1115,6 +1118,7 @@ function createConnection() {
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     teamsListMembers(teamId) { return request("teams.listMembers", { teamId }); },
+    teamsUpdateApplicationRoles(teamId, userId, changes) { return request("teams.updateApplicationRoles", { teamId, userId, add: changes?.add, remove: changes?.remove }); },
     teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
     teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },
     teamsRevokeJoinLink(teamId, joinLinkId) { return request("teams.revokeJoinLink", { teamId, joinLinkId }); },
@@ -7126,6 +7130,9 @@ var TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
 var TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
 var TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
 var TEAM_JOIN_LINK_SECRET_ID = "v1";
+var TEAM_APPLICATION_ROLE_MAX = 32;
+var TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
+var TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 function createTeamTables(adapter) {
   const sql = adapter.dialect.sql;
   return chainMaybePromise([
@@ -7134,6 +7141,9 @@ function createTeamTables(adapter) {
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_application_roles] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId], [role]))"
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
@@ -7175,6 +7185,10 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
     async listMembers(teamId) {
       requireAuth({ auth }, { linked: true });
       return listTeamMembers(database, auth, teamId);
+    },
+    async updateApplicationRoles(teamId, userId, changes) {
+      requireAuth({ auth }, { linked: true });
+      return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
     },
     async createJoinLink(teamId, email, options = {}) {
       requireAuth({ auth }, { linked: true });
@@ -7231,6 +7245,21 @@ function normalizeTeamJoinPath(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
   if (value.includes("\\") || value.includes("?") || value.includes("#") || value.split("/").includes("..")) return null;
   return value;
+}
+function normalizeTeamApplicationRoles(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > TEAM_APPLICATION_ROLE_MAX) throw invalidTeamApplicationRoleDeclaration();
+  const roles = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const role of value) {
+    if (typeof role !== "string" || !TEAM_APPLICATION_ROLE_PATTERN.test(role) || role === "admin" || role === "member" || role.startsWith("sporades-")) {
+      throw invalidTeamApplicationRoleDeclaration();
+    }
+    if (seen.has(role)) throw invalidTeamApplicationRoleDeclaration();
+    seen.add(role);
+    roles.push(role);
+  }
+  return roles;
 }
 async function createTeamJoinLink(database, auth, teamId, email, options = {}, eventContext) {
   requireAuth({ auth }, { linked: true });
@@ -7566,13 +7595,13 @@ async function listCurrentUserTeams(database, auth) {
     "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
   )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
   return {
-    teams: rows.map((row) => ({
+    teams: await Promise.all(rows.map(async (row) => ({
       id: String(row.id),
       name: safeTeamName(row.name),
       role: row.role === "admin" ? "admin" : "member",
-      applicationRoles: [],
+      applicationRoles: await activeTeamApplicationRoles(database.adapter, database.teamApplicationRoles, row.id, auth.userId),
       memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
-    }))
+    })))
   };
 }
 async function createAdditionalTeam(database, auth, name, eventContext) {
@@ -7632,6 +7661,37 @@ async function renameCurrentUserTeam(database, auth, teamId, name, eventContext)
   emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
 }
+async function updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  let patch;
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
+    patch = normalizeTeamApplicationRolePatch(changes, database.teamApplicationRoles ?? []);
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      for (const role of patch.remove) {
+        await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
+      }
+      const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      for (const role of patch.add) {
+        await tx.prepare(sql("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now);
+      }
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.updateApplicationRoles", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.applicationRolesUpdated", auth.userId, teamId, "succeeded", "TEAM_APPLICATION_ROLES_UPDATED", {
+    targetUserId: String(userId).slice(0, 128),
+    add: patch.add,
+    remove: patch.remove
+  });
+  return { updated: true };
+}
 async function promoteTeamMember(database, auth, teamId, userId, eventContext) {
   return changeTeamMemberRole(database, auth, teamId, userId, "admin", eventContext);
 }
@@ -7674,6 +7734,7 @@ async function removeTeamMember(database, auth, teamId, userId, eventContext) {
       const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, userId);
@@ -7694,6 +7755,7 @@ async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
       await lockTeamLifecycle(tx, teamId);
       const membership = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
       if (!membership || membership.role === "admin") throw teamDenied();
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, auth.userId);
@@ -7722,6 +7784,7 @@ async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
       await tx.prepare(sql("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       const deleted = await tx.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
       if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
@@ -7747,15 +7810,13 @@ async function listTeamMembers(database, auth, teamId) {
       "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
     )).all(teamId, TEAM_MEMBER_LIST_MAX);
     return {
-      members: rows.map((row) => ({
+      members: await Promise.all(rows.map(async (row) => ({
         userId: String(row.userId),
         displayName: String(row.displayName),
         picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
         role: row.role === "admin" ? "admin" : "member",
-        // Ticket 09 will source active declared assignment rows here. Until
-        // then no membership has a public application role to expose.
-        applicationRoles: []
-      }))
+        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
+      })))
     };
   });
 }
@@ -7859,6 +7920,45 @@ function normalizeTeamName(value) {
   }
   return name;
 }
+function invalidTeamApplicationRoleDeclaration() {
+  return commandError2(
+    "Invalid Team application-role declaration.",
+    `Declare at most ${TEAM_APPLICATION_ROLE_MAX} unique lowercase roles using letters, digits, and hyphens; admin, member, and sporades-* are reserved.`,
+    "INVALID_TEAM_APPLICATION_ROLES"
+  );
+}
+function invalidTeamApplicationRolePatch() {
+  return commandError2(
+    "Invalid Team application-role update.",
+    `Use non-overlapping add and remove arrays of at most ${TEAM_APPLICATION_ROLE_PATCH_MAX} declared roles.`,
+    "INVALID_APPLICATION_ROLES"
+  );
+}
+function normalizeTeamApplicationRolePatch(value, declared) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.add) || !Array.isArray(value.remove) || value.add.length > TEAM_APPLICATION_ROLE_PATCH_MAX || value.remove.length > TEAM_APPLICATION_ROLE_PATCH_MAX) throw invalidTeamApplicationRolePatch();
+  const allowed = new Set(Array.isArray(declared) ? declared : []);
+  const normalize = (roles) => {
+    const seen = /* @__PURE__ */ new Set();
+    for (const role of roles) {
+      if (typeof role !== "string" || !allowed.has(role) || seen.has(role)) throw invalidTeamApplicationRolePatch();
+      seen.add(role);
+    }
+    return [...seen];
+  };
+  const add = normalize(value.add);
+  const remove = normalize(value.remove);
+  if (add.some((role) => remove.includes(role))) throw invalidTeamApplicationRolePatch();
+  return { add, remove };
+}
+async function activeTeamApplicationRoles(adapter, declared, teamId, userId) {
+  const active = Array.isArray(declared) ? declared : [];
+  if (active.length === 0) return [];
+  const rows = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?"
+  )).all(String(teamId), String(userId));
+  const assigned = new Set(rows.map((row) => String(row.role)));
+  return active.filter((role) => assigned.has(role));
+}
 function isOpaqueTeamId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -7874,13 +7974,13 @@ function teamSummary(input) {
     memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0))
   };
 }
-function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId, outcome, code) {
+function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId, outcome, code, extra = {}) {
   const input = {
     category: "audit",
     event,
     level: "info",
     message: teamSecurityMessage(event, outcome),
-    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
+    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64), ...extra },
     request: null,
     release: null,
     correlation: null
@@ -7900,6 +8000,7 @@ function teamSecurityOperation(event) {
   if (event === "teams.joinLink.revoked" || event === "teams.joinLink.revoke") return "teams.revokeJoinLink";
   if (event === "teams.promoted" || event === "teams.promote") return "teams.promote";
   if (event === "teams.demoted" || event === "teams.demote") return "teams.demote";
+  if (event === "teams.applicationRolesUpdated" || event === "teams.updateApplicationRoles") return "teams.updateApplicationRoles";
   if (event === "teams.memberRemoved" || event === "teams.removeMember") return "teams.removeMember";
   if (event === "teams.left" || event === "teams.leave") return "teams.leave";
   return "teams.delete";
@@ -7913,6 +8014,7 @@ function teamSecurityMessage(event, outcome) {
   if (event === "teams.joinLink.revoked") return "Team Join link revoked.";
   if (event === "teams.promoted") return "Team member promoted.";
   if (event === "teams.demoted") return "Team admin demoted.";
+  if (event === "teams.applicationRolesUpdated") return "Team application roles updated.";
   if (event === "teams.memberRemoved") return "Team member removed.";
   if (event === "teams.left") return "Left Team.";
   if (event === "teams.deleted") return "Team deleted.";
@@ -14187,6 +14289,10 @@ async function drainPendingAclWrites(context) {
 
 // src/server-runtime-source.ts
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+  if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
+    throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
+  }
+  const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   const path12 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
@@ -14266,6 +14372,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     authConfig: authStatus2(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
+    teamApplicationRoles,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -16373,6 +16480,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
             hint: error?.hint ?? "Sign in with a Team administrator account and retry."
           }
         });
+      }
+      return;
+    }
+    if (message.type === "teams.updateApplicationRoles") {
+      try {
+        const data = await updateTeamMemberApplicationRoles(database, client.session.auth, message.teamId, message.userId, { add: message.add, remove: message.remove });
+        sendJson(client, { id: message.id ?? null, type: "teams.updateApplicationRoles.result", data, error: null });
+      } catch (error) {
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...error?.code ? { code: error.code } : {}, message: error?.message ?? "Could not update Team application roles.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
       }
       return;
     }

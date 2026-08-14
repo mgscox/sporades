@@ -136,9 +136,12 @@ The repository currently includes:
 - Built-in Team management through browser `teams` and trusted `ctx.teams`:
   explicit Team creation, rename, admin-scoped membership listing, email-bound
   Join links and joining, plus transactional admin promotion/demotion, member
-  removal, ordinary-member leave, and sole-member deletion. Team lifecycle
-  audits are redacted and application roles/Team ACL remain separate future
-  work.
+  removal, ordinary-member leave, and sole-member deletion. Capsules may
+  declare up to 32 lowercase membership application roles under
+  `teams.appRoles`; exact-Team admins atomically add/revoke them through the
+  browser or trusted API. Management `admin`/`member` stays separate, stored
+  assignments for undeclared roles fail closed but survive a declaration
+  rollback, and audits are redacted. Team ACL remains separate future work.
 
 ### Future scope
 

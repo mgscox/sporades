@@ -26,6 +26,9 @@ export const TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
 export const TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
 const TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
 const TEAM_JOIN_LINK_SECRET_ID = "v1";
+export const TEAM_APPLICATION_ROLE_MAX = 32;
+export const TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
+const TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function createTeamTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
@@ -41,6 +44,12 @@ export function createTeamTables(adapter: LooseRecord) {
       "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] (" +
       "[teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, " +
       "PRIMARY KEY ([teamId], [userId])" +
+      ")",
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_application_roles] (" +
+      "[teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, " +
+      "PRIMARY KEY ([teamId], [userId], [role])" +
       ")",
     )),
     () => adapter.exec(sql(
@@ -102,6 +111,10 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
       requireAuth({ auth }, { linked: true });
       return listTeamMembers(database, auth, teamId);
     },
+    async updateApplicationRoles(teamId: any, userId: any, changes: any) {
+      requireAuth({ auth }, { linked: true });
+      return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
+    },
     async createJoinLink(teamId: any, email: any, options: LooseRecord = {}) {
       requireAuth({ auth }, { linked: true });
       return createTeamJoinLink(database, auth, teamId, email, options, contextGetter?.());
@@ -160,6 +173,26 @@ export function normalizeTeamJoinPath(value: any) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
   if (value.includes("\\") || value.includes("?") || value.includes("#") || value.split("/").includes("..")) return null;
   return value;
+}
+
+/**
+ * Validate the Capsule-owned vocabulary once at load time. These identifiers
+ * are application authority labels, not runtime identities: management roles
+ * and the entire Sporades namespace remain unavailable to Capsules.
+ */
+export function normalizeTeamApplicationRoles(value: any): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > TEAM_APPLICATION_ROLE_MAX) throw invalidTeamApplicationRoleDeclaration();
+  const roles: string[] = [];
+  const seen = new Set<string>();
+  for (const role of value) {
+    if (typeof role !== "string" || !TEAM_APPLICATION_ROLE_PATTERN.test(role) || role === "admin" || role === "member" || role.startsWith("sporades-")) {
+      throw invalidTeamApplicationRoleDeclaration();
+    }
+    if (seen.has(role)) throw invalidTeamApplicationRoleDeclaration();
+    seen.add(role); roles.push(role);
+  }
+  return roles;
 }
 
 export async function createTeamJoinLink(database: LooseRecord, auth: LooseRecord, teamId: any, email: any, options: LooseRecord = {}, eventContext?: LooseRecord) {
@@ -554,13 +587,13 @@ export async function listCurrentUserTeams(database: LooseRecord, auth: LooseRec
     "WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC",
   )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
   return {
-    teams: rows.map((row: LooseRecord) => ({
+    teams: await Promise.all(rows.map(async (row: LooseRecord) => ({
       id: String(row.id),
       name: safeTeamName(row.name),
       role: row.role === "admin" ? "admin" : "member",
-      applicationRoles: [],
+      applicationRoles: await activeTeamApplicationRoles(database.adapter, database.teamApplicationRoles, row.id, auth.userId),
       memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0)),
-    })),
+    }))),
   };
 }
 
@@ -628,6 +661,40 @@ export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRe
   return { team };
 }
 
+/** Atomically reconcile one exact membership's Capsule-declared role set. */
+export async function updateTeamMemberApplicationRoles(database: LooseRecord, auth: LooseRecord, teamId: any, userId: any, changes: any, eventContext?: LooseRecord) {
+  requireAuth({ auth }, { linked: true });
+  let patch: { add: string[]; remove: string[] };
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
+    patch = normalizeTeamApplicationRolePatch(changes, database.teamApplicationRoles ?? []);
+    await withTeamTransaction(database, async (tx) => {
+      const sql = tx.dialect.sql;
+      // The shared lifecycle lock linearizes role changes with membership
+      // removal and Team deletion. Both actor authority and target existence
+      // are deliberately re-read after it.
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      for (const role of patch.remove) {
+        await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
+      }
+      const now = (database.clock?.now?.() ?? new Date()).toISOString();
+      for (const role of patch.add) {
+        await tx.prepare(sql("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now);
+      }
+    });
+  } catch (error: any) {
+    emitTeamSecurityEvent(database, eventContext, "teams.updateApplicationRoles", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.applicationRolesUpdated", auth.userId, teamId, "succeeded", "TEAM_APPLICATION_ROLES_UPDATED", {
+    targetUserId: String(userId).slice(0, 128), add: patch!.add, remove: patch!.remove,
+  });
+  return { updated: true };
+}
+
 /**
  * Team-admin lifecycle mutations deliberately re-read both the actor and
  * target inside one adapter transaction. A browser's old membership list is
@@ -678,6 +745,7 @@ export async function removeTeamMember(database: LooseRecord, auth: LooseRecord,
       const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, userId);
@@ -701,6 +769,7 @@ export async function leaveCurrentUserTeam(database: LooseRecord, auth: LooseRec
       // An admin must explicitly hand over/demote first. This is deliberately
       // stricter than merely checking whether another admin exists.
       if (!membership || membership.role === "admin") throw teamDenied();
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
       await releaseTeamMembershipSlot(tx, auth.userId);
@@ -730,6 +799,7 @@ export async function deleteCurrentUserTeam(database: LooseRecord, auth: LooseRe
       await tx.prepare(sql("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
       await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       const deleted = await tx.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
       if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
@@ -761,15 +831,13 @@ export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, 
       "WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
     )).all(teamId, TEAM_MEMBER_LIST_MAX);
     return {
-      members: rows.map((row: LooseRecord) => ({
+      members: await Promise.all(rows.map(async (row: LooseRecord) => ({
         userId: String(row.userId),
         displayName: String(row.displayName),
         picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
         role: row.role === "admin" ? "admin" : "member",
-        // Ticket 09 will source active declared assignment rows here. Until
-        // then no membership has a public application role to expose.
-        applicationRoles: [],
-      })),
+        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId),
+      }))),
     };
   });
 }
@@ -903,6 +971,51 @@ function normalizeTeamName(value: any) {
   return name;
 }
 
+function invalidTeamApplicationRoleDeclaration() {
+  return commandError(
+    "Invalid Team application-role declaration.",
+    `Declare at most ${TEAM_APPLICATION_ROLE_MAX} unique lowercase roles using letters, digits, and hyphens; admin, member, and sporades-* are reserved.`,
+    "INVALID_TEAM_APPLICATION_ROLES",
+  );
+}
+
+function invalidTeamApplicationRolePatch() {
+  return commandError(
+    "Invalid Team application-role update.",
+    `Use non-overlapping add and remove arrays of at most ${TEAM_APPLICATION_ROLE_PATCH_MAX} declared roles.`,
+    "INVALID_APPLICATION_ROLES",
+  );
+}
+
+function normalizeTeamApplicationRolePatch(value: any, declared: any): { add: string[]; remove: string[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.add) || !Array.isArray(value.remove)
+    || value.add.length > TEAM_APPLICATION_ROLE_PATCH_MAX || value.remove.length > TEAM_APPLICATION_ROLE_PATCH_MAX) throw invalidTeamApplicationRolePatch();
+  const allowed = new Set(Array.isArray(declared) ? declared : []);
+  const normalize = (roles: any[]) => {
+    const seen = new Set<string>();
+    for (const role of roles) {
+      if (typeof role !== "string" || !allowed.has(role) || seen.has(role)) throw invalidTeamApplicationRolePatch();
+      seen.add(role);
+    }
+    return [...seen];
+  };
+  const add = normalize(value.add); const remove = normalize(value.remove);
+  if (add.some((role) => remove.includes(role))) throw invalidTeamApplicationRolePatch();
+  return { add, remove };
+}
+
+async function activeTeamApplicationRoles(adapter: LooseRecord, declared: any, teamId: any, userId: any): Promise<string[]> {
+  const active = Array.isArray(declared) ? declared : [];
+  if (active.length === 0) return [];
+  const rows = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?",
+  )).all(String(teamId), String(userId));
+  const assigned = new Set(rows.map((row: LooseRecord) => String(row.role)));
+  // Declaration order gives a stable UI projection and avoids exposing storage
+  // row order. Undeclared retained assignments fail closed until restored.
+  return active.filter((role: string) => assigned.has(role));
+}
+
 function isOpaqueTeamId(value: any) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -921,7 +1034,7 @@ function teamSummary(input: LooseRecord) {
   };
 }
 
-function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord | undefined, event: string, actorUserId: any, teamId: any, outcome: "succeeded" | "denied", code: string) {
+function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord | undefined, event: string, actorUserId: any, teamId: any, outcome: "succeeded" | "denied", code: string, extra: LooseRecord = {}) {
   // Keep audit data identifier-only and bounded: names can contain sensitive
   // presentation text, while Sessions and provider records never belong here.
   const input = {
@@ -929,7 +1042,7 @@ function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord 
     event,
     level: "info",
     message: teamSecurityMessage(event, outcome),
-    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
+    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64), ...extra },
     request: null,
     release: null,
     correlation: null,
@@ -950,6 +1063,7 @@ function teamSecurityOperation(event: string) {
   if (event === "teams.joinLink.revoked" || event === "teams.joinLink.revoke") return "teams.revokeJoinLink";
   if (event === "teams.promoted" || event === "teams.promote") return "teams.promote";
   if (event === "teams.demoted" || event === "teams.demote") return "teams.demote";
+  if (event === "teams.applicationRolesUpdated" || event === "teams.updateApplicationRoles") return "teams.updateApplicationRoles";
   if (event === "teams.memberRemoved" || event === "teams.removeMember") return "teams.removeMember";
   if (event === "teams.left" || event === "teams.leave") return "teams.leave";
   return "teams.delete";
@@ -964,6 +1078,7 @@ function teamSecurityMessage(event: string, outcome: "succeeded" | "denied") {
   if (event === "teams.joinLink.revoked") return "Team Join link revoked.";
   if (event === "teams.promoted") return "Team member promoted.";
   if (event === "teams.demoted") return "Team admin demoted.";
+  if (event === "teams.applicationRolesUpdated") return "Team application roles updated.";
   if (event === "teams.memberRemoved") return "Team member removed.";
   if (event === "teams.left") return "Left Team.";
   if (event === "teams.deleted") return "Team deleted.";

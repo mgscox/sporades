@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, promoteTeamMember, removeTeamMember, revokeTeamJoinLink } from "../dist/teams-runtime.js";
+import { createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -52,16 +52,46 @@ test("Team runtime DDL runs in deterministic table order", async () => {
   assert.equal(calls.length, 1, "the second DDL statement waits for the first");
   releaseFirst();
   await created;
-  assert.equal(calls.length, 9);
+  assert.equal(calls.length, 10);
   assert.match(calls[0], /sporades_teams/);
   assert.match(calls[1], /sporades_team_memberships/);
-  assert.match(calls[2], /sporades_team_bootstrap/);
-  assert.match(calls[3], /sporades_team_membership_counters/);
-  assert.match(calls[4], /sporades_team_join_link_secrets/);
-  assert.match(calls[5], /sporades_team_join_links/);
-  assert.match(calls[6], /sporades_team_join_link_throttles/);
-  assert.match(calls[7], /sporades_team_join_link_counters/);
-  assert.match(calls[8], /sporades_team_join_link_redemptions/);
+  assert.match(calls[2], /sporades_team_membership_application_roles/);
+  assert.match(calls[3], /sporades_team_bootstrap/);
+  assert.match(calls[4], /sporades_team_membership_counters/);
+  assert.match(calls[5], /sporades_team_join_link_secrets/);
+  assert.match(calls[6], /sporades_team_join_links/);
+  assert.match(calls[7], /sporades_team_join_link_throttles/);
+  assert.match(calls[8], /sporades_team_join_link_counters/);
+  assert.match(calls[9], /sporades_team_join_link_redemptions/);
+});
+
+test("Team role declarations validate at Capsule load and retained assignments fail closed until reintroduced", async () => {
+  await withDatabase(async (databasePath) => {
+    const config = { name: "team-role-declaration", auth: { providers: { anonymous: true, email: true } } };
+    for (const appRoles of [["admin"], ["member"], ["sporades-owner"], ["Author"], ["author", "author"], Array.from({ length: 33 }, (_, index) => `role-${index}`)]) {
+      await assert.rejects(
+        () => openDevDatabase(databasePath, "", {}, config, { name: "bad-roles", teams: { appRoles }, schema: {} }),
+        (error) => error?.code === "INVALID_TEAM_APPLICATION_ROLES",
+      );
+    }
+    let database = await openDevDatabase(databasePath, "", {}, config, { name: "declared-roles", teams: { appRoles: ["author"] }, schema: {} });
+    const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "declared-owner@example.com", password: "password-123", name: "Owner" });
+    const member = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "declared-member@example.com", password: "password-123", name: "Member" });
+    const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+    await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, member.auth.userId, new Date().toISOString());
+    await updateTeamMemberApplicationRoles(database, owner.auth, team.id, member.auth.userId, { add: ["author"], remove: [] });
+    assert.deepEqual((await listTeamMembers(database, owner.auth, team.id)).members.find((entry) => entry.userId === member.auth.userId).applicationRoles, ["author"]);
+    const audit = (await database.log.tail(10)).find((event) => event.event === "teams.applicationRolesUpdated");
+    assert.deepEqual(audit.data, { operation: "teams.updateApplicationRoles", outcome: "succeeded", code: "TEAM_APPLICATION_ROLES_UPDATED", actorUserId: owner.auth.userId, teamId: team.id, targetUserId: member.auth.userId, add: ["author"], remove: [] });
+    assertNoTeamAuditLeak(audit, ["declared-owner@example.com", "declared-member@example.com", "password", "session"]);
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, config, { name: "undeclared-roles", schema: {} });
+    assert.deepEqual((await listTeamMembers(database, owner.auth, team.id)).members.find((entry) => entry.userId === member.auth.userId).applicationRoles, [], "removed declaration immediately deactivates its retained row");
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, config, { name: "restored-roles", teams: { appRoles: ["author"] }, schema: {} });
+    assert.deepEqual((await listTeamMembers(database, owner.auth, team.id)).members.find((entry) => entry.userId === member.auth.userId).applicationRoles, ["author"], "reintroduction restores the retained assignment without migration");
+    await database.close();
+  });
 });
 
 test("Join-link capacity and admin throttle admit only their final guarded slots across concurrent runtime adapters", async () => {
@@ -942,6 +972,11 @@ function assertLifecycleLockPrecedes(statements, mutableStatement, operation) {
 }
 
 function normalizedSql(statement) { return statement.replace(/["\[\]]/g, ""); }
+
+function assertNoTeamAuditLeak(value, forbidden) {
+  const serialized = JSON.stringify(value);
+  for (const item of forbidden) assert.doesNotMatch(serialized, new RegExp(globalThis.String(item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+}
 
 async function withDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-runtime-"));

@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Join a Team through a validated link.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Capsule server definition accepts a bounded declaration of application Team-role identifiers without requiring Teams to be explicitly enabled.
 - [ ] Role identifiers use a documented stable lowercase grammar and reject malformed values, duplicates, excessive counts, Sporades-reserved prefixes, `admin`, and `member` at Capsule load.

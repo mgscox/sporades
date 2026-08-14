@@ -72,6 +72,7 @@ import { auth, createHooks, createInfernoAdapters, createLitControllers, createS
 
 const app = capsule({
   name: "typed island",
+  teams: { appRoles: ["author", "reviewer"] },
   journey: { enabled: true, ttlSeconds: 30, capture: { navigation: true, focus: false } },
   emailEvents: emailEvent(async (ctx, event) => {
     ctx.log.info("email event", event.provider, event.kind, event.providerEventId, event.occurredAt);
@@ -176,6 +177,7 @@ const app = capsule({
       const created = await ctx.teams.create("Typed Team");
       const renamed = await ctx.teams.rename(created.team.id, "Renamed Typed Team");
       const members = await ctx.teams.listMembers(renamed.team.id);
+      const roleUpdate = await ctx.teams.updateApplicationRoles(renamed.team.id, members.members[0]?.userId ?? "", { add: ["author"], remove: [] });
       const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
       const joined = await ctx.teams.join("opaque-join-code");
       const promoted = await ctx.teams.promote(renamed.team.id, members.members[0]?.userId ?? "");
@@ -183,7 +185,7 @@ const app = capsule({
       const removed = await ctx.teams.removeMember(renamed.team.id, members.members[0]?.userId ?? "");
       const left = await ctx.teams.leave(renamed.team.id);
       const deleted = await ctx.teams.delete(renamed.team.id);
-      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
+      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, roleUpdate.updated ? "roles" : "", promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({

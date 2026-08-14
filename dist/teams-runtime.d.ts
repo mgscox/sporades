@@ -6,10 +6,12 @@ export declare const TEAM_JOIN_LINK_MIN_TTL_SECONDS: number;
 export declare const TEAM_JOIN_LINK_MAX_TTL_SECONDS: number;
 export declare const TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
 export declare const TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
+export declare const TEAM_APPLICATION_ROLE_MAX = 32;
+export declare const TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
 export declare function createTeamTables(adapter: LooseRecord): any;
 export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseRecord, contextGetter?: () => LooseRecord): {
     list(): Promise<{
-        teams: any;
+        teams: any[];
     }>;
     create(name: any): Promise<{
         team: any;
@@ -18,6 +20,9 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         team: any;
     }>;
     listMembers(teamId: any): Promise<any>;
+    updateApplicationRoles(teamId: any, userId: any, changes: any): Promise<{
+        updated: boolean;
+    }>;
     createJoinLink(teamId: any, email: any, options?: LooseRecord): Promise<{
         id: any;
         link: string;
@@ -67,6 +72,12 @@ export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     origin: string;
 };
 export declare function normalizeTeamJoinPath(value: any): string | null;
+/**
+ * Validate the Capsule-owned vocabulary once at load time. These identifiers
+ * are application authority labels, not runtime identities: management roles
+ * and the entire Sporades namespace remain unavailable to Capsules.
+ */
+export declare function normalizeTeamApplicationRoles(value: any): string[];
 export declare function createTeamJoinLink(database: LooseRecord, auth: LooseRecord, teamId: any, email: any, options?: LooseRecord, eventContext?: LooseRecord): Promise<{
     id: any;
     link: string;
@@ -96,13 +107,17 @@ export declare function joinCurrentUserTeam(database: LooseRecord, auth: LooseRe
     team: any;
 }>;
 export declare function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord): Promise<{
-    teams: any;
+    teams: any[];
 }>;
 export declare function createAdditionalTeam(database: LooseRecord, auth: LooseRecord, name: any, eventContext?: LooseRecord): Promise<{
     team: any;
 }>;
 export declare function renameCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, name: any, eventContext?: LooseRecord): Promise<{
     team: any;
+}>;
+/** Atomically reconcile one exact membership's Capsule-declared role set. */
+export declare function updateTeamMemberApplicationRoles(database: LooseRecord, auth: LooseRecord, teamId: any, userId: any, changes: any, eventContext?: LooseRecord): Promise<{
+    updated: boolean;
 }>;
 /**
  * Team-admin lifecycle mutations deliberately re-read both the actor and

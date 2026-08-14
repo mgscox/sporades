@@ -332,6 +332,8 @@ export type TeamJoinLink = { id: string; email: string; createdAt: string; expir
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
 export type TeamJoinLinkValidation = { valid: boolean };
+/** Atomic membership-scoped application-role reconciliation. Management role is never included. */
+export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
@@ -340,6 +342,8 @@ export type CurrentUserTeamsApi = {
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
   listMembers(teamId: string): Promise<{ members: TeamMemberSummary[] }>;
+  /** Atomically adds and removes declared application roles for a member of one administered Team. */
+  updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<{ updated: true }>;
   /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
   createJoinLink(teamId: string, email: string, options?: { ttlSeconds?: number }): Promise<{ id: string; link: string; createdAt: string; expiresAt: string }>;
   /** Lists active Join-link management metadata without recovering a capability. */
@@ -745,6 +749,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
+  /** Bounded Capsule-specific role vocabulary for Team memberships. `admin`, `member`, and `sporades-*` remain runtime-reserved. */
+  teams?: { appRoles?: readonly string[] };
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];
