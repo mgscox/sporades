@@ -182,7 +182,9 @@ const MIGRATED_RUNTIME_MODULES = [
   // normalization and dispatch. Private sentinels keep both visible here.
   { file: "email-events-config.js", atLeast: 2, sentinel: "sameOriginWebhookPath" },
   { file: "email-events-runtime.js", atLeast: 7, sentinel: "normalizeMailjetEvent" },
-  { file: "mail-config-validation.js", atLeast: 3, sentinel: "captureMailConfigData" },
+  // This validation module intentionally has three cohesive declarations, so
+  // its strict-greater-than census floor is two.
+  { file: "mail-config-validation.js", atLeast: 2, sentinel: "captureMailConfigData" },
   // Batch 3, and the largest subject added here: 104 functions, 51 of them private. The sentinel is
   // private for the third time running, and this one is worth naming. `passwordResetCodeParts` mints
   // the reset selector and verifier and is exported from nothing and registered in nothing — under

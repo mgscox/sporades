@@ -8889,7 +8889,7 @@ async function releaseTeamMembershipSlot(tx, userId) {
 async function pruneExpiredTeamJoinLinks(tx, now) {
   const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now, TEAM_JOIN_LINK_PRUNE_LIMIT);
   for (const row of rows) {
-    const deleted = await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [expiresAt] <= ?")).run(row.id, now);
+    const deleted = await deleteExpiredTeamJoinLink(tx, String(row.id), String(row.teamId), now);
     if (Number(deleted?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
   }
 }
@@ -8919,15 +8919,21 @@ async function reconcileTeamJoinLinkCapacity(tx, teamId, now) {
   const expired = await tx.prepare(tx.dialect.sql(
     "SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] <= ? LIMIT ?"
   )).all(teamId, now, TEAM_JOIN_LINK_PRUNE_LIMIT);
-  for (const row of expired) await tx.prepare(tx.dialect.sql(
-    "DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [teamId] = ? AND [expiresAt] <= ?"
-  )).run(row.id, teamId, now);
+  for (const row of expired) await deleteExpiredTeamJoinLink(tx, String(row.id), teamId, now);
   await tx.prepare(tx.dialect.sql(
     "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
   )).run(teamId, teamId, now);
   await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_team_join_link_counters] SET [activeCount] = (SELECT COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL) WHERE [teamId] = ?"
   )).run(teamId, now, teamId);
+}
+async function deleteExpiredTeamJoinLink(tx, joinLinkId, teamId, now) {
+  await tx.prepare(tx.dialect.sql(
+    "DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ? AND [teamId] = ?"
+  )).run(joinLinkId, teamId);
+  return tx.prepare(tx.dialect.sql(
+    "DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [teamId] = ? AND [expiresAt] <= ?"
+  )).run(joinLinkId, teamId, now);
 }
 async function releaseTeamJoinLinkCapacity(tx, teamId) {
   await tx.prepare(tx.dialect.sql(
@@ -23536,7 +23542,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.7.2";
+var CLI_VERSION = "0.8.1";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
@@ -25590,7 +25596,7 @@ async function startDevSession(options) {
   const shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    process.stdout.write(`Stopping Sporades dev session...
+    if (!options.json) process.stdout.write(`Stopping Sporades dev session...
 `);
     for (const watcher of watchers) {
       watcher.close();

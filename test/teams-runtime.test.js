@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createAdditionalTeam, createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
+import { createAdditionalTeam, createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -343,11 +343,31 @@ test("target-Team expiry reconciliation frees capacity even when the global boun
       for (let index = 0; index < 20; index += 1) {
         await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)")).run(`target-expired-${index}`, `target-selector-${index}`, "hash", team.id, `target-${index}@example.com`, linked.auth.userId, expiredAt, expiredAt);
       }
+      await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)")).run("target-expired-0", team.id, linked.auth.userId, expiredAt);
       await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) VALUES (?, ?)")).run(team.id, 20);
 
       const created = await createTeamJoinLink(database, linked.auth, team.id, "live@example.com", { ttlSeconds: 300 });
       assert.ok(created.link, "target expiration must not leave its capacity counter pinned at 20");
       assert.equal(database.adapter.prepare(sql("SELECT [activeCount] FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).get(team.id).activeCount, 1);
+      assert.equal(database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_redemptions] WHERE [teamId] = ?")).get(team.id).count, 0, "target reconciliation removes expired redemption ownership with its grants");
+    } finally { await database.close(); }
+  });
+});
+
+test("global Join-link expiry pruning removes redemption ownership with its grant", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "join-global-prune-redemptions", auth: { providers: { anonymous: true, email: true } } }, { name: "join-global-prune-redemptions", schema: {} });
+    try {
+      const linked = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "global-prune-owner@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, linked.auth)).teams[0];
+      const sql = database.adapter.dialect.sql;
+      const expiredAt = new Date(Date.now() - 60_000).toISOString();
+      await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")).run("expired-redeemed-link", "expired-redeemed-selector", "hash", team.id, "recipient@example.com", linked.auth.userId, expiredAt, expiredAt, expiredAt);
+      await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)")).run("expired-redeemed-link", team.id, linked.auth.userId, expiredAt);
+
+      assert.deepEqual(await listTeamJoinLinks(database, linked.auth, team.id), { links: [] });
+      assert.equal(database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_join_links] WHERE [id] = ?")).get("expired-redeemed-link").count, 0);
+      assert.equal(database.adapter.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).get("expired-redeemed-link").count, 0);
     } finally { await database.close(); }
   });
 });

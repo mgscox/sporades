@@ -1,8 +1,9 @@
 # Changes
 
-## Unreleased - 2026-08-13
+## 0.8.1 - 2026-08-14
 
-Changes since v0.7.1.
+Corrects the incomplete `0.8.0` package release with the merged `main` runtime,
+generated artifacts, and documentation.
 
 ### 📝 Documentation
 

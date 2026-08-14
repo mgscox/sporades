@@ -418,7 +418,14 @@ test("Facebook abort deadlines terminate stalled exchange and Graph reads", asyn
     process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK = "1";
     process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS = "10";
     const stall = (_url, options) => new Promise((resolve, reject) => {
-      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      // AbortSignal.timeout() intentionally uses an unref'd timer. Keep this
+      // synthetic transport alive until it observes that deadline, just as a
+      // real socket would.
+      const keepAlive = setTimeout(() => {}, 100);
+      options.signal.addEventListener("abort", () => {
+        clearTimeout(keepAlive);
+        reject(options.signal.reason);
+      }, { once: true });
     });
     try {
       globalThis.fetch = stall;

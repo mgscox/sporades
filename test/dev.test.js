@@ -33,6 +33,18 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_PROCESS_EVENT_TIMEOUT_MS = 10000;
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
+const TEAM_RUNTIME_TABLES = [
+  "sporades_team_bootstrap",
+  "sporades_team_join_link_counters",
+  "sporades_team_join_link_redemptions",
+  "sporades_team_join_link_secrets",
+  "sporades_team_join_link_throttles",
+  "sporades_team_join_links",
+  "sporades_team_membership_application_roles",
+  "sporades_team_membership_counters",
+  "sporades_team_memberships",
+  "sporades_teams",
+];
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-"));
@@ -6104,6 +6116,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
         "sporades_file_uploads",
         "sporades_files",
         "sporades_jobs",
+        ...TEAM_RUNTIME_TABLES,
         "sporades_user_preferences",
         "todos",
       ]);
@@ -9471,6 +9484,7 @@ test("sporades db list returns tables from the running dev session database", as
             "sporades_file_uploads",
             "sporades_files",
             "sporades_jobs",
+            ...TEAM_RUNTIME_TABLES,
             "sporades_user_preferences",
             "todos",
           ],
@@ -9504,7 +9518,10 @@ test("sporades db dump returns structured table data from the running dev sessio
 
       const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
       assert.equal(dumpResult.code, 0, dumpResult.stderr);
-      assert.deepEqual(JSON.parse(dumpResult.stdout), {
+      const dump = JSON.parse(dumpResult.stdout);
+      assert.deepEqual(dump.data.tables.filter((table) => TEAM_RUNTIME_TABLES.includes(table.name)).map((table) => table.name), TEAM_RUNTIME_TABLES);
+      dump.data.tables = dump.data.tables.filter((table) => !TEAM_RUNTIME_TABLES.includes(table.name));
+      assert.deepEqual(dump, {
         ok: true,
         data: {
           tables: [
@@ -9683,6 +9700,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades_jobs" },
             { name: "sporades_schedule_occurrences" },
             { name: "sporades_schedules" },
+            ...TEAM_RUNTIME_TABLES.map((name) => ({ name })),
             { name: "sporades_user_preferences" },
             { name: "todos" },
           ],
