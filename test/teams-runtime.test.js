@@ -585,6 +585,22 @@ test("Join redemption revalidates its capability and identity, commits one membe
       });
       await assert.rejects(() => joinCurrentUserTeam(database, sameEmailUser.auth, code), (error) => error?.code === "INVALID_JOIN_LINK");
 
+      const race = await createTeamJoinLink(database, owner.auth, team.id, "recipient@example.com", { ttlSeconds: 300 });
+      const raceCode = new URL(race.link).searchParams.get("code");
+      const raceResults = await Promise.allSettled([
+        joinCurrentUserTeam(database, recipient.auth, raceCode),
+        joinCurrentUserTeam(database, sameEmailUser.auth, raceCode),
+      ]);
+      assert.equal(raceResults.filter((result) => result.status === "fulfilled").length, 1, "same-email contenders consume at most one capability");
+      assert.equal(raceResults.filter((result) => result.status === "rejected").length, 1);
+
+      const oauthGuest = await resolveAnonymousSession(database, null);
+      const oauth = await linkProviderIdentity(database, oauthGuest, "google", {
+        subject: "join-oauth-subject", email: "oauth-recipient@example.com", displayName: "OAuth Recipient",
+      });
+      const oauthLink = await createTeamJoinLink(database, owner.auth, team.id, "oauth-recipient@example.com", { ttlSeconds: 300 });
+      assert.equal((await joinCurrentUserTeam(database, oauth.auth, new URL(oauthLink.link).searchParams.get("code"))).team.role, "member", "an OAuth-attached email redeems normally");
+
       const anonymous = await resolveAnonymousSession(database, null);
       const unused = await createTeamJoinLink(database, owner.auth, team.id, "anonymous@example.com", { ttlSeconds: 300 });
       const unusedCode = new URL(unused.link).searchParams.get("code");
@@ -594,6 +610,74 @@ test("Join redemption revalidates its capability and identity, commits one membe
       await database.close();
     }
   });
+});
+
+test("Join redemption bootstraps legacy users only after validation and records redacted outcomes", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-legacy-join", auth: { providers: { anonymous: true, email: true, google: true } },
+    }, { name: "teams-legacy-join", schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const ownerSession = await resolveAnonymousSession(database, null);
+      const owner = await signUpWithEmail(database, ownerSession, "email", {
+        email: "legacy-owner@example.com", password: "password-123", name: "Owner",
+      });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const now = new Date().toISOString();
+      const legacy = { userId: "legacy-join-user", displayName: "Legacy", email: "legacy@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "google" };
+      await database.adapter.withTransaction(async (tx) => {
+        await tx.insertAuthUser({ id: legacy.userId, createdAt: now, displayName: legacy.displayName, email: legacy.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: legacy.provider });
+        await tx.insertAuthIdentity({ id: "legacy-join-identity", userId: legacy.userId, provider: "google", subject: "legacy-join-subject", email: legacy.email, displayName: legacy.displayName, picture: null, createdAt: now, updatedAt: now });
+      });
+      assert.equal(teamCountForUser(database, legacy.userId), 0);
+      await assert.rejects(() => joinCurrentUserTeam(database, legacy, "not-a-link"), (error) => error?.code === "INVALID_JOIN_LINK");
+      assert.equal(teamCountForUser(database, legacy.userId), 0, "invalid redemption must not bootstrap a legacy account");
+
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, legacy.email, { ttlSeconds: 300 });
+      const code = new URL(issued.link).searchParams.get("code");
+      const joined = await joinCurrentUserTeam(database, legacy, code);
+      assert.equal(joined.team.role, "member");
+      assert.equal(teamCountForUser(database, legacy.userId), 1, "valid redemption atomically creates the initial singleton Team");
+      assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [userId] = ?").get(legacy.userId).count, 2);
+      const audit = (await database.log.tail(20)).find((event) => event.event === "teams.joined");
+      assert.deepEqual(audit.data, { operation: "teams.join", outcome: "succeeded", code: "TEAM_JOINED", actorUserId: legacy.userId, teamId: team.id });
+      assert.doesNotMatch(JSON.stringify(audit), /legacy@example\.com|v1\./i);
+
+      const rollback = await createTeamJoinLink(database, owner.auth, team.id, "rollback@example.com", { ttlSeconds: 300 });
+      const rollbackCode = new URL(rollback.link).searchParams.get("code");
+      const rollbackSession = await resolveAnonymousSession(database, null);
+      const rollbackUser = await signUpWithEmail(database, rollbackSession, "email", { email: "rollback@example.com", password: "password-123", name: "Rollback" });
+      database.adapter = failTeamBootstrapMembershipInsert(baseAdapter, new Error("join rollback"));
+      await assert.rejects(() => joinCurrentUserTeam(database, rollbackUser.auth, rollbackCode), /join rollback/);
+      database.adapter = baseAdapter;
+      assert.equal(baseAdapter.prepare("SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [id] = ?").get(rollback.id).consumedAt, null, "failed membership insertion rolls back consumption");
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
+test("a committed Join redemption retains its same-user retry outcome after runtime restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-restart-"));
+  const databasePath = path.join(dir, "data.db");
+  const config = { name: "teams-join-restart", auth: { providers: { anonymous: true, email: true } } };
+  let database = await openDevDatabase(databasePath, "", {}, config, { name: "teams-join-restart", schema: {} });
+  try {
+    const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "restart-owner@example.com", password: "password-123", name: "Owner" });
+    const recipient = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "restart-recipient@example.com", password: "password-123", name: "Recipient" });
+    const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+    const issued = await createTeamJoinLink(database, owner.auth, team.id, "restart-recipient@example.com", { ttlSeconds: 300 });
+    const code = new URL(issued.link).searchParams.get("code");
+    const joined = await joinCurrentUserTeam(database, recipient.auth, code);
+    await database.close();
+    database = await openDevDatabase(databasePath, "", {}, config, { name: "teams-join-restart", schema: {} });
+    assert.deepEqual(await joinCurrentUserTeam(database, recipient.auth, code), joined);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Privileged callbacks do not inherit current-user Teams", async () => {

@@ -313,6 +313,11 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
       if (!attachedEmails.some((identity: LooseRecord) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) throw invalidTeamJoinLink();
 
+      // Legacy linked accounts have no bootstrap record yet. Do this only
+      // after every non-mutating Join capability and identity check succeeds;
+      // it then commits or rolls back with the redemption as one unit.
+      await ensureInitialTeamOnAdapter(tx, auth.userId);
+
       const redemption = await tx.prepare(sql(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?",
       )).get(row.id);

@@ -7344,6 +7344,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       )).all(auth.userId, auth.userId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
       if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) throw invalidTeamJoinLink();
+      await ensureInitialTeamOnAdapter(tx, auth.userId);
       const redemption = await tx.prepare(sql(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
       )).get(row.id);
