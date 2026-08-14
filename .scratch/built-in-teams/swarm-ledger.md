@@ -1,0 +1,32 @@
+# Built-in Teams swarm ledger
+
+**Coordinator base:** `34e6a0cb5813ddac91678f0e6bd9f909962ab7a2` (`codex/team-feature-status`)
+
+| Issue | State | Blockers | Base SHA | Worker / reviewer | Worker SHA | Verdict | Merged SHA | Tests | Cleanup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 01 — Initial singleton Team | done | None | `34e6a0c` | `codex/swarm-teams-01` / final review `ACCEPT` | `7538f67` | ACCEPT | `e6dddd7` | Integration: build/typecheck; Teams 8/8; ACL/type/docs 58/58; bundle 15 pass/1 configured Postgres skip | worker worktree retained |
+| 02 — Bootstrap during account linking | ready | 01 merged | — | — | — | — | — | — |
+| 03 — Create and rename Teams | ready | 01 merged | — | — | — | — | — | — |
+| 04 — List Team memberships | blocked | 03 | — | — | — | — | — | — | — |
+| 05 — Email-bound Join links | blocked | 03 | — | — | — | — | — | — | — |
+| 06 — Validate Join links | blocked | 02, 05 | — | — | — | — | — | — | — |
+| 07 — Join through link | blocked | 04, 06 | — | — | — | — | — | — | — |
+| 08 — Team-admin lifecycle | blocked | 07 | — | — | — | — | — | — | — |
+| 09 — Membership application roles | blocked | 07 | — | — | — | — | — | — | — |
+| 10 — Team ACL | blocked | 09 | — | — | — | — | — | — | — |
+| 11 — Complete Teams contract | blocked | 08, 10 | — | — | — | — | — | — | — |
+
+## Preflight
+
+- 2026-08-14: graph validated against `34e6a0c`; all 11 tickets and declared blocker edges are present.
+- 2026-08-14: coordinator worktree clean before ledger creation; no upstream is configured for the feature branch.
+- 2026-08-14: dependencies installed with `npm ci`; `npm run typecheck` passed.
+- 2026-08-14: broad `npm test` reached test execution but has baseline Node 24 native assertions in database-adapter subprocesses, including the app-table, auth-storage, file-metadata, generic conformance, and adapter-engine test entries. Those need live revalidation under supported Node 22 before they can be treated as source regressions.
+- 2026-08-14: independent review of `34e6a0c...c843bd2` returned `REQUEST_CHANGES`: Capsule schemas could adopt runtime Team table names; simultaneous SQLite bootstrap calls raced at transaction start; and a privileged context retained a caller-scoped `teams` closure.
+- 2026-08-14: fresh re-review of `34e6a0c...3929d60` returned `REQUEST_CHANGES`: bootstrap coalescing was per user rather than per SQLite runtime connection, Team tables were missing from Postgres conformance cleanup, and the required no-Team Capsule compatibility regression was absent.
+- 2026-08-14: fresh re-review of `34e6a0c...572cff6` returned `REQUEST_CHANGES`: the Team namespace guard was case-sensitive and incomplete on SQLite, Team storage DDL was concurrent, and generated SDK documentation was stale.
+- 2026-08-14: fresh re-review of `34e6a0c...ce0ef33` returned `REQUEST_CHANGES`: `docs/ROADMAP.md` still described Teams as an entirely future candidate rather than separating the delivered listing foundation from deferred administration, Join links, roles, and ACL work.
+- 2026-08-14: fresh re-review of `34e6a0c...117f852` returned `REQUEST_CHANGES`: the separate Capsule-roles roadmap candidate was not explicitly reconciled with the approved membership-scoped application-role model.
+- 2026-08-14: fresh re-review of `34e6a0c...7023850` found canonical generic-role documentation drift and missing behavioral deployed-bundle parity coverage. Its auth-link bootstrap finding is deliberately deferred: it is the approved scope of blocked Ticket 02, not Ticket 01's lazy bootstrap foundation.
+- 2026-08-14: fresh re-review of `34e6a0c...13bc1c4` returned `REQUEST_CHANGES`: ACL context spread exposed mutable `ctx.teams`, allowing lazy Team bootstrap from ACL evaluation before Ticket 10's constrained read-only helpers exist.
+- 2026-08-14: final review of `34e6a0c...7538f67` returned `ACCEPT`. The coordinator integrated the reviewed eight-commit series as `17e2c7a`, `456915d`, `1bb83d2`, `9dbf553`, `292845e`, `da01fbd`, `4f9cb29`, and `e6dddd7`; integration checks passed.

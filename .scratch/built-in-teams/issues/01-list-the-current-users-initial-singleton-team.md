@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A linked user with no Team bootstrap history receives exactly one initial Team and one `admin` membership when first using the Team interface.
 - [ ] Initial-Team creation and creator-admin membership commit atomically and are idempotent across repeated and concurrent calls.
