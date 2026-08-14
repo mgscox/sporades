@@ -955,6 +955,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       provider: "privileged-server-role",
     },
   };
+  // Teams are current-user authority, never a Privileged server capability.
+  delete privilegedContext.teams;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -1134,6 +1136,7 @@ export function schemaFromCapsuleDefinition(definition: any) {
 }
 
 function schemaTableFromCapsuleTable(name: string, table: any) {
+  assertNotReservedTeamTableName(name);
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
     throw commandError(
       `Invalid Capsule table: ${name}`,
@@ -1146,6 +1149,16 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
     acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
   };
+}
+
+function assertNotReservedTeamTableName(name: string) {
+  if (name === "sporades_teams" || name.startsWith("sporades_team_")) {
+    throw commandError(
+      `Reserved runtime table name: ${name}`,
+      "Choose a Capsule table name outside the sporades_team_ runtime namespace.",
+      "RESERVED_TABLE_NAME",
+    );
+  }
 }
 function schemaFieldFromCapsuleField(name: string, field: any) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
@@ -1219,8 +1232,10 @@ function extractSchema(serverSource: string) {
     }
     const argsSource = serverSource.slice(tablePattern.lastIndex, argsEnd).trim();
     const fieldsSource = argsSource.startsWith("{") && argsSource.endsWith("}") ? argsSource.slice(1, -1) : argsSource;
+    const name = match[1];
+    assertNotReservedTeamTableName(name);
     tables.push({
-      name: match[1],
+      name,
       fields: extractFields(fieldsSource),
     });
     tablePattern.lastIndex = argsEnd + 1;

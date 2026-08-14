@@ -182,6 +182,8 @@ const app = capsule({
         metadata: { reason: "type-test" },
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
+        // @ts-expect-error Privileged server role must not inherit a caller's Team capability.
+        privilegedCtx.teams.list();
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
         await privilegedCtx.mail.send({

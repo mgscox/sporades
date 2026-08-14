@@ -9786,7 +9786,17 @@ async function ensureInitialTeam(database, auth) {
   if (database.__transactionActive) {
     return ensureInitialTeamOnAdapter(database.adapter, auth);
   }
-  return database.adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+  const root = database.__rootDatabase ?? database;
+  root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
+  const running = root.__teamBootstrapByUser.get(auth.userId);
+  if (running) return running;
+  const work = database.adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, auth));
+  root.__teamBootstrapByUser.set(auth.userId, work);
+  try {
+    return await work;
+  } finally {
+    if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+  }
 }
 async function ensureInitialTeamOnAdapter(tx, auth) {
   const sql = tx.dialect.sql;
@@ -13851,6 +13861,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
       provider: "privileged-server-role"
     }
   };
+  delete privilegedContext.teams;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -13994,6 +14005,7 @@ function schemaFromCapsuleDefinition(definition) {
   };
 }
 function schemaTableFromCapsuleTable(name, table) {
+  assertNotReservedTeamTableName(name);
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
     throw commandError2(
       `Invalid Capsule table: ${name}`,
@@ -14005,6 +14017,15 @@ function schemaTableFromCapsuleTable(name, table) {
     acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field))
   };
+}
+function assertNotReservedTeamTableName(name) {
+  if (name === "sporades_teams" || name.startsWith("sporades_team_")) {
+    throw commandError2(
+      `Reserved runtime table name: ${name}`,
+      "Choose a Capsule table name outside the sporades_team_ runtime namespace.",
+      "RESERVED_TABLE_NAME"
+    );
+  }
 }
 function schemaFieldFromCapsuleField(name, field) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
@@ -14071,8 +14092,10 @@ function extractSchema(serverSource) {
     }
     const argsSource = serverSource.slice(tablePattern.lastIndex, argsEnd).trim();
     const fieldsSource = argsSource.startsWith("{") && argsSource.endsWith("}") ? argsSource.slice(1, -1) : argsSource;
+    const name = match[1];
+    assertNotReservedTeamTableName(name);
     tables.push({
-      name: match[1],
+      name,
       fields: extractFields(fieldsSource)
     });
     tablePattern.lastIndex = argsEnd + 1;
