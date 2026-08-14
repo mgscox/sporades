@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createWebSocketHub, openDevDatabase, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { job, mutation } from "../dist/server.js";
+import { createWebSocketHub, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { endpoint, job, mutation } from "../dist/server.js";
 import { createAdditionalTeam } from "../dist/teams-runtime.js";
 
 const capsule = {
@@ -26,6 +26,12 @@ const capsule = {
       await ctx.jobs.enqueue("queued", {}, { idempotencyKey: "teams-audit-flush" });
       return created;
     }),
+  },
+  endpoints: {
+    renameAdditionalTeam: endpoint({ method: "POST", path: "/teams/rename" }, async (ctx) => ({
+      status: 200,
+      body: await ctx.teams.rename(ctx.request.body.teamId, ctx.request.body.name),
+    })),
   },
   jobs: { queued: job(() => null) },
 };
@@ -131,7 +137,9 @@ test("linked users create and rename explicit additional Teams through browser a
     const listed = await send(owner, { id: "additional-list", type: "teams.list" });
     assert.equal(listed.error, null, JSON.stringify(listed.error));
     assert.equal(listed.data.teams.length, 3);
-    assert.deepEqual(listed.data.teams.map((team) => team.id), [listed.data.teams[0].id, created.data.team.id, eightyBytes.data.team.id]);
+    const singleton = listed.data.teams.find((team) => team.name === "My Team");
+    assert.ok(singleton);
+    assert.deepEqual(new Set(listed.data.teams.map((team) => team.id)), new Set([singleton.id, created.data.team.id, eightyBytes.data.team.id]));
 
     const trustedCreate = await runMutation(runtime.database, signedUp.data.auth, "createAdditionalTeam", ["Trusted Team"]);
     assert.equal(trustedCreate.error, null, JSON.stringify(trustedCreate.error));
@@ -199,6 +207,94 @@ test("linked users create and rename explicit additional Teams through browser a
   } finally {
     owner?.close(); stranger?.close();
     await runtime?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("trusted endpoint and app-message Team rename denials emit one redacted audit each", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-trusted-denials-"));
+  const databasePath = path.join(dir, "data.db");
+  const runtime = await startRuntime(databasePath);
+  let owner;
+  let stranger;
+  try {
+    owner = await runtime.open();
+    const ownerSignUp = await send(owner, {
+      id: "trusted-denial-owner-signup",
+      type: "auth.signUp",
+      provider: "email",
+      credentials: { email: "owner-private@example.com", password: "password-123", name: "Owner Private" },
+    });
+    assert.equal(ownerSignUp.error, null, JSON.stringify(ownerSignUp.error));
+    const created = await send(owner, { id: "trusted-denial-create", type: "teams.create", name: "Top Secret Team" });
+    assert.equal(created.error, null, JSON.stringify(created.error));
+
+    stranger = await runtime.open();
+    const strangerSignUp = await send(stranger, {
+      id: "trusted-denial-stranger-signup",
+      type: "auth.signUp",
+      provider: "email",
+      credentials: { email: "stranger-private@example.com", password: "password-123", name: "Stranger Private" },
+    });
+    assert.equal(strangerSignUp.error, null, JSON.stringify(strangerSignUp.error));
+    runtime.database.messages = [{
+      name: "renameAdditionalTeam",
+      handlerSource: "(ctx, data) => ctx.teams.rename(data.teamId, data.name)",
+    }];
+
+    const beforeEndpoint = await deniedRenameAudits(runtime.database);
+    const endpointResponse = await fetch(`${runtime.baseUrl}/teams/rename`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sporades-session-token": strangerSignUp.data.sessionToken,
+      },
+      body: JSON.stringify({ teamId: created.data.team.id, name: "Attempted endpoint rename" }),
+    });
+    assert.equal(endpointResponse.status, 500, "endpoint handler denials follow the existing generic endpoint-error status policy");
+    const endpointDenied = await endpointResponse.json();
+    assert.deepEqual(endpointDenied.error, {
+      code: "DENIED",
+      message: "Team operation denied.",
+      hint: "Sign in with a Team administrator account and retry.",
+    });
+    assertNoTeamLeak(endpointDenied, [
+      "Top Secret Team", "Attempted endpoint rename", ownerSignUp.data.sessionToken, strangerSignUp.data.sessionToken,
+      "owner-private@example.com", "stranger-private@example.com", "provider",
+    ]);
+    const endpointAudits = await deniedRenameAudits(runtime.database);
+    assert.equal(endpointAudits.length, beforeEndpoint.length + 1);
+    assertRedactedDeniedRenameAudit(endpointAudits.at(-1), created.data.team.id, strangerSignUp.data.auth.userId, [
+      "Top Secret Team", "Attempted endpoint rename", ownerSignUp.data.sessionToken, strangerSignUp.data.sessionToken,
+      "owner-private@example.com", "stranger-private@example.com", "provider",
+    ]);
+
+    const beforeMessage = await deniedRenameAudits(runtime.database);
+    const messageDenied = await send(stranger, {
+      id: "trusted-denial-message",
+      type: "app.send",
+      message: "renameAdditionalTeam",
+      data: { teamId: created.data.team.id, name: "Attempted message rename" },
+    });
+    assert.equal(messageDenied.type, "app.result");
+    assert.equal(messageDenied.error.code, "DENIED", JSON.stringify(messageDenied));
+    assert.equal(messageDenied.error.message, "Team operation denied.");
+    assertNoTeamLeak(messageDenied, [
+      "Top Secret Team", "Attempted message rename", ownerSignUp.data.sessionToken, strangerSignUp.data.sessionToken,
+      "owner-private@example.com", "stranger-private@example.com", "provider",
+    ]);
+    const messageAudits = await deniedRenameAudits(runtime.database);
+    assert.equal(messageAudits.length, beforeMessage.length + 1);
+    assertRedactedDeniedRenameAudit(messageAudits.at(-1), created.data.team.id, strangerSignUp.data.auth.userId, [
+      "Top Secret Team", "Attempted message rename", ownerSignUp.data.sessionToken, strangerSignUp.data.sessionToken,
+      "owner-private@example.com", "stranger-private@example.com", "provider",
+    ]);
+
+    const persisted = runtime.database.adapter.prepare("SELECT [name] FROM [sporades_teams] WHERE [id] = ?").get(created.data.team.id);
+    assert.equal(persisted.name, "Top Secret Team", "denials must leave the existing Team unchanged");
+  } finally {
+    owner?.close(); stranger?.close();
+    await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -294,11 +390,18 @@ async function startRuntime(databasePath) {
   }, capsule);
   const hub = createWebSocketHub(() => database);
   const server = createServer();
+  server.on("request", async (request, response) => {
+    if (!await routeEndpoint(database, request, response)) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+    }
+  });
   server.on("upgrade", (request, socket) => hub.accept(request, socket));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   return {
     database,
+    baseUrl: `http://127.0.0.1:${port}`,
     open: () => new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?connectionToken=${hub.createConnectionToken()}`);
       ws.addEventListener("open", () => resolve(ws), { once: true });
@@ -310,6 +413,30 @@ async function startRuntime(databasePath) {
       await database.close();
     },
   };
+}
+
+async function deniedRenameAudits(database) {
+  return (await database.log.tail(100)).filter((event) => event.event === "teams.rename" && event.data.outcome === "denied");
+}
+
+function assertRedactedDeniedRenameAudit(event, teamId, actorUserId, forbidden) {
+  assert.deepEqual(event.data, {
+    operation: "teams.rename",
+    outcome: "denied",
+    code: "DENIED",
+    actorUserId,
+    teamId,
+  });
+  assertNoTeamLeak(event, forbidden);
+}
+
+function assertNoTeamLeak(value, forbidden) {
+  const serialized = JSON.stringify(value);
+  for (const item of forbidden) assert.doesNotMatch(serialized, new RegExp(escapeRegExp(item), "i"));
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function send(ws, message) {
@@ -341,7 +468,7 @@ function failPendingJobInsert(adapter) {
       return (statement) => {
         const prepared = value.call(target, statement);
         const text = String(statement?.text ?? statement);
-        if (!text.includes("INSERT INTO [sporades_jobs]")) return prepared;
+        if (!text.includes("INSERT INTO") || !text.includes("sporades_jobs")) return prepared;
         return { ...prepared, run() { throw new Error("pending Job insert failed"); } };
       };
     },
