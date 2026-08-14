@@ -170,6 +170,9 @@ export async function createTeamJoinLink(database: LooseRecord, auth: LooseRecor
     const normalizedEmail = normalizeTeamJoinEmail(email);
     const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
     created = await withTeamTransaction(database, async (tx) => {
+      // Deletion uses the same Team row lock. Take it before authorization so
+      // a stale admin cannot issue state for a Team that has just gone away.
+      await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
       const now = database.clock?.now?.() ?? new Date();
       const nowIso = now.toISOString();
@@ -219,6 +222,10 @@ export async function revokeTeamJoinLink(database: LooseRecord, auth: LooseRecor
     throw teamDenied();
   }
   await withTeamTransaction(database, async (tx) => {
+    // Keep revocation linearized with Team deletion and re-check authority
+    // after the lock: a previously-admin caller may have been demoted while
+    // waiting for another lifecycle operation to commit.
+    await lockTeamLifecycle(tx, teamId);
     if (!await currentTeamAdmin(tx, teamId, auth.userId)) {
       emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, teamId, "denied", "DENIED");
       throw teamDenied();
@@ -307,7 +314,16 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
     if (!parsed) throw invalidTeamJoinLink();
     joined = await withTeamTransaction(database, async (tx) => {
       const sql = tx.dialect.sql;
-      const row = await tx.prepare(sql(
+      let row = await tx.prepare(sql(
+        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+      )).get(parsed.selector);
+      // A Join link identifies the Team to lock, but that lookup alone is not
+      // authority: deletion may commit between it and a membership write on a
+      // different runtime. Acquire the shared lifecycle lock, then read the
+      // grant again so every predicate below observes post-lock state.
+      if (!row) throw invalidTeamJoinLink();
+      await lockTeamLifecycle(tx, String(row.teamId));
+      row = await tx.prepare(sql(
         "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
       )).get(parsed.selector);
       const secretRow = await tx.prepare(sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
@@ -587,6 +603,9 @@ export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRe
   }
   const normalizedName = normalizeTeamName(name);
   const team = await withTeamTransaction(database, async (tx) => {
+    // Rename is a Team-scoped write too. It must not report a successful
+    // update for a Team concurrently deleted by another runtime.
+    await lockTeamLifecycle(tx, teamId);
     const membership = await tx.prepare(tx.dialect.sql(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
     )).get(teamId, auth.userId);

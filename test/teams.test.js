@@ -521,6 +521,69 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
   }
 });
 
+test("browser Team deletion and Join redemption leave no orphan Team state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-public-delete-join-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let recipient;
+  try {
+    owner = await runtime.open();
+    recipient = await runtime.open();
+    const ownerSignUp = await signUp(owner, "public-delete-owner", "public-delete-owner@example.com", "Owner");
+    const recipientSignUp = await signUp(recipient, "public-delete-recipient", "public-delete-recipient@example.com", "Recipient");
+    const team = (await send(owner, { id: "public-delete-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const issued = await send(owner, {
+      id: "public-delete-issue", type: "teams.createJoinLink", teamId: team.id,
+      email: "public-delete-recipient@example.com", ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    const code = new URL(issued.data.link).searchParams.get("code");
+
+    const [deleted, joined] = await Promise.all([
+      send(owner, { id: "public-delete", type: "teams.delete", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken }),
+      send(recipient, { id: "public-delete-join", type: "teams.join", code, sessionToken: recipientSignUp.data.sessionToken }),
+    ]);
+    assert.equal([deleted, joined].filter((result) => result.error === null).length, 1, JSON.stringify({ deleted, joined }));
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] [m] LEFT JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [t].[id] IS NULL",
+    ).get().count, 0);
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_redemptions] [r] LEFT JOIN [sporades_team_join_links] [l] ON [l].[id] = [r].[joinLinkId] WHERE [l].[id] IS NULL",
+    ).get().count, 0);
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_counters] [c] LEFT JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] WHERE [t].[id] IS NULL",
+    ).get().count, 0);
+  } finally {
+    owner?.close(); recipient?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rolled-back trusted Team deletion emits no success audit and preserves the Team", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-delete-rollback-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  const auth = { userId: "delete-rollback-user", displayName: "Rollback", email: "delete-rollback@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
+  const baseAdapter = runtime.database.adapter;
+  try {
+    await baseAdapter.withTransaction((tx) => tx.linkAuthUser({
+      id: auth.userId, displayName: auth.displayName, email: auth.email, picture: null,
+      isAuthenticated: 1, isGuest: 0, provider: "email",
+    }));
+    const team = (await runQuery(runtime.database, auth, "ownTeams")).data.teams[0];
+    runtime.database.mutationHooks.afterMutation = ["() => { throw new Error('post-delete rollback'); }"];
+    const result = await runMutation(runtime.database, auth, "deleteOwnedTeam", [team.id]);
+    assert.equal(result.ok, false);
+    assert.equal(baseAdapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [id] = ?").get(team.id).count, 1);
+    assert.equal(baseAdapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?").get(team.id).count, 1);
+    assert.equal((await runtime.database.log.tail(20)).some((event) => event.event === "teams.deleted"), false, "success audits flush only after commit");
+  } finally {
+    runtime.database.mutationHooks.afterMutation = [];
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a valid Join link with a mismatched email stays publicly generic while its denied audit retains the Team ID", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-mismatch-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));

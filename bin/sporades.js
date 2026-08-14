@@ -7240,6 +7240,7 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
     const normalizedEmail = normalizeTeamJoinEmail(email);
     const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
     created = await withTeamTransaction(database, async (tx) => {
+      await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
       const now = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
       const nowIso = now.toISOString();
@@ -7287,6 +7288,7 @@ async function revokeTeamJoinLink(database, auth, teamId, joinLinkId, eventConte
     throw teamDenied();
   }
   await withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
     if (!await currentTeamAdmin(tx, teamId, auth.userId)) {
       emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, teamId, "denied", "DENIED");
       throw teamDenied();
@@ -7362,7 +7364,12 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
     if (!parsed) throw invalidTeamJoinLink();
     joined = await withTeamTransaction(database, async (tx) => {
       const sql = tx.dialect.sql;
-      const row = await tx.prepare(sql(
+      let row = await tx.prepare(sql(
+        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+      )).get(parsed.selector);
+      if (!row) throw invalidTeamJoinLink();
+      await lockTeamLifecycle(tx, String(row.teamId));
+      row = await tx.prepare(sql(
         "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
       )).get(parsed.selector);
       const secretRow = await tx.prepare(sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
@@ -7605,6 +7612,7 @@ async function renameCurrentUserTeam(database, auth, teamId, name, eventContext)
   }
   const normalizedName = normalizeTeamName(name);
   const team = await withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
     const membership = await tx.prepare(tx.dialect.sql(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);

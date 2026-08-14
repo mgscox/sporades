@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createTeamJoinLink, createTeamTables, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, revokeTeamJoinLink } from "../dist/teams-runtime.js";
+import { createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, listCurrentUserTeams, promoteTeamMember, removeTeamMember, revokeTeamJoinLink } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
 
@@ -108,6 +108,118 @@ test("Join-link capacity and admin throttle admit only their final guarded slots
     await second.close(); await first.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("delete and Join-link writers share a Team lifecycle lock across runtime adapters", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-delete-join-lock-"));
+  const databasePath = path.join(dir, "data.db");
+  const config = { name: "delete-join-lock", auth: { providers: { anonymous: true, email: true } } };
+  const ownerRuntime = await openDevDatabase(databasePath, "", {}, config, { name: "delete-join-lock", schema: {} });
+  const recipientRuntime = await openDevDatabase(databasePath, "", {}, config, { name: "delete-join-lock", schema: {} });
+  try {
+    const owner = await signUpWithEmail(ownerRuntime, await resolveAnonymousSession(ownerRuntime, null), "email", {
+      email: "delete-lock-owner@example.com", password: "password-123", name: "Owner",
+    });
+    const recipient = await signUpWithEmail(ownerRuntime, await resolveAnonymousSession(ownerRuntime, null), "email", {
+      email: "delete-lock-recipient@example.com", password: "password-123", name: "Recipient",
+    });
+    const team = (await listCurrentUserTeams(ownerRuntime, owner.auth)).teams[0];
+    const issued = await createTeamJoinLink(ownerRuntime, owner.auth, team.id, "delete-lock-recipient@example.com", { ttlSeconds: 300 });
+    const code = new URL(issued.link).searchParams.get("code");
+
+    // Start both mutations together against independent runtime adapters. The
+    // database must linearize them: either joining makes deletion ineligible,
+    // or deletion makes the stale capability unusable. Neither result may
+    // leave a Team-scoped row pointing at a deleted Team.
+    const results = await Promise.allSettled([
+      deleteCurrentUserTeam(ownerRuntime, owner.auth, team.id),
+      joinCurrentUserTeam(recipientRuntime, recipient.auth, code),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(ownerRuntime.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] [m] LEFT JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [t].[id] IS NULL",
+    ).get().count, 0, "no orphan membership survives the race");
+    assert.equal(ownerRuntime.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_redemptions] [r] LEFT JOIN [sporades_team_join_links] [l] ON [l].[id] = [r].[joinLinkId] WHERE [l].[id] IS NULL",
+    ).get().count, 0, "no orphan redemption survives the race");
+    assert.equal(ownerRuntime.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_join_link_counters] [c] LEFT JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] WHERE [t].[id] IS NULL",
+    ).get().count, 0, "no orphan link counter survives the race");
+  } finally {
+    await Promise.all([ownerRuntime.close(), recipientRuntime.close()]);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Join-link issue, revoke, and redemption acquire the Team lifecycle lock before their mutable state", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "team-join-lifecycle-seam", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "team-join-lifecycle-seam", schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+        email: "join-lifecycle-owner@example.com", password: "password-123", name: "Owner",
+      });
+      const recipient = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+        email: "join-lifecycle-recipient@example.com", password: "password-123", name: "Recipient",
+      });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const statements = [];
+      database.adapter = recordTeamStatements(baseAdapter, statements);
+
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "join-lifecycle-recipient@example.com", { ttlSeconds: 300 });
+      assertLifecycleLockPrecedes(statements, "INSERT INTO sporades_team_join_links", "issue");
+
+      statements.length = 0;
+      await revokeTeamJoinLink(database, owner.auth, team.id, issued.id);
+      assertLifecycleLockPrecedes(statements, "UPDATE sporades_team_join_links SET revokedAt", "revoke");
+
+      statements.length = 0;
+      const redeemable = await createTeamJoinLink(database, owner.auth, team.id, "join-lifecycle-recipient@example.com", { ttlSeconds: 300 });
+      statements.length = 0;
+      await joinCurrentUserTeam(database, recipient.auth, new URL(redeemable.link).searchParams.get("code"));
+      assertLifecycleLockPrecedes(statements, "UPDATE sporades_team_join_links SET consumedAt", "redemption");
+      const linkReads = statements.filter((statement) => normalizedSql(statement).includes("SELECT id, selector, verifierHash, teamId, email, expiresAt, consumedAt, revokedAt FROM sporades_team_join_links"));
+      assert.equal(linkReads.length, 2, "redemption re-reads its grant after claiming the Team lock");
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
+test("concurrent demote and remove operations retain one committed Team admin", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, {
+      name: "team-admin-lifecycle-race", auth: { providers: { anonymous: true, email: true } },
+    }, { name: "team-admin-lifecycle-race", schema: {} });
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+        email: "race-owner@example.com", password: "password-123", name: "Owner",
+      });
+      const otherAdmin = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+        email: "race-admin@example.com", password: "password-123", name: "Other admin",
+      });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "race-admin@example.com", { ttlSeconds: 300 });
+      await joinCurrentUserTeam(database, otherAdmin.auth, new URL(issued.link).searchParams.get("code"));
+      await promoteTeamMember(database, owner.auth, team.id, otherAdmin.auth.userId);
+
+      // Both calls see two admins before entering the transaction. The shared
+      // lifecycle lock, not a preflight count, decides which can commit.
+      const results = await Promise.allSettled([
+        demoteTeamMember(database, owner.auth, team.id, otherAdmin.auth.userId),
+        removeTeamMember(database, otherAdmin.auth, team.id, owner.auth.userId),
+      ]);
+      assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+      assert.equal(database.adapter.prepare(
+        "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'",
+      ).get(team.id).count, 1, "the surviving Team retains its only committed admin");
+    } finally {
+      await database.close();
+    }
+  });
 });
 
 test("Join-link inspection rejects tampering, expiry, and revocation without recovering stored capability material", async () => {
@@ -804,6 +916,32 @@ function failFirstAuthTransaction(adapter, error) {
     },
   });
 }
+
+function recordTeamStatements(adapter, statements) {
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        statements.push(`${statement}`);
+        return value.call(currentTarget, statement);
+      };
+    },
+  });
+  return wrap(adapter);
+}
+
+function assertLifecycleLockPrecedes(statements, mutableStatement, operation) {
+  const lock = statements.findIndex((statement) => normalizedSql(statement).includes("UPDATE sporades_teams SET name = name WHERE id = ?"));
+  const mutable = statements.findIndex((statement) => normalizedSql(statement).includes(mutableStatement));
+  assert.ok(lock >= 0, `${operation} must acquire the Team lifecycle lock: ${statements.join(" | ")}`);
+  assert.ok(mutable > lock, `${operation} must mutate Team-scoped state only after the Team lifecycle lock`);
+}
+
+function normalizedSql(statement) { return statement.replace(/["\[\]]/g, ""); }
 
 async function withDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-runtime-"));
