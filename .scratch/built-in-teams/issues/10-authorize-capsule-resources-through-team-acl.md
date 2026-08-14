@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Declare and assign membership application roles.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The constrained ACL context exposes read-only Team decisions for membership, Team-admin status, one declared role, and any of a bounded declared-role set.
 - [ ] Every Team ACL decision accepts an explicit Team ID and never reads an implicit current Team.
