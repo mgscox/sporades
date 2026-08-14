@@ -5,7 +5,7 @@
 | Issue | State | Blockers | Base SHA | Worker / reviewer | Worker SHA | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 01 — Initial singleton Team | done | None | `34e6a0c` | `codex/swarm-teams-01` / final review `ACCEPT` | `7538f67` | ACCEPT | `e6dddd7` | Integration: build/typecheck; Teams 8/8; ACL/type/docs 58/58; bundle 15 pass/1 configured Postgres skip | worker worktree retained |
-| 02 — Bootstrap during account linking | ready | 01 merged | — | — | — | — | — | — |
+| 02 — Bootstrap during account linking | done | 01 merged | `06760a9` | `codex/swarm-teams-02` / final review `ACCEPT` | `1319d42` | ACCEPT | `7a11833` | Integration: build/typecheck/generated-bin; OAuth/public/bundle 62 pass/1 configured PG skip | worker worktree retained |
 | 03 — Create and rename Teams | ready | 01 merged | — | — | — | — | — | — |
 | 04 — List Team memberships | blocked | 03 | — | — | — | — | — | — | — |
 | 05 — Email-bound Join links | blocked | 03 | — | — | — | — | — | — | — |
@@ -30,3 +30,4 @@
 - 2026-08-14: fresh re-review of `34e6a0c...7023850` found canonical generic-role documentation drift and missing behavioral deployed-bundle parity coverage. Its auth-link bootstrap finding is deliberately deferred: it is the approved scope of blocked Ticket 02, not Ticket 01's lazy bootstrap foundation.
 - 2026-08-14: fresh re-review of `34e6a0c...13bc1c4` returned `REQUEST_CHANGES`: ACL context spread exposed mutable `ctx.teams`, allowing lazy Team bootstrap from ACL evaluation before Ticket 10's constrained read-only helpers exist.
 - 2026-08-14: final review of `34e6a0c...7538f67` returned `ACCEPT`. The coordinator integrated the reviewed eight-commit series as `17e2c7a`, `456915d`, `1bb83d2`, `9dbf553`, `292845e`, `da01fbd`, `4f9cb29`, and `e6dddd7`; integration checks passed.
+- 2026-08-14: final review of `06760a9...1319d42` returned `ACCEPT`. The coordinator integrated the reviewed six-commit series as `f91976c`, `5962163`, `efc02d4`, `39064a4`, `3d8575d`, and `7a11833`; integration checks passed. The later rework-only commits `bf24d04`, `27aafb8`, and `1319d42` were included in that accepted worker range and are represented by their coordinator equivalents in the integration series.

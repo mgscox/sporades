@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — List the current user's initial singleton Team.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Successful email registration creates the initial Team and creator-admin membership in the same Auth transaction as account linking and Session rotation.
 - [ ] Successful OAuth identity linking creates the initial Team and creator-admin membership in the same Auth transaction as Provider identity linking and Session rotation.
