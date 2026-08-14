@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 test("the published Teams contract defines the public boundaries and is reachable from the reference index", async () => {
-  const [teams, reference, config, clientTypes, serverTypes, clientApi, serverApi] = await Promise.all([
+  const [teams, reference, config, clientTypes, serverTypes, clientApi, serverApi, aclTeamHelpersApi] = await Promise.all([
     readFile(new URL("../docs/reference/teams.md", import.meta.url), "utf8"),
     readFile(new URL("../docs/guide/reference.md", import.meta.url), "utf8"),
     readFile(new URL("../docs/.vitepress/config.mts", import.meta.url), "utf8"),
@@ -11,6 +11,7 @@ test("the published Teams contract defines the public boundaries and is reachabl
     readFile(new URL("../src/types/server.d.ts", import.meta.url), "utf8"),
     readFile(new URL("../docs/api/types/client.TeamsApi.html", import.meta.url), "utf8"),
     readFile(new URL("../docs/api/types/server.CurrentUserTeamsApi.html", import.meta.url), "utf8"),
+    readFile(new URL("../docs/api/types/server.AclTeamHelpers.html", import.meta.url), "utf8"),
   ]);
 
   assert.match(reference, /Built-in Teams[\s\S]*reference\/teams\.md/);
@@ -37,6 +38,8 @@ test("the published Teams contract defines the public boundaries and is reachabl
   assert.match(clientTypes, /export const teams: TeamsApi/);
   assert.match(serverTypes, /export type CurrentUserTeamsApi/);
   assert.match(serverTypes, /export type AclTeamHelpers/);
+  assert.match(serverTypes, /Read-only Team decisions available while evaluating table and File ACL rules\./);
   assert.match(clientApi, /TeamsApi/);
   assert.match(serverApi, /CurrentUserTeamsApi/);
+  assert.match(aclTeamHelpersApi, /Read-only Team decisions available while evaluating table and File ACL rules\./);
 });

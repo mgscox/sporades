@@ -92,7 +92,7 @@ export type AclStorageHelpers = {
   exists(resourceName: "files", reference: string): boolean;
 };
 
-/** Read-only Team decisions available only while evaluating a table ACL rule. */
+/** Read-only Team decisions available while evaluating table and File ACL rules. */
 export type AclTeamHelpers = {
   /** True when the current linked actor belongs to the explicitly identified Team. */
   isMember(teamId: string): boolean;
