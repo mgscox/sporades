@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — List Team memberships within admin scope; 06 — Validate Join links after authentication.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A linked current user can submit the opaque Join code through the browser Team interface and receive the committed membership on success.
 - [ ] The trusted server Team interface provides the same current-user joining behavior.

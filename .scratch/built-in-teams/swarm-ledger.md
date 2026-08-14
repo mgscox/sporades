@@ -10,9 +10,9 @@
 | 04 — List Team memberships | done | 03 merged | `bbdf347` | `codex/swarm-teams-04` / final review `ACCEPT` | `34281d5` | ACCEPT | `96d6d0e` | Integration: build/typecheck; focused 43 pass/1 configured PG skip | worker worktree retained |
 | 05 — Email-bound Join links | done | 03 merged | `0561f31` | `codex/swarm-teams-05` / final review `ACCEPT` | `f6078b9` | ACCEPT | `a8029b9` | Integration: build/typecheck/docs; focused 69 pass/1 configured PG skip | worker worktree retained |
 | 06 — Validate Join links | done | 02, 05 merged | `e0eea5f` | `codex/swarm-teams-06` / final review `ACCEPT` | `a37978b` | ACCEPT | `134d121` | Integration: build/typecheck; focused 71 pass | worker worktree retained |
-| 07 — Join through link | ready | 04, 06 merged | — | — | — | — | — | — |
-| 08 — Team-admin lifecycle | blocked | 07 | — | — | — | — | — | — | — |
-| 09 — Membership application roles | blocked | 07 | — | — | — | — | — | — | — |
+| 07 — Join through link | done | 04, 06 merged | `36c678a` | `codex/swarm-teams-07` / final review `ACCEPT` | `61fcc47` | ACCEPT | `8beb9cd` | Integration: build/typecheck/docs; focused Teams/client/runtime/type 85/85 | worker worktree retained |
+| 08 — Team-admin lifecycle | ready | 07 merged | — | — | — | — | — | — | — |
+| 09 — Membership application roles | ready | 07 merged | — | — | — | — | — | — | — |
 | 10 — Team ACL | blocked | 09 | — | — | — | — | — | — | — |
 | 11 — Complete Teams contract | blocked | 08, 10 | — | — | — | — | — | — | — |
 
