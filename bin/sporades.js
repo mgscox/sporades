@@ -5851,18 +5851,24 @@ async function createAdditionalTeam(database, auth, name, eventContext) {
     )).run(id, auth.userId, now);
     return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
   });
-  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id);
+  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id, "succeeded", "TEAM_CREATED");
   return { team };
 }
 async function renameCurrentUserTeam(database, auth, teamId, name, eventContext) {
   requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  if (!isOpaqueTeamId(teamId)) {
+    emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, null, "denied", "DENIED");
+    throw teamDenied();
+  }
   const normalizedName = normalizeTeamName(name);
   const team = await withTeamTransaction(database, async (tx) => {
     const membership = await tx.prepare(tx.dialect.sql(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
-    if (membership?.role !== "admin") throw teamDenied();
+    if (membership?.role !== "admin") {
+      emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, teamId, "denied", "DENIED");
+      throw teamDenied();
+    }
     const changed = await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?"
     )).run(normalizedName, teamId);
@@ -5872,7 +5878,7 @@ async function renameCurrentUserTeam(database, auth, teamId, name, eventContext)
     )).get(teamId);
     return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
   });
-  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id);
+  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
 }
 async function ensureInitialTeam(database, auth) {
@@ -5990,13 +5996,13 @@ function teamSummary(input) {
     memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0))
   };
 }
-function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId) {
+function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId, outcome, code) {
   const input = {
     category: "audit",
     event,
     level: "info",
     message: event === "teams.created" ? "Team created." : "Team renamed.",
-    data: { actorUserId: String(actorUserId).slice(0, 128), teamId: String(teamId).slice(0, 64) },
+    data: { operation: event === "teams.created" ? "teams.create" : "teams.rename", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
     request: null,
     release: null,
     correlation: null

@@ -152,6 +152,10 @@ test("linked users create and rename explicit additional Teams through browser a
 
     const auditEvents = (await runtime.database.log.tail(20)).filter((event) => event.event.startsWith("teams."));
     assert.deepEqual(auditEvents.map((event) => event.event), ["teams.created", "teams.created", "teams.created", "teams.renamed", "teams.renamed"]);
+    assert.deepEqual(auditEvents.map((event) => [event.data.operation, event.data.outcome, event.data.code]), [
+      ["teams.create", "succeeded", "TEAM_CREATED"], ["teams.create", "succeeded", "TEAM_CREATED"], ["teams.create", "succeeded", "TEAM_CREATED"],
+      ["teams.rename", "succeeded", "TEAM_RENAMED"], ["teams.rename", "succeeded", "TEAM_RENAMED"],
+    ]);
     assert.doesNotMatch(JSON.stringify(auditEvents), /Product Team|Platform Team|sessionToken|provider/);
 
     stranger = await runtime.open();
@@ -176,6 +180,8 @@ test("linked users create and rename explicit additional Teams through browser a
     assert.doesNotMatch(JSON.stringify(denied), /Product Team|Platform Team|additional-owner/);
     const malformed = await send(stranger, { id: "additional-malformed-rename", type: "teams.rename", teamId: { id: created.data.team.id }, name: "Nope" });
     assert.equal(malformed.error.code, "DENIED");
+    const deniedAudit = (await runtime.database.log.tail(20)).find((event) => event.event === "teams.rename" && event.data.outcome === "denied");
+    assert.deepEqual([deniedAudit.data.operation, deniedAudit.data.outcome, deniedAudit.data.code], ["teams.rename", "denied", "DENIED"]);
 
     owner.close(); owner = null;
     stranger.close(); stranger = null;
@@ -259,7 +265,7 @@ test("the durable Team membership claim holds the limit across concurrent runtim
 test("a committed Team audit flushes before a later pending Job enqueue failure", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-audit-flush-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
-  const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
+  const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: "https://example.com/audit.png", isAuthenticated: true, isGuest: false, provider: "email" };
   const baseAdapter = runtime.database.adapter;
   try {
     await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ ...auth, isAuthenticated: 1, isGuest: 0 }));

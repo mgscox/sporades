@@ -922,13 +922,22 @@ test("a generated server bundle lazily lists the current linked user's singleton
       assert.equal(first.data.teams.length, 1);
       assert.equal(first.data.teams[0].role, "admin");
 
+      socket.send({ id: "teams-create", type: "teams.create", name: "Generated Team" });
+      const created = await socket.waitFor((message) => message.id === "teams-create");
+      assert.equal(created.type, "teams.create.result");
+      assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "teams-rename", type: "teams.rename", teamId: created.data.team.id, name: "Generated Renamed Team" });
+      const renamed = await socket.waitFor((message) => message.id === "teams-rename");
+      assert.equal(renamed.type, "teams.rename.result");
+      assert.equal(renamed.data.team.name, "Generated Renamed Team");
+
       socket.send({ id: "teams-query", type: "query.subscribe", query: "ownTeams" });
       const trusted = await socket.waitFor((message) => message.id === "teams-query");
       assert.deepEqual(trusted, { id: "teams-query", type: "query.result", query: "ownTeams", data: first.data, error: null });
 
       socket.send({ id: "teams-repeat", type: "teams.list" });
       const repeated = await socket.waitFor((message) => message.id === "teams-repeat");
-      assert.deepEqual(repeated.data, first.data);
+      assert.equal(repeated.data.teams.some((team) => team.id === created.data.team.id && team.name === "Generated Renamed Team"), true);
     } finally {
       socket.close();
       await booted.stop();

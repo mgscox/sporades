@@ -111,13 +111,16 @@ export async function createAdditionalTeam(database: LooseRecord, auth: LooseRec
     )).run(id, auth.userId, now);
     return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
   });
-  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id);
+  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id, "succeeded", "TEAM_CREATED");
   return { team };
 }
 
 export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, name: any, eventContext?: LooseRecord) {
   requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  if (!isOpaqueTeamId(teamId)) {
+    emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, null, "denied", "DENIED");
+    throw teamDenied();
+  }
   const normalizedName = normalizeTeamName(name);
   const team = await withTeamTransaction(database, async (tx) => {
     const membership = await tx.prepare(tx.dialect.sql(
@@ -125,7 +128,10 @@ export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRe
     )).get(teamId, auth.userId);
     // Deliberately merge absent Teams, non-members, and ordinary members into
     // one public denial. No name or membership state escapes this boundary.
-    if (membership?.role !== "admin") throw teamDenied();
+    if (membership?.role !== "admin") {
+      emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, teamId, "denied", "DENIED");
+      throw teamDenied();
+    }
     const changed = await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?",
     )).run(normalizedName, teamId);
@@ -135,7 +141,7 @@ export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRe
     )).get(teamId);
     return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
   });
-  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id);
+  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
 }
 
@@ -286,7 +292,7 @@ function teamSummary(input: LooseRecord) {
   };
 }
 
-function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord | undefined, event: string, actorUserId: any, teamId: any) {
+function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord | undefined, event: string, actorUserId: any, teamId: any, outcome: "succeeded" | "denied", code: string) {
   // Keep audit data identifier-only and bounded: names can contain sensitive
   // presentation text, while Sessions and provider records never belong here.
   const input = {
@@ -294,7 +300,7 @@ function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord 
     event,
     level: "info",
     message: event === "teams.created" ? "Team created." : "Team renamed.",
-    data: { actorUserId: String(actorUserId).slice(0, 128), teamId: String(teamId).slice(0, 64) },
+    data: { operation: event === "teams.created" ? "teams.create" : "teams.rename", outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64) },
     request: null,
     release: null,
     correlation: null,
