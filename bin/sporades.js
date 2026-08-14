@@ -14811,6 +14811,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     await flushPendingJobEnqueues(context);
     return result;
   } catch (error) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     throw error;
   }
@@ -16360,6 +16361,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     await flushPendingJobEnqueues(context);
     return response;
   } catch (error) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });

@@ -1629,6 +1629,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         return result;
     }
     catch (error) {
+        flushTeamSecurityEvents(database, context, { deniedOnly: true });
         await flushPendingJobEnqueues(context);
         throw error;
     }
@@ -3249,6 +3250,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
         return response;
     }
     catch (error) {
+        flushTeamSecurityEvents(database, context, { deniedOnly: true });
         await flushPendingJobEnqueues(context);
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });

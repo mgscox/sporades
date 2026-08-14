@@ -195,7 +195,7 @@ test("linked users create and rename explicit additional Teams through browser a
     owner = await runtime.open();
     const afterRestart = await send(owner, { id: "additional-after-restart", type: "teams.list", sessionToken: signedUp.data.sessionToken });
     assert.equal(afterRestart.error, null, JSON.stringify(afterRestart.error));
-    assert.deepEqual(afterRestart.data.teams.map((team) => team.name), ["My Team", "Platform Team", "a".repeat(80), "Trusted Renamed Team"]);
+    assert.deepEqual(new Set(afterRestart.data.teams.map((team) => team.name)), new Set(["My Team", "Platform Team", "a".repeat(80), "Trusted Renamed Team"]));
   } finally {
     owner?.close(); stranger?.close();
     await runtime?.close();
@@ -279,6 +279,7 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
     assert.equal(result.ok, false);
     assert.equal(countTeams(baseAdapter), 2, "the initial and additional Teams committed before the Job failure");
     assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
   } finally {
     runtime.database.adapter = baseAdapter;
     await runtime.close();

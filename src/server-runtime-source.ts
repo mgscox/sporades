@@ -1820,6 +1820,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushPendingJobEnqueues(context);
     return result;
   } catch (error) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     throw error;
   }
@@ -3522,6 +3523,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     await flushPendingJobEnqueues(context);
     return response;
   } catch (error: any) {
+    flushTeamSecurityEvents(database, context, { deniedOnly: true });
     await flushPendingJobEnqueues(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
