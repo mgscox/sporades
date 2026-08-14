@@ -55,6 +55,7 @@ export default defineConfig({
           { text: "Feature reference index", link: "/guide/reference" },
           { text: "Projects and configuration", link: "/reference/projects-and-configuration" },
           { text: "Server runtime", link: "/reference/server-runtime" },
+          { text: "Built-in Teams", link: "/reference/teams" },
           { text: "Jobs and schedules", link: "/reference/jobs-and-schedules" },
           { text: "Client, auth, and preferences", link: "/reference/client-auth-and-preferences" },
           { text: "Files and realtime", link: "/reference/files-and-realtime" },
