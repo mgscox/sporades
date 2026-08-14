@@ -472,6 +472,49 @@ test("a linked recipient redeems a Join link through browser and trusted Team se
   }
 });
 
+test("a valid Join link with a mismatched email stays publicly generic while its denied audit retains the Team ID", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-join-mismatch-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let recipient;
+  try {
+    owner = await runtime.open();
+    recipient = await runtime.open();
+    const ownerSignUp = await signUp(owner, "join-mismatch-owner", "owner@example.com", "Owner");
+    const recipientSignUp = await signUp(recipient, "join-mismatch-recipient", "recipient@example.com", "Recipient");
+    const team = (await send(owner, { id: "join-mismatch-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const issued = await send(owner, {
+      id: "join-mismatch-issue", type: "teams.createJoinLink", teamId: team.id,
+      email: "someone-else@example.com", ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    const code = new URL(issued.data.link).searchParams.get("code");
+
+    const result = await send(recipient, {
+      id: "join-mismatch", type: "teams.join", code, sessionToken: recipientSignUp.data.sessionToken,
+    });
+    assert.equal(result.type, "error");
+    assert.deepEqual(result.error, {
+      code: "INVALID_JOIN_LINK",
+      message: "Join link is invalid.",
+      hint: "Use a current Join link for this linked account.",
+    });
+    assertNoTeamLeak(result, [team.id, code, "someone-else@example.com"]);
+
+    const audit = (await runtime.database.log.tail(20)).find((event) =>
+      event.event === "teams.joinLink.join" && event.data.actorUserId === recipientSignUp.data.auth.userId && event.data.code === "INVALID_JOIN_LINK",
+    );
+    assert.deepEqual(audit.data, {
+      operation: "teams.join", outcome: "denied", code: "INVALID_JOIN_LINK", actorUserId: recipientSignUp.data.auth.userId, teamId: team.id,
+    });
+    assertNoTeamLeak(audit, [code, "someone-else@example.com"]);
+  } finally {
+    owner?.close(); recipient?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("trusted endpoint and app-message Team rename denials emit one redacted audit each", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-trusted-denials-"));
   const databasePath = path.join(dir, "data.db");

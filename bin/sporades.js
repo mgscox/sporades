@@ -7315,6 +7315,7 @@ async function validateTeamJoinLink(database, auth, code) {
 }
 async function joinCurrentUserTeam(database, auth, code, eventContext) {
   let joined;
+  let deniedTeamId = null;
   try {
     requireAuth({ auth }, { linked: true });
     const parsed = parseTeamJoinCode(code);
@@ -7343,7 +7344,10 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
       )).all(auth.userId, auth.userId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
-      if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) throw invalidTeamJoinLink();
+      if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
+        deniedTeamId = String(team.id);
+        throw invalidTeamJoinLink();
+      }
       await ensureInitialTeamOnAdapter(tx, auth.userId);
       const redemption = await tx.prepare(sql(
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
@@ -7386,7 +7390,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
     });
   } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, null, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");

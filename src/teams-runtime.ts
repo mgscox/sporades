@@ -280,6 +280,7 @@ export async function validateTeamJoinLink(database: LooseRecord, auth: LooseRec
 // browser's earlier non-consuming check is only UI guidance, never authority.
 export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseRecord, code: any, eventContext?: LooseRecord) {
   let joined;
+  let deniedTeamId: string | null = null;
   try {
     requireAuth({ auth }, { linked: true });
     const parsed = parseTeamJoinCode(code);
@@ -311,7 +312,13 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
         "UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL",
       )).all(auth.userId, auth.userId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
-      if (!attachedEmails.some((identity: LooseRecord) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) throw invalidTeamJoinLink();
+      if (!attachedEmails.some((identity: LooseRecord) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
+        // The signed, current link has already resolved its Team. Preserve
+        // that internal audit correlation without changing the generic public
+        // denial or recording the link or either email address.
+        deniedTeamId = String(team.id);
+        throw invalidTeamJoinLink();
+      }
 
       // Legacy linked accounts have no bootstrap record yet. Do this only
       // after every non-mutating Join capability and identity check succeeds;
@@ -364,7 +371,7 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
       return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
     });
   } catch (error: any) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, null, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
