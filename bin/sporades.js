@@ -62,6 +62,12 @@ export const teams = {
   list() {
     return connect().teamsList();
   },
+  create(name) {
+    return connect().teamsCreate(name);
+  },
+  rename(teamId, name) {
+    return connect().teamsRename(teamId, name);
+  },
 };
 
 export const journey = {
@@ -1070,6 +1076,8 @@ function createConnection() {
       });
     },
     teamsList() { return request("teams.list"); },
+    teamsCreate(name) { return request("teams.create", { name }); },
+    teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -5765,6 +5773,7 @@ function chainMaybePromise(steps) {
 var INITIAL_TEAM_NAME = "My Team";
 var TEAM_NAME_MAX_BYTES = 80;
 var TEAM_MEMBER_COUNT_MAX = 99;
+var TEAM_MEMBERSHIP_MAX = 25;
 var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 function createTeamTables(adapter) {
   const sql = adapter.dialect.sql;
@@ -5785,6 +5794,14 @@ function createCurrentUserTeamsApi(database, auth) {
     async list() {
       requireAuth({ auth }, { linked: true });
       return listCurrentUserTeams(database, auth);
+    },
+    async create(name) {
+      requireAuth({ auth }, { linked: true });
+      return createAdditionalTeam(database, auth, name);
+    },
+    async rename(teamId, name) {
+      requireAuth({ auth }, { linked: true });
+      return renameCurrentUserTeam(database, auth, teamId, name);
     }
   };
 }
@@ -5805,6 +5822,55 @@ async function listCurrentUserTeams(database, auth) {
     }))
   };
 }
+async function createAdditionalTeam(database, auth, name) {
+  requireAuth({ auth }, { linked: true });
+  const normalizedName = normalizeTeamName(name);
+  const team = await withTeamTransaction(database, async (tx) => {
+    await ensureInitialTeamOnAdapter(tx, auth.userId);
+    const count = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [userId] = ?"
+    )).get(auth.userId);
+    if (Number(count?.count ?? 0) >= TEAM_MEMBERSHIP_MAX) {
+      throw commandError2(
+        "Team limit reached.",
+        `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`,
+        "TEAM_LIMIT_REACHED"
+      );
+    }
+    const id = randomUUID();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
+    )).run(id, normalizedName, now, auth.userId);
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)"
+    )).run(id, auth.userId, now);
+    return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
+  });
+  emitTeamSecurityEvent(database, "teams.created", auth.userId, team.id);
+  return { team };
+}
+async function renameCurrentUserTeam(database, auth, teamId, name) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  const normalizedName = normalizeTeamName(name);
+  const team = await withTeamTransaction(database, async (tx) => {
+    const membership = await tx.prepare(tx.dialect.sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (membership?.role !== "admin") throw teamDenied();
+    const changed = await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?"
+    )).run(normalizedName, teamId);
+    if (Number(changed?.changes ?? 0) !== 1) throw teamDenied();
+    const count = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
+  });
+  emitTeamSecurityEvent(database, "teams.renamed", auth.userId, team.id);
+  return { team };
+}
 async function ensureInitialTeam(database, auth) {
   if (database.__transactionActive) {
     return ensureInitialTeamOnAdapter(database.adapter, auth.userId);
@@ -5821,6 +5887,18 @@ async function ensureInitialTeam(database, auth) {
     return await work;
   } finally {
     if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
+  }
+}
+async function withTeamTransaction(database, callback) {
+  if (database.__transactionActive) return callback(database.adapter);
+  const root = database.__rootDatabase ?? database;
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => database.adapter.withTransaction(callback));
+  root.__runtimeTransactionQueue = work;
+  try {
+    return await work;
+  } finally {
     if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
   }
 }
@@ -5861,6 +5939,48 @@ async function ensureInitialTeamOnAdapter(tx, userId) {
 function safeTeamName(value) {
   const name = typeof value === "string" ? value.trim() : "";
   return Buffer.byteLength(name, "utf8") <= TEAM_NAME_MAX_BYTES && name.length > 0 ? name : INITIAL_TEAM_NAME;
+}
+function normalizeTeamName(value) {
+  if (typeof value !== "string") {
+    throw commandError2("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
+  }
+  const name = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (name.length === 0 || Buffer.byteLength(name, "utf8") > TEAM_NAME_MAX_BYTES) {
+    throw commandError2(
+      "Team name is invalid.",
+      `Use a non-empty Team name up to ${TEAM_NAME_MAX_BYTES} UTF-8 bytes.`,
+      "INVALID_TEAM_NAME"
+    );
+  }
+  return name;
+}
+function isOpaqueTeamId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+function teamDenied() {
+  return commandError2("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
+}
+function teamSummary(input) {
+  return {
+    id: String(input.id),
+    name: safeTeamName(input.name),
+    role: input.role === "admin" ? "admin" : "member",
+    applicationRoles: [],
+    memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0))
+  };
+}
+function emitTeamSecurityEvent(database, event, actorUserId, teamId) {
+  const input = {
+    category: "audit",
+    event,
+    level: "info",
+    message: event === "teams.created" ? "Team created." : "Team renamed.",
+    data: { actorUserId: String(actorUserId).slice(0, 128), teamId: String(teamId).slice(0, 64) },
+    request: null,
+    release: null,
+    correlation: null
+  };
+  database.log?.emit?.(input);
 }
 
 // src/file-storage-runtime.ts
@@ -15539,6 +15659,44 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
           error: {
             ...error?.code ? { code: error.code } : {},
             message: error?.message ?? "Could not list Teams.",
+            hint: error?.hint ?? "Sign in and retry the request."
+          }
+        });
+      }
+      return;
+    }
+    if (message.type === "teams.create") {
+      try {
+        const data = await createAdditionalTeam(database, client.session.auth, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.create.result", data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not create Team.",
+            hint: error?.hint ?? "Sign in and retry the request."
+          }
+        });
+      }
+      return;
+    }
+    if (message.type === "teams.rename") {
+      try {
+        const data = await renameCurrentUserTeam(database, client.session.auth, message.teamId, message.name);
+        sendJson(client, { id: message.id ?? null, type: "teams.rename.result", data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not rename Team.",
             hint: error?.hint ?? "Sign in and retry the request."
           }
         });

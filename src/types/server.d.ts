@@ -322,6 +322,10 @@ export type TeamSummary = {
 };
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  create(name: string): Promise<{ team: TeamSummary }>;
+  /** Renames an explicitly identified Team administered by the current user. */
+  rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
 };
 
 /** Copy overrides for the built-in password reset message. */

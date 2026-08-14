@@ -3,9 +3,13 @@
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
+import { commandError } from "./runtime-errors.js";
 const INITIAL_TEAM_NAME = "My Team";
 const TEAM_NAME_MAX_BYTES = 80;
 const TEAM_MEMBER_COUNT_MAX = 99;
+// A user's Team list is a compact navigation surface, never an unbounded
+// directory. The cap applies to all memberships, including the initial Team.
+export const TEAM_MEMBERSHIP_MAX = 25;
 const TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 export function createTeamTables(adapter) {
     const sql = adapter.dialect.sql;
@@ -30,6 +34,14 @@ export function createCurrentUserTeamsApi(database, auth) {
             requireAuth({ auth }, { linked: true });
             return listCurrentUserTeams(database, auth);
         },
+        async create(name) {
+            requireAuth({ auth }, { linked: true });
+            return createAdditionalTeam(database, auth, name);
+        },
+        async rename(teamId, name) {
+            requireAuth({ auth }, { linked: true });
+            return renameCurrentUserTeam(database, auth, teamId, name);
+        },
     };
 }
 export async function listCurrentUserTeams(database, auth) {
@@ -50,6 +62,44 @@ export async function listCurrentUserTeams(database, auth) {
             memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0)),
         })),
     };
+}
+export async function createAdditionalTeam(database, auth, name) {
+    requireAuth({ auth }, { linked: true });
+    const normalizedName = normalizeTeamName(name);
+    const team = await withTeamTransaction(database, async (tx) => {
+        await ensureInitialTeamOnAdapter(tx, auth.userId);
+        const count = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [userId] = ?")).get(auth.userId);
+        if (Number(count?.count ?? 0) >= TEAM_MEMBERSHIP_MAX) {
+            throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
+        }
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, normalizedName, now, auth.userId);
+        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, auth.userId, now);
+        return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
+    });
+    emitTeamSecurityEvent(database, "teams.created", auth.userId, team.id);
+    return { team };
+}
+export async function renameCurrentUserTeam(database, auth, teamId, name) {
+    requireAuth({ auth }, { linked: true });
+    if (!isOpaqueTeamId(teamId))
+        throw teamDenied();
+    const normalizedName = normalizeTeamName(name);
+    const team = await withTeamTransaction(database, async (tx) => {
+        const membership = await tx.prepare(tx.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+        // Deliberately merge absent Teams, non-members, and ordinary members into
+        // one public denial. No name or membership state escapes this boundary.
+        if (membership?.role !== "admin")
+            throw teamDenied();
+        const changed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?")).run(normalizedName, teamId);
+        if (Number(changed?.changes ?? 0) !== 1)
+            throw teamDenied();
+        const count = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
+        return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
+    });
+    emitTeamSecurityEvent(database, "teams.renamed", auth.userId, team.id);
+    return { team };
 }
 async function ensureInitialTeam(database, auth) {
     if (database.__transactionActive) {
@@ -74,6 +124,23 @@ async function ensureInitialTeam(database, auth) {
     finally {
         if (root.__teamBootstrapByUser.get(auth.userId) === work)
             root.__teamBootstrapByUser.delete(auth.userId);
+        if (root.__runtimeTransactionQueue === work)
+            root.__runtimeTransactionQueue = null;
+    }
+}
+async function withTeamTransaction(database, callback) {
+    if (database.__transactionActive)
+        return callback(database.adapter);
+    // Share Ticket 01's runtime queue: node:sqlite has one connection, and Team
+    // operations must not race a lazy/bootstrap auth transaction into BEGIN.
+    const root = database.__rootDatabase ?? database;
+    const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
+    const work = previous.catch(() => undefined).then(() => database.adapter.withTransaction(callback));
+    root.__runtimeTransactionQueue = work;
+    try {
+        return await work;
+    }
+    finally {
         if (root.__runtimeTransactionQueue === work)
             root.__runtimeTransactionQueue = null;
     }
@@ -125,5 +192,45 @@ async function ensureInitialTeamOnAdapter(tx, userId) {
 function safeTeamName(value) {
     const name = typeof value === "string" ? value.trim() : "";
     return Buffer.byteLength(name, "utf8") <= TEAM_NAME_MAX_BYTES && name.length > 0 ? name : INITIAL_TEAM_NAME;
+}
+function normalizeTeamName(value) {
+    if (typeof value !== "string") {
+        throw commandError("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
+    }
+    const name = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+    if (name.length === 0 || Buffer.byteLength(name, "utf8") > TEAM_NAME_MAX_BYTES) {
+        throw commandError("Team name is invalid.", `Use a non-empty Team name up to ${TEAM_NAME_MAX_BYTES} UTF-8 bytes.`, "INVALID_TEAM_NAME");
+    }
+    return name;
+}
+function isOpaqueTeamId(value) {
+    return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+function teamDenied() {
+    return commandError("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
+}
+function teamSummary(input) {
+    return {
+        id: String(input.id),
+        name: safeTeamName(input.name),
+        role: input.role === "admin" ? "admin" : "member",
+        applicationRoles: [],
+        memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0)),
+    };
+}
+function emitTeamSecurityEvent(database, event, actorUserId, teamId) {
+    // Keep audit data identifier-only and bounded: names can contain sensitive
+    // presentation text, while Sessions and provider records never belong here.
+    const input = {
+        category: "audit",
+        event,
+        level: "info",
+        message: event === "teams.created" ? "Team created." : "Team renamed.",
+        data: { actorUserId: String(actorUserId).slice(0, 128), teamId: String(teamId).slice(0, 64) },
+        request: null,
+        release: null,
+        correlation: null,
+    };
+    database.log?.emit?.(input);
 }
 //# sourceMappingURL=teams-runtime.js.map

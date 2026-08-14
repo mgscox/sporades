@@ -18,7 +18,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { createCurrentUserTeamsApi, listCurrentUserTeams } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -2558,6 +2558,48 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                     error: {
                         ...(error?.code ? { code: error.code } : {}),
                         message: error?.message ?? "Could not list Teams.",
+                        hint: error?.hint ?? "Sign in and retry the request.",
+                    },
+                });
+            }
+            return;
+        }
+        if (message.type === "teams.create") {
+            try {
+                const data = await createAdditionalTeam(database, client.session.auth, message.name);
+                sendJson(client, { id: message.id ?? null, type: "teams.create.result", data, error: null });
+            }
+            catch (error) {
+                if (error?.sporadesAuthDenialLogData)
+                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        ...(error?.code ? { code: error.code } : {}),
+                        message: error?.message ?? "Could not create Team.",
+                        hint: error?.hint ?? "Sign in and retry the request.",
+                    },
+                });
+            }
+            return;
+        }
+        if (message.type === "teams.rename") {
+            try {
+                const data = await renameCurrentUserTeam(database, client.session.auth, message.teamId, message.name);
+                sendJson(client, { id: message.id ?? null, type: "teams.rename.result", data, error: null });
+            }
+            catch (error) {
+                if (error?.sporadesAuthDenialLogData)
+                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        ...(error?.code ? { code: error.code } : {}),
+                        message: error?.message ?? "Could not rename Team.",
                         hint: error?.hint ?? "Sign in and retry the request.",
                     },
                 });

@@ -39,6 +39,12 @@ export const teams = {
   list() {
     return connect().teamsList();
   },
+  create(name) {
+    return connect().teamsCreate(name);
+  },
+  rename(teamId, name) {
+    return connect().teamsRename(teamId, name);
+  },
 };
 
 export const journey = {
@@ -1047,6 +1053,8 @@ function createConnection() {
       });
     },
     teamsList() { return request("teams.list"); },
+    teamsCreate(name) { return request("teams.create", { name }); },
+    teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
