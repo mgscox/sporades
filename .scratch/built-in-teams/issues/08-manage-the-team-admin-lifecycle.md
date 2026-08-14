@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Join a Team through a validated link.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A current Team admin can promote an ordinary member to `admin` through the browser and trusted server Team interfaces.
 - [ ] Multiple Team admins are supported and visible through safe admin-scoped membership listing.
