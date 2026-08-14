@@ -330,7 +330,7 @@ test("Team admins create, inspect, list, and revoke email-bound Join links witho
 
     const invalidEmail = await send(owner, { id: "join-invalid-email", type: "teams.createJoinLink", teamId, email: "not an email" });
     assert.equal(invalidEmail.error.code, "INVALID_EMAIL");
-    const invalidAudit = (await runtime.database.log.tail(20)).find((event) => event.event === "teams.joinLink.create" && event.data.code === "INVALID_EMAIL");
+    const invalidAudit = (await runtime.database.log.tail(20)).find((event) => event.event === "teams.joinLink.create" && event.data.code === "INVALID_EMAIL" && event.data.actorUserId === ownerSignUp.data.auth.userId && event.data.teamId === teamId);
     assert.deepEqual(invalidAudit.data, {
       operation: "teams.createJoinLink", outcome: "denied", code: "INVALID_EMAIL", actorUserId: ownerSignUp.data.auth.userId, teamId,
     });

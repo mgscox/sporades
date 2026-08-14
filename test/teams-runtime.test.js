@@ -129,6 +129,30 @@ test("Join-link inspection rejects tampering, expiry, and revocation without rec
   });
 });
 
+test("target-Team expiry reconciliation frees capacity even when the global bounded prune is exhausted elsewhere", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "join-target-reconcile", auth: { providers: { anonymous: true, email: true } } }, { name: "join-target-reconcile", schema: {} });
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      const linked = await signUpWithEmail(database, session, "email", { email: "reconcile-owner@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, linked.auth)).teams[0];
+      const sql = database.adapter.dialect.sql;
+      const expiredAt = new Date(Date.now() - 60_000).toISOString();
+      for (let index = 0; index < 100; index += 1) {
+        await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)")).run(`other-expired-${index}`, `other-selector-${index}`, "hash", `other-team-${index}`, `other-${index}@example.com`, linked.auth.userId, expiredAt, expiredAt);
+      }
+      for (let index = 0; index < 20; index += 1) {
+        await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)")).run(`target-expired-${index}`, `target-selector-${index}`, "hash", team.id, `target-${index}@example.com`, linked.auth.userId, expiredAt, expiredAt);
+      }
+      await database.adapter.prepare(sql("INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) VALUES (?, ?)")).run(team.id, 20);
+
+      const created = await createTeamJoinLink(database, linked.auth, team.id, "live@example.com", { ttlSeconds: 300 });
+      assert.ok(created.link, "target expiration must not leave its capacity counter pinned at 20");
+      assert.equal(database.adapter.prepare(sql("SELECT [activeCount] FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).get(team.id).activeCount, 1);
+    } finally { await database.close(); }
+  });
+});
+
 test("concurrent initial Team listing shares one SQLite bootstrap transaction", async () => {
   await withDatabase(async (databasePath) => {
     const database = await openDevDatabase(databasePath, "", {}, {
