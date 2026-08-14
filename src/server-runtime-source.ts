@@ -45,7 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, flushTeamSecurityEvents, listCurrentUserTeams, renameCurrentUserTeam } from "./teams-runtime.js";
+import { createAdditionalTeam, createCurrentUserTeamsApi, flushTeamSecurityEvents, listCurrentUserTeams, listTeamMembers, renameCurrentUserTeam } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -2834,6 +2834,26 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
             ...(error?.code ? { code: error.code } : {}),
             message: error?.message ?? "Could not rename Team.",
             hint: error?.hint ?? "Sign in and retry the request.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teams.listMembers") {
+      try {
+        const data = await listTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not list Team members.",
+            hint: error?.hint ?? "Sign in with a Team administrator account and retry.",
           },
         });
       }

@@ -320,12 +320,22 @@ export type TeamSummary = {
   applicationRoles: string[];
   memberCount: number;
 };
+/** Safe member presentation for an exact-Team administrator. */
+export type TeamMemberSummary = {
+  userId: string;
+  displayName: string;
+  picture: string | null;
+  role: "admin" | "member";
+  applicationRoles: string[];
+};
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
   create(name: string): Promise<{ team: TeamSummary }>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
+  /** Lists a bounded safe membership directory for one Team the caller currently administers. */
+  listMembers(teamId: string): Promise<{ members: TeamMemberSummary[] }>;
 };
 
 /** Copy overrides for the built-in password reset message. */

@@ -267,8 +267,17 @@ export type TeamSummary = {
   /** Capped at 99 so a Team list remains bounded. */
   memberCount: number;
 };
+/** Safe member presentation for an exact-Team administrator. */
+export type TeamMemberSummary = {
+  userId: string;
+  displayName: string;
+  picture: string | null;
+  role: "admin" | "member";
+  applicationRoles: string[];
+};
 export type TeamsListResult = { teams: TeamSummary[] };
 export type TeamMutationResult = { team: TeamSummary };
+export type TeamMembersListResult = { members: TeamMemberSummary[] };
 /** Built-in current-user Team operations over the standard client transport. */
 export type TeamsApi = {
   list(): Promise<SporadesResult<TeamsListResult>>;
@@ -276,6 +285,8 @@ export type TeamsApi = {
   create(name: string): Promise<SporadesResult<TeamMutationResult>>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;
+  /** Lists a bounded safe membership directory for one Team the caller currently administers. */
+  listMembers(teamId: string): Promise<SporadesResult<TeamMembersListResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */

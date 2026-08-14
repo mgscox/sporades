@@ -68,6 +68,9 @@ export const teams = {
   rename(teamId, name) {
     return connect().teamsRename(teamId, name);
   },
+  listMembers(teamId) {
+    return connect().teamsListMembers(teamId);
+  },
 };
 
 export const journey = {
@@ -1078,6 +1081,7 @@ function createConnection() {
     teamsList() { return request("teams.list"); },
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
+    teamsListMembers(teamId) { return request("teams.listMembers", { teamId }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -5773,6 +5777,7 @@ function chainMaybePromise(steps) {
 var INITIAL_TEAM_NAME = "My Team";
 var TEAM_NAME_MAX_BYTES = 80;
 var TEAM_MEMBER_COUNT_MAX = 99;
+var TEAM_MEMBER_LIST_MAX = 100;
 var TEAM_MEMBERSHIP_MAX = 25;
 var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 function createTeamTables(adapter) {
@@ -5805,6 +5810,10 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
     async rename(teamId, name) {
       requireAuth({ auth }, { linked: true });
       return renameCurrentUserTeam(database, auth, teamId, name, contextGetter?.());
+    },
+    async listMembers(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return listTeamMembers(database, auth, teamId);
     }
   };
 }
@@ -5880,6 +5889,31 @@ async function renameCurrentUserTeam(database, auth, teamId, name, eventContext)
   });
   emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
+}
+async function listTeamMembers(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    const callerMembership = await tx.prepare(sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (callerMembership?.role !== "admin") throw teamDenied();
+    const rows = await tx.prepare(sql(
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
+    )).all(teamId, TEAM_MEMBER_LIST_MAX);
+    return {
+      members: rows.map((row) => ({
+        userId: String(row.userId),
+        displayName: String(row.displayName),
+        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
+        role: row.role === "admin" ? "admin" : "member",
+        // Ticket 09 will source active declared assignment rows here. Until
+        // then no membership has a public application role to expose.
+        applicationRoles: []
+      }))
+    };
+  });
 }
 async function ensureInitialTeam(database, auth) {
   if (database.__transactionActive) {
@@ -15742,6 +15776,25 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
             ...error?.code ? { code: error.code } : {},
             message: error?.message ?? "Could not rename Team.",
             hint: error?.hint ?? "Sign in and retry the request."
+          }
+        });
+      }
+      return;
+    }
+    if (message.type === "teams.listMembers") {
+      try {
+        const data = await listTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not list Team members.",
+            hint: error?.hint ?? "Sign in with a Team administrator account and retry."
           }
         });
       }

@@ -17,6 +17,13 @@ const capsule = {
       kind: "query",
       handler: (ctx) => ctx.teams.list(),
     },
+    ownTeamMembers: {
+      kind: "query",
+      handler: async (ctx) => {
+        const { teams } = await ctx.teams.list();
+        return ctx.teams.listMembers(teams[0].id);
+      },
+    },
   },
   mutations: {
     createAdditionalTeam: mutation((ctx, name) => ctx.teams.create(name)),
@@ -93,6 +100,72 @@ test("a newly linked caller immediately receives one persistent singleton Team t
   } finally {
     anonymous?.close(); linked?.close();
     await runtime?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Team membership lists are safe, bounded, and scoped to the current admin through browser and trusted seams", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-memberships-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"));
+  let owner;
+  let otherAdmin;
+  let member;
+  let stranger;
+  try {
+    owner = await runtime.open();
+    otherAdmin = await runtime.open();
+    member = await runtime.open();
+    stranger = await runtime.open();
+    const ownerSignUp = await signUp(owner, "members-owner", "members-owner@example.com", "Owner");
+    const otherAdminSignUp = await signUp(otherAdmin, "members-other-admin", "members-other-admin@example.com", "Other Admin");
+    const memberSignUp = await signUp(member, "members-member", "members-member@example.com", "Member");
+    const strangerSignUp = await signUp(stranger, "members-stranger", "members-stranger@example.com", "Stranger");
+    const ownerTeams = await send(owner, { id: "members-owner-teams", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken });
+    const otherAdminTeams = await send(otherAdmin, { id: "members-other-admin-teams", type: "teams.list", sessionToken: otherAdminSignUp.data.sessionToken });
+    const teamA = ownerTeams.data.teams[0].id;
+    const teamB = otherAdminTeams.data.teams[0].id;
+    await runtime.database.adapter.withTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      const memberCreatedAt = new Date(Date.now() - 1_000).toISOString();
+      await tx.updateAuthUserProfile({ id: ownerSignUp.data.auth.userId, displayName: "Owner", picture: "https://example.com/owner.png", isAuthenticated: 1, isGuest: 0 });
+      await tx.updateAuthUserProfile({ id: memberSignUp.data.auth.userId, displayName: "Member", picture: "https://example.com/member.png", isAuthenticated: 1, isGuest: 0 });
+      await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamA, memberSignUp.data.auth.userId, memberCreatedAt);
+      await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamB, memberSignUp.data.auth.userId, memberCreatedAt);
+      for (let index = 0; index < 110; index += 1) {
+        const userId = `bounded-member-${index}`;
+        await tx.insertAuthUser({ id: userId, createdAt: now, displayName: `Bounded ${index}`, email: `bounded-${index}@example.com`, picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
+        await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamA, userId, now);
+      }
+    });
+
+    const browser = await send(owner, { id: "members-owner-list", type: "teams.listMembers", teamId: teamA, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(browser.error, null, JSON.stringify(browser.error));
+    assert.equal(browser.type, "teams.listMembers.result");
+    assert.ok(browser.data.members.length > 1 && browser.data.members.length <= 100, "the member directory has a fixed response bound");
+    assert.deepEqual(Object.keys(browser.data.members[0]).sort(), ["applicationRoles", "displayName", "picture", "role", "userId"]);
+    assert.deepEqual(browser.data.members.find((entry) => entry.userId === ownerSignUp.data.auth.userId), {
+      userId: ownerSignUp.data.auth.userId, displayName: "Owner", picture: "https://example.com/owner.png", role: "admin", applicationRoles: [],
+    });
+    assert.deepEqual(browser.data.members.find((entry) => entry.userId === memberSignUp.data.auth.userId), {
+      userId: memberSignUp.data.auth.userId, displayName: "Member", picture: "https://example.com/member.png", role: "member", applicationRoles: [],
+    });
+    assertNoTeamLeak(browser.data, ["members-owner@example.com", "members-member@example.com", "bounded-0@example.com", "password", "sessionToken", "provider"]);
+
+    const trusted = await runQuery(runtime.database, ownerSignUp.data.auth, "ownTeamMembers");
+    assert.deepEqual(trusted, { data: browser.data, error: null }, "trusted handler calls share the browser result and authorization contract");
+
+    const ordinaryMember = await send(member, { id: "members-ordinary-denied", type: "teams.listMembers", teamId: teamA, sessionToken: memberSignUp.data.sessionToken });
+    const otherTeamAdmin = await send(otherAdmin, { id: "members-cross-team-denied", type: "teams.listMembers", teamId: teamA, sessionToken: otherAdminSignUp.data.sessionToken });
+    const nonMember = await send(stranger, { id: "members-nonmember-denied", type: "teams.listMembers", teamId: teamA, sessionToken: strangerSignUp.data.sessionToken });
+    const malformed = await send(stranger, { id: "members-malformed-denied", type: "teams.listMembers", teamId: "not-a-team-id", sessionToken: strangerSignUp.data.sessionToken });
+    for (const denied of [ordinaryMember, otherTeamAdmin, nonMember, malformed]) {
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.code, "DENIED");
+      assertNoTeamLeak(denied, [teamA, "members-owner@example.com", "Owner"]);
+    }
+  } finally {
+    owner?.close(); otherAdmin?.close(); member?.close(); stranger?.close();
+    await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -450,6 +523,17 @@ function send(ws, message) {
     ws.addEventListener("message", listener);
     ws.send(JSON.stringify(message));
   });
+}
+
+async function signUp(ws, id, email, name) {
+  const result = await send(ws, {
+    id,
+    type: "auth.signUp",
+    provider: "email",
+    credentials: { email, password: "password-123", name },
+  });
+  assert.equal(result.error, null, JSON.stringify(result.error));
+  return result;
 }
 
 function countTeams(adapter) {

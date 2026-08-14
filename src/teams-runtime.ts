@@ -11,6 +11,9 @@ type LooseRecord = Record<string, any>;
 const INITIAL_TEAM_NAME = "My Team";
 const TEAM_NAME_MAX_BYTES = 80;
 const TEAM_MEMBER_COUNT_MAX = 99;
+// Membership lists are a management surface, not a directory export. Keep the
+// response bounded even when a Team has more members than its UI renders.
+export const TEAM_MEMBER_LIST_MAX = 100;
 // A user's Team list is a compact navigation surface, never an unbounded
 // directory. The cap applies to all memberships, including the initial Team.
 export const TEAM_MEMBERSHIP_MAX = 25;
@@ -58,6 +61,10 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
     async rename(teamId: any, name: any) {
       requireAuth({ auth }, { linked: true });
       return renameCurrentUserTeam(database, auth, teamId, name, contextGetter?.());
+    },
+    async listMembers(teamId: any) {
+      requireAuth({ auth }, { linked: true });
+      return listTeamMembers(database, auth, teamId);
     },
   };
 }
@@ -143,6 +150,37 @@ export async function renameCurrentUserTeam(database: LooseRecord, auth: LooseRe
   });
   emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
   return { team };
+}
+
+export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    // Check the caller's current, persisted membership before querying member
+    // profiles. Missing Teams, non-members, and ordinary members are one
+    // opaque public denial, so this API cannot become a Team-existence probe.
+    const callerMembership = await tx.prepare(sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    )).get(teamId, auth.userId);
+    if (callerMembership?.role !== "admin") throw teamDenied();
+    const rows = await tx.prepare(sql(
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] " +
+      "FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] " +
+      "WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
+    )).all(teamId, TEAM_MEMBER_LIST_MAX);
+    return {
+      members: rows.map((row: LooseRecord) => ({
+        userId: String(row.userId),
+        displayName: String(row.displayName),
+        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
+        role: row.role === "admin" ? "admin" : "member",
+        // Ticket 09 will source active declared assignment rows here. Until
+        // then no membership has a public application role to expose.
+        applicationRoles: [],
+      })),
+    };
+  });
 }
 
 async function ensureInitialTeam(database: LooseRecord, auth: LooseRecord) {

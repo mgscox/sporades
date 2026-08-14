@@ -175,7 +175,8 @@ const app = capsule({
       const result = await ctx.teams.list();
       const created = await ctx.teams.create("Typed Team");
       const renamed = await ctx.teams.rename(created.team.id, "Renamed Typed Team");
-      return result.teams.map((team) => team.id).concat(renamed.team.id);
+      const members = await ctx.teams.listMembers(renamed.team.id);
+      return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "");
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
@@ -366,12 +367,17 @@ preferences.update(null);
 teams.list().then((result) => result.data?.teams.map((team) => team.memberCount));
 teams.create("Browser Team").then((result) => result.data?.team.id);
 teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
+teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
 // @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
 teams.list("current-team");
 // @ts-expect-error Team names must be strings.
 teams.create({ name: "not a string" });
 // @ts-expect-error Team renames always require an explicit Team ID.
 teams.rename("Renamed Browser Team");
+// @ts-expect-error membership directories always require an explicit Team ID.
+teams.listMembers();
+// @ts-expect-error Team IDs must be strings.
+teams.listMembers({ teamId: "not-a-string" });
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
