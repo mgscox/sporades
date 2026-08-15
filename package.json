@@ -68,5 +68,10 @@
     "fsevents@2.3.3": true,
     "inferno@9.1.0": true,
     "esbuild@0.25.12": true
+  },
+  "overrides": {
+    "vitepress": {
+      "vite": "$vite"
+    }
   }
 }
