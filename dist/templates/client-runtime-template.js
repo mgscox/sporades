@@ -43,6 +43,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
     return value;
   }
   if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError("Query arguments must contain plain JSON arrays.");
     if (Object.getOwnPropertySymbols(value).length > 0) throw new TypeError("Query arguments must not contain symbol keys.");
     if (ancestors.has(value)) throw new TypeError("Query arguments must not contain cycles.");
     if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
