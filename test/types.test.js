@@ -72,7 +72,18 @@ import { auth, createHooks, createInfernoAdapters, createLitControllers, createS
 
 const app = capsule({
   name: "typed island",
-  teams: { appRoles: ["author", "reviewer"] },
+  teams: {
+    appRoles: ["author", "reviewer"],
+    admitJoin: async (ctx, input) => {
+      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      // @ts-expect-error admission policy data access is transaction-bound and read-only.
+      ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
+      ctx.log.info("team admission", input.currentMemberCount, input.userId);
+      // @ts-expect-error admission receives only transaction-bound data access, auth, env, and logging.
+      ctx.teams.list();
+      return { allow: rows.length === 0 };
+    },
+  },
   files: {
     acl: {
       read: ({ file, ctx }) => {
@@ -200,6 +211,8 @@ const app = capsule({
       const created = await ctx.teams.create("Typed Team");
       const renamed = await ctx.teams.rename(created.team.id, "Renamed Typed Team");
       const members = await ctx.teams.listMembers(renamed.team.id);
+      const memberPage = await ctx.teams.listMembers(renamed.team.id, { cursor: members.nextCursor, limit: 25 });
+      memberPage.totalCount.valueOf();
       const roleUpdate = await ctx.teams.updateApplicationRoles(renamed.team.id, members.members[0]?.userId ?? "", { add: ["author"], remove: [] });
       const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
       const joined = await ctx.teams.join("opaque-join-code");
@@ -400,6 +413,7 @@ teams.list().then((result) => result.data?.teams.map((team) => team.memberCount)
 teams.create("Browser Team").then((result) => result.data?.team.id);
 teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
 teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
+teams.listMembers("00000000-0000-4000-8000-000000000000", { cursor: "opaque", limit: 25 }).then((result) => result.data?.totalCount.valueOf());
 teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"], remove: ["reviewer"] }).then((result) => result.data?.updated.valueOf());
 teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
 teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
@@ -424,6 +438,8 @@ teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0
 teams.updateApplicationRoles({ teamId: "not-a-string" }, "00000000-0000-4000-8000-000000000000", { add: [], remove: [] });
 // @ts-expect-error Team IDs must be strings.
 teams.listMembers({ teamId: "not-a-string" });
+// @ts-expect-error member page limits must be numbers.
+teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: "25" });
 // @ts-expect-error Join codes must be strings.
 teams.validateJoinLink({ code: "not-a-string" });
 // @ts-expect-error Join codes must be strings.

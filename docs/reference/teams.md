@@ -12,7 +12,7 @@ Teams are always available but never automatically partition Capsule data. There
 
 When a user first links an account, Sporades atomically creates that user's initial singleton Team and its admin membership. Users linked before Teams are bootstrapped lazily on their first Team operation. Anonymous users neither receive durable Teams nor may perform linked-user Team operations. A user may belong to multiple Teams; every Team-scoped operation names its Team ID explicitly.
 
-`teams.list()` returns the caller's memberships with a bounded member count, their management role, and their active application roles. Capsules can use that state to keep single-user navigation simple without relying on hidden current-Team state.
+`teams.list()` returns the caller's memberships with a capped display count, their management role, and their active application roles. The display count is capped at 99 for compatibility and is not suitable for seat enforcement. Capsules can use that state to keep single-user navigation simple without relying on hidden current-Team state.
 
 ## Manage Teams from a Capsule
 
@@ -41,7 +41,20 @@ export default capsule({
 
 Capsules may declare up to 32 membership application roles with `teams.appRoles`. Names match `^[a-z][a-z0-9-]{0,31}$`; `admin`, `member`, and the `sporades-` prefix are reserved. Application roles are scoped to one membership, are not automatically given to admins, and become inactive when a Capsule removes their declaration. Retained inactive assignments fail closed and become active again if a rollback restores the declaration.
 
-Only admins can enumerate memberships for their exact Team. The bounded safe result contains user ID, display name, optional picture, management role, and active application roles; results omit member emails, provider subjects, sessions, credentials, and inactive roles. Ordinary members can inspect their own membership through `teams.list()` but cannot enumerate a directory.
+Only admins can enumerate memberships for their exact Team. `listMembers(teamId, { cursor, limit })` returns a bounded page in deterministic membership-creation and user-ID order, an opaque `nextCursor` when another page exists, and an exact uncapped `totalCount`. Omitting options remains valid and uses the compatible 100-member page size; limits range from 1 through 100. Treat cursors as opaque and pass them back unchanged.
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await teams.listMembers(teamId, { cursor, limit: 50 });
+  if (page.error) throw page.error;
+  renderMembers(page.data.members);
+  showSeatUsage(page.data.totalCount); // authoritative current membership count
+  cursor = page.data.nextCursor;
+} while (cursor);
+```
+
+The safe result contains user ID, display name, optional picture, management role, and active application roles; results omit member emails, provider subjects, sessions, credentials, and inactive roles. Pending Join links are not members and do not affect `totalCount`. Ordinary members can inspect their own membership through `teams.list()` but cannot enumerate a directory. Invalid limits and malformed cursors fail with `INVALID_TEAM_MEMBER_PAGE` after Team-admin authorization, without revealing Team or member details.
 
 Exact-Team admins use `updateApplicationRoles(teamId, userId, { add, remove })` to atomically reconcile declared roles. Promotion and demotion preserve at least one committed admin. Members leave with `leave(teamId)`; an admin cannot leave while still an admin, and `removeMember` cannot remove its caller. A sole admin member may delete an otherwise empty Team with `delete(teamId)`.
 
@@ -60,6 +73,25 @@ if (checked.data?.valid) await teams.join(code);
 ```
 
 Inspection before authentication exposes only safe Team presentation and usability. Post-auth validation is non-consuming validation followed by the authoritative join: it returns only `{ valid }`, does not reserve or consume a link, and `join(code)` repeats capability and identity checks transactionally before creating an ordinary `member` membership with no application roles.
+
+### Trusted Join admission
+
+A Capsule may declare `teams.admitJoin` in trusted server code to decide whether a validated Join link may create a new membership. The policy receives the target `teamId`, joining `userId`, and exact `currentMemberCount`, plus a transaction-bound context containing read-only `ctx.db`, `ctx.auth`, `ctx.env`, and `ctx.log`.
+
+```ts
+export default capsule({
+  name: "team-notes",
+  schema: { subscriptions: table({ teamId: String(), seats: Number() }) },
+  teams: {
+    async admitJoin(ctx, { teamId, currentMemberCount }) {
+      const subscription = (await ctx.db.subscriptions.where("teamId", teamId).all())[0];
+      return { allow: Boolean(subscription && currentMemberCount < subscription.seats) };
+    },
+  },
+});
+```
+
+The runtime invokes this policy only after authentication, Join-link validation, intended-recipient matching, and the Team lifecycle lock, but before membership insertion. The check, any read-only `ctx.db` access, capability consumption, and membership insert share one transaction. Concurrent joins for a final seat therefore serialize against the same Team row: one may commit and the next observes the new exact count. A denial or policy error rolls the transaction back and returns only the generic `TEAM_JOIN_DENIED` client error; policy data and internal errors are not exposed. Browser callers cannot supply, alter, or omit this policy. Capsules without `admitJoin` preserve the 0.8.1 Join behavior, and idempotent retries by an already-joined member do not create or re-admit a membership.
 
 Sporades compares normalized email equality across the current linked user's attached addresses, but does not require verified email. Email-verification policy belongs to the Capsule. Malformed, expired, revoked, consumed, unknown, and email-mismatched capabilities all have generic invalid results. Repeated same-user join attempts are idempotent.
 

@@ -419,7 +419,10 @@ export async function openDevDatabase(
   options: LooseRecord = {},
 ) {
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
-    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
+    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
+  }
+  if (capsuleDefinition?.teams?.admitJoin !== undefined && typeof capsuleDefinition.teams.admitJoin !== "function") {
+    throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   if (capsuleDefinition?.files !== undefined && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
@@ -514,6 +517,10 @@ export async function openDevDatabase(
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
+    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
+    createTeamJoinAdmissionContext(transactionAdapter: LooseRecord, auth: LooseRecord) {
+      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
+    },
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -1975,6 +1982,35 @@ export function createEndpointDatabaseApi(database: LooseRecord, contextGetter: 
   );
 }
 
+function createEndpointReadOnlyDatabaseApi(database: LooseRecord, contextGetter: any = null) {
+  return Object.fromEntries(
+    database.schema.tables.map((table: { name: any; }) => [
+      table.name,
+      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter)),
+    ]),
+  );
+}
+
+function readOnlyEndpointTableApi(tableApi: LooseRecord): LooseRecord {
+  return {
+    where(fieldName: any, value: any) {
+      return readOnlyEndpointTableApi(tableApi.where(fieldName, value));
+    },
+    orderBy(fieldName: any, direction = "asc") {
+      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction));
+    },
+    limit(count: any) {
+      return readOnlyEndpointTableApi(tableApi.limit(count));
+    },
+    get() {
+      return tableApi.get();
+    },
+    all() {
+      return tableApi.all();
+    },
+  };
+}
+
 function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query: LooseRecord = {}, contextGetter: any = null) {
   return {
     insert(values: LooseRecord) {
@@ -2853,7 +2889,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
     if (message.type === "teams.listMembers") {
       try {
-        const data = await listTeamMembers(database, client.session.auth, message.teamId);
+        const data = await listTeamMembers(database, client.session.auth, message.teamId, { cursor: message.cursor, limit: message.limit });
         sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
       } catch (error: any) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -3743,6 +3779,17 @@ function createMutationContext(database: LooseRecord, auth: any) {
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     },
   };
+  return context;
+}
+
+function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord) {
+  const context: LooseRecord = {
+    auth,
+    env: database.serverEnv,
+    log: createEndpointLogger(database),
+  };
+  const holder = createContextHolder(context);
+  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 

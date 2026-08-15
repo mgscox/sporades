@@ -1,5 +1,6 @@
 type LooseRecord = Record<string, any>;
 export declare const TEAM_MEMBER_LIST_MAX = 100;
+export declare const TEAM_MEMBER_LIST_DEFAULT = 100;
 export declare const TEAM_MEMBERSHIP_MAX = 25;
 export declare const TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS: number;
 export declare const TEAM_JOIN_LINK_MIN_TTL_SECONDS: number;
@@ -19,7 +20,7 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
     rename(teamId: any, name: any): Promise<{
         team: any;
     }>;
-    listMembers(teamId: any): Promise<any>;
+    listMembers(teamId: any, options?: LooseRecord): Promise<any>;
     updateApplicationRoles(teamId: any, userId: any, changes: any): Promise<{
         updated: boolean;
     }>;
@@ -139,7 +140,7 @@ export declare function leaveCurrentUserTeam(database: LooseRecord, auth: LooseR
 export declare function deleteCurrentUserTeam(database: LooseRecord, auth: LooseRecord, teamId: any, eventContext?: LooseRecord): Promise<{
     deleted: boolean;
 }>;
-export declare function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
+export declare function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any, options?: LooseRecord): Promise<any>;
 export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
 export declare function flushTeamSecurityEvents(database: LooseRecord, context: LooseRecord | undefined, options?: LooseRecord): void;
 export {};

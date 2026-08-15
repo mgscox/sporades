@@ -956,6 +956,8 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const members = await socket.waitFor((message) => message.id === "teams-members");
       assert.equal(members.type, "teams.listMembers.result");
       assert.equal(members.error, null, JSON.stringify(members));
+      assert.equal(members.data.totalCount, 2);
+      assert.equal(members.data.nextCursor, undefined);
       assert.deepEqual(Object.keys(members.data.members[0]).sort(), ["applicationRoles", "displayName", "picture", "role", "userId"]);
       assert.equal(JSON.stringify(members.data).includes("bundle-teams@example.com"), false, "generated bundles keep emails out of member results");
 

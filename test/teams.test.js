@@ -6,8 +6,10 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { endpoint, job, mutation, query } from "../dist/server.js";
-import { createAdditionalTeam } from "../dist/teams-runtime.js";
+import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
+import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
+import { withPostgresAdapter } from "./support/database-adapter-engines.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 let trustedValidationCode = null;
 let trustedJoinCode = null;
@@ -69,6 +71,29 @@ const rolesCapsule = {
   mutations: {
     ...capsule.mutations,
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+  },
+};
+
+const observedJoinAdmissions = [];
+const admissionCapsule = {
+  ...capsule,
+  name: "teams-admission-test",
+  schema: {
+    seatPolicies: table({ teamId: StringField(), maximumMembers: NumberField() }),
+  },
+  teams: {
+    async admitJoin(ctx, input) {
+      const policies = await ctx.db.seatPolicies.where("teamId", input.teamId).all();
+      observedJoinAdmissions.push({ ...input, actorUserId: ctx.auth.userId });
+      return { allow: input.currentMemberCount < (policies[0]?.maximumMembers ?? Infinity) };
+    },
+  },
+  mutations: {
+    ...capsule.mutations,
+    updateSeatPolicyAndJoin: mutation(async (ctx, policyId, maximumMembers, code) => {
+      await ctx.db.seatPolicies.update(policyId, { maximumMembers });
+      return ctx.teams.join(code);
+    }),
   },
 };
 
@@ -188,7 +213,9 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
     const browser = await send(owner, { id: "members-owner-list", type: "teams.listMembers", teamId: teamA, sessionToken: ownerSignUp.data.sessionToken });
     assert.equal(browser.error, null, JSON.stringify(browser.error));
     assert.equal(browser.type, "teams.listMembers.result");
-    assert.ok(browser.data.members.length > 1 && browser.data.members.length <= 100, "the member directory has a fixed response bound");
+    assert.equal(browser.data.members.length, 100, "omitting options preserves the previous page-size bound");
+    assert.equal(browser.data.totalCount, 112, "the exact total is not capped with the display page");
+    assert.equal(typeof browser.data.nextCursor, "string");
     assert.deepEqual(Object.keys(browser.data.members[0]).sort(), ["applicationRoles", "displayName", "picture", "role", "userId"]);
     assert.deepEqual(browser.data.members.find((entry) => entry.userId === ownerSignUp.data.auth.userId), {
       userId: ownerSignUp.data.auth.userId, displayName: "Owner", picture: "https://example.com/owner.png", role: "admin", applicationRoles: [],
@@ -197,6 +224,32 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
       userId: memberSignUp.data.auth.userId, displayName: "Member", picture: "https://example.com/member.png", role: "member", applicationRoles: [],
     });
     assertNoTeamLeak(browser.data, ["members-owner@example.com", "members-member@example.com", "bounded-0@example.com", "password", "sessionToken", "provider"]);
+
+    const seen = [];
+    let cursor;
+    do {
+      const page = await send(owner, {
+        id: `members-page-${seen.length}`, type: "teams.listMembers", teamId: teamA,
+        cursor, limit: 17, sessionToken: ownerSignUp.data.sessionToken,
+      });
+      assert.equal(page.error, null, JSON.stringify(page.error));
+      assert.equal(page.data.totalCount, 112);
+      assert.ok(page.data.members.length <= 17);
+      seen.push(...page.data.members.map((entry) => entry.userId));
+      cursor = page.data.nextCursor;
+    } while (cursor);
+    assert.equal(seen.length, 112);
+    assert.equal(new Set(seen).size, 112, "every member is returned exactly once");
+
+    for (const [id, options] of [
+      ["members-bad-cursor", { cursor: "not-an-opaque-cursor", limit: 10 }],
+      ["members-corrupt-cursor", { cursor: `${browser.data.nextCursor}!`, limit: 10 }],
+      ["members-bad-limit", { limit: 0 }],
+    ]) {
+      const invalidPage = await send(owner, { id, type: "teams.listMembers", teamId: teamA, ...options, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(invalidPage.error.code, "INVALID_TEAM_MEMBER_PAGE");
+      assertNoTeamLeak(invalidPage, [teamA, "members-owner@example.com", "Bounded 0"]);
+    }
 
     const trusted = await runQuery(runtime.database, ownerSignUp.data.auth, "ownTeamMembers");
     assert.deepEqual(trusted, { data: browser.data, error: null }, "trusted handler calls share the browser result and authorization contract");
@@ -210,6 +263,14 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
       assert.equal(denied.error.code, "DENIED");
       assertNoTeamLeak(denied, [teamA, "members-owner@example.com", "Owner"]);
     }
+
+    await runtime.database.adapter.withTransaction(async (tx) => {
+      for (const userId of seen.slice(100)) {
+        await tx.prepare("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").run(teamA, userId);
+      }
+    });
+    const emptyFinal = await send(owner, { id: "members-empty-final", type: "teams.listMembers", teamId: teamA, cursor: browser.data.nextCursor, limit: 1, sessionToken: ownerSignUp.data.sessionToken });
+    assert.deepEqual(emptyFinal.data, { members: [], totalCount: 100 }, "a page emptied by committed removal terminates without another cursor");
   } finally {
     owner?.close(); otherAdmin?.close(); member?.close(); stranger?.close();
     await runtime.close();
@@ -511,6 +572,201 @@ test("a linked recipient redeems a Join link through browser and trusted Team se
   }
 });
 
+test("Capsule Team admission is transaction-bound and serializes concurrent joins for the final seat", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-admission-"));
+  const databasePath = path.join(dir, "data.db");
+  const first = await startRuntime(databasePath, admissionCapsule);
+  let second;
+  let owner;
+  let firstRecipient;
+  let secondRecipient;
+  let thirdRecipient;
+  try {
+    owner = await first.open();
+    firstRecipient = await first.open();
+    secondRecipient = await first.open();
+    const ownerSignUp = await signUp(owner, "admission-owner", "admission-owner@example.com", "Admission Owner");
+    const firstSignUp = await signUp(firstRecipient, "admission-first", "admission-first@example.com", "First Recipient");
+    const secondSignUp = await signUp(secondRecipient, "admission-second", "admission-second@example.com", "Second Recipient");
+    const team = (await send(owner, { id: "admission-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const now = new Date().toISOString();
+    await first.database.adapter.prepare(
+      "INSERT INTO [seatPolicies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
+    ).run("seat-policy", now, now, team.id, 2);
+
+    const issue = async (id, email) => {
+      const result = await send(owner, { id, type: "teams.createJoinLink", teamId: team.id, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(result.error, null, JSON.stringify(result.error));
+      return new URL(result.data.link).searchParams.get("code");
+    };
+    const [firstCode, secondCode] = await Promise.all([
+      issue("admission-first-link", "admission-first@example.com"),
+      issue("admission-second-link", "admission-second@example.com"),
+    ]);
+
+    second = await openDevDatabase(databasePath, "", {}, {
+      name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } },
+    }, admissionCapsule);
+    observedJoinAdmissions.length = 0;
+    const attempts = await Promise.allSettled([
+      joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
+      joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
+    ]);
+    assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+    const denied = attempts.find((attempt) => attempt.status === "rejected");
+    assert.equal(denied.reason.code, "TEAM_JOIN_DENIED");
+    assert.deepEqual({ message: denied.reason.message, hint: denied.reason.hint }, {
+      message: "Could not join this Team.",
+      hint: "Ask a Team administrator for access.",
+    });
+    assert.equal(observedJoinAdmissions.length, 2, "every new-membership join invokes trusted policy");
+    assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+    assert.ok(observedJoinAdmissions.every((entry) => entry.teamId === team.id && entry.userId === entry.actorUserId));
+
+    const members = await send(owner, { id: "admission-members", type: "teams.listMembers", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(members.data.totalCount, 2);
+    const deniedCode = attempts[0].status === "rejected" ? firstCode : secondCode;
+    const deniedLink = first.database.adapter.prepare(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    ).get(deniedCode.split(".")[1]);
+    assert.equal(deniedLink.consumedAt, null, "policy denial rolls capability and membership writes back together");
+
+    thirdRecipient = await first.open();
+    const thirdSignUp = await signUp(thirdRecipient, "admission-third", "admission-third@example.com", "Third Recipient");
+    const thirdCode = await issue("admission-third-link", "admission-third@example.com");
+    const trustedJoined = await runMutation(first.database, thirdSignUp.data.auth, "updateSeatPolicyAndJoin", ["seat-policy", 3, thirdCode]);
+    assert.equal(trustedJoined.ok, true, JSON.stringify(trustedJoined));
+    assert.equal(trustedJoined.data.team.memberCount, 3, "admission sees app state updated earlier in the same mutation transaction");
+
+    const fourthRecipient = await first.open();
+    const fourthSignUp = await signUp(fourthRecipient, "admission-fourth", "admission-fourth@example.com", "Fourth Recipient");
+    const fourthCode = await issue("admission-fourth-link", "admission-fourth@example.com");
+    const publicDenied = await send(fourthRecipient, {
+      id: "admission-public-denied", type: "teams.join", code: fourthCode, sessionToken: fourthSignUp.data.sessionToken,
+    });
+    assert.deepEqual(publicDenied.error, {
+      code: "TEAM_JOIN_DENIED", message: "Could not join this Team.", hint: "Ask a Team administrator for access.",
+    });
+    assertNoTeamLeak(publicDenied, [team.id, "admission-fourth@example.com", fourthCode, "maximumMembers"]);
+    assert.equal(observedJoinAdmissions.length, 4, "trusted and public join transports cannot omit or bypass admission");
+    fourthRecipient.close();
+  } finally {
+    owner?.close(); firstRecipient?.close(); secondRecipient?.close(); thirdRecipient?.close();
+    await second?.close();
+    await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Postgres Team admission serializes concurrent joins for the final seat", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres Team admission test.",
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-admission-postgres-"));
+  await withPostgresAdapter(async () => {}, { appTableNames: ["seatPolicies"] });
+  const serverEnv = {
+    SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+    SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+  };
+  const runtimeOptions = { serverEnv, config: { services: { database: { engine: "postgres" } } } };
+  const first = await startRuntime(path.join(dir, "first.db"), admissionCapsule, runtimeOptions);
+  let second;
+  let owner;
+  let firstRecipient;
+  let secondRecipient;
+  try {
+    owner = await first.open(); firstRecipient = await first.open(); secondRecipient = await first.open();
+    const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const ownerSignUp = await signUp(owner, "pg-admission-owner", `pg-owner-${unique}@example.com`, "Postgres Owner");
+    const firstSignUp = await signUp(firstRecipient, "pg-admission-first", `pg-first-${unique}@example.com`, "Postgres First");
+    const secondSignUp = await signUp(secondRecipient, "pg-admission-second", `pg-second-${unique}@example.com`, "Postgres Second");
+    const team = (await send(owner, { id: "pg-admission-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const now = new Date().toISOString();
+    await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+      "INSERT INTO [seatPolicies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
+    )).run(`pg-policy-${unique}`, now, now, team.id, 2);
+    const issue = async (id, email) => {
+      const result = await send(owner, { id, type: "teams.createJoinLink", teamId: team.id, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(result.error, null, JSON.stringify(result.error));
+      return new URL(result.data.link).searchParams.get("code");
+    };
+    const [firstCode, secondCode] = await Promise.all([
+      issue("pg-admission-first-link", firstSignUp.data.auth.email),
+      issue("pg-admission-second-link", secondSignUp.data.auth.email),
+    ]);
+    second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, {
+      name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } }, services: { database: { engine: "postgres" } },
+    }, admissionCapsule, { serviceEnv: serverEnv });
+    const attempts = await Promise.allSettled([
+      joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
+      joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
+    ]);
+    assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+    assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
+    const count = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(team.id);
+    assert.equal(Number(count.count), 2);
+  } finally {
+    owner?.close(); firstRecipient?.close(); secondRecipient?.close();
+    await second?.close(); await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("libSQL Team admission serializes concurrent joins for the final seat", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-admission-libsql-"));
+  await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+    const serverEnv = {
+      SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+      SPORADES_SERVICE_DATABASE_URL: url,
+    };
+    const runtimeOptions = { serverEnv, config: { services: { database: { kind: "database", engine: "libsql" } } } };
+    const first = await startRuntime(path.join(dir, "first.db"), admissionCapsule, runtimeOptions);
+    let second;
+    let owner;
+    let firstRecipient;
+    let secondRecipient;
+    try {
+      owner = await first.open(); firstRecipient = await first.open(); secondRecipient = await first.open();
+      const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const ownerSignUp = await signUp(owner, "libsql-admission-owner", `libsql-owner-${unique}@example.com`, "libSQL Owner");
+      const firstSignUp = await signUp(firstRecipient, "libsql-admission-first", `libsql-first-${unique}@example.com`, "libSQL First");
+      const secondSignUp = await signUp(secondRecipient, "libsql-admission-second", `libsql-second-${unique}@example.com`, "libSQL Second");
+      const team = (await send(owner, { id: "libsql-admission-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+      const now = new Date().toISOString();
+      await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+        "INSERT INTO [seatPolicies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
+      )).run(`libsql-policy-${unique}`, now, now, team.id, 2);
+      const issue = async (id, email) => {
+        const result = await send(owner, { id, type: "teams.createJoinLink", teamId: team.id, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+        assert.equal(result.error, null, JSON.stringify(result.error));
+        return new URL(result.data.link).searchParams.get("code");
+      };
+      const [firstCode, secondCode] = await Promise.all([
+        issue("libsql-admission-first-link", firstSignUp.data.auth.email),
+        issue("libsql-admission-second-link", secondSignUp.data.auth.email),
+      ]);
+      second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, {
+        name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } }, services: { database: { kind: "database", engine: "libsql" } },
+      }, admissionCapsule, { serviceEnv: serverEnv });
+      const attempts = await Promise.allSettled([
+        joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
+        joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
+      ]);
+      assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+      assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
+      const count = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+        "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+      )).get(team.id);
+      assert.equal(Number(count.count), 2);
+    } finally {
+      owner?.close(); firstRecipient?.close(); secondRecipient?.close();
+      await second?.close(); await first.close();
+    }
+  });
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("Team admins manage promotion, demotion, removal, leaving, and sole-member deletion through browser and trusted seams", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-lifecycle-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
@@ -545,9 +801,13 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
     assert.equal(removed.error.code, "DENIED", "ordinary members cannot remove themselves or others");
     const removedByAdmin = await send(firstMember, { id: "lifecycle-remove", type: "teams.removeMember", teamId: team.id, userId: secondSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
     assert.deepEqual(removedByAdmin, { id: "lifecycle-remove", type: "teams.removeMember.result", data: { removed: true }, error: null });
+    const afterRemoval = await send(firstMember, { id: "lifecycle-after-remove", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.equal(afterRemoval.data.totalCount, 2, "admin removal frees committed capacity immediately");
 
     const left = await send(owner, { id: "lifecycle-leave", type: "teams.leave", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
     assert.deepEqual(left, { id: "lifecycle-leave", type: "teams.leave.result", data: { left: true }, error: null });
+    const afterLeave = await send(firstMember, { id: "lifecycle-after-leave", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.equal(afterLeave.data.totalCount, 1, "leave frees committed capacity immediately");
     const lastAdminDemotion = await send(firstMember, { id: "lifecycle-last-demotion", type: "teams.demote", teamId: team.id, userId: firstSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminDemotion.error.code, "DENIED");
     const lastAdminLeave = await send(firstMember, { id: "lifecycle-last-leave", type: "teams.leave", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
@@ -1091,11 +1351,12 @@ test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs 
   }
 });
 
-async function startRuntime(databasePath, capsuleDefinition = capsule) {
-  const database = await openDevDatabase(databasePath, "", {}, {
+async function startRuntime(databasePath, capsuleDefinition = capsule, options = {}) {
+  const database = await openDevDatabase(databasePath, "", options.serverEnv ?? {}, {
     name: "teams-test",
     auth: { providers: { anonymous: true, email: true } },
-  }, capsuleDefinition);
+    ...(options.config ?? {}),
+  }, capsuleDefinition, { serviceEnv: options.serverEnv ?? {} });
   const hub = createWebSocketHub(() => database);
   const server = createServer();
   server.on("request", async (request, response) => {

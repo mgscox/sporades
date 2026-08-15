@@ -255,6 +255,18 @@ export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
   [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? TableApi<RowFromFields<Fields>> : TableApi;
 };
 
+export type ReadOnlyTableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
+  where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): ReadOnlyTableApi<Row>;
+  orderBy(fieldName: keyof Row & string, direction?: OrderDirection): ReadOnlyTableApi<Row>;
+  limit(count: number): ReadOnlyTableApi<Row>;
+  get(): Row | null;
+  all(): Row[];
+};
+
+export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
+  [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? ReadOnlyTableApi<RowFromFields<Fields>> : ReadOnlyTableApi;
+};
+
 /**
  * Current Sporades user identity for a handler invocation.
  *
@@ -376,12 +388,20 @@ export type TeamMemberSummary = {
   role: "admin" | "member";
   applicationRoles: string[];
 };
+export type TeamMembersListOptions = { cursor?: string; limit?: number };
+export type TeamMembersListResult = { members: TeamMemberSummary[]; nextCursor?: string; totalCount: number };
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
 export type TeamJoinLinkValidation = { valid: boolean };
 /** Atomic membership-scoped application-role reconciliation. Management role is never included. */
 export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
+export type TeamJoinAdmissionInput = { teamId: string; userId: string; currentMemberCount: number };
+export type TeamJoinAdmissionDecision = { allow: boolean };
+export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+  /** Transaction-bound application reads. Admission policies cannot mutate app state. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+};
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
@@ -389,7 +409,7 @@ export type CurrentUserTeamsApi = {
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
-  listMembers(teamId: string): Promise<{ members: TeamMemberSummary[] }>;
+  listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
   /** Atomically adds and removes declared application roles for a member of one administered Team. */
   updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<{ updated: true }>;
   /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
@@ -798,7 +818,11 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
-  teams?: { appRoles?: readonly string[] };
+  teams?: {
+    appRoles?: readonly string[];
+    /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
+    admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
+  };
   /** Optional File ACL rules for deliberate non-owner access to normal File operations. File ownership and public-URL revocation remain with the File owner. */
   files?: CapsuleFilesDefinition;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */

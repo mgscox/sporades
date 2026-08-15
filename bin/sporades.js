@@ -68,8 +68,8 @@ export const teams = {
   rename(teamId, name) {
     return connect().teamsRename(teamId, name);
   },
-  listMembers(teamId) {
-    return connect().teamsListMembers(teamId);
+  listMembers(teamId, options = {}) {
+    return connect().teamsListMembers(teamId, options);
   },
   updateApplicationRoles(teamId, userId, changes) {
     return connect().teamsUpdateApplicationRoles(teamId, userId, changes);
@@ -1117,7 +1117,7 @@ function createConnection() {
     teamsList() { return request("teams.list"); },
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
-    teamsListMembers(teamId) { return request("teams.listMembers", { teamId }); },
+    teamsListMembers(teamId, options = {}) { return request("teams.listMembers", { teamId, cursor: options.cursor, limit: options.limit }); },
     teamsUpdateApplicationRoles(teamId, userId, changes) { return request("teams.updateApplicationRoles", { teamId, userId, add: changes?.add, remove: changes?.remove }); },
     teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
     teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },
@@ -8477,6 +8477,7 @@ var INITIAL_TEAM_NAME = "My Team";
 var TEAM_NAME_MAX_BYTES = 80;
 var TEAM_MEMBER_COUNT_MAX = 99;
 var TEAM_MEMBER_LIST_MAX = 100;
+var TEAM_MEMBER_LIST_DEFAULT = TEAM_MEMBER_LIST_MAX;
 var TEAM_MEMBERSHIP_MAX = 25;
 var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
 var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
@@ -8538,9 +8539,9 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
       requireAuth({ auth }, { linked: true });
       return renameCurrentUserTeam(database, auth, teamId, name, contextGetter?.());
     },
-    async listMembers(teamId) {
+    async listMembers(teamId, options = {}) {
       requireAuth({ auth }, { linked: true });
-      return listTeamMembers(database, auth, teamId);
+      return listTeamMembers(database, auth, teamId, options);
     },
     async updateApplicationRoles(teamId, userId, changes) {
       requireAuth({ auth }, { linked: true });
@@ -8806,6 +8807,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
       )).get(row.teamId, auth.userId);
       if (!membership) {
+        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
         await ensureMembershipCounterOnAdapter(tx, auth.userId);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
@@ -8828,6 +8830,23 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
   }
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
+}
+async function enforceTeamJoinAdmission(database, tx, auth, teamId) {
+  if (typeof database.teamJoinAdmission !== "function") return;
+  const count = await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId);
+  try {
+    const context = database.createTeamJoinAdmissionContext(tx, auth);
+    const decision = await database.teamJoinAdmission(context, {
+      teamId,
+      userId: auth.userId,
+      currentMemberCount: Number(count?.count ?? 0)
+    });
+    if (decision?.allow !== true) throw teamJoinDenied();
+  } catch {
+    throw teamJoinDenied();
+  }
 }
 function normalizeTeamJoinEmail(email) {
   const normalized = String(email ?? "").trim().toLowerCase();
@@ -8948,6 +8967,9 @@ function teamJoinLinkLimitError() {
 }
 function invalidTeamJoinLink() {
   return commandError2("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
+}
+function teamJoinDenied() {
+  return commandError2("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
 }
 async function listCurrentUserTeams(database, auth) {
   requireAuth({ auth }, { linked: true });
@@ -9159,7 +9181,7 @@ async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
   emitTeamSecurityEvent(database, eventContext, "teams.deleted", auth.userId, teamId, "succeeded", "TEAM_DELETED");
   return { deleted: true };
 }
-async function listTeamMembers(database, auth, teamId) {
+async function listTeamMembers(database, auth, teamId, options = {}) {
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
@@ -9168,19 +9190,56 @@ async function listTeamMembers(database, auth, teamId) {
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
     if (callerMembership?.role !== "admin") throw teamDenied();
+    const page = normalizeTeamMemberPage(options);
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
+    const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
     const rows = await tx.prepare(sql(
-      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
-    )).all(teamId, TEAM_MEMBER_LIST_MAX);
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] , [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
+    )).all(...params);
+    const hasMore = rows.length > page.limit;
+    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+    const last = pageRows.at(-1);
     return {
-      members: await Promise.all(rows.map(async (row) => ({
+      members: await Promise.all(pageRows.map(async (row) => ({
         userId: String(row.userId),
         displayName: String(row.displayName),
         picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
         role: row.role === "admin" ? "admin" : "member",
         applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
-      })))
+      }))),
+      ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
+      totalCount: Number(total?.count ?? 0)
     };
   });
+}
+function normalizeTeamMemberPage(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw invalidTeamMemberPage();
+  const limit = options.limit === void 0 ? TEAM_MEMBER_LIST_DEFAULT : options.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > TEAM_MEMBER_LIST_MAX) throw invalidTeamMemberPage();
+  if (options.cursor === void 0) return { cursor: null, limit };
+  if (typeof options.cursor !== "string" || options.cursor.length < 1 || options.cursor.length > 512) throw invalidTeamMemberPage();
+  try {
+    if (!/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw invalidTeamMemberPage();
+    const cursorBytes = Buffer.from(options.cursor, "base64url");
+    if (cursorBytes.toString("base64url") !== options.cursor) throw invalidTeamMemberPage();
+    const decoded = JSON.parse(cursorBytes.toString("utf8"));
+    if (decoded?.v !== 1 || typeof decoded.createdAt !== "string" || !Number.isFinite(Date.parse(decoded.createdAt)) || typeof decoded.userId !== "string" || decoded.userId.length < 1 || decoded.userId.length > 256) {
+      throw invalidTeamMemberPage();
+    }
+    return { cursor: { createdAt: decoded.createdAt, userId: decoded.userId }, limit };
+  } catch (error) {
+    if (error?.code === "INVALID_TEAM_MEMBER_PAGE") throw error;
+    throw invalidTeamMemberPage();
+  }
+}
+function encodeTeamMemberCursor(createdAt, userId) {
+  return Buffer.from(JSON.stringify({ v: 1, createdAt, userId }), "utf8").toString("base64url");
+}
+function invalidTeamMemberPage() {
+  return commandError2("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
 }
 async function ensureInitialTeam(database, auth) {
   if (database.__transactionActive) {
@@ -14445,7 +14504,10 @@ function quoteIdentifier(identifier) {
 // src/server-runtime-source.ts
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
-    throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[] }.", "INVALID_TEAM_APPLICATION_ROLES");
+    throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
+  }
+  if (capsuleDefinition?.teams?.admitJoin !== void 0 && typeof capsuleDefinition.teams.admitJoin !== "function") {
+    throw commandError2("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   if (capsuleDefinition?.files !== void 0 && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
@@ -14532,6 +14594,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
+    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
+    createTeamJoinAdmissionContext(transactionAdapter, auth) {
+      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
+    },
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -15823,6 +15889,33 @@ function createEndpointDatabaseApi(database, contextGetter = null) {
     database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)])
   );
 }
+function createEndpointReadOnlyDatabaseApi(database, contextGetter = null) {
+  return Object.fromEntries(
+    database.schema.tables.map((table) => [
+      table.name,
+      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter))
+    ])
+  );
+}
+function readOnlyEndpointTableApi(tableApi) {
+  return {
+    where(fieldName, value) {
+      return readOnlyEndpointTableApi(tableApi.where(fieldName, value));
+    },
+    orderBy(fieldName, direction = "asc") {
+      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction));
+    },
+    limit(count) {
+      return readOnlyEndpointTableApi(tableApi.limit(count));
+    },
+    get() {
+      return tableApi.get();
+    },
+    all() {
+      return tableApi.all();
+    }
+  };
+}
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
     insert(values) {
@@ -16626,7 +16719,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "teams.listMembers") {
       try {
-        const data = await listTeamMembers(database, client.session.auth, message.teamId);
+        const data = await listTeamMembers(database, client.session.auth, message.teamId, { cursor: message.cursor, limit: message.limit });
         sendJson(client, { id: message.id ?? null, type: "teams.listMembers.result", data, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -17424,6 +17517,16 @@ function createMutationContext(database, auth) {
       if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
+  return context;
+}
+function createTeamJoinAdmissionContext(database, auth) {
+  const context = {
+    auth,
+    env: database.serverEnv,
+    log: createEndpointLogger(database)
+  };
+  const holder = createContextHolder(context);
+  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 function createCurrentUserJobApi(database, contextGetter) {
@@ -23542,7 +23645,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.8.1";
+var CLI_VERSION = "0.8.2";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
