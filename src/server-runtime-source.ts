@@ -2784,7 +2784,30 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         });
         return;
       }
-      const subscription = { id: message.id, name: queryName, style: message.query ? "direct" : "rows", generation: 0 };
+      let args;
+      try {
+        args = normalizeQueryArguments(message.args ?? []);
+      } catch {
+        sendJson(client, {
+          id: message.id,
+          type: "query.result",
+          query: queryName,
+          data: null,
+          error: invalidQueryArgumentsError(),
+        });
+        return;
+      }
+      if (!message.query && args.length > 0) {
+        sendJson(client, {
+          id: message.id,
+          type: "query.result",
+          query: queryName,
+          data: null,
+          error: invalidQueryArgumentsError(),
+        });
+        return;
+      }
+      const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
       void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error));
       return;
@@ -3187,7 +3210,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result: any = await runQuery(database, client.session.auth, subscription.name);
+      const result: any = await runQuery(database, client.session.auth, subscription.name, subscription.args);
       const data =
         subscription.style === "direct"
           ? (result.data ?? result.rows)
@@ -3458,7 +3481,13 @@ function sendJsonWithCompletion(client: LooseRecord, message: LooseRecord, timeo
   });
 }
 
-export async function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any> {
+export async function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs: unknown = []): Promise<any> {
+  let args;
+  try {
+    args = normalizeQueryArguments(rawArgs);
+  } catch {
+    return { rows: null, data: null, error: invalidQueryArgumentsError() };
+  }
   let context;
   try {
     context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
@@ -3473,10 +3502,11 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   }
 
   if (queryName === "ctx.env") {
+    if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
     return { data: context.env, error: null };
   }
 
-  const customResult = await runCustomQuery(database, context, queryName);
+  const customResult = await runCustomQuery(database, context, queryName, args);
   if (customResult) {
     return customResult;
   }
@@ -3491,6 +3521,8 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
       },
     };
   }
+
+  if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
 
   const cacheKey = `${table.name}:${context.auth.userId}`;
   if (!database.rowCache.has(cacheKey)) {
@@ -3508,7 +3540,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
 }
 
-async function runCustomQuery(database: LooseRecord, context: any, queryName: any) {
+async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[]) {
   const handler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   if (!handler) {
     return null;
@@ -3519,7 +3551,7 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
       typeof handler.handler === "function"
         ? handler.handler
         : new Function(`return (${handler.handlerSource});`)();
-    const data = await queryHandler(context);
+    const data = await queryHandler(context, ...args);
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
@@ -3534,6 +3566,68 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
       },
     };
+  }
+}
+
+const QUERY_ARGUMENT_LIMIT_BYTES = 65536;
+
+function invalidQueryArgumentsError() {
+  return {
+    message: "Invalid query arguments.",
+    hint: "Use a JSON-compatible argument array no larger than 65536 UTF-8 bytes.",
+  };
+}
+
+function normalizeQueryArguments(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error("Query arguments must be an array.");
+  const snapshot = normalizeQueryArgumentValue(value, new Set<object>());
+  const canonicalJson = JSON.stringify(snapshot);
+  if (Buffer.byteLength(canonicalJson, "utf8") > QUERY_ARGUMENT_LIMIT_BYTES) {
+    throw new Error("Query arguments are too large.");
+  }
+  return snapshot as readonly unknown[];
+}
+
+function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Query arguments must contain finite numbers.");
+    return value;
+  }
+  if (typeof value !== "object") throw new Error("Query arguments must be JSON-compatible.");
+  if (Object.getOwnPropertySymbols(value).length > 0) throw new Error("Query arguments must not contain symbol keys.");
+  if (ancestors.has(value)) throw new Error("Query arguments must not contain cycles.");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
+        throw new Error("Query arguments must not contain non-index array properties.");
+      }
+      const copy: unknown[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) throw new Error("Query arguments must not contain sparse arrays.");
+        copy.push(normalizeQueryArgumentValue(value[index], ancestors));
+      }
+      return Object.freeze(copy);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error("Query arguments must contain plain objects only.");
+    }
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.getOwnPropertyNames(value).sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) throw new Error("Query arguments must not contain accessors.");
+      Object.defineProperty(copy, key, {
+        value: normalizeQueryArgumentValue(descriptor.value, ancestors),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return Object.freeze(copy);
+  } finally {
+    ancestors.delete(value);
   }
 }
 

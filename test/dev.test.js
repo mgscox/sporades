@@ -10212,6 +10212,13 @@ export default capsule({
       parts: ["bundled", "query"],
     })),
 
+    greetingFor: query((_ctx, name) => ({
+      text: decorateGreeting(name),
+      parts: ["argument-bearing", "query"],
+    })),
+
+    argumentBytes: query((_ctx, value) => ({ bytes: new TextEncoder().encode(value).byteLength })),
+
     broken: query(() => {
       throw new Error("Imported helper went sideways.");
     }),
@@ -10238,6 +10245,51 @@ export default capsule({
           },
           error: null,
         });
+
+        socket.send(JSON.stringify({ id: "greeting-for-1", type: "query.subscribe", query: "greetingFor", args: ["Grace"] }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "greeting-for-1",
+          type: "query.result",
+          query: "greetingFor",
+          data: {
+            text: "Hello, Grace!",
+            parts: ["argument-bearing", "query"],
+          },
+          error: null,
+        });
+
+        socket.send(JSON.stringify({ id: "invalid-known-1", type: "query.subscribe", query: "greetingFor", args: { name: "Grace" } }));
+        const invalidKnown = await readSocketMessage(socket);
+        socket.send(JSON.stringify({ id: "invalid-unknown-1", type: "query.subscribe", query: "doesNotExist", args: { name: "Grace" } }));
+        const invalidUnknown = await readSocketMessage(socket);
+        assert.deepEqual(invalidKnown, {
+          id: "invalid-known-1",
+          type: "query.result",
+          query: "greetingFor",
+          data: null,
+          error: {
+            message: "Invalid query arguments.",
+            hint: "Use a JSON-compatible argument array no larger than 65536 UTF-8 bytes.",
+          },
+        });
+        assert.deepEqual(invalidUnknown.error, invalidKnown.error, "invalid payloads do not reveal whether a query exists");
+
+        socket.send(JSON.stringify({ id: "legacy-args-1", type: "query.subscribe", name: "greetingFor", args: ["Grace"] }));
+        assert.deepEqual((await readSocketMessage(socket)).error, invalidKnown.error);
+
+        const exact = "é".repeat((65536 - 4) / 2);
+        socket.send(JSON.stringify({ id: "boundary-1", type: "query.subscribe", query: "argumentBytes", args: [exact] }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "boundary-1",
+          type: "query.result",
+          query: "argumentBytes",
+          data: { bytes: Buffer.byteLength(exact, "utf8") },
+          error: null,
+        });
+
+        const tooLarge = "é".repeat(Math.ceil((65537 - 4) / 2));
+        socket.send(JSON.stringify({ id: "oversized-1", type: "query.subscribe", query: "greetingFor", args: [tooLarge] }));
+        assert.deepEqual((await readSocketMessage(socket)).error, invalidKnown.error);
 
         socket.send(JSON.stringify({ id: "broken-1", type: "query.subscribe", query: "broken" }));
         assert.deepEqual(await readSocketMessage(socket), {

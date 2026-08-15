@@ -38,10 +38,68 @@ export function onMessage(listener) {
 }
 
 export const queries = {
-  subscribe(name, listener) {
-    return connect().subscribeQuery(name, listener);
+  subscribe(name, listener, ...args) {
+    const normalizedArgs = args.length === 1 && args[0]?.[normalizedQueryArgumentsMarker]
+      ? args[0]
+      : normalizeQueryArguments(args);
+    return connect().subscribeNormalizedQuery(name, listener, normalizedArgs);
   },
 };
+
+const queryArgumentLimitBytes = 65536;
+const normalizedQueryArgumentsMarker = Symbol("sporades.normalizedQueryArguments");
+
+function normalizeQueryArguments(args) {
+  if (!Array.isArray(args)) throw new TypeError("Query arguments must be an array.");
+  const ancestors = new Set();
+  const snapshot = normalizeQueryArgumentValue(args, ancestors);
+  const identity = JSON.stringify(snapshot);
+  const byteLength = new TextEncoder().encode(identity).byteLength;
+  if (byteLength > queryArgumentLimitBytes) throw new RangeError("Query arguments exceed the 65536-byte limit.");
+  return Object.freeze({ snapshot, identity, byteLength, [normalizedQueryArgumentsMarker]: true });
+}
+
+function normalizeQueryArgumentValue(value, ancestors) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("Query arguments must contain JSON values.");
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (Object.getOwnPropertySymbols(value).length > 0) throw new TypeError("Query arguments must not contain symbol keys.");
+    if (ancestors.has(value)) throw new TypeError("Query arguments must not contain cycles.");
+    if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
+      throw new TypeError("Query arguments must not contain non-index array properties.");
+    }
+    ancestors.add(value);
+    const snapshot = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.hasOwn(value, index)) throw new TypeError("Query arguments must not contain sparse arrays.");
+      snapshot.push(normalizeQueryArgumentValue(value[index], ancestors));
+    }
+    ancestors.delete(value);
+    return Object.freeze(snapshot);
+  }
+  if (!value || typeof value !== "object") throw new TypeError("Query arguments must contain JSON values.");
+  if (Object.getOwnPropertySymbols(value).length > 0) throw new TypeError("Query arguments must not contain symbol keys.");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Query arguments must contain plain JSON objects.");
+  if (ancestors.has(value)) throw new TypeError("Query arguments must not contain cycles.");
+  ancestors.add(value);
+  const snapshot = Object.create(null);
+  for (const key of Object.getOwnPropertyNames(value).sort()) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("Query arguments must contain plain JSON objects.");
+    Object.defineProperty(snapshot, key, {
+      value: normalizeQueryArgumentValue(descriptor.value, ancestors),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  ancestors.delete(value);
+  return Object.freeze(snapshot);
+}
 
 export const mutations = {
   run(name, ...args) {
@@ -171,13 +229,14 @@ export const files = {
 export function createHooks(primitives) {
   const { useEffect, useState } = primitives;
 
-  function useQuery(name) {
+  function useQuery(name, ...args) {
+    const normalizedArgs = normalizeQueryArguments(args);
     const [state, setState] = useState({ data: null, error: null, loading: true });
 
     useEffect(() => {
-      const subscription = queries.subscribe(name, setState);
+      const subscription = queries.subscribe(name, setState, normalizedArgs);
       return () => subscription.unsubscribe();
-    }, [name]);
+    }, [name, normalizedArgs.identity]);
 
     return state;
   }
@@ -237,9 +296,10 @@ export function createHooks(primitives) {
 export function createVueComposables(primitives) {
   const { reactive, onScopeDispose } = primitives;
 
-  function useQuery(name) {
+  function useQuery(name, ...args) {
+    const normalizedArgs = normalizeQueryArguments(args);
     const state = reactive({ data: null, error: null, loading: true });
-    const subscription = queries.subscribe(name, (nextState) => Object.assign(state, nextState));
+    const subscription = queries.subscribe(name, (nextState) => Object.assign(state, nextState), normalizedArgs);
     onScopeDispose(() => subscription.unsubscribe());
     return state;
   }
@@ -293,9 +353,10 @@ export function createVueComposables(primitives) {
 export function createSolidPrimitives(primitives) {
   const { createSignal, onCleanup } = primitives;
 
-  function createQuery(name) {
+  function createQuery(name, ...args) {
+    const normalizedArgs = normalizeQueryArguments(args);
     const [state, setState] = createSignal({ data: null, error: null, loading: true });
-    const subscription = queries.subscribe(name, setState);
+    const subscription = queries.subscribe(name, setState, normalizedArgs);
     onCleanup(() => subscription.unsubscribe());
     return state;
   }
@@ -389,8 +450,9 @@ export function createLitControllers() {
     return controller;
   }
 
-  function queryController(host, name) {
-    return observedController(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish));
+  function queryController(host, name, ...args) {
+    const normalizedArgs = normalizeQueryArguments(args);
+    return observedController(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish, normalizedArgs));
   }
 
   function mutationController(host, name) {
@@ -477,7 +539,10 @@ export function createInfernoAdapters() {
     };
     return adapter;
   }
-  const queryAdapter = (host, name) => observedAdapter(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish));
+  const queryAdapter = (host, name, ...args) => {
+    const normalizedArgs = normalizeQueryArguments(args);
+    return observedAdapter(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish, normalizedArgs));
+  };
   function mutationAdapter(host, name) {
     let pending = 0, latestInvocation = 0;
     const adapter = { state: { data: null, error: null, loading: false }, async run(...args) {
@@ -513,10 +578,11 @@ export function createInfernoAdapters() {
 }
 
 export function createSvelteStores() {
-  function queryStore(name) {
+  function queryStore(name, ...args) {
+    const normalizedArgs = normalizeQueryArguments(args);
     return createLazyStore(
       { data: null, error: null, loading: true },
-      (publish) => queries.subscribe(name, publish).unsubscribe,
+      (publish) => queries.subscribe(name, publish, normalizedArgs).unsubscribe,
       true,
     );
   }
@@ -688,6 +754,7 @@ function createConnection() {
           id: subscription.id,
           type: "query.subscribe",
           query: subscription.name,
+          args: subscription.args.snapshot,
         });
       }
     });
@@ -1073,17 +1140,19 @@ function createConnection() {
     confirmPasswordReset(code, newPassword) {
       return request("auth.confirmPasswordReset", { code, newPassword });
     },
-    subscribeQuery(name, listener) {
+    subscribeNormalizedQuery(name, listener, args) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
       if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");
-      let subscription = queryChannels.get(name);
+      const channelsForName = queryChannels.get(name) ?? new Map();
+      if (!queryChannels.has(name)) queryChannels.set(name, channelsForName);
+      let subscription = channelsForName.get(args.identity);
       if (!subscription) {
         const id = nextId++;
-        subscription = { id, name, listeners: new Set(), latest: null };
-        queryChannels.set(name, subscription);
+        subscription = { id, name, args, listeners: new Set(), latest: null };
+        channelsForName.set(args.identity, subscription);
         subscriptions.set(id, subscription);
         const activeSocket = open();
-        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name });
+        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name, args: args.snapshot });
       }
       subscription.listeners.add(listener);
       listener(subscription.latest ?? { data: null, error: null, loading: true });
@@ -1093,7 +1162,8 @@ function createConnection() {
         active = false;
         subscription.listeners.delete(listener);
         if (subscription.listeners.size === 0) {
-          queryChannels.delete(name);
+          channelsForName.delete(args.identity);
+          if (channelsForName.size === 0) queryChannels.delete(name);
           subscriptions.delete(subscription.id);
           sendIfOpen({ id: nextId++, type: "query.unsubscribe", subscriptionId: subscription.id });
         }
@@ -16621,7 +16691,30 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         });
         return;
       }
-      const subscription = { id: message.id, name: queryName, style: message.query ? "direct" : "rows", generation: 0 };
+      let args;
+      try {
+        args = normalizeQueryArguments(message.args ?? []);
+      } catch {
+        sendJson(client, {
+          id: message.id,
+          type: "query.result",
+          query: queryName,
+          data: null,
+          error: invalidQueryArgumentsError()
+        });
+        return;
+      }
+      if (!message.query && args.length > 0) {
+        sendJson(client, {
+          id: message.id,
+          type: "query.result",
+          query: queryName,
+          data: null,
+          error: invalidQueryArgumentsError()
+        });
+        return;
+      }
+      const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
       void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
       return;
@@ -17006,7 +17099,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result = await runQuery(database, client.session.auth, subscription.name);
+      const result = await runQuery(database, client.session.auth, subscription.name, subscription.args);
       const data = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       sendJson(client, {
@@ -17228,7 +17321,13 @@ function sendJsonWithCompletion(client, message, timeoutMs = 250) {
     }
   });
 }
-async function runQuery(database, auth, queryName) {
+async function runQuery(database, auth, queryName, rawArgs = []) {
+  let args;
+  try {
+    args = normalizeQueryArguments(rawArgs);
+  } catch {
+    return { rows: null, data: null, error: invalidQueryArgumentsError() };
+  }
   let context;
   try {
     context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
@@ -17242,9 +17341,10 @@ async function runQuery(database, auth, queryName) {
     };
   }
   if (queryName === "ctx.env") {
+    if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
     return { data: context.env, error: null };
   }
-  const customResult = await runCustomQuery(database, context, queryName);
+  const customResult = await runCustomQuery(database, context, queryName, args);
   if (customResult) {
     return customResult;
   }
@@ -17258,6 +17358,7 @@ async function runQuery(database, auth, queryName) {
       }
     };
   }
+  if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
   const cacheKey = `${table.name}:${context.auth.userId}`;
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
@@ -17272,14 +17373,14 @@ async function runQuery(database, auth, queryName) {
   const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
 }
-async function runCustomQuery(database, context, queryName) {
+async function runCustomQuery(database, context, queryName, args) {
   const handler = database.queries.find((candidate) => candidate.name === queryName);
   if (!handler) {
     return null;
   }
   try {
     const queryHandler = typeof handler.handler === "function" ? handler.handler : new Function(`return (${handler.handlerSource});`)();
-    const data = await queryHandler(context);
+    const data = await queryHandler(context, ...args);
     assertJsonCompatible(data);
     return { data, error: null };
   } catch (error) {
@@ -17294,6 +17395,64 @@ async function runCustomQuery(database, context, queryName) {
         hint: error?.hint ?? "Check the Capsule query handler and retry the query."
       }
     };
+  }
+}
+var QUERY_ARGUMENT_LIMIT_BYTES = 65536;
+function invalidQueryArgumentsError() {
+  return {
+    message: "Invalid query arguments.",
+    hint: "Use a JSON-compatible argument array no larger than 65536 UTF-8 bytes."
+  };
+}
+function normalizeQueryArguments(value) {
+  if (!Array.isArray(value)) throw new Error("Query arguments must be an array.");
+  const snapshot = normalizeQueryArgumentValue(value, /* @__PURE__ */ new Set());
+  const canonicalJson = JSON.stringify(snapshot);
+  if (Buffer.byteLength(canonicalJson, "utf8") > QUERY_ARGUMENT_LIMIT_BYTES) {
+    throw new Error("Query arguments are too large.");
+  }
+  return snapshot;
+}
+function normalizeQueryArgumentValue(value, ancestors) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Query arguments must contain finite numbers.");
+    return value;
+  }
+  if (typeof value !== "object") throw new Error("Query arguments must be JSON-compatible.");
+  if (Object.getOwnPropertySymbols(value).length > 0) throw new Error("Query arguments must not contain symbol keys.");
+  if (ancestors.has(value)) throw new Error("Query arguments must not contain cycles.");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\\d*)$/.test(key) || Number(key) >= value.length))) {
+        throw new Error("Query arguments must not contain non-index array properties.");
+      }
+      const copy2 = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) throw new Error("Query arguments must not contain sparse arrays.");
+        copy2.push(normalizeQueryArgumentValue(value[index], ancestors));
+      }
+      return Object.freeze(copy2);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error("Query arguments must contain plain objects only.");
+    }
+    const copy = /* @__PURE__ */ Object.create(null);
+    for (const key of Object.getOwnPropertyNames(value).sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) throw new Error("Query arguments must not contain accessors.");
+      Object.defineProperty(copy, key, {
+        value: normalizeQueryArgumentValue(descriptor.value, ancestors),
+        enumerable: true,
+        writable: false,
+        configurable: false
+      });
+    }
+    return Object.freeze(copy);
+  } finally {
+    ancestors.delete(value);
   }
 }
 async function runMutation(database, auth, mutationName, args) {
@@ -23645,7 +23804,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.8.3";
+var CLI_VERSION = "0.8.4";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);

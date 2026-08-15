@@ -144,7 +144,7 @@ export declare function sendEmailPasswordResetLink(database: LooseRecord, sessio
     ok: boolean;
     error?: undefined;
 }>;
-export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
+export declare function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs?: unknown): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
 export declare function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options?: LooseRecord): Promise<any>;
 export declare function runCurrentUserJobWorker(database: LooseRecord): Promise<void>;

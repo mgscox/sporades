@@ -633,8 +633,13 @@ export type EmailEventHandler<Schema extends SchemaDefinition = SchemaDefinition
 ) => MaybePromise<void>;
 
 /** Handler for a named query exposed over the Sporades client transport. */
-export type QueryHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
+export type QueryHandler<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Args extends readonly JsonValue[] = readonly JsonValue[],
+  Result = unknown,
+> = (
   ctx: CapsuleContext<Schema>,
+  ...args: Args
 ) => MaybePromise<Result>;
 
 /** Handler for a named mutation exposed over the Sporades client transport. */
@@ -810,7 +815,7 @@ export type ScheduleDefinition = {
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
   schema?: Schema;
-  queries?: Record<string, QueryDefinition<QueryHandler<Schema>>>;
+  queries?: Record<string, QueryDefinition<QueryHandler<Schema, any>>>;
   mutations?: Record<string, MutationDefinition>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
@@ -860,7 +865,9 @@ export function endpoint<Handler extends EndpointHandler>(options: EndpointOptio
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
-export function query<Handler extends QueryHandler>(handler: Handler): QueryDefinition<Handler>;
+export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
+  handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
+): QueryDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
 /** Define a named mutation for client-initiated writes or commands. */
 export function mutation<const Args extends unknown[] = string[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,

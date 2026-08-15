@@ -1,12 +1,14 @@
 # Changes
 
-## Unreleased - 2026-08-15
+## 0.8.4 - 2026-08-15
 
 Changes since v0.8.1.
 
 ### 🚀 Features
 
 - Add exact pagination and join admission (63f68a0).
+- Add JSON-safe positional arguments to reactive Custom queries across the
+  client transport and framework adapters.
 
 ### 🐛 Bug Fixes
 
@@ -28,4 +30,3 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
