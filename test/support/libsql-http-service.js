@@ -9,6 +9,7 @@ export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) 
   const requests = [];
   const sessions = new Map();
   let nextBaton = 1;
+  const transactionQueue = { tail: Promise.resolve() };
 
   const server = createServer(async (request, response) => {
     if (request.method === "GET" && (request.url === "/health" || request.url === "/v2")) {
@@ -23,7 +24,7 @@ export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) 
     try {
       const body = await readJson(request);
       requests.push(body);
-      const result = await runPipeline(adapter, sessions, nextBaton, body, options);
+      const result = await runPipeline(adapter, sessions, nextBaton, body, options, transactionQueue);
       nextBaton = result.nextBaton;
       response
         .writeHead(200, { "content-type": "application/json" })
@@ -49,7 +50,7 @@ export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) 
   }
 }
 
-async function runPipeline(adapter, sessions, nextBaton, body, options) {
+async function runPipeline(adapter, sessions, nextBaton, body, options, transactionQueue) {
   let baton = body.baton ?? null;
   if (baton && !sessions.has(baton)) {
     throw new Error("Unknown baton.");
@@ -57,20 +58,43 @@ async function runPipeline(adapter, sessions, nextBaton, body, options) {
   if (!baton) {
     baton = `baton-${nextBaton}`;
     nextBaton += 1;
-    sessions.set(baton, {});
+    sessions.set(baton, { releaseTransaction: null });
   }
+  const session = sessions.get(baton);
 
   const results = [];
   let closed = false;
   for (const streamRequest of body.requests ?? []) {
     if (streamRequest.type === "close") {
+      session.releaseTransaction?.();
+      session.releaseTransaction = null;
       sessions.delete(baton);
       closed = true;
       results.push({ type: "ok", response: { type: "close" } });
       continue;
     }
     if (streamRequest.type === "execute") {
-      results.push({ type: "ok", response: { type: "execute", result: await executeStatement(adapter, streamRequest.stmt, options) } });
+      const statementSql = streamRequest.stmt?.sql ?? "";
+      const beginsTransaction = /^\s*BEGIN\b/i.test(statementSql);
+      const endsTransaction = /^\s*(?:COMMIT|ROLLBACK)\b/i.test(statementSql);
+      if (beginsTransaction) {
+        const previous = transactionQueue.tail;
+        transactionQueue.tail = new Promise((resolve) => { session.releaseTransaction = resolve; });
+        await previous;
+      }
+      try {
+        results.push({ type: "ok", response: { type: "execute", result: await executeStatement(adapter, streamRequest.stmt, options) } });
+      } catch (error) {
+        if (beginsTransaction || endsTransaction) {
+          session.releaseTransaction?.();
+          session.releaseTransaction = null;
+        }
+        throw error;
+      }
+      if (endsTransaction) {
+        session.releaseTransaction?.();
+        session.releaseTransaction = null;
+      }
       continue;
     }
     if (streamRequest.type === "describe") {

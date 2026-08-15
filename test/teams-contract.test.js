@@ -33,10 +33,16 @@ test("the published Teams contract defines the public boundaries and is reachabl
     /normalized email equality[\s\S]*does not require verified email/i,
     /Team admin[\s\S]*application roles[\s\S]*ACL[\s\S]*Privileged server role/i,
     /redacted security events/i,
+    /exact uncapped `totalCount`/i,
+    /trusted server code[\s\S]*transaction-bound context/i,
+    /Concurrent joins for a final seat[\s\S]*serialize/i,
   ]) assert.match(teams, statement);
   assert.match(clientTypes, /export type TeamsApi/);
   assert.match(clientTypes, /export const teams: TeamsApi/);
+  assert.match(clientTypes, /TeamMembersListResult = \{ members: TeamMemberSummary\[\]; nextCursor\?: string; totalCount: number \}/);
   assert.match(serverTypes, /export type CurrentUserTeamsApi/);
+  assert.match(serverTypes, /admitJoin\?\(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput\)/);
+  assert.match(serverTypes, /TeamJoinAdmissionContext[\s\S]*ReadOnlyDatabaseFromSchema<Schema>/);
   assert.match(serverTypes, /export type AclTeamHelpers/);
   assert.match(serverTypes, /Read-only Team decisions available while evaluating table and File ACL rules\./);
   assert.match(clientApi, /TeamsApi/);

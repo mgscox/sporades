@@ -63,5 +63,23 @@ export const CONFORMANCE_SURFACE = {
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_membership_counters] WHERE [userId] = ? AND [membershipCount] = ?", "bounded-user", 25), 1);
       },
     },
+    {
+      name: "Team lifecycle locking keeps exact counts and membership rollback portable",
+      async run(adapter) {
+        await adapter.ensureTeamsStorage();
+        const sql = adapter.dialect.sql;
+        await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run("counted-team", "Counted", NOW, "counted-admin");
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)")).run("counted-team", "counted-admin", "admin", NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)")).run("counted-team", "counted-member", "member", NOW);
+        await assert.rejects(adapter.withTransaction(async (tx) => {
+          const locked = await tx.prepare(tx.dialect.sql("UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?")).run("counted-team");
+          assert.equal(Number(locked.changes), 1);
+          assert.equal(await count(tx, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?", "counted-team"), 2);
+          await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)")).run("counted-team", "rolled-back-member", "member", NOW);
+          throw new Error("roll back admission lane");
+        }), /roll back admission lane/);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?", "counted-team"), 2);
+      },
+    },
   ],
 };

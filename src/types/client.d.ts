@@ -277,7 +277,8 @@ export type TeamMemberSummary = {
 };
 export type TeamsListResult = { teams: TeamSummary[] };
 export type TeamMutationResult = { team: TeamSummary };
-export type TeamMembersListResult = { members: TeamMemberSummary[] };
+export type TeamMembersListOptions = { cursor?: string; limit?: number };
+export type TeamMembersListResult = { members: TeamMemberSummary[]; nextCursor?: string; totalCount: number };
 /** Admin-only Join-link metadata. The link capability is never recoverable from this view. */
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkCreateResult = { id: string; link: string; createdAt: string; expiresAt: string };
@@ -296,7 +297,7 @@ export type TeamsApi = {
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
-  listMembers(teamId: string): Promise<SporadesResult<TeamMembersListResult>>;
+  listMembers(teamId: string, options?: TeamMembersListOptions): Promise<SporadesResult<TeamMembersListResult>>;
   /** Atomically adds and removes declared application roles for a member of one administered Team. */
   updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<SporadesResult<{ updated: true }>>;
   /** Creates a short-lived, email-bound Join link. Sporades returns it but never sends it. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */

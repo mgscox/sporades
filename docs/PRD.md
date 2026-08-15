@@ -147,6 +147,11 @@ The repository currently includes:
   membership, Team-admin, and declared application-role decisions through the
   constrained read-only `ctx.acl.teams` helpers; Teams never select a current
   Team or automatically partition Capsule data.
+  Admin membership enumeration supports opaque cursor pagination with an exact
+  uncapped total, while the Team-summary count remains display-only. Capsules
+  may declare a trusted `teams.admitJoin` policy that reads app-owned state
+  through transaction-bound `ctx.db`; the runtime serializes the policy and
+  membership insert under the Team lifecycle lock for atomic seat admission.
 
 ### Future scope
 

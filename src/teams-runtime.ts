@@ -15,6 +15,7 @@ const TEAM_MEMBER_COUNT_MAX = 99;
 // Membership lists are a management surface, not a directory export. Keep the
 // response bounded even when a Team has more members than its UI renders.
 export const TEAM_MEMBER_LIST_MAX = 100;
+export const TEAM_MEMBER_LIST_DEFAULT = TEAM_MEMBER_LIST_MAX;
 // A user's Team list is a compact navigation surface, never an unbounded
 // directory. The cap applies to all memberships, including the initial Team.
 export const TEAM_MEMBERSHIP_MAX = 25;
@@ -107,9 +108,9 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
       requireAuth({ auth }, { linked: true });
       return renameCurrentUserTeam(database, auth, teamId, name, contextGetter?.());
     },
-    async listMembers(teamId: any) {
+    async listMembers(teamId: any, options: LooseRecord = {}) {
       requireAuth({ auth }, { linked: true });
-      return listTeamMembers(database, auth, teamId);
+      return listTeamMembers(database, auth, teamId, options);
     },
     async updateApplicationRoles(teamId: any, userId: any, changes: any) {
       requireAuth({ auth }, { linked: true });
@@ -422,6 +423,7 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
       )).get(row.teamId, auth.userId);
       if (!membership) {
+        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
         await ensureMembershipCounterOnAdapter(tx, auth.userId);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
@@ -445,6 +447,24 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
   }
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
+}
+
+async function enforceTeamJoinAdmission(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, teamId: string) {
+  if (typeof database.teamJoinAdmission !== "function") return;
+  const count = await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+  )).get(teamId);
+  try {
+    const context = database.createTeamJoinAdmissionContext(tx, auth);
+    const decision = await database.teamJoinAdmission(context, {
+      teamId,
+      userId: auth.userId,
+      currentMemberCount: Number(count?.count ?? 0),
+    });
+    if (decision?.allow !== true) throw teamJoinDenied();
+  } catch {
+    throw teamJoinDenied();
+  }
 }
 
 function normalizeTeamJoinEmail(email: any) {
@@ -584,6 +604,7 @@ async function releaseTeamJoinLinkCapacity(tx: LooseRecord, teamId: string) {
 function teamJoinLinkThrottleError() { return commandError("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED"); }
 function teamJoinLinkLimitError() { return commandError("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED"); }
 function invalidTeamJoinLink() { return commandError("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK"); }
+function teamJoinDenied() { return commandError("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED"); }
 
 export async function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord) {
   requireAuth({ auth }, { linked: true });
@@ -823,7 +844,7 @@ export async function deleteCurrentUserTeam(database: LooseRecord, auth: LooseRe
   return { deleted: true };
 }
 
-export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any) {
+export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any, options: LooseRecord = {}) {
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
@@ -835,21 +856,67 @@ export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, 
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
     )).get(teamId, auth.userId);
     if (callerMembership?.role !== "admin") throw teamDenied();
+    const page = normalizeTeamMemberPage(options);
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId);
+    const cursorClause = page.cursor
+      ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) "
+      : "";
+    const params = page.cursor
+      ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1]
+      : [teamId, page.limit + 1];
     const rows = await tx.prepare(sql(
       "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] " +
+      ", [m].[createdAt] " +
       "FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] " +
-      "WHERE [m].[teamId] = ? ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
-    )).all(teamId, TEAM_MEMBER_LIST_MAX);
+      "WHERE [m].[teamId] = ? " + cursorClause +
+      "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
+    )).all(...params);
+    const hasMore = rows.length > page.limit;
+    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+    const last = pageRows.at(-1);
     return {
-      members: await Promise.all(rows.map(async (row: LooseRecord) => ({
+      members: await Promise.all(pageRows.map(async (row: LooseRecord) => ({
         userId: String(row.userId),
         displayName: String(row.displayName),
         picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
         role: row.role === "admin" ? "admin" : "member",
         applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId),
       }))),
+      ...(hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {}),
+      totalCount: Number(total?.count ?? 0),
     };
   });
+}
+
+function normalizeTeamMemberPage(options: any) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw invalidTeamMemberPage();
+  const limit = options.limit === undefined ? TEAM_MEMBER_LIST_DEFAULT : options.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > TEAM_MEMBER_LIST_MAX) throw invalidTeamMemberPage();
+  if (options.cursor === undefined) return { cursor: null, limit };
+  if (typeof options.cursor !== "string" || options.cursor.length < 1 || options.cursor.length > 512) throw invalidTeamMemberPage();
+  try {
+    if (!/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw invalidTeamMemberPage();
+    const cursorBytes = Buffer.from(options.cursor, "base64url");
+    if (cursorBytes.toString("base64url") !== options.cursor) throw invalidTeamMemberPage();
+    const decoded = JSON.parse(cursorBytes.toString("utf8"));
+    if (decoded?.v !== 1 || typeof decoded.createdAt !== "string" || !Number.isFinite(Date.parse(decoded.createdAt)) || typeof decoded.userId !== "string" || decoded.userId.length < 1 || decoded.userId.length > 256) {
+      throw invalidTeamMemberPage();
+    }
+    return { cursor: { createdAt: decoded.createdAt, userId: decoded.userId }, limit };
+  } catch (error: any) {
+    if (error?.code === "INVALID_TEAM_MEMBER_PAGE") throw error;
+    throw invalidTeamMemberPage();
+  }
+}
+
+function encodeTeamMemberCursor(createdAt: string, userId: string) {
+  return Buffer.from(JSON.stringify({ v: 1, createdAt, userId }), "utf8").toString("base64url");
+}
+
+function invalidTeamMemberPage() {
+  return commandError("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
 }
 
 async function ensureInitialTeam(database: LooseRecord, auth: LooseRecord) {
