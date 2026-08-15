@@ -70,6 +70,13 @@ reactivity and cleanup model. See
 [Projects and Client Frameworks](./projects.md#choose-a-client-framework) to
 compare all supported choices.
 
+When you declare a Custom query that needs a client-selected value, pass its
+JSON-compatible positional arguments after the query name, such as
+`useQuery("todosForProject", projectId)`. Sporades snapshots those values and
+uses their canonical JSON form to share equal subscriptions; see the
+[client reference](../reference/client-auth-and-preferences.md#use-queries)
+for the 65,536-byte limit and supported values.
+
 ## 4. Inspect it
 
 From another terminal:
