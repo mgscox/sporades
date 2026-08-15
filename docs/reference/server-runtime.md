@@ -135,6 +135,28 @@ ctx.db.projects.all()
 Prefer filtering by `ctx.auth.userId` for per-user data. That keeps privacy in
 the server code where it belongs.
 
+Declared Custom queries can also receive JSON-compatible positional arguments
+after `ctx`. Arguments are part of the reactive subscription identity, so use a
+Custom query when a client-selected filter belongs in server code:
+
+```ts
+queries: {
+  projectsForTeam: query((ctx, teamId: string, options: { archived: boolean }) =>
+    ctx.db.projects
+      .where("teamId", teamId)
+      .where("ownerId", ctx.auth.userId)
+      .all()
+      .filter((project) => options.archived || !project.archived),
+  ),
+}
+```
+
+The runtime accepts only JSON values (no dates, functions, sparse arrays,
+custom instances, cycles, or non-finite numbers) and snapshots the complete
+argument array independently before handler lookup. Its canonical JSON form may
+be at most 65,536 UTF-8 bytes. Runtime-owned queries, implicit table queries,
+and legacy rows subscriptions remain argument-free.
+
 ### Change Data With Mutations
 
 Mutations receive `ctx` plus the arguments passed from the client:

@@ -34,6 +34,33 @@ function ProjectList() {
 
 The query name must match a server query key.
 
+For a declared Custom query, pass JSON-compatible positional arguments after
+the query name. The same trailing-argument convention is used by
+`queries.subscribe`, `useQuery`, Vue `useQuery`, Solid `createQuery`, Svelte
+`queryStore`, Lit `queryController`, and Inferno `queryAdapter` (after their
+existing host argument where applicable):
+
+```tsx
+const projects = useQuery("projectsForTeam", teamId, { archived: false });
+```
+
+Sporades snapshots those values and treats recursively key-sorted objects as
+the same subscription; array order remains significant. Re-rendering with a
+new but canonically equal object therefore keeps the same channel. Arguments
+must be JSON values and their canonical JSON array is limited to 65,536 UTF-8
+bytes. Do not use query arguments with runtime-owned or implicit table queries.
+
+Framework-neutral code follows the same order:
+
+```ts
+const subscription = queries.subscribe(
+  "projectsForTeam",
+  (state) => render(state),
+  teamId,
+  { archived: false },
+);
+```
+
 ### Use Mutations
 
 `useMutation(name)` returns `{ run, error, loading }`:

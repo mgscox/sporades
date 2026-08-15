@@ -19,6 +19,102 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("framework-neutral query subscriptions structurally isolate argument tuples while sharing canonical equals", async () => {
+  const frames = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "query.subscribe": async (message) => {
+      frames.push(message);
+      return { type: "query.result", data: message.args, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const first = runtime.queries.subscribe("teamNotes", () => {}, { teamId: "team-a", filters: { archived: false, label: "planning" } });
+    const same = runtime.queries.subscribe("teamNotes", () => {}, { filters: { label: "planning", archived: false }, teamId: "team-a" });
+    const other = runtime.queries.subscribe("teamNotes", () => {}, { teamId: "team-b", filters: { archived: false, label: "planning" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(frames.length, 2, "canonically equal tuples share a channel while a different tuple remains independent");
+    assert.deepEqual(frames.map((frame) => frame.args).sort((left, right) => left[0].teamId.localeCompare(right[0].teamId)), [
+      [{ teamId: "team-a", filters: { archived: false, label: "planning" } }],
+      [{ teamId: "team-b", filters: { archived: false, label: "planning" } }],
+    ]);
+
+    first.unsubscribe(); same.unsubscribe(); other.unsubscribe();
+  } finally { browser.cleanup(); }
+});
+
+test("query argument normalization snapshots safe JSON values, rejects hostile inputs, and enforces the UTF-8 boundary", async () => {
+  const frames = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "query.subscribe": async (message) => {
+      frames.push(message);
+      return { type: "query.result", data: null, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const dangerous = JSON.parse('{"__proto__":{"polluted":true},"constructor":"ordinary","prototype":"ordinary"}');
+    runtime.queries.subscribe("safe", () => {}, dangerous);
+    dangerous.__proto__.polluted = false;
+    dangerous.constructor = "changed";
+
+    const cyclic = []; cyclic.push(cyclic);
+    const symbolKeyed = { valid: true }; symbolKeyed[Symbol("hidden")] = true;
+    const nonEnumerable = {}; Object.defineProperty(nonEnumerable, "hidden", { value: true });
+    const arrayWithProperty = ["valid"]; arrayWithProperty.extra = true;
+    class CustomValue {}
+    for (const value of [undefined, () => {}, Symbol("nope"), 1n, NaN, Infinity, cyclic, symbolKeyed, nonEnumerable, arrayWithProperty, new Date(), new CustomValue(), [, "sparse"]]) {
+      assert.throws(() => runtime.queries.subscribe("invalid", () => {}, value), /Query arguments/);
+    }
+
+    const exact = "é".repeat((65536 - 4) / 2);
+    assert.equal(Buffer.byteLength(JSON.stringify([exact]), "utf8"), 65536);
+    runtime.queries.subscribe("boundary", () => {}, exact);
+    assert.throws(() => runtime.queries.subscribe("boundary-over", () => {}, `${exact}é`), /65536-byte limit/);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(frames.find((frame) => frame.query === "safe").args, [JSON.parse('{"__proto__":{"polluted":true},"constructor":"ordinary","prototype":"ordinary"}')]);
+    assert.equal(({}).polluted, undefined);
+    assert.equal(frames.find((frame) => frame.query === "boundary").args[0], exact);
+  } finally { browser.cleanup(); }
+});
+
+test("React-style query hooks replace only a canonically changed argument channel", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    const subscriptions = [];
+    runtime.queries.subscribe = (name, _listener, normalizedArgs) => {
+      const subscription = { name, normalizedArgs, closed: false, unsubscribe() { this.closed = true; } };
+      subscriptions.push(subscription);
+      return subscription;
+    };
+    let previousDeps = null;
+    let cleanup = null;
+    const hooks = runtime.createHooks({
+      useState(initial) { return [initial, () => {}]; },
+      useEffect(effect, deps) {
+        if (previousDeps?.length === deps.length && previousDeps.every((value, index) => Object.is(value, deps[index]))) return;
+        cleanup?.();
+        previousDeps = deps;
+        cleanup = effect();
+      },
+    });
+
+    hooks.useQuery("notes", { teamId: "a", filters: { archived: false } });
+    hooks.useQuery("notes", { filters: { archived: false }, teamId: "a" });
+    hooks.useQuery("notes", { teamId: "a", filters: { archived: true } });
+
+    assert.equal(subscriptions.length, 2);
+    assert.equal(subscriptions[0].closed, true, "a changed canonical value releases the retired channel");
+    assert.equal(subscriptions[1].closed, false);
+    assert.throws(() => hooks.useQuery("notes", new Date()), /Query arguments/);
+    cleanup();
+    assert.equal(subscriptions[1].closed, true);
+  } finally { browser.cleanup(); }
+});
+
 test("browser client runtime exposes opaque Team Join, application-role, and lifecycle operations", async () => {
   const runtime = await importClientRuntime();
 

@@ -318,6 +318,26 @@ Subscriptions immediately deliver their latest complete state, resubscribe
 after reconnect, and may be unsubscribed more than once safely. React and
 Preact clients can adapt those same primitives with `createHooks`:
 
+Declared Custom queries may take JSON-compatible positional arguments after
+the listener (or after the query name for framework adapters). The arguments
+are immutable snapshots, become part of the subscription identity, and are
+resubmitted after reconnect and mutation refreshes:
+
+```ts
+const notes = queries.subscribe(
+  "notesForTeam",
+  (state) => render(state),
+  teamId,
+  { archived: false },
+);
+```
+
+Object-key order does not create a new channel; array order does. The complete
+canonical JSON argument array is limited to 65,536 UTF-8 bytes. Dates,
+functions, custom instances, cycles, sparse arrays, non-finite numbers, and
+other non-JSON values fail before transport. Runtime-owned and implicit table
+queries remain argument-free.
+
 ```tsx
 import { useEffect, useState } from "react";
 import { auth, createHooks, files, onMessage, preferences, sendMessage } from "sporades/client";

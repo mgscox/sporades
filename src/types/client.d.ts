@@ -333,7 +333,7 @@ export type QueryState<Data = unknown> = {
 
 /** Framework-neutral realtime query subscriptions. */
 export type QueriesApi = {
-  subscribe<Data = unknown>(name: string, listener: (state: QueryState<Data>) => void): Subscription;
+  subscribe<Data = unknown>(name: string, listener: (state: QueryState<Data>) => void, ...args: JsonValue[]): Subscription;
 };
 
 /** Framework-neutral mutation execution using the standard Sporades result envelope. */
@@ -374,7 +374,7 @@ export type HookPrimitives = {
 
 /** Framework-bound Sporades hooks produced by `createHooks()`. */
 export type SporadesHooks = {
-  useQuery<Data = unknown>(name: string): QueryState<Data>;
+  useQuery<Data = unknown>(name: string, ...args: JsonValue[]): QueryState<Data>;
   useMutation<Result = unknown>(name: string): MutationState<Result>;
   useAuth(): UseAuthState;
 };
@@ -387,7 +387,7 @@ export type VueComposablePrimitives = {
 
 /** Vue-native Sporades composables over the shared framework-neutral client connection. */
 export type SporadesVueComposables = {
-  useQuery<Data = unknown>(name: string): QueryState<Data>;
+  useQuery<Data = unknown>(name: string, ...args: JsonValue[]): QueryState<Data>;
   useMutation<Result = unknown>(name: string): VueMutationState<Result>;
   useAuth(): UseAuthState;
 };
@@ -434,7 +434,7 @@ export type SolidAuth = {
 
 /** SolidJS-native Sporades primitives over the shared framework-neutral client connection. */
 export type SporadesSolidPrimitives = {
-  createQuery<Data = unknown>(name: string): SolidAccessor<QueryState<Data>>;
+  createQuery<Data = unknown>(name: string, ...args: JsonValue[]): SolidAccessor<QueryState<Data>>;
   createMutation<Result = unknown>(name: string): SolidMutation<Result>;
   createAuth(): SolidAuth;
 };
@@ -472,7 +472,7 @@ export type LitAuthController = LitReactiveController & {
 
 /** Lit reactive-controller factories over the shared framework-neutral client connection. */
 export type SporadesLitControllers = {
-  queryController<Data = unknown>(host: LitReactiveControllerHost, name: string): LitQueryController<Data>;
+  queryController<Data = unknown>(host: LitReactiveControllerHost, name: string, ...args: JsonValue[]): LitQueryController<Data>;
   mutationController<Result = unknown>(host: LitReactiveControllerHost, name: string): LitMutationController<Result>;
   authController(host: LitReactiveControllerHost): LitAuthController;
 };
@@ -489,7 +489,7 @@ export type InfernoMutationAdapter<Result = unknown> = { state: SolidMutationSta
 export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; signOut: AuthApi["signOut"] };
 /** Inferno-native lifecycle adapters over the shared framework-neutral client connection. */
 export type SporadesInfernoAdapters = {
-  queryAdapter<Data = unknown>(host: InfernoAdapterHost, name: string): InfernoQueryAdapter<Data>;
+  queryAdapter<Data = unknown>(host: InfernoAdapterHost, name: string, ...args: JsonValue[]): InfernoQueryAdapter<Data>;
   mutationAdapter<Result = unknown>(host: InfernoAdapterHost, name: string): InfernoMutationAdapter<Result>;
   authAdapter(host: InfernoAdapterHost): InfernoAuthAdapter;
 };
@@ -514,7 +514,7 @@ export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "sign
 
 /** Svelte-native stores over the shared framework-neutral client connection. */
 export type SporadesSvelteStores = {
-  queryStore<Data = unknown>(name: string): SvelteReadable<QueryState<Data>>;
+  queryStore<Data = unknown>(name: string, ...args: JsonValue[]): SvelteReadable<QueryState<Data>>;
   mutationStore<Result = unknown>(name: string): SvelteMutationStore<Result>;
   authStore(): SvelteAuthStore;
 };

@@ -475,6 +475,18 @@ const addTodo = useMutation("addTodo");
 Queries are subscribed. When mutations change data, connected clients receive
 fresh query results through the same transport.
 
+Declared Custom queries may also take JSON-compatible positional arguments:
+
+```ts
+const notes = useQuery("notesForTeam", teamId, { archived: false });
+```
+
+The client snapshots the full argument tuple, canonicalizes object keys for
+channel identity, and resends that snapshot on reconnect and refresh. This is
+not a client-side filter: the declared server query receives `ctx` followed by
+the tuple. Runtime-owned and implicit table queries do not accept arguments,
+and the canonical JSON tuple is capped at 65,536 UTF-8 bytes.
+
 App messages are also carried over this WebSocket, but client-origin messages
 must pass through declared server handlers. Sporades does not relay arbitrary
 client packets directly to other clients.

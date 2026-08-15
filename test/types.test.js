@@ -206,6 +206,9 @@ const app = capsule({
       await Promise.resolve();
       return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
     }),
+    greetingFor: query((_ctx, name: string, options: { uppercase: boolean }) => {
+      return options.uppercase ? name.toUpperCase() : name;
+    }),
     ownTeams: query(async (ctx) => {
       const result = await ctx.teams.list();
       const created = await ctx.teams.create("Typed Team");
@@ -460,6 +463,16 @@ const incompleteJourneyRecord: JourneyRecord = { sessionId: "session", userId: "
 const journeySubscription = journey.subscribe((event) => event.type === "snapshot" ? event.states : event.state);
 journeySubscription.unsubscribe();
 journey.disable();
+queries.subscribe("greetingFor", () => {}, "Ada", { uppercase: true });
+// @ts-expect-error Query arguments must be JSON-compatible.
+queries.subscribe("greetingFor", () => {}, new Date());
+createHooks({ useState: <State,>(value: State | (() => State)): [State, (next: State) => void] => [typeof value === "function" ? (value as () => State)() : value, () => {}], useEffect: () => {} }).useQuery("greetingFor", "Ada", { uppercase: true });
+createVueComposables({ reactive: (value) => value, onScopeDispose: () => {} }).useQuery("greetingFor", "Ada");
+createSolidPrimitives({ createSignal: (value) => [() => value, () => value], onCleanup: () => {} }).createQuery("greetingFor", "Ada");
+const queryHost = { addController() {}, requestUpdate() {} };
+createLitControllers().queryController(queryHost, "greetingFor", "Ada");
+createInfernoAdapters().queryAdapter({ forceUpdate() {} }, "greetingFor", "Ada");
+createSvelteStores().queryStore("greetingFor", "Ada");
 // @ts-expect-error journey.set requires an object with a status.
 journey.set(null);
 // @ts-expect-error Journey metadata is a top-level JSON object, not an array.

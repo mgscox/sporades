@@ -1,15 +1,18 @@
 # Changes
 
-## 0.8.2 - 2026-08-15
+## 0.8.4 - 2026-08-15
 
-### ✨ Built-in Teams
+Changes since v0.8.1.
 
-- Add backward-compatible cursor pagination to client and server
-  `teams.listMembers`, including deterministic ordering and an exact uncapped
-  `totalCount`; the capped Team-summary count remains display-only.
-- Add trusted Capsule `teams.admitJoin` policy with transaction-bound, read-only `ctx.db`
-  reads and Team-row serialization, so concurrent final-seat joins cannot
-  oversubscribe. Capsules without a policy retain 0.8.1 Join behavior.
+### 🚀 Features
+
+- Add exact pagination and join admission (63f68a0).
+- Add JSON-safe positional arguments to reactive Custom queries across the
+  client transport and framework adapters.
+
+### 🐛 Bug Fixes
+
+- Resolve npm audit vulnerabilities (a6a4b51).
 
 ## 0.8.1 - 2026-08-14
 
