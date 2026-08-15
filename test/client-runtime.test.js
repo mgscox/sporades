@@ -64,6 +64,8 @@ test("query argument normalization snapshots safe JSON values, rejects hostile i
     const nonEnumerable = {}; Object.defineProperty(nonEnumerable, "hidden", { value: true });
     const arrayWithProperty = ["valid"]; arrayWithProperty.extra = true;
     class CustomValue {}
+    class CustomArray extends Array {}
+    assert.throws(() => runtime.queries.subscribe("invalid", () => {}, new CustomArray("custom")), /plain JSON arrays/);
     for (const value of [undefined, () => {}, Symbol("nope"), 1n, NaN, Infinity, cyclic, symbolKeyed, nonEnumerable, arrayWithProperty, new Date(), new CustomValue(), [, "sparse"]]) {
       assert.throws(() => runtime.queries.subscribe("invalid", () => {}, value), /Query arguments/);
     }
