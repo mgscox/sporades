@@ -1037,6 +1037,65 @@ test("detached and aborted Privileged Team inspections fail closed after their c
   });
 });
 
+test("Privileged Join-link inspection stops at every paused read boundary after detachment or abort", async () => {
+  await withDatabase(async (databasePath) => {
+    let joinCode;
+    let detachedError;
+    const abortController = new AbortController();
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged-inspect-inflight", auth: { providers: { anonymous: true, email: true } } }, {
+      name: "teams-privileged-inspect-inflight",
+      schema: {},
+      mutations: {
+        detachAtJoinLinkRow: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.inspect.detach", targetResourceKind: "team-join-link" },
+          async (privileged) => {
+            privileged.teams.inspectJoinLink(joinCode).catch((error) => { detachedError = error; });
+            await joinLinkPause.started;
+            return { scheduled: true };
+          },
+        )),
+        abortAtTeamRow: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.inspect.abort", targetResourceKind: "team-join-link", signal: abortController.signal },
+          async (privileged) => {
+            const pending = privileged.teams.inspectJoinLink(joinCode);
+            await teamRowPause.started;
+            abortController.abort();
+            teamRowPause.release();
+            await assert.rejects(pending, (error) => error?.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
+            return { aborted: true };
+          },
+        )),
+      },
+    });
+    const baseAdapter = database.adapter;
+    const joinLinkPause = pausePrivilegedTeamInspectionRead(baseAdapter, "sporades_team_join_links");
+    const teamRowPause = pausePrivilegedTeamInspectionRead(baseAdapter, "sporades_teams");
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-inspect-inflight@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "inspect-inflight-invitee@example.com", { ttlSeconds: 300 });
+      joinCode = new URL(issued.link).searchParams.get("code");
+
+      database.adapter = joinLinkPause.adapter;
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "detachAtJoinLinkRow", []), { ok: true, data: { scheduled: true }, error: null });
+      joinLinkPause.release();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(detachedError?.code, "PRIVILEGED_TEAM_ACCESS_INACTIVE");
+      assert.equal(joinLinkPause.statements.some((statement) => statement.includes("sporades_team_join_link_secrets")), false);
+      assert.equal(joinLinkPause.statements.some((statement) => statement.includes("sporades_teams")), false);
+
+      database.adapter = teamRowPause.adapter;
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "abortAtTeamRow", []), { ok: true, data: { aborted: true }, error: null });
+      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_team_join_links")).length, 1);
+      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_team_join_link_secrets")).length, 1);
+      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_teams")).length, 1);
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
 test("Privileged Team inspection fails closed for absent Teams, aborts, and retained callbacks", async () => {
   await withDatabase(async (databasePath) => {
     let team;
@@ -1175,6 +1234,7 @@ function pausePrivilegedTeamInspectionRead(adapter, table = "sporades_team_membe
   let releaseRead;
   let startedResolve;
   let paused = false;
+  const statements = [];
   const started = new Promise((resolve) => { startedResolve = resolve; });
   const wrap = (target) => new Proxy(target, {
     get(currentTarget, property, receiver) {
@@ -1184,6 +1244,7 @@ function pausePrivilegedTeamInspectionRead(adapter, table = "sporades_team_membe
       const value = Reflect.get(currentTarget, property, receiver);
       if (property !== "prepare" || typeof value !== "function") return value;
       return (statement) => {
+        statements.push(`${statement}`);
         const prepared = value.call(currentTarget, statement);
         if (paused || !`${statement}`.includes(table)) return prepared;
         return new Proxy(prepared, {
@@ -1205,6 +1266,7 @@ function pausePrivilegedTeamInspectionRead(adapter, table = "sporades_team_membe
   return {
     adapter: wrap(adapter),
     started,
+    statements,
     release() { releaseRead?.(); },
   };
 }

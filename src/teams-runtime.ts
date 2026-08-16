@@ -182,7 +182,7 @@ export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: (
       return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
     },
     async inspectJoinLink(code: any) {
-      return runPrivilegedTeamInspection(contextGetter, () => inspectTeamJoinLink(database, code));
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => inspectTeamJoinLinkWithActivity(database, code, assertActive));
     },
   });
 }
@@ -302,14 +302,20 @@ export async function revokeTeamJoinLink(database: LooseRecord, auth: LooseRecor
 }
 
 export async function inspectTeamJoinLink(database: LooseRecord, code: any) {
+  return inspectTeamJoinLinkWithActivity(database, code);
+}
+
+async function inspectTeamJoinLinkWithActivity(database: LooseRecord, code: any, assertActive: (() => void) | undefined = undefined) {
   const parsed = parseTeamJoinCode(code);
   if (!parsed) return { team: null, expiresAt: null, usable: false };
   const row = await database.adapter.prepare(database.adapter.dialect.sql(
     "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
   )).get(parsed.selector);
+  assertActive?.();
   const secretRow = await database.adapter.prepare(database.adapter.dialect.sql(
     "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?",
   )).get(TEAM_JOIN_LINK_SECRET_ID);
+  assertActive?.();
   const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
   const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
   const expectedSignature = Buffer.from(row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
@@ -320,6 +326,7 @@ export async function inspectTeamJoinLink(database: LooseRecord, code: any) {
   const usable = Boolean(row && verifierMatches && signatureMatches && !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > now);
   if (!usable) return { team: null, expiresAt: null, usable: false };
   const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+  assertActive?.();
   if (!team) return { team: null, expiresAt: null, usable: false };
   return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
 }
