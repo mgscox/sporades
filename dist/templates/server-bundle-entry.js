@@ -121,8 +121,8 @@ const shutdown = async () => {
     shutdownStarted = true;
     websocketHub.disconnectAll();
     await database.shutdown();
-    server.close(() => {
-        database.close();
+    server.close(async () => {
+        await database.close();
         process.exit(0);
     });
 };

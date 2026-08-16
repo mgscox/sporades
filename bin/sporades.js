@@ -26489,12 +26489,12 @@ async function createDevRuntime(options) {
       );
       await nextDatabase.init();
       await database.shutdown();
-      database.close();
+      await database.close();
       database = nextDatabase;
     },
     async shutdown() {
       await database.shutdown();
-      database.close();
+      await database.close();
     }
   };
 }
