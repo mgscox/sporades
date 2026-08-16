@@ -10,6 +10,66 @@ import { job, mutation, schedule } from "../dist/server.js";
 import { runMutation } from "../dist/server-runtime-source.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
+test("far-future annual and monthly Schedules do not run before their nominal occurrence", async (t) => {
+  for (const scenario of [
+    { name: "annual", now: "2026-08-16T00:00:00.000Z", expression: "0 0 1 1 *" },
+    { name: "monthly", now: "2030-01-01T00:00:01.000Z", expression: "0 0 1 * *" },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), `sporades-schedule-long-${scenario.name}-timer-`));
+      const fixedNow = new Date(scenario.now);
+      const clock = {
+        now: () => new Date(fixedNow),
+        setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimer: (timer) => clearTimeout(timer),
+      };
+      let executions = 0;
+      const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `scheduled-long-${scenario.name}-timer` }, {
+        jobs: { work: job(() => { executions += 1; return null; }) },
+        schedules: {
+          longWait: schedule({ expression: scenario.expression, timezone: "UTC", job: "work" }),
+        },
+      }, { clock });
+      try {
+        await database.init();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        assert.equal(executions, 0);
+        assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+      } finally {
+        await database.shutdown();
+        await database.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("a far-future Schedule rechecks its occurrence after each native-timer chunk", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-long-chunk-"));
+  const clock = createControllableRuntimeClock("2026-08-16T00:00:00.000Z");
+  let executions = 0;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-long-chunk" }, {
+    jobs: { work: job(() => { executions += 1; return null; }) },
+    schedules: { annual: schedule({ expression: "0 0 1 1 *", timezone: "UTC", job: "work" }) },
+  }, { clock });
+  try {
+    await database.init();
+    const scheduledFor = Date.parse("2027-01-01T00:00:00.000Z");
+    clock.advanceBy(2_147_483_647);
+    await clock.runDueTimers();
+    assert.equal(executions, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+
+    clock.advanceBy(scheduledFor - clock.now().getTime());
+    await clock.runDueTimers();
+    assert.equal(executions, 1);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a matching static Schedule enqueues and runs one ordinary Privileged Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");

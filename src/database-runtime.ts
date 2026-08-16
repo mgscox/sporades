@@ -1896,6 +1896,8 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   const authToken = typeof options === "object" ? options.authToken : null;
   let closed = false;
   const activeTransactions = new Set<any>();
+  const connectionGate = createConnectionTransactionGate();
+  const runDirectly = (operation: () => any) => operation();
 
   // libSQL speaks SQLite's SQL, so it takes SQLite's dialect. That is a statement about the two
   // engines rather than a borrowing: the dialect is a value both adapters ask for, not an adapter
@@ -1905,36 +1907,36 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   // where node:sqlite hands back JavaScript directly.
   const normalization = libsqlRowNormalization();
 
-  const createOperations = (transaction: any = null) => ({
+  const createOperations = (transaction: any = null, run: (operation: () => any) => any = runDirectly) => ({
     exec(sql: string) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql)
         ? { type: "sequence", sql }
         : { type: "execute", stmt: { sql } };
-      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
+      return run(() => libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined));
     },
     prepare(sql: string) {
       assertLibsqlOpen(closed);
       return {
         all(...params: (number | undefined)[]) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
+          return run(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
             libsqlRowsFromResult(normalization, result),
-          );
+          ));
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+          return run(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
             changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
             lastInsertRowid:
               result.last_insert_rowid === null || result.last_insert_rowid === undefined
                 ? undefined
                 : BigInt(result.last_insert_rowid),
-          }));
+          })));
         },
         columns() {
-          return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+          return run(() => libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction }));
         },
       };
     },
@@ -1942,7 +1944,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
 
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
-    ...createOperations(),
+    ...createOperations(null, connectionGate.runOperation),
     engine: "libsql",
     dialect,
     normalization,
@@ -1951,42 +1953,46 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
     // body instead.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      const transaction = { baton: null as any, baseUrl: endpoint };
-      const transactionAdapter = createTransactionScopedAdapter({
-        ...adapter,
-        ...createOperations(transaction),
-      });
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        let result;
-        try { result = await fn(transactionAdapter); }
-        finally { revokeTransactionScopedAdapter(transactionAdapter); }
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) {
+      return await connectionGate.runTransaction(async () => {
+        const transaction = { baton: null as any, baseUrl: endpoint };
+        const transactionAdapter = createTransactionScopedAdapter({
+          ...adapter,
+          ...createOperations(transaction, runDirectly),
+        });
+        activeTransactions.add(transaction);
         try {
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
-        } catch { }
-        throw error;
-      } finally {
-        activeTransactions.delete(transaction);
-      }
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+          let result;
+          try { result = await fn(transactionAdapter); }
+          finally { revokeTransactionScopedAdapter(transactionAdapter); }
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+          return result;
+        } catch (error) {
+          try {
+            await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+          } catch { }
+          throw error;
+        } finally {
+          activeTransactions.delete(transaction);
+        }
+      });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      const transaction = { baton: null as any, baseUrl: endpoint };
-      const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction) });
-      activeTransactions.add(transaction);
-      try {
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
-        let result;
-        try { result = await fn(snapshotAdapter); }
-        finally { revokeTransactionScopedAdapter(snapshotAdapter); }
-        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
-        return result;
-      } catch (error) { try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true }); } catch {} throw error; }
-      finally { activeTransactions.delete(transaction); }
+      return await connectionGate.runTransaction(async () => {
+        const transaction = { baton: null as any, baseUrl: endpoint };
+        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
+        activeTransactions.add(transaction);
+        try {
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
+          let result;
+          try { result = await fn(snapshotAdapter); }
+          finally { revokeTransactionScopedAdapter(snapshotAdapter); }
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+          return result;
+        } catch (error) { try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true }); } catch {} throw error; }
+        finally { activeTransactions.delete(transaction); }
+      });
     },
     async close() {
       closed = true;

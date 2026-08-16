@@ -32,27 +32,31 @@ async function assertNestedTransactionModesRejectPromptly(adapter) {
 }
 
 async function assertCapturedRootTransactionReentryRejectsPromptly(adapter) {
-  for (const timing of ["before await", "after await"]) {
-    let nested;
-    let nestedCallbackEntered = false;
-    const outcome = await adapter.withTransaction(async () => {
-      if (timing === "after await") await Promise.resolve();
-      nested = adapter.withTransaction(async () => { nestedCallbackEntered = true; });
-      const nestedOutcome = await Promise.race([
-        nested.then(
-          () => ({ kind: "resolved" }),
-          (error) => ({ kind: "rejected", error }),
-        ),
-        new Promise((resolve) => setTimeout(() => resolve({ kind: "timed-out" }), 100)),
-      ]);
-      if (nestedOutcome.kind === "timed-out") throw new Error(`captured root reentry timed out ${timing}`);
-      return nestedOutcome;
-    }).catch((error) => ({ kind: "outer-rejected", error }));
+  for (const outerMode of ["withTransaction", "withReadOnlySnapshot"]) {
+    for (const nestedMode of ["withTransaction", "withReadOnlySnapshot"]) {
+      for (const timing of ["before await", "after await"]) {
+        let nested;
+        let nestedCallbackEntered = false;
+        const outcome = await adapter[outerMode](async () => {
+          if (timing === "after await") await Promise.resolve();
+          nested = adapter[nestedMode](async () => { nestedCallbackEntered = true; });
+          const nestedOutcome = await Promise.race([
+            nested.then(
+              () => ({ kind: "resolved" }),
+              (error) => ({ kind: "rejected", error }),
+            ),
+            new Promise((resolve) => setTimeout(() => resolve({ kind: "timed-out" }), 100)),
+          ]);
+          if (nestedOutcome.kind === "timed-out") throw new Error(`captured root ${outerMode} -> ${nestedMode} reentry timed out ${timing}`);
+          return nestedOutcome;
+        }).catch((error) => ({ kind: "outer-rejected", error }));
 
-    if (nested) await nested.catch(() => {});
-    assert.equal(outcome.kind, "rejected", `captured root reentry ${timing} rejects instead of waiting on its own connection queue`);
-    assert.match(outcome.error.message, /nested database transactions are not supported/i);
-    assert.equal(nestedCallbackEntered, false);
+        if (nested) await nested.catch(() => {});
+        assert.equal(outcome.kind, "rejected", `captured root ${outerMode} -> ${nestedMode} reentry ${timing} rejects instead of waiting on its own connection queue`);
+        assert.match(outcome.error.message, /nested database transactions are not supported/i);
+        assert.equal(nestedCallbackEntered, false);
+      }
+    }
   }
 }
 
@@ -235,6 +239,24 @@ test("SQLite rejects captured root transaction reentry before and after await", 
 test("libSQL transaction callbacks reject nested transaction modes without deadlocking", async () => {
   await withLibsqlAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
+  }, { isolateProcess: true });
+});
+
+test("libSQL rejects captured root transaction reentry before and after await", async () => {
+  await withLibsqlAdapter(async (adapter) => {
+    await assertCapturedRootTransactionReentryRejectsPromptly(adapter);
+  }, { isolateProcess: true });
+});
+
+test("libSQL keeps public operations outside a transaction while owner operations proceed", async () => {
+  await withLibsqlAdapter(async (adapter) => {
+    await assertPublicOperationsWaitForTransactionOwner(adapter, "ticket04_libsql_gate");
+  }, { isolateProcess: true });
+});
+
+test("libSQL resumes chained public operations after a transaction completes", async () => {
+  await withLibsqlAdapter(async (adapter) => {
+    await assertChainedPublicOperationsResumeAfterTransaction(adapter, "ticket04_libsql_chain");
   }, { isolateProcess: true });
 });
 

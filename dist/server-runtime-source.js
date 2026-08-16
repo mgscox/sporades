@@ -624,6 +624,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
         await reconcileSchedules(database);
+        await armJobLeaseRecovery(database);
         await startStaticSchedules(database);
         // Orderly shutdown deliberately retains queued and delayed Jobs. A fresh
         // runtime has no inherited worker/wake timer, so one normal worker pass
@@ -771,6 +772,7 @@ async function reconcileSchedules(database) {
     }
     await recoverPendingScheduleOccurrences(database);
 }
+const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
 async function startStaticSchedules(database) {
     database.__scheduleTimers ??= new Set();
     database.__activeScheduleOccurrences ??= new Set();
@@ -783,6 +785,14 @@ async function startStaticSchedules(database) {
             const occurrence = new Date(definition.nextOccurrence);
             const timer = database.clock.setTimer(() => {
                 database.__scheduleTimers.delete(timer);
+                // Native timers clamp delays above 2^31-1 milliseconds to one
+                // millisecond. Long recurrences therefore wake in bounded chunks and
+                // must prove the nominal occurrence is due before creating durable
+                // Schedule or Job state.
+                if (occurrence.getTime() > database.clock.now().getTime()) {
+                    arm();
+                    return;
+                }
                 const active = recordScheduledOccurrence(database, definition, occurrence).catch(async (error) => {
                     database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
                     if (!database.__scheduleStopped)
@@ -795,7 +805,7 @@ async function startStaticSchedules(database) {
                 });
                 database.__activeScheduleOccurrences.add(active);
                 return active;
-            }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
+            }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, occurrence.getTime() - database.clock.now().getTime())));
             database.__scheduleTimers.add(timer);
         };
         arm();
@@ -907,8 +917,27 @@ async function recoverExpiredJobLeases(database) {
     const recoveredAt = database.clock.now();
     const recoveredIso = recoveredAt.toISOString();
     const sql = database.adapter.dialect.sql;
-    const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
+    const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
+    let earliestFutureLeaseAt = null;
     for (const row of rows) {
+        if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
+            const failure = { code: "JOB_LEASE_INVALID", message: "The stored Job claim lease is invalid." };
+            const ownership = jobClaimOwnership(row.claimToken);
+            const leasePredicate = row.leaseExpiresAt === null
+                ? "[leaseExpiresAt] IS NULL"
+                : "[leaseExpiresAt] = ?";
+            const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
+            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+                "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+            continue;
+        }
+        const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
+        if (leaseExpiresAt > recoveredAt.getTime()) {
+            earliestFutureLeaseAt = earliestFutureLeaseAt === null
+                ? leaseExpiresAt
+                : Math.min(earliestFutureLeaseAt, leaseExpiresAt);
+            continue;
+        }
         const retry = parsePersistedJobRetry(row.retryJson);
         const storedFailure = invalidStoredJobFailure(row, recoveredAt);
         const history = JSON.parse(row.attemptHistory || "[]");
@@ -921,16 +950,63 @@ async function recoverExpiredJobLeases(database) {
             : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
         if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
             await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
-                "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate)).run(retryAvailableAt, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+                "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
         }
         else {
             const failure = storedFailure ?? (retry === null || retryEligible
                 ? invalidJobRetryPolicyFailure()
                 : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
             await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
-                "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+                "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
         }
     }
+    return earliestFutureLeaseAt;
+}
+async function armJobLeaseRecovery(database) {
+    if (database.__jobStopped)
+        return;
+    const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
+    if (database.__jobStopped)
+        return;
+    scheduleJobLeaseRecoveryAt(database, earliestFutureLeaseAt);
+}
+function scheduleJobLeaseRecoveryAt(database, dueAt) {
+    if (database.__jobLeaseRecoveryTimer) {
+        database.clock.clearTimer(database.__jobLeaseRecoveryTimer);
+        database.__jobLeaseRecoveryTimer = null;
+    }
+    database.__jobLeaseRecoveryDueAt = dueAt;
+    if (database.__jobStopped || dueAt === null)
+        return;
+    database.__jobLeaseRecoveryTimer = database.clock.setTimer(async () => {
+        database.__jobLeaseRecoveryTimer = null;
+        database.__jobLeaseRecoveryDueAt = null;
+        if (database.__jobStopped)
+            return;
+        const recovery = (async () => {
+            try {
+                await armJobLeaseRecovery(database);
+                if (!database.__jobStopped)
+                    scheduleCurrentUserJobWorker(database);
+            }
+            catch (error) {
+                try {
+                    database.log.emit({ category: "platform", event: "job.lease_recovery.failed", level: "error", message: "Running Job lease recovery failed", data: { code: String(error?.code ?? "JOB_LEASE_RECOVERY_FAILED").slice(0, 80) } });
+                }
+                catch { }
+                if (!database.__jobStopped)
+                    scheduleJobLeaseRecoveryAt(database, database.clock.now().getTime() + 1_000);
+            }
+        })();
+        database.__jobLeaseRecoveryPromise = recovery;
+        try {
+            await recovery;
+        }
+        finally {
+            if (database.__jobLeaseRecoveryPromise === recovery)
+                database.__jobLeaseRecoveryPromise = null;
+        }
+    }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, dueAt - database.clock.now().getTime())));
 }
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 function invalidStoredJobFailure(row, referenceInstant) {
@@ -4291,9 +4367,21 @@ function stopCurrentUserJobWorker(database) {
         database.clock.clearTimer(database.__jobWakeTimer);
         database.__jobWakeTimer = null;
     }
+    if (database.__jobLeaseRecoveryTimer) {
+        database.clock.clearTimer(database.__jobLeaseRecoveryTimer);
+        database.__jobLeaseRecoveryTimer = null;
+    }
+    database.__jobLeaseRecoveryDueAt = null;
     for (const activeClaim of database.__jobAbortControllers?.values?.() ?? [])
         (activeClaim?.controller ?? activeClaim)?.abort?.();
-    return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : undefined;
+    const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise]
+        .filter(Boolean)
+        .map((pending) => Promise.resolve(pending));
+    if (settlements.length === 0)
+        return undefined;
+    if (settlements.length === 1)
+        return settlements[0];
+    return Promise.all(settlements).then(() => undefined);
 }
 function scheduleCurrentUserJobWorker(database) {
     if (database.__jobStopped)
@@ -4330,7 +4418,6 @@ function scheduleCurrentUserJobWorker(database) {
         database.__jobWorkerTimer = null;
     }
 }
-const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
 function scheduleJobWorkerWake(database, delayMs) {
     if (database.__jobStopped)
         return;

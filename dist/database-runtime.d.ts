@@ -36,15 +36,12 @@ export declare function createLibsqlDatabaseAdapter(options: {
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
-    exec(sql: string): Promise<undefined>;
+    exec(sql: string): any;
     prepare(sql: string): {
-        all(...params: (number | undefined)[]): Promise<any>;
-        get(...params: undefined[]): Promise<any>;
-        run(...params: string[]): Promise<{
-            changes: number;
-            lastInsertRowid: bigint | undefined;
-        }>;
-        columns(): Promise<any>;
+        all(...params: (number | undefined)[]): any;
+        get(...params: undefined[]): any;
+        run(...params: string[]): any;
+        columns(): any;
     };
 }>;
 export declare function createAppTable(sqlite: LooseRecord, table: LooseRecord, tableName?: any): any;

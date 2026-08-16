@@ -842,7 +842,11 @@ Capsule server code catches and shapes a safe response.
 generated runtime artifacts expose the same Privileged server role behavior as
 the source runtime code. `npm run build` regenerates the bundled `bin/` and
 `dist/` outputs, so Dev sessions, Container sessions, and Hosted Capsules do not
-drift from source behavior. A deployed Capsule's server Bundle is built from the
+drift from source behavior. The retained generated-source manifest seals all
+shipped JavaScript, declarations, source maps, CLI bundles, and the build inputs
+that produce them, excluding only the manifest itself. The freshness check fails
+when a sealed output is changed or deleted or a generator input changes without
+a complete rebuild. A deployed Capsule's server Bundle is built from the
 runtime module graph, so a name that fails to reach it is a build error rather
 than a runtime one.
 
@@ -903,7 +907,12 @@ retry state fails terminally during recovery and is revalidated before worker
 claim rather than executing early or blocking startup. Availability and retry
 instants reserve enough time-domain headroom for their runtime claim lease;
 retry policy objects reject members other than `maxAttempts` and optional
-`delayMs`. A
+`delayMs`. A restart that observes a canonical future running lease tracks its
+earliest expiry and re-arms recovery in bounded native-timer chunks; it does not
+strand the attempt merely because the lease was not expired during storage
+open. Recovery rechecks the durable lease and exact claim before transition.
+Missing or noncanonical retained running leases fail terminally with the safe
+`JOB_LEASE_INVALID` code. Orderly close clears the tracked recovery wake. A
 missing captured actor is terminal regardless of unused retry attempts. Capsule
 shutdown hook failure does not skip Database adapter closure. Runtime close
 attempts mail, Database adapter, and file-storage closure independently and
@@ -962,6 +971,10 @@ adapter. Declaration changes affect only future occurrences; removal forgets
 Schedule state without deleting historical Jobs, and later reuse of the name is
 a fresh identity. Deterministic occurrence identity and durable reconciliation
 prevent duplicate Job creation across overlapping starts and crashes.
+The next-occurrence timer uses bounded native-timer chunks and rechecks that the
+nominal instant is due before it persists or enqueues anything, so distant
+monthly and annual occurrences cannot run early when a host timer clamps a long
+delay.
 
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the

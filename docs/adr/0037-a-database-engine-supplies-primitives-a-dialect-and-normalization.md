@@ -138,6 +138,14 @@ an adapter whose statements run inside the transaction, and
 engine may define for itself, and they are exactly the five the conformance
 coverage gate exempts under ADR-0035's three mechanics.
 
+Every single-connection engine applies the same ownership gate to those
+mechanics. Public root operations from another async owner wait until the active
+transaction or read-only snapshot releases the connection. Re-entering either
+transaction mode through a captured root adapter from the current owner rejects
+promptly as unsupported, before or after an `await`; it must never queue behind
+itself. SQLite, libSQL, and PostgreSQL share conformance coverage for both sides
+of this boundary.
+
 **A dialect**, built with the dialect factory, answering every entry listed
 above.
 

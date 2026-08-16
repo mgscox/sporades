@@ -33,6 +33,8 @@ Changes since v0.8.5.
   shutdown that wins during pre-handler reconciliation relinquishes the exact
   claim without consuming an attempt, far-future and retry wakes use bounded
   native-timer chunks instead of overflow-clamped rescans,
+  retained future running leases schedule bounded recovery wakes after restart,
+  malformed retained running leases fail terminally instead of becoming stuck,
   a commit during an active empty queue scan guarantees another worker pass,
   and shutdown alone cannot misclassify retained work as user-cancelled. Signal
   shutdown stops accepting and drains HTTP requests before runtime resources
@@ -51,6 +53,15 @@ Changes since v0.8.5.
 - Allocate additive-migration temporary table names without colliding with valid
   Capsule tables, preserving those tables on both successful and rolled-back
   SQLite, libSQL, and PostgreSQL migrations.
+- Re-arm distant Schedule occurrences in bounded native-timer chunks and verify
+  the nominal instant is due before persisting or enqueueing, preventing monthly
+  and annual recurrences from firing immediately when Node clamps a long delay.
+- Apply the transaction ownership gate consistently to libSQL root transactions,
+  read-only snapshots, and public operations so captured-root re-entry rejects
+  promptly while external callers remain serialized.
+- Seal generated JavaScript, declarations, source maps, CLI bundles, and their
+  generator inputs in the generated-source manifest so corruption or deletion
+  cannot pass the freshness check.
 - Reject query argument array subclasses while continuing to accept arrays
   created in another JavaScript realm (2171b61).
 

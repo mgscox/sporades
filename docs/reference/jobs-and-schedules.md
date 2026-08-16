@@ -72,15 +72,21 @@ attempt again. Storage recovery records an expired attempt before Capsule
 initialization, but no recovered handler or retry wake starts until the runtime
 has completed its `init()` boundary. Long `availableAt` and retry waits are
 re-armed in bounded native-timer chunks, so dates beyond the platform timer
-limit do not cause early execution or repeated queue scans.
+limit do not cause early execution or repeated queue scans. If restart happens
+before a retained running attempt's lease expires, initialization tracks the
+earliest canonical expiry and re-arms recovery in the same bounded chunks. The
+attempt is reconciled only after its lease is actually due. A retained running
+attempt with a missing or noncanonical lease fails terminally with
+`JOB_LEASE_INVALID` instead of executing or leaving startup permanently stuck.
 
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
 duplicate-safe and use idempotency keys for caller retries.
 
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
-clears immediate, delayed, and retry worker timers, aborts active Job handlers,
-and awaits scheduled worker settlement before the Capsule shutdown hook and
+clears immediate, delayed, and retry worker timers plus the retained-lease
+recovery wake, aborts active Job handlers, and awaits scheduled worker
+settlement before the Capsule shutdown hook and
 before mail, the Database adapter, and other runtime resources close. An active
 worker settles its current attempt without claiming another queued Job, and
 worker settlement failure does not skip resource closure. Durable queued and
@@ -179,6 +185,10 @@ backlog. Schedule state and pending occurrences survive runtime restarts through
 the configured Database adapter. A deterministic identity based on Capsule,
 Schedule name, and scheduled UTC instant prevents overlapping starts or crash
 recovery from creating duplicate Jobs for one occurrence.
+Long waits for the next occurrence are re-armed in bounded native-timer chunks.
+Every wake rechecks the current instant before persisting an occurrence, so
+monthly, annual, and other distant recurrences cannot be overflow-clamped into
+an immediate occurrence by the host timer implementation.
 
 Changing an expression, timezone, payload, retry policy, or enabled state affects
 future occurrences only and does not rewrite historical Jobs. Removing a

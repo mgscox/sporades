@@ -166,13 +166,15 @@ arise. Running from `bin/`, a tree whose `dist/` and `bin/` came from different
 builds would put the `dist/` gate inside a deployed Capsule while every other
 runtime function in that same Capsule came from `bin/`.
 
-**Nothing in `scripts/` compares them.** `check-generated-bin.mjs` checks the
-shebang, the generated-file header and the absence of `../src/` imports; it has no
-mtime, hash or freshness comparison, and an earlier version of this section and of
-the comment in `server-bundle-template.ts` both claimed a check it does not
-perform. The measured consequence was that a `dist/inspection-sql.js` whose
-validator had been replaced by one admitting everything built cleanly and shipped
-verbatim.
+`check-generated-bin.mjs` checks the shebang, generated-file header and absence
+of `../src/` imports, then verifies the retained generated-source manifest. The
+manifest seals the complete shipped `dist/` and `bin/` trees—including
+JavaScript, declarations and source maps—against the TypeScript, build scripts,
+package metadata and compiler configuration that produced them. It excludes the
+manifest file itself to avoid a self-referential digest. Corrupting or deleting
+an output, or changing a generator input without a complete build, therefore
+fails the check. The builder's runtime parity probe below remains a separate
+semantic defence for the carried module copy.
 
 So the builder compares the two copies itself, and the comparison is in two parts
 because the same names are not enough:
