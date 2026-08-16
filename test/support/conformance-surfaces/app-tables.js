@@ -111,14 +111,19 @@ const MIGRATED_ENTRIES_TABLE = {
   fields: [...ENTRIES_TABLE.fields, { name: "status", kind: "String", sqliteType: "TEXT", defaultValue: "open" }],
 };
 
-const MIGRATED_ENTRIES_WITH_UNIQUE_TABLE = {
-  ...MIGRATED_ENTRIES_TABLE,
-  uniqueConstraints: [["note"]],
+const UNIQUE_MUTABILITY_TABLE = {
+  name: "conformance_unique_mutability",
+  fields: [
+    { name: "first", kind: "String", sqliteType: "TEXT" },
+    { name: "second", kind: "String", sqliteType: "TEXT" },
+    { name: "third", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["first", "second"]],
 };
 
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
-const MIGRATED_SCHEMA_WITH_UNIQUE = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_WITH_UNIQUE_TABLE, ARCHIVE_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MUTABILITY_TABLE] };
 
 // The two tables of the migration that must fail partway. A migration walks the schema's tables in
 // order, so putting a table that migrates cleanly ahead of one that cannot is what makes the
@@ -696,32 +701,6 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
-    // Unique declarations are supported for newly created tables in this slice. Altering the
-    // constraint set of a stored table needs its own compatibility, duplicate-data, and error
-    // contract, so the additive migration boundary must reject it before it reaches the rebuild.
-    name: "migrateAppSchema rejects an existing table unique change without rebuilding, copying, or rewriting metadata",
-    async run(adapter) {
-      const schemaBefore = (await adapter.readSchemaMetadata()).value;
-      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
-      const entriesBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === ENTRIES_TABLE.name);
-
-      await assert.rejects(adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE), {
-        message: "Unsupported Capsule schema change.",
-        hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
-      });
-
-      const entriesAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === ENTRIES_TABLE.name);
-      assert.deepEqual(entriesAfter.columns, entriesBefore.columns);
-      assert.deepEqual(
-        entriesAfter.rows.map((row) => pick(row, entriesBefore.columns)),
-        entriesBefore.rows.map((row) => pick(row, entriesBefore.columns)),
-      );
-      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${ENTRIES_TABLE.name}`), false);
-      assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore);
-      assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore);
-    },
-  },
-  {
     // Migrations rewrite user data, so the answer that matters most from this method is the one it
     // gives when it cannot finish. ADR-0026 puts a multi-write workflow that must succeed or fail
     // as one unit inside a Database adapter transaction, and a schema migration is the largest one
@@ -988,6 +967,49 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    // Unique declarations work for a new table. Changing the constraint set after that table has
+    // stored data needs a dedicated compatibility and duplicate-data contract, so every such
+    // change must fail before the additive migration reaches its rebuild/copy path.
+    name: "migrateAppSchema rejects every existing-table unique change without rebuilding, copying, or rewriting metadata",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_TABLE);
+      await adapter.insertAppRow(UNIQUE_MUTABILITY_TABLE, {
+        id: "unique-mutability-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        first: "first",
+        second: "second",
+        third: "third",
+      });
+
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const tableBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
+      const changes = [
+        { name: "add", uniqueConstraints: [["first", "second"], ["third"]] },
+        { name: "remove", uniqueConstraints: [] },
+        { name: "replace", uniqueConstraints: [["first"]] },
+        { name: "composite-order", uniqueConstraints: [["second", "first"]] },
+      ];
+
+      for (const change of changes) {
+        const changedTable = { ...UNIQUE_MUTABILITY_TABLE, uniqueConstraints: change.uniqueConstraints };
+        const changedSchema = { tables: [...MIGRATED_SCHEMA.tables, changedTable] };
+        await assert.rejects(adapter.migrateAppSchema(changedSchema), {
+          message: "Unsupported Capsule schema change.",
+          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        }, change.name);
+
+        const tableAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
+        assert.deepEqual(tableAfter.columns, tableBefore.columns, `${change.name} must not change columns`);
+        assert.deepEqual(tableAfter.rows, tableBefore.rows, `${change.name} must not copy or change rows`);
+        assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_MUTABILITY_TABLE.name}`), false, `${change.name} must not create a rebuild table`);
+        assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore, `${change.name} must not rewrite schema metadata`);
+        assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore, `${change.name} must not rewrite schema metadata hash`);
+      }
+    },
+  },
+  {
     name: "user preferences storage stores one Sporades user's preferences, overwrites them, and answers null for another",
     async run(adapter) {
       await adapter.ensureUserPreferencesStorage();
@@ -1074,6 +1096,7 @@ export const CONFORMANCE_SURFACE = {
     STANDALONE_ALIAS_TABLE_NAME,
     COLLIDING_NAMES_TABLE.name,
     UNIQUE_TABLE.name,
+    UNIQUE_MUTABILITY_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
