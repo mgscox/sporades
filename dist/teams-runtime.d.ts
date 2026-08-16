@@ -21,6 +21,7 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         team: any;
     }>;
     listMembers(teamId: any, options?: LooseRecord): Promise<any>;
+    countMembers(teamId: any): Promise<any>;
     updateApplicationRoles(teamId: any, userId: any, changes: any): Promise<{
         updated: boolean;
     }>;
@@ -141,6 +142,8 @@ export declare function deleteCurrentUserTeam(database: LooseRecord, auth: Loose
     deleted: boolean;
 }>;
 export declare function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any, options?: LooseRecord): Promise<any>;
+/** Returns only the exact accepted-membership total for the caller's current Team. */
+export declare function countTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
 export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
 export declare function flushTeamSecurityEvents(database: LooseRecord, context: LooseRecord | undefined, options?: LooseRecord): void;
 export {};

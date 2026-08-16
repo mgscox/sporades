@@ -130,6 +130,9 @@ export const teams = {
   listMembers(teamId, options = {}) {
     return connect().teamsListMembers(teamId, options);
   },
+  countMembers(teamId) {
+    return connect().teamsCountMembers(teamId);
+  },
   updateApplicationRoles(teamId, userId, changes) {
     return connect().teamsUpdateApplicationRoles(teamId, userId, changes);
   },
@@ -1189,6 +1192,7 @@ function createConnection() {
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     teamsListMembers(teamId, options = {}) { return request("teams.listMembers", { teamId, cursor: options.cursor, limit: options.limit }); },
+    teamsCountMembers(teamId) { return request("teams.countMembers", { teamId }); },
     teamsUpdateApplicationRoles(teamId, userId, changes) { return request("teams.updateApplicationRoles", { teamId, userId, add: changes?.add, remove: changes?.remove }); },
     teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
     teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },
@@ -8614,6 +8618,10 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
       requireAuth({ auth }, { linked: true });
       return listTeamMembers(database, auth, teamId, options);
     },
+    async countMembers(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return countTeamMembers(database, auth, teamId);
+    },
     async updateApplicationRoles(teamId, userId, changes) {
       requireAuth({ auth }, { linked: true });
       return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
@@ -9042,6 +9050,9 @@ function invalidTeamJoinLink() {
 function teamJoinDenied() {
   return commandError2("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
 }
+function teamMemberCountDenied() {
+  return commandError2("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED");
+}
 async function listCurrentUserTeams(database, auth) {
   requireAuth({ auth }, { linked: true });
   await ensureInitialTeam(database, auth);
@@ -9284,6 +9295,21 @@ async function listTeamMembers(database, auth, teamId, options = {}) {
       ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
       totalCount: Number(total?.count ?? 0)
     };
+  });
+}
+async function countTeamMembers(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    const callerMembership = await tx.prepare(sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (!callerMembership) throw teamMemberCountDenied();
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    return { totalCount: Number(total?.count ?? 0) };
   });
 }
 function normalizeTeamMemberPage(options) {
@@ -16825,6 +16851,25 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
             ...error?.code ? { code: error.code } : {},
             message: error?.message ?? "Could not list Team members.",
             hint: error?.hint ?? "Sign in with a Team administrator account and retry."
+          }
+        });
+      }
+      return;
+    }
+    if (message.type === "teams.countMembers") {
+      try {
+        const data = await countTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.countMembers.result", data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not read this Team's member count.",
+            hint: error?.hint ?? "Sign in as a current Team member and retry."
           }
         });
       }

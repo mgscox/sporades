@@ -4,6 +4,11 @@
 
 Changes since v0.8.5.
 
+### 🚀 Features
+
+- Let current Team members read exact accepted membership totals through the
+  count-only `teams.countMembers(teamId)` API without directory access.
+
 ### 🐛 Bug Fixes
 
 - Reject query argument array subclasses while continuing to accept arrays

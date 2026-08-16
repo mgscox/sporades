@@ -390,6 +390,8 @@ export type TeamMemberSummary = {
 };
 export type TeamMembersListOptions = { cursor?: string; limit?: number };
 export type TeamMembersListResult = { members: TeamMemberSummary[]; nextCursor?: string; totalCount: number };
+/** Exact accepted-membership total for one Team the current linked user belongs to. */
+export type TeamMemberCountResult = { totalCount: number };
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
@@ -410,6 +412,8 @@ export type CurrentUserTeamsApi = {
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
   listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
+  /** Returns only the exact accepted-membership total for one Team the current linked user belongs to. */
+  countMembers(teamId: string): Promise<TeamMemberCountResult>;
   /** Atomically adds and removes declared application roles for a member of one administered Team. */
   updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<{ updated: true }>;
   /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */

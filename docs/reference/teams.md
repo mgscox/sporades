@@ -43,18 +43,20 @@ Capsules may declare up to 32 membership application roles with `teams.appRoles`
 
 Only admins can enumerate memberships for their exact Team. `listMembers(teamId, { cursor, limit })` returns a bounded page in deterministic membership-creation and user-ID order, an opaque `nextCursor` when another page exists, and an exact uncapped `totalCount`. Omitting options remains valid and uses the compatible 100-member page size; limits range from 1 through 100. Treat cursors as opaque and pass them back unchanged.
 
+Any current member of an explicitly identified Team, including an ordinary member, may call `countMembers(teamId)` for `{ totalCount }`. This is an exact accepted-membership total, not the capped `teams.list()` display count; pending Join links do not affect it. The result contains no member identities, roles, emails, or presentation fields. Unknown Teams and non-members receive the same opaque denial, and `countMembers()` grants neither directory access nor mutation authority.
+
 ```ts
 let cursor: string | undefined;
 do {
   const page = await teams.listMembers(teamId, { cursor, limit: 50 });
   if (page.error) throw page.error;
   renderMembers(page.data.members);
-  showSeatUsage(page.data.totalCount); // authoritative current membership count
+  showSeatUsage(page.data.totalCount); // authoritative current membership count for admins
   cursor = page.data.nextCursor;
 } while (cursor);
 ```
 
-The safe result contains user ID, display name, optional picture, management role, and active application roles; results omit member emails, provider subjects, sessions, credentials, and inactive roles. Pending Join links are not members and do not affect `totalCount`. Ordinary members can inspect their own membership through `teams.list()` but cannot enumerate a directory. Invalid limits and malformed cursors fail with `INVALID_TEAM_MEMBER_PAGE` after Team-admin authorization, without revealing Team or member details.
+The safe directory result contains user ID, display name, optional picture, management role, and active application roles; results omit member emails, provider subjects, sessions, credentials, and inactive roles. Pending Join links are not members and do not affect either `totalCount` or `countMembers(teamId)`. Ordinary members can inspect their own membership through `teams.list()` and the count-only `countMembers(teamId)` surface, but cannot enumerate a directory. Invalid limits and malformed cursors fail with `INVALID_TEAM_MEMBER_PAGE` after Team-admin authorization, without revealing Team or member details.
 
 Exact-Team admins use `updateApplicationRoles(teamId, userId, { add, remove })` to atomically reconcile declared roles. Promotion and demotion preserve at least one committed admin. Members leave with `leave(teamId)`; an admin cannot leave while still an admin, and `removeMember` cannot remove its caller. A sole admin member may delete an otherwise empty Team with `delete(teamId)`.
 

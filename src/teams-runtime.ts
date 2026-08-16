@@ -112,6 +112,10 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
       requireAuth({ auth }, { linked: true });
       return listTeamMembers(database, auth, teamId, options);
     },
+    async countMembers(teamId: any) {
+      requireAuth({ auth }, { linked: true });
+      return countTeamMembers(database, auth, teamId);
+    },
     async updateApplicationRoles(teamId: any, userId: any, changes: any) {
       requireAuth({ auth }, { linked: true });
       return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
@@ -605,6 +609,7 @@ function teamJoinLinkThrottleError() { return commandError("Join link creation i
 function teamJoinLinkLimitError() { return commandError("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED"); }
 function invalidTeamJoinLink() { return commandError("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK"); }
 function teamJoinDenied() { return commandError("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED"); }
+function teamMemberCountDenied() { return commandError("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED"); }
 
 export async function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord) {
   requireAuth({ auth }, { linked: true });
@@ -887,6 +892,26 @@ export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, 
       ...(hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {}),
       totalCount: Number(total?.count ?? 0),
     };
+  });
+}
+
+/** Returns only the exact accepted-membership total for the caller's current Team. */
+export async function countTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    // Authorize against the same transaction snapshot used for the count. This
+    // keeps unknown Teams and non-members indistinguishable and never joins
+    // membership data to profile or role presentation fields.
+    const callerMembership = await tx.prepare(sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    )).get(teamId, auth.userId);
+    if (!callerMembership) throw teamMemberCountDenied();
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId);
+    return { totalCount: Number(total?.count ?? 0) };
   });
 }
 
