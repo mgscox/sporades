@@ -16272,14 +16272,16 @@ function releaseHandlerContextMapping(database) {
   database.__releaseHandlerContextMapping?.();
   delete database.__releaseHandlerContextMapping;
 }
-async function cleanupTransactionHandler(database, context, preservePrimaryError) {
+async function cleanupTransactionHandler(database, context, preservePrimaryError, clearCache = true) {
+  let cleanupFailed = false;
   try {
     if (context) await drainPendingAclWrites(context);
   } catch (error) {
+    cleanupFailed = true;
     if (!preservePrimaryError) throw error;
   } finally {
     try {
-      database.rowCache.clear();
+      if (clearCache || cleanupFailed) database.rowCache.clear();
     } finally {
       releaseHandlerContextMapping(database);
     }
@@ -17928,7 +17930,7 @@ async function runMutation(database, auth, mutationName, args) {
         handlerFailed = true;
         throw error;
       } finally {
-        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
       }
     });
     flushTeamSecurityEvents(database, context);

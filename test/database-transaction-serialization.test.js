@@ -179,7 +179,7 @@ test("SQLite rejects captured root transaction reentry before and after await", 
 test("libSQL transaction callbacks reject nested transaction modes without deadlocking", async () => {
   await withLibsqlAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
-  });
+  }, { isolateProcess: true });
 });
 
 test("Postgres transaction callbacks reject nested transaction modes without deadlocking", {

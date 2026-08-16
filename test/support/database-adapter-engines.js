@@ -75,7 +75,10 @@ export async function withSqliteAdapter(fn, options = {}) {
 
 export async function withLibsqlAdapter(fn, options = {}) {
   return await withTempDir("sporades-adapter-libsql-", async (dir) => {
-    return await withFakeLibsqlService(path.join(dir, options.fileName ?? "adapter.db"), options.service ?? {}, async (service) => {
+    return await withFakeLibsqlService(path.join(dir, options.fileName ?? "adapter.db"), {
+      ...(options.service ?? {}),
+      ...(options.isolateProcess ? { isolateProcess: true } : {}),
+    }, async (service) => {
       const adapter = await createLibsqlDatabaseAdapter({ url: service.url });
       try {
         return await fn(adapter, service);
