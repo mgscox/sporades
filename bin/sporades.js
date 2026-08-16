@@ -15014,6 +15014,35 @@ async function shutdownAndCloseDatabase(database) {
   if (shutdownRejected) throw shutdownError;
   if (closeRejected) throw closeError;
 }
+async function shutdownHttpServerAndRuntime(server, shutdownRuntime) {
+  let serverError;
+  let runtimeError;
+  let serverRejected = false;
+  let runtimeRejected = false;
+  try {
+    await new Promise((resolve, reject) => {
+      try {
+        server.close((error) => error ? reject(error) : resolve());
+      } catch (error) {
+        reject(error);
+      }
+    });
+  } catch (error) {
+    serverRejected = true;
+    serverError = error;
+  }
+  try {
+    await shutdownRuntime();
+  } catch (error) {
+    runtimeRejected = true;
+    runtimeError = error;
+  }
+  if (serverRejected && runtimeRejected) {
+    throw new AggregateError([serverError, runtimeError], "HTTP server closure and runtime shutdown both failed.");
+  }
+  if (serverRejected) throw serverError;
+  if (runtimeRejected) throw runtimeError;
+}
 async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   try {
     await candidateDatabase.init();
@@ -15029,11 +15058,18 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
     await shutdownAndCloseDatabase(currentDatabase);
   } catch (teardownError) {
     try {
-      await shutdownAndCloseDatabase(candidateDatabase);
-    } catch (candidateError) {
-      throw new AggregateError([teardownError, candidateError], "Current runtime teardown and candidate runtime cleanup both failed.");
+      const warning = candidateDatabase.log?.emit?.({
+        category: "platform",
+        event: "dev.runtime.previous_teardown_failed",
+        level: "warn",
+        message: "Previous Dev runtime teardown failed after replacement",
+        data: { code: String(teardownError?.code ?? "RUNTIME_TEARDOWN_FAILED").slice(0, 80) }
+      });
+      Promise.resolve(warning).catch(() => {
+      });
+    } catch {
     }
-    throw teardownError;
+    return candidateDatabase;
   }
   return candidateDatabase;
 }
@@ -18614,6 +18650,7 @@ function dropPendingJobDispatch(context) {
 }
 function stopCurrentUserJobWorker(database) {
   database.__jobStopped = true;
+  database.__jobWorkerRerunRequested = false;
   if (database.__jobWorkerTimer) {
     database.clock.clearTimer(database.__jobWorkerTimer);
     database.__jobWorkerTimer = null;
@@ -18627,7 +18664,12 @@ function stopCurrentUserJobWorker(database) {
   return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : void 0;
 }
 function scheduleCurrentUserJobWorker(database) {
-  if (database.__jobStopped || database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
+  if (database.__jobStopped) return;
+  if (database.__jobWorkerRunning) {
+    database.__jobWorkerRerunRequested = true;
+    return;
+  }
+  if (database.__jobWorkerScheduled) return;
   database.__jobWorkerScheduled = true;
   try {
     database.__jobWorkerTimer = database.clock.setTimer(async () => {
@@ -18773,6 +18815,9 @@ async function runCurrentUserJobWorker(database) {
     }
   } finally {
     database.__jobWorkerRunning = false;
+    const rerunRequested = database.__jobWorkerRerunRequested === true;
+    database.__jobWorkerRerunRequested = false;
+    if (rerunRequested && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
   }
 }
 function createHookErrorResult(error) {
@@ -26687,18 +26732,16 @@ async function startDevSession(options) {
     websocketHub.disconnectAll();
     let shutdownError;
     try {
-      await runtime.shutdown();
+      await shutdownHttpServerAndRuntime(server, () => runtime.shutdown());
     } catch (error) {
       shutdownError = error;
     }
-    server.close(async () => {
-      await rm6(sessionFilePath, { force: true });
-      process.off("unhandledRejection", onUnhandledRejection);
-      process.off("uncaughtException", onUncaughtException);
-      if (shutdownError) process.stderr.write(`${errorDetails3(shutdownError).message}
+    await rm6(sessionFilePath, { force: true });
+    process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
+    if (shutdownError) process.stderr.write(`${errorDetails3(shutdownError).message}
 `);
-      process.exit(shutdownError ? 1 : 0);
-    });
+    process.exit(shutdownError ? 1 : 0);
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

@@ -179,11 +179,17 @@ recovers on runtime restart. An active
 worker settles its current attempt without claiming another queued Job, and a
 worker settlement failure does not skip resource closure. The same close
 ordering is used by Dev lifecycle transitions and the bundled process signal
-path, so a worker cannot continue against an already closed adapter.
+path. Signal shutdown first stops accepting HTTP connections and drains in-flight
+requests, then settles runtime work and closes resources, so neither a request
+nor a worker can continue against an already closed adapter. A Job committed
+during an active worker scan records a required rerun before the worker clears
+its running state, so the commit cannot be stranded until another enqueue or
+process restart.
 Capsule shutdown hook failure still proceeds to Database adapter closure.
-During a failed Dev restart, the initialized replacement candidate is closed
-before keeping the current runtime as the active owned instance, so a failed
-handoff cannot leak or silently swap runtime ownership.
+Candidate initialization is the Dev replacement ownership boundary. If teardown
+of the prior runtime then reports a failure after closing its resources, Dev
+promotes the initialized candidate and records a bounded warning; it never keeps
+serving through the closed prior runtime or closes its only viable replacement.
 
 ### Local Container Session
 

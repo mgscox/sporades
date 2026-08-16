@@ -363,6 +363,40 @@ export async function shutdownAndCloseDatabase(database) {
     if (closeRejected)
         throw closeError;
 }
+export async function shutdownHttpServerAndRuntime(server, shutdownRuntime) {
+    let serverError;
+    let runtimeError;
+    let serverRejected = false;
+    let runtimeRejected = false;
+    try {
+        await new Promise((resolve, reject) => {
+            try {
+                server.close((error) => error ? reject(error) : resolve());
+            }
+            catch (error) {
+                reject(error);
+            }
+        });
+    }
+    catch (error) {
+        serverRejected = true;
+        serverError = error;
+    }
+    try {
+        await shutdownRuntime();
+    }
+    catch (error) {
+        runtimeRejected = true;
+        runtimeError = error;
+    }
+    if (serverRejected && runtimeRejected) {
+        throw new AggregateError([serverError, runtimeError], "HTTP server closure and runtime shutdown both failed.");
+    }
+    if (serverRejected)
+        throw serverError;
+    if (runtimeRejected)
+        throw runtimeError;
+}
 export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
     try {
         await candidateDatabase.init();
@@ -380,13 +414,24 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
         await shutdownAndCloseDatabase(currentDatabase);
     }
     catch (teardownError) {
+        // Candidate initialization is the ownership decision. The old runtime may
+        // already be stopped and its adapter has been closed by the teardown helper,
+        // so rejecting here would leave the Dev server pointing at a dead runtime
+        // while also destroying its only viable replacement.
         try {
-            await shutdownAndCloseDatabase(candidateDatabase);
+            const warning = candidateDatabase.log?.emit?.({
+                category: "platform",
+                event: "dev.runtime.previous_teardown_failed",
+                level: "warn",
+                message: "Previous Dev runtime teardown failed after replacement",
+                data: { code: String(teardownError?.code ?? "RUNTIME_TEARDOWN_FAILED").slice(0, 80) },
+            });
+            // Ownership must return to the caller without waiting for logging I/O;
+            // otherwise requests can still observe the already-closed prior runtime.
+            Promise.resolve(warning).catch(() => { });
         }
-        catch (candidateError) {
-            throw new AggregateError([teardownError, candidateError], "Current runtime teardown and candidate runtime cleanup both failed.");
-        }
-        throw teardownError;
+        catch { }
+        return candidateDatabase;
     }
     return candidateDatabase;
 }
@@ -4124,6 +4169,7 @@ function dropPendingJobDispatch(context) {
 }
 function stopCurrentUserJobWorker(database) {
     database.__jobStopped = true;
+    database.__jobWorkerRerunRequested = false;
     if (database.__jobWorkerTimer) {
         database.clock.clearTimer(database.__jobWorkerTimer);
         database.__jobWorkerTimer = null;
@@ -4138,7 +4184,16 @@ function stopCurrentUserJobWorker(database) {
     return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : undefined;
 }
 function scheduleCurrentUserJobWorker(database) {
-    if (database.__jobStopped || database.__jobWorkerScheduled || database.__jobWorkerRunning)
+    if (database.__jobStopped)
+        return;
+    if (database.__jobWorkerRunning) {
+        // A transaction may commit after the active worker's final queue read but
+        // before that worker relinquishes ownership. Remember the dispatch so the
+        // worker cannot clear its running state without arranging another scan.
+        database.__jobWorkerRerunRequested = true;
+        return;
+    }
+    if (database.__jobWorkerScheduled)
         return;
     database.__jobWorkerScheduled = true;
     try {
@@ -4313,6 +4368,10 @@ export async function runCurrentUserJobWorker(database) {
     }
     finally {
         database.__jobWorkerRunning = false;
+        const rerunRequested = database.__jobWorkerRerunRequested === true;
+        database.__jobWorkerRerunRequested = false;
+        if (rerunRequested && !database.__jobStopped)
+            scheduleCurrentUserJobWorker(database);
     }
 }
 function createHookErrorResult(error) {

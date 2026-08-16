@@ -13,7 +13,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, readJsonlLogEvents, replaceRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replaceRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
@@ -2047,19 +2047,17 @@ async function startDevSession(options) {
         websocketHub.disconnectAll();
         let shutdownError;
         try {
-            await runtime.shutdown();
+            await shutdownHttpServerAndRuntime(server, () => runtime.shutdown());
         }
         catch (error) {
             shutdownError = error;
         }
-        server.close(async () => {
-            await rm(sessionFilePath, { force: true });
-            process.off("unhandledRejection", onUnhandledRejection);
-            process.off("uncaughtException", onUncaughtException);
-            if (shutdownError)
-                process.stderr.write(`${errorDetails(shutdownError).message}\n`);
-            process.exit(shutdownError ? 1 : 0);
-        });
+        await rm(sessionFilePath, { force: true });
+        process.off("unhandledRejection", onUnhandledRejection);
+        process.off("uncaughtException", onUncaughtException);
+        if (shutdownError)
+            process.stderr.write(`${errorDetails(shutdownError).message}\n`);
+        process.exit(shutdownError ? 1 : 0);
     };
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);

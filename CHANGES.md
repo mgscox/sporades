@@ -30,9 +30,12 @@ Changes since v0.8.5.
   before runtime resources close; transactional cancellation aborts only after
   commit even across middleware context replacement, the worker reconciles a
   cancellation committed during claim registration before entering the handler,
-  and shutdown alone cannot misclassify retained work as user-cancelled. Shutdown
-  failures still close database resources, and failed Dev handoffs close their
-  initialized candidate without changing runtime ownership.
+  a commit during an active empty queue scan guarantees another worker pass,
+  and shutdown alone cannot misclassify retained work as user-cancelled. Signal
+  shutdown stops accepting and drains HTTP requests before runtime resources
+  close. Shutdown failures still close database resources, and when prior-runtime
+  teardown fails after candidate initialization, Dev promotes that viable
+  candidate instead of retaining a closed runtime or leaking both instances.
 - Allocate additive-migration temporary table names without colliding with valid
   Capsule tables, preserving those tables on both successful and rolled-back
   SQLite, libSQL, and PostgreSQL migrations.

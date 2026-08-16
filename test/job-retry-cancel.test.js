@@ -203,6 +203,26 @@ test("closing the runtime cancels scheduled Job work before its adapter closes",
  finally {await rm(dir,{recursive:true,force:true});}
 });
 
+test("a Job committed during an active empty scan triggers a lossless rerun", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-rerun-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const seen=[];let releaseEmptyRead=()=>{};let emptyReadStarted;const emptyReadBegan=new Promise(resolve=>{emptyReadStarted=resolve;});let db;
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job((_ctx,payload)=>seen.push(payload.name))},mutations:{enqueue:mutation((ctx,name)=>ctx.jobs.enqueue("record",{name})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const baseAdapter=db.adapter;
+  db.adapter=pauseEmptyQueuedJobRead(baseAdapter,()=>emptyReadStarted(),release=>{releaseEmptyRead=release;});
+  await db.init();
+  const firstDrain=clock.runDueTimers();
+  await emptyReadBegan;
+  const queued=await runMutation(db,auth,"enqueue",["during-scan"]);
+  assert.equal(queued.data.status,"queued");
+  releaseEmptyRead();releaseEmptyRead=()=>{};
+  await firstDrain;
+  assert.deepEqual(seen,["during-scan"],"the committed enqueue must cause another scan without a later enqueue or restart");
+  assert.equal((await runMutation(db,auth,"get",[queued.data.id])).data.status,"succeeded");
+  db.adapter=baseAdapter;
+ } finally {releaseEmptyRead();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("closing the runtime finishes the active Job without claiming queued work", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-active-close-")); const seen=[]; const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z"); let started; let release=()=>{}; let closed=false;
  const began=new Promise(r=>started=r); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{block:job(async()=>{seen.push("block");started();await new Promise(r=>release=r);}),record:job(()=>seen.push("queued"))},mutations:{enqueue:mutation((ctx,handler)=>ctx.jobs.enqueue(handler,{}))}},{clock});
@@ -418,6 +438,32 @@ function pauseJobCancellationRead(adapter,onStarted,onRelease) {
    return statement=>{
     const prepared=value.call(target,statement);
     if(paused||!String(statement).includes("sporades_jobs")||!String(statement).includes("actorUserId")) return prepared;
+    return new Proxy(prepared,{
+     get(preparedTarget,preparedProperty,preparedReceiver) {
+      const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);
+      if(preparedProperty!=="get"||typeof method!=="function") return method;
+      return async(...args)=>{
+       const result=await method.apply(preparedTarget,args);
+       paused=true;onStarted();
+       await new Promise(resolve=>onRelease(resolve));
+       return result;
+      };
+     },
+    });
+   };
+  },
+ });
+}
+
+function pauseEmptyQueuedJobRead(adapter,onStarted,onRelease) {
+ let paused=false;
+ return new Proxy(adapter,{
+  get(target,property,receiver) {
+   const value=Reflect.get(target,property,receiver);
+   if(property!=="prepare"||typeof value!=="function") return value;
+   return statement=>{
+    const prepared=value.call(target,statement);
+    if(paused||!/SELECT \* FROM .*sporades_jobs.*status.*queued/i.test(String(statement))) return prepared;
     return new Proxy(prepared,{
      get(preparedTarget,preparedProperty,preparedReceiver) {
       const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);

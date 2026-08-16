@@ -62,6 +62,7 @@ import {
   routeEndpoint,
   routeSporadesAuth,
   runReadOnlyQuery,
+  shutdownHttpServerAndRuntime,
   simulateLocalIdentitySession,
   readJsonlLogEvents,
   replaceRuntimeDatabase,
@@ -2430,15 +2431,13 @@ async function startDevSession(options: LooseRecord) {
     rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
     websocketHub.disconnectAll();
     let shutdownError: unknown;
-    try { await runtime.shutdown(); }
+    try { await shutdownHttpServerAndRuntime(server, () => runtime.shutdown()); }
     catch (error) { shutdownError = error; }
-    server.close(async () => {
-      await rm(sessionFilePath, { force: true });
-      process.off("unhandledRejection", onUnhandledRejection);
-      process.off("uncaughtException", onUncaughtException);
-      if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}\n`);
-      process.exit(shutdownError ? 1 : 0);
-    });
+    await rm(sessionFilePath, { force: true });
+    process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
+    if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}\n`);
+    process.exit(shutdownError ? 1 : 0);
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

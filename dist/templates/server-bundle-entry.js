@@ -18,7 +18,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { sporadesCapsuleModuleUrl, sporadesConfig, sporadesSealedServerEnv, sporadesServerEnv, sporadesServerSource, } from "sporades:server-bundle-inputs";
 // The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
@@ -122,16 +122,14 @@ const shutdown = async () => {
     websocketHub.disconnectAll();
     let shutdownError;
     try {
-        await shutdownAndCloseDatabase(database);
+        await shutdownHttpServerAndRuntime(server, () => shutdownAndCloseDatabase(database));
     }
     catch (error) {
         shutdownError = error;
     }
-    server.close(async () => {
-        if (shutdownError)
-            process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
-        process.exit(shutdownError ? 1 : 0);
-    });
+    if (shutdownError)
+        process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
+    process.exit(shutdownError ? 1 : 0);
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

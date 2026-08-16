@@ -885,13 +885,17 @@ delayed, and retry worker timers, abort active Job handlers, and await scheduled
 worker settlement before the Capsule shutdown hook and before mail, the
 Database adapter, and other runtime resources close. An active worker settles
 its current attempt without claiming another queued Job, and worker settlement
-failure does not skip resource closure. A shutdown abort without a durable
-`cancelRequestedAt` marker is not user cancellation: it follows the ordinary
-retry or exhausted-attempt transition for that Job.
-Capsule shutdown hook failure does not skip Database adapter closure. During a
-failed Dev restart, the initialized replacement candidate is closed before
-Sporades retains ownership of the current runtime rather than swapping to or
-leaking the candidate.
+failure does not skip resource closure. A commit that races the active worker's
+empty queue read guarantees another scan before worker ownership clears, without
+waiting for a later enqueue or restart. Signal shutdown stops accepting and
+drains HTTP requests before runtime resources close. A shutdown abort without a
+durable `cancelRequestedAt` marker is not user cancellation: it follows the
+ordinary retry or exhausted-attempt transition for that Job.
+Capsule shutdown hook failure does not skip Database adapter closure. Candidate
+initialization is the Dev replacement ownership boundary. If teardown of the
+prior runtime subsequently reports a failure after closing its resources,
+Sporades promotes the viable candidate and records a bounded warning; it does
+not retain a closed prior runtime or close its only viable replacement.
 Durable queued and delayed Job state remains stored and recovers on runtime
 restart. Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.

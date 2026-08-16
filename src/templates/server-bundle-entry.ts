@@ -32,6 +32,7 @@ import {
   routeRuntimeHealth,
   routeSporadesAuth,
   shutdownAndCloseDatabase,
+  shutdownHttpServerAndRuntime,
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
@@ -149,12 +150,10 @@ const shutdown = async () => {
   shutdownStarted = true;
   websocketHub.disconnectAll();
   let shutdownError: unknown;
-  try { await shutdownAndCloseDatabase(database); }
+  try { await shutdownHttpServerAndRuntime(server, () => shutdownAndCloseDatabase(database)); }
   catch (error) { shutdownError = error; }
-  server.close(async () => {
-    if (shutdownError) process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
-    process.exit(shutdownError ? 1 : 0);
-  });
+  if (shutdownError) process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
+  process.exit(shutdownError ? 1 : 0);
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

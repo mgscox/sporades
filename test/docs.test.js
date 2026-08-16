@@ -932,9 +932,12 @@ test("canonical Job and architecture docs describe settled runtime shutdown", as
     assert.match(document, /active[\s\S]*worker[\s\S]*current attempt[\s\S]*without[\s\S]*claiming another/i);
     assert.match(document, /worker settlement[\s\S]*failure[\s\S]*does not skip[\s\S]*resource closure/i);
     assert.match(document, /Capsule shutdown hook[\s\S]*failure[\s\S]*(?:Database adapter|database connection)[\s\S]*(?:close|closure)/i);
-    assert.match(document, /failed Dev restart/i);
-    assert.match(document, /replacement candidate[\s\S]*(?:close|closure)|(?:close|closure)[\s\S]*replacement candidate/i);
-    assert.match(document, /(?:active|current) runtime/i);
+    assert.match(document, /Signal shutdown[\s\S]*stop(?:s)? accepting[\s\S]*drain(?:s)?[\s\S]*HTTP/i);
+    assert.match(document, /commit[\s\S]*(?:empty queue (?:read|scan)|worker scan)[\s\S]*(?:another scan|required rerun)/i);
+    assert.match(document, /Candidate\s+initialization[\s\S]*Dev replacement ownership boundary/i);
+    assert.match(document, /teardown[\s\S]*(?:prior|previous) runtime[\s\S]*(?:failure|reports a failure)/i);
+    assert.match(document, /promote(?:s)?[\s\S]*(?:viable|initialized)[\s\S]*candidate/i);
+    assert.match(document, /closed[\s\S]*(?:(?:prior|previous)[\s\S]*)?runtime/i);
     assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
   }
 });

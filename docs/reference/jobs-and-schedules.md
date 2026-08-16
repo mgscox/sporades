@@ -76,11 +76,15 @@ may finish or observe the abort signal during shutdown. A shutdown abort without
 a persisted `cancelRequestedAt` marker is not terminal cancellation and follows
 the Job's ordinary retry or exhausted-attempt transition; an unclean
 interruption still follows the lease-recovery and at-least-once rules above.
-Capsule shutdown hook failure still proceeds to Database adapter closure. If a
-failed Dev restart cannot tear down the active runtime after initializing a
-replacement candidate, Sporades closes that candidate and keeps the current
-runtime as the active owned instance; it does not leak or swap in the failed
-replacement.
+If enqueue commits while a worker is completing an empty queue scan, the worker
+records and runs another scan before relinquishing ownership; committed work is
+not left waiting for another enqueue or restart. Signal shutdown stops accepting
+and drains HTTP requests before runtime resources close. Capsule shutdown hook
+failure still proceeds to Database adapter closure. Candidate initialization is
+the Dev replacement ownership boundary: if teardown of the prior runtime then
+reports a failure after closing its resources, Sporades promotes the viable
+candidate and records a bounded warning instead of retaining a closed runtime or
+closing its only usable replacement.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its
