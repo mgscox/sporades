@@ -10,6 +10,11 @@ import { withFakeLibsqlService } from "./libsql-http-service.js";
 // needs to hand a caller a live adapter lives here instead of being copied into every test.
 
 const POSTGRES_TEST_URL_VARIABLE = "SPORADES_POSTGRES_TEST_URL";
+const DEDICATED_POSTGRES_TEST_DATABASE = {
+  host: "127.0.0.1",
+  port: "55432",
+  database: "sporades_w17",
+};
 
 const RUNTIME_TABLE_NAMES = [
   "sporades",
@@ -92,6 +97,21 @@ export async function withPostgresAdapter(fn, options = {}) {
 }
 
 export async function resetPostgresSchema(adapter, appTableNames = []) {
+  // This is intentionally more restrictive than a normal test URL check. Unlike the ephemeral
+  // engines, Postgres survives the test process and this helper drops tables. Keep the destructive
+  // capability permanently pinned to the one local, dedicated database that exists for this suite.
+  const url = postgresTestUrl();
+  const parsed = url ? new URL(url) : null;
+  if (
+    !parsed ||
+    parsed.hostname !== DEDICATED_POSTGRES_TEST_DATABASE.host ||
+    parsed.port !== DEDICATED_POSTGRES_TEST_DATABASE.port ||
+    parsed.pathname !== `/${DEDICATED_POSTGRES_TEST_DATABASE.database}`
+  ) {
+    throw new Error(
+      `${POSTGRES_TEST_URL_VARIABLE} must target postgres://${DEDICATED_POSTGRES_TEST_DATABASE.host}:${DEDICATED_POSTGRES_TEST_DATABASE.port}/${DEDICATED_POSTGRES_TEST_DATABASE.database} before resetting a test schema.`,
+    );
+  }
   const names = [...appTableNames, ...RUNTIME_TABLE_NAMES].map((name) => `"${name}"`).join(", ");
   await adapter.exec(`DROP TABLE IF EXISTS ${names} CASCADE`);
 }

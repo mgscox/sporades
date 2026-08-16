@@ -12936,6 +12936,24 @@ function chainSchemaOperation(previous, operation) {
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
+function createConnectionTransactionQueue() {
+  let tail = Promise.resolve();
+  return async (run2) => {
+    const previous = tail;
+    let release = () => {
+    };
+    tail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => {
+    });
+    try {
+      return await run2();
+    } finally {
+      release();
+    }
+  };
+}
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
   if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
     return await createLibsqlDatabaseAdapter({
@@ -13683,6 +13701,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   if (!options.readOnly) nodeFsModule.mkdirSync(path12.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
+  const runExclusiveTransaction = createConnectionTransactionQueue();
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
     engine: "sqlite",
@@ -13709,29 +13728,33 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       };
     },
     async withTransaction(fn) {
-      this.exec("BEGIN");
-      try {
-        const result = await fn(this);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
+      return await runExclusiveTransaction(async () => {
+        adapter.exec("BEGIN");
+        try {
+          const result = await fn(adapter);
+          adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          adapter.exec("ROLLBACK");
+          throw error;
+        }
+      });
     },
     async withReadOnlySnapshot(fn) {
-      this.exec("BEGIN");
-      this.exec("PRAGMA query_only = ON");
-      try {
-        const result = await fn(this);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      } finally {
-        if (!options.readOnly) this.exec("PRAGMA query_only = OFF");
-      }
+      return await runExclusiveTransaction(async () => {
+        adapter.exec("BEGIN");
+        adapter.exec("PRAGMA query_only = ON");
+        try {
+          const result = await fn(adapter);
+          adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          adapter.exec("ROLLBACK");
+          throw error;
+        } finally {
+          if (!options.readOnly) adapter.exec("PRAGMA query_only = OFF");
+        }
+      });
     },
     close() {
       return connection.close();
@@ -13751,6 +13774,7 @@ async function createPostgresDatabaseAdapter(options) {
     );
   }
   const client = await createPostgresConnection(url);
+  const runExclusiveTransaction = createConnectionTransactionQueue();
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
@@ -13824,32 +13848,36 @@ async function createPostgresDatabaseAdapter(options) {
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn) {
-      await this.exec("BEGIN");
-      try {
-        const result = await fn(this);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
+      return await runExclusiveTransaction(async () => {
+        await adapter.exec("BEGIN");
         try {
-          await this.exec("ROLLBACK");
-        } catch {
+          const result = await fn(adapter);
+          await adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          try {
+            await adapter.exec("ROLLBACK");
+          } catch {
+          }
+          throw error;
         }
-        throw error;
-      }
+      });
     },
     async withReadOnlySnapshot(fn) {
-      await this.exec("BEGIN TRANSACTION READ ONLY");
-      try {
-        const result = await fn(this);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
+      return await runExclusiveTransaction(async () => {
+        await adapter.exec("BEGIN TRANSACTION READ ONLY");
         try {
-          await this.exec("ROLLBACK");
-        } catch {
+          const result = await fn(adapter);
+          await adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          try {
+            await adapter.exec("ROLLBACK");
+          } catch {
+          }
+          throw error;
         }
-        throw error;
-      }
+      });
     },
     async close() {
       closed = true;

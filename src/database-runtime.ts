@@ -186,6 +186,24 @@ type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
 
+// A connection can queue SQL statements, but it cannot safely interleave the BEGIN/work/COMMIT
+// sequences of two callers. Adapters backed by one connection use this gate for every transaction
+// mode, preserving the transaction boundary that the runtime has already chosen (ADR-0026).
+function createConnectionTransactionQueue() {
+  let tail: Promise<void> = Promise.resolve();
+  return async <Value>(run: () => Promise<Value>): Promise<Value> => {
+    const previous = tail;
+    let release: () => void = () => {};
+    tail = new Promise<void>((resolve) => { release = resolve; });
+    await previous.catch(() => {});
+    try {
+      return await run();
+    } finally {
+      release();
+    }
+  };
+}
+
 export async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
   if (
     config.services?.database?.engine === "libsql" &&
@@ -1129,6 +1147,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
   if (!options.readOnly) nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
+  const runExclusiveTransaction = createConnectionTransactionQueue();
 
   // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
   // below its own name is a connection, statement primitives and transaction session mechanics.
@@ -1158,21 +1177,25 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       };
     },
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      this.exec("BEGIN");
-      try {
-        const result = await fn(this as any);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
+      return await runExclusiveTransaction(async () => {
+        adapter.exec("BEGIN");
+        try {
+          const result = await fn(adapter);
+          adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          adapter.exec("ROLLBACK");
+          throw error;
+        }
+      });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      this.exec("BEGIN"); this.exec("PRAGMA query_only = ON");
-      try { const result = await fn(this); this.exec("COMMIT"); return result; }
-      catch (error) { this.exec("ROLLBACK"); throw error; }
-      finally { if (!options.readOnly) this.exec("PRAGMA query_only = OFF"); }
+      return await runExclusiveTransaction(async () => {
+        adapter.exec("BEGIN"); adapter.exec("PRAGMA query_only = ON");
+        try { const result = await fn(adapter); adapter.exec("COMMIT"); return result; }
+        catch (error) { adapter.exec("ROLLBACK"); throw error; }
+        finally { if (!options.readOnly) adapter.exec("PRAGMA query_only = OFF"); }
+      });
     },
     close() {
       return connection.close();
@@ -1195,6 +1218,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   }
 
   const client = await createPostgresConnection(url);
+  const runExclusiveTransaction = createConnectionTransactionQueue();
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
@@ -1271,22 +1295,26 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      await this.exec("BEGIN");
-      try {
-        const result = await fn(this as any);
-        await this.exec("COMMIT");
-        return result;
-      } catch (error) {
+      return await runExclusiveTransaction(async () => {
+        await adapter.exec("BEGIN");
         try {
-          await this.exec("ROLLBACK");
-        } catch { }
-        throw error;
-      }
+          const result = await fn(adapter);
+          await adapter.exec("COMMIT");
+          return result;
+        } catch (error) {
+          try {
+            await adapter.exec("ROLLBACK");
+          } catch { }
+          throw error;
+        }
+      });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      await this.exec("BEGIN TRANSACTION READ ONLY");
-      try { const result = await fn(this); await this.exec("COMMIT"); return result; }
-      catch (error) { try { await this.exec("ROLLBACK"); } catch {} throw error; }
+      return await runExclusiveTransaction(async () => {
+        await adapter.exec("BEGIN TRANSACTION READ ONLY");
+        try { const result = await fn(adapter); await adapter.exec("COMMIT"); return result; }
+        catch (error) { try { await adapter.exec("ROLLBACK"); } catch {} throw error; }
+      });
     },
     async close() {
       closed = true;
