@@ -443,22 +443,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
         close: () => {
             database.__scheduleStopped = true;
-            database.__jobStopped = true;
             abortSchedulePayloadFactories(database);
             for (const timer of database.__scheduleTimers ?? [])
                 database.clock.clearTimer(timer);
             database.__scheduleTimers?.clear?.();
-            if (database.__jobWorkerTimer) {
-                database.clock.clearTimer(database.__jobWorkerTimer);
-                database.__jobWorkerTimer = null;
-            }
-            database.__jobWorkerScheduled = false;
-            if (database.__jobWakeTimer) {
-                database.clock.clearTimer(database.__jobWakeTimer);
-                database.__jobWakeTimer = null;
-            }
-            for (const controller of database.__jobAbortControllers?.values?.() ?? [])
-                controller.abort();
+            const workerSettlement = stopCurrentUserJobWorker(database);
             const closeResources = () => {
                 const mailResult = database.mail.close();
                 const sqliteResult = database.adapter.close();
@@ -466,7 +455,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
                 return pending.length > 0 ? Promise.all(pending) : undefined;
             };
-            if (!database.__jobWorkerPromise)
+            if (!workerSettlement)
                 return closeResources();
             return (async () => {
                 let workerError;
@@ -474,7 +463,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 let workerRejected = false;
                 let closeRejected = false;
                 try {
-                    await database.__jobWorkerPromise;
+                    await workerSettlement;
                 }
                 catch (error) {
                     workerRejected = true;
@@ -520,12 +509,15 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         database.__shutdownPromise = (async () => {
             try {
                 database.__scheduleStopped = true;
+                const workerSettlement = stopCurrentUserJobWorker(database);
                 abortSchedulePayloadFactories(database);
                 for (const timer of database.__scheduleTimers ?? [])
                     database.clock.clearTimer(timer);
                 database.__scheduleTimers?.clear?.();
                 database.__scheduleRecoveryTimer = null;
                 database.__scheduleRecoveryDueAt = null;
+                if (workerSettlement)
+                    await workerSettlement;
                 await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
                 if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
@@ -4038,6 +4030,21 @@ function dropPendingJobDispatch(context) {
     context.__pendingJobDispatch = false;
     context.__pendingJobsFlushed = true;
     delete context.__jobQueueDatabase;
+}
+function stopCurrentUserJobWorker(database) {
+    database.__jobStopped = true;
+    if (database.__jobWorkerTimer) {
+        database.clock.clearTimer(database.__jobWorkerTimer);
+        database.__jobWorkerTimer = null;
+    }
+    database.__jobWorkerScheduled = false;
+    if (database.__jobWakeTimer) {
+        database.clock.clearTimer(database.__jobWakeTimer);
+        database.__jobWakeTimer = null;
+    }
+    for (const controller of database.__jobAbortControllers?.values?.() ?? [])
+        controller.abort();
+    return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : undefined;
 }
 function scheduleCurrentUserJobWorker(database) {
     if (database.__jobStopped || database.__jobWorkerScheduled || database.__jobWorkerRunning)

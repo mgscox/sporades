@@ -14962,20 +14962,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
-      database.__jobStopped = true;
       abortSchedulePayloadFactories(database);
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
-      if (database.__jobWorkerTimer) {
-        database.clock.clearTimer(database.__jobWorkerTimer);
-        database.__jobWorkerTimer = null;
-      }
-      database.__jobWorkerScheduled = false;
-      if (database.__jobWakeTimer) {
-        database.clock.clearTimer(database.__jobWakeTimer);
-        database.__jobWakeTimer = null;
-      }
-      for (const controller of database.__jobAbortControllers?.values?.() ?? []) controller.abort();
+      const workerSettlement = stopCurrentUserJobWorker(database);
       const closeResources = () => {
         const mailResult = database.mail.close();
         const sqliteResult = database.adapter.close();
@@ -14983,14 +14973,14 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
         return pending.length > 0 ? Promise.all(pending) : void 0;
       };
-      if (!database.__jobWorkerPromise) return closeResources();
+      if (!workerSettlement) return closeResources();
       return (async () => {
         let workerError;
         let closeError;
         let workerRejected = false;
         let closeRejected = false;
         try {
-          await database.__jobWorkerPromise;
+          await workerSettlement;
         } catch (error) {
           workerRejected = true;
           workerError = error;
@@ -15028,11 +15018,13 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database.__shutdownPromise = (async () => {
       try {
         database.__scheduleStopped = true;
+        const workerSettlement = stopCurrentUserJobWorker(database);
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
         database.__scheduleTimers?.clear?.();
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
+        if (workerSettlement) await workerSettlement;
         await Promise.allSettled([...database.__activeScheduleOccurrences ?? []]);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError2("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
@@ -18408,6 +18400,20 @@ function dropPendingJobDispatch(context) {
   context.__pendingJobDispatch = false;
   context.__pendingJobsFlushed = true;
   delete context.__jobQueueDatabase;
+}
+function stopCurrentUserJobWorker(database) {
+  database.__jobStopped = true;
+  if (database.__jobWorkerTimer) {
+    database.clock.clearTimer(database.__jobWorkerTimer);
+    database.__jobWorkerTimer = null;
+  }
+  database.__jobWorkerScheduled = false;
+  if (database.__jobWakeTimer) {
+    database.clock.clearTimer(database.__jobWakeTimer);
+    database.__jobWakeTimer = null;
+  }
+  for (const controller of database.__jobAbortControllers?.values?.() ?? []) controller.abort();
+  return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : void 0;
 }
 function scheduleCurrentUserJobWorker(database) {
   if (database.__jobStopped || database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
