@@ -33,6 +33,37 @@ test("running cancellation preserves success, cancels AbortError, and retries or
  } finally {db.close();await rm(dir,{recursive:true,force:true});}
 });
 
+test("running cancellation aborts only after its transaction commits", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-cancel-commit-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let started=()=>{};let release=()=>{};let activeSignal;let db;
+ const capsule={jobs:{gate:job(async(ctx)=>{activeSignal=ctx.signal;started();await new Promise((resolve,reject)=>{release=resolve;ctx.signal.addEventListener("abort",()=>{const error=new Error("aborted");error.name="AbortError";reject(error);},{once:true});});return {ok:true};})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("gate",{})),cancelAndFail:mutation(async(ctx,id)=>{await ctx.jobs.cancel(id);throw new Error("roll back cancellation");}),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id)),get:mutation((ctx,id)=>ctx.jobs.get(id))}};
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},capsule,{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+
+  let began=new Promise(resolve=>{started=resolve;});
+  const rolledBackJob=await runMutation(db,auth,"enqueue",[]);
+  const rolledBackDrain=clock.runDueTimers();
+  await began;
+  const rolledBackCancellation=await runMutation(db,auth,"cancelAndFail",[rolledBackJob.data.id]);
+  assert.equal(rolledBackCancellation.ok,false);
+  assert.equal(activeSignal.aborted,false,"a rolled-back cancellation must not escape its transaction");
+  assert.equal((await runMutation(db,auth,"get",[rolledBackJob.data.id])).data.status,"running");
+  release();release=()=>{};
+  await rolledBackDrain;
+  assert.equal((await runMutation(db,auth,"get",[rolledBackJob.data.id])).data.status,"succeeded");
+
+  began=new Promise(resolve=>{started=resolve;});
+  const committedJob=await runMutation(db,auth,"enqueue",[]);
+  const committedDrain=clock.runDueTimers();
+  await began;
+  const committedCancellation=await runMutation(db,auth,"cancel",[committedJob.data.id]);
+  assert.equal(committedCancellation.ok,true);
+  assert.equal(activeSignal.aborted,true,"a committed cancellation must reach its running handler");
+  await committedDrain;
+  assert.equal((await runMutation(db,auth,"get",[committedJob.data.id])).data.status,"cancelled");
+ } finally {release();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("queued cancellation and delayed ordering are deterministic", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-order-")); const seen=[];
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job((ctx,p)=>seen.push(p.id))},mutations:{enqueue:mutation((ctx,id,o)=>ctx.jobs.enqueue("record",{id},o)),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id))}});
@@ -84,6 +115,32 @@ test("closing the runtime finishes the active Job without claiming queued work",
  const began=new Promise(r=>started=r); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{block:job(async()=>{seen.push("block");started();await new Promise(r=>release=r);}),record:job(()=>seen.push("queued"))},mutations:{enqueue:mutation((ctx,handler)=>ctx.jobs.enqueue(handler,{}))}},{clock});
  try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",["block"]); const draining=clock.runDueTimers(); await began; const queued=await runMutation(db,auth,"enqueue",["record"]); assert.equal(queued.data.status,"queued"); const closing=db.close(); release(); await Promise.all([draining,closing]); closed=true; assert.deepEqual(seen,["block"]);}
  finally {release();if(!closed) await db.close().catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("orderly close retains an aborted active Job for its remaining retry", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-active-retry-close-"));const file=path.join(dir,"data.db");const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const seen=[];let started;let db;const began=new Promise(resolve=>{started=resolve;});
+ try {
+  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(async(ctx)=>{seen.push("first");started();await new Promise((resolve,reject)=>ctx.signal.addEventListener("abort",()=>{const error=new Error("shutdown");error.name="AbortError";reject(error);},{once:true}));})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:0}})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]);
+  const draining=clock.runDueTimers();
+  await began;
+  const closing=db.close();
+  await Promise.all([draining,closing]);
+  db=null;
+
+  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("recovered"))},mutations:{get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  const retained=(await runMutation(db,auth,"get",[queued.data.id])).data;
+  assert.equal(retained.status,"delayed");
+  assert.equal(retained.attempts,1);
+  assert.equal(retained.cancelRequestedAt,undefined);
+  await db.init();
+  await clock.runDueTimers();
+  const completed=(await runMutation(db,auth,"get",[queued.data.id])).data;
+  assert.equal(completed.status,"succeeded");
+  assert.equal(completed.attempts,2);
+  assert.deepEqual(seen,["first","recovered"]);
+ } finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
 test("closing the runtime relinquishes a Job whose claim settles after shutdown starts", async () => {
@@ -207,12 +264,6 @@ test("runtime shutdown settles the active Job before the Capsule shutdown hook",
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{block:job(async(ctx)=>{activeSignal=ctx.signal;events.push("job-start");started();await new Promise(r=>release=r);events.push(`job-end:${ctx.signal.aborted}`);}),record:job(()=>events.push("queued"))},mutations:{enqueue:mutation((ctx,handler)=>ctx.jobs.enqueue(handler,{}))},hooks:{shutdown:()=>events.push("shutdown-hook")}},{clock}); let shutdown;
  try {await db.init();db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["block"]);const draining=clock.runDueTimers();await began;await runMutation(db,auth,"enqueue",["record"]);shutdown=db.shutdown();await new Promise(r=>setImmediate(r));assert.equal(db.__jobStopped,true);assert.equal(activeSignal.aborted,true);assert.deepEqual(events,["job-start"]);release();await Promise.all([draining,shutdown]);assert.deepEqual(events,["job-start","job-end:true","shutdown-hook"]);}
  finally {release();await shutdown?.catch(()=>{});await Promise.resolve(db.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
-});
-
-test("transaction-scoped cancellation aborts a controller created later on the root runtime", async () => {
- const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-root-cancel-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{}))}},{clock});
- try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");const queued=await runMutation(db,auth,"enqueue",[]);db.adapter.prepare("UPDATE sporades_jobs SET status='running' WHERE id=?").run(queued.data.id);await db.adapter.withTransaction(async(transactionAdapter)=>{const transactionDatabase={...db,adapter:transactionAdapter,__transactionActive:true,__rootDatabase:db};const controller=new AbortController();db.__jobAbortControllers=new Map([[queued.data.id,controller]]);const cancelled=await cancelJob(transactionDatabase,{auth},queued.data.id);assert.equal(cancelled.cancelRequestedAt,clock.now().toISOString());assert.equal(controller.signal.aborted,true);});}
- finally {await Promise.resolve(db.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
 function pauseJobClaim(adapter,onStarted,onRelease) {

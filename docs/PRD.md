@@ -868,14 +868,19 @@ is at least once rather than exactly once, so handlers must be idempotent and
 safe to repeat after lease recovery. Expired durable state may be reconciled
 while storage opens, but recovered handlers and retry wakes begin only after
 the Capsule runtime completes initialization. Every running attempt owns an
-opaque claim so stale lifecycle work cannot mutate a newer attempt.
+opaque claim so stale lifecycle work cannot mutate a newer attempt. A running
+cancellation request and its handler abort become effective only after their
+enclosing mutation, App message, or Custom endpoint transaction commits; a
+rollback discards both.
 
 Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
 delayed, and retry worker timers, abort active Job handlers, and await scheduled
 worker settlement before the Capsule shutdown hook and before mail, the
 Database adapter, and other runtime resources close. An active worker settles
 its current attempt without claiming another queued Job, and worker settlement
-failure does not skip resource closure.
+failure does not skip resource closure. A shutdown abort without a durable
+`cancelRequestedAt` marker is not user cancellation: it follows the ordinary
+retry or exhausted-attempt transition for that Job.
 Durable queued and delayed Job state remains stored and recovers on runtime
 restart. Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.

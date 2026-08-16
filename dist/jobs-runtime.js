@@ -621,15 +621,39 @@ export async function cancelJob(database, context, id) {
             if (Number(changed?.changes ?? 0) !== 1)
                 continue;
             const runtimeDatabase = database.__rootDatabase ?? database;
-            const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
-            const controller = activeClaim?.controller ?? activeClaim;
-            if (!activeClaim?.claimToken || activeClaim.claimToken === row.claimToken)
-                controller?.abort?.();
+            if (database.__transactionActive) {
+                const pendingContext = context.__jobParentContext ?? context;
+                pendingContext.__pendingJobCancellationAborts ??= new Map();
+                pendingContext.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+            }
+            else {
+                abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
+            }
             return jobState({ ...row, cancelRequestedAt: now }, true);
         }
         throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
     }
     throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
+export function commitPendingJobCancellationAborts(context) {
+    if (!context)
+        return;
+    const pending = context.__pendingJobCancellationAborts;
+    if (!(pending instanceof Map))
+        return;
+    delete context.__pendingJobCancellationAborts;
+    for (const [id, claim] of pending)
+        abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
+}
+export function dropPendingJobCancellationAborts(context) {
+    if (context)
+        delete context.__pendingJobCancellationAborts;
+}
+function abortRuntimeJobClaim(runtimeDatabase, id, claimToken) {
+    const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+    const controller = activeClaim?.controller ?? activeClaim;
+    if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken)
+        controller?.abort?.();
 }
 export function jobSummary(row) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 export function encodeJobCursor(row) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }

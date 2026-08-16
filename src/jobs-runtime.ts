@@ -595,14 +595,36 @@ export async function cancelJob(database: LooseRecord, context: any, id: any) {
       )).run(now, id, ...(hasClaimToken ? [row.claimToken] : []));
       if (Number(changed?.changes ?? 0) !== 1) continue;
       const runtimeDatabase = database.__rootDatabase ?? database;
-      const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
-      const controller = activeClaim?.controller ?? activeClaim;
-      if (!activeClaim?.claimToken || activeClaim.claimToken === row.claimToken) controller?.abort?.();
+      if (database.__transactionActive) {
+        const pendingContext = context.__jobParentContext ?? context;
+        pendingContext.__pendingJobCancellationAborts ??= new Map();
+        pendingContext.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+      } else {
+        abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
+      }
       return jobState({ ...row, cancelRequestedAt: now }, true);
     }
     throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
   }
   throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
+
+export function commitPendingJobCancellationAborts(context: LooseRecord | undefined) {
+  if (!context) return;
+  const pending = context.__pendingJobCancellationAborts;
+  if (!(pending instanceof Map)) return;
+  delete context.__pendingJobCancellationAborts;
+  for (const [id, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
+}
+
+export function dropPendingJobCancellationAborts(context: LooseRecord | undefined) {
+  if (context) delete context.__pendingJobCancellationAborts;
+}
+
+function abortRuntimeJobClaim(runtimeDatabase: LooseRecord, id: any, claimToken: any) {
+  const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+  const controller = activeClaim?.controller ?? activeClaim;
+  if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken) controller?.abort?.();
 }
 
 export function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }

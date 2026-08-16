@@ -154,7 +154,11 @@ The normative transitions are `delayed -> queued` when work becomes available,
 `running -> delayed` when another attempt is allowed, and `running -> failed`
 when attempts are exhausted. Queued or delayed Jobs can become `cancelled`.
 Running cancellation is cooperative: the Job remains running after cancellation
-is requested, and its actual handler outcome determines the terminal state.
+is requested, and its actual handler outcome determines the terminal state. In
+a transactional handler, both the durable request and its in-process abort take
+effect only after commit; rollback discards both. A lifecycle shutdown abort
+without that durable request follows normal retry or exhausted-attempt behavior
+instead of becoming `cancelled`.
 
 Retries must not duplicate a Job's identity. A retry is another attempt for the
 same Job, not a new Job unless server code explicitly enqueues one.

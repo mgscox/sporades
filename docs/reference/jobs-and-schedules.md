@@ -43,6 +43,9 @@ Jobs may use a one-time future `availableAt` and become `delayed` until then;
 this is not recurring scheduling. A bounded `retry` policy records attempts and
 uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
 work, or cooperatively requests cancellation of running work through its signal.
+For transactional mutation, App message, and Custom endpoint handlers, the
+running handler is aborted only after the cancellation transaction commits; a
+rollback discards the marker and the pending abort together.
 
 The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
 and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
@@ -64,9 +67,11 @@ worker settles its current attempt without claiming another queued Job, and
 worker settlement failure does not skip resource closure. Durable queued and
 delayed Job state remains stored and recovers on runtime restart. Each running
 attempt owns an opaque claim, so a stale shutdown, recovery, completion, or
-cancellation transition cannot overwrite a newer attempt. Cooperative handlers may finish or observe the
-abort signal during shutdown; an unclean interruption still follows the lease
-recovery and at-least-once rules above.
+cancellation transition cannot overwrite a newer attempt. Cooperative handlers
+may finish or observe the abort signal during shutdown. A shutdown abort without
+a persisted `cancelRequestedAt` marker is not terminal cancellation and follows
+the Job's ordinary retry or exhausted-attempt transition; an unclean
+interruption still follows the lease-recovery and at-least-once rules above.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its

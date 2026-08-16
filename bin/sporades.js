@@ -6293,14 +6293,33 @@ async function cancelJob(database, context, id) {
       )).run(now, id, ...hasClaimToken ? [row.claimToken] : []);
       if (Number(changed?.changes ?? 0) !== 1) continue;
       const runtimeDatabase = database.__rootDatabase ?? database;
-      const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
-      const controller = activeClaim?.controller ?? activeClaim;
-      if (!activeClaim?.claimToken || activeClaim.claimToken === row.claimToken) controller?.abort?.();
+      if (database.__transactionActive) {
+        const pendingContext = context.__jobParentContext ?? context;
+        pendingContext.__pendingJobCancellationAborts ??= /* @__PURE__ */ new Map();
+        pendingContext.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+      } else {
+        abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
+      }
       return jobState({ ...row, cancelRequestedAt: now }, true);
     }
     throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
   }
   throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
+function commitPendingJobCancellationAborts(context) {
+  if (!context) return;
+  const pending = context.__pendingJobCancellationAborts;
+  if (!(pending instanceof Map)) return;
+  delete context.__pendingJobCancellationAborts;
+  for (const [id, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
+}
+function dropPendingJobCancellationAborts(context) {
+  if (context) delete context.__pendingJobCancellationAborts;
+}
+function abortRuntimeJobClaim(runtimeDatabase, id, claimToken) {
+  const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+  const controller = activeClaim?.controller ?? activeClaim;
+  if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken) controller?.abort?.();
 }
 function jobSummary(row) {
   return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
@@ -16291,10 +16310,12 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     throw error;
@@ -18125,6 +18146,7 @@ async function runMutation(database, auth, mutationName, args) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -18133,6 +18155,7 @@ async function runMutation(database, auth, mutationName, args) {
     }
     return committed;
   } catch (error) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     database.rowCache.clear();
@@ -18218,10 +18241,12 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {
@@ -18504,8 +18529,9 @@ function createPrivilegedJobApi(database, contextGetter) {
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
     async cancel(id) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      return await cancelJob(database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id);
+      const context = contextGetter();
+      assertActivePrivilegedJobAccess(() => context);
+      return await cancelJob(database, Object.assign(Object.create(context), { __privilegedJobAccess: true }), id);
     }
   };
 }
@@ -18654,7 +18680,11 @@ async function runCurrentUserJobWorker(database) {
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
         const abortError = error?.cause ?? error;
-        const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const cancellation = abortShaped ? await database.adapter.prepare(sql(
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+        )).get(row.id, claimToken) : null;
+        const cancelled = Boolean(cancellation?.cancelRequestedAt);
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
           await database.adapter.prepare(sql(

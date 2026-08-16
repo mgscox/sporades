@@ -93,7 +93,8 @@ import {
 } from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
-  createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
+  commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
+  dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
   finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition,
   jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload,
   resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
@@ -1938,10 +1939,12 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     throw error;
@@ -3950,6 +3953,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -3958,6 +3962,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     }
     return committed;
   } catch (error: any) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     database.rowCache.clear();
@@ -4052,10 +4057,12 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
         await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {
@@ -4293,7 +4300,11 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
-    async cancel(id: any) { assertActivePrivilegedJobAccess(contextGetter); return await cancelJob(database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id); },
+    async cancel(id: any) {
+      const context = contextGetter();
+      assertActivePrivilegedJobAccess(() => context);
+      return await cancelJob(database, Object.assign(Object.create(context), { __privilegedJobAccess: true }), id);
+    },
   };
 }
 async function dispatchPendingJobs(context: LooseRecord | undefined) {
@@ -4434,7 +4445,13 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
         const abortError = error?.cause ?? error;
-        const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const cancellation = abortShaped
+          ? await database.adapter.prepare(sql(
+            "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+          )).get(row.id, claimToken)
+          : null;
+        const cancelled = Boolean(cancellation?.cancelRequestedAt);
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
           await database.adapter.prepare(sql(

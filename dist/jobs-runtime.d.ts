@@ -67,6 +67,8 @@ export declare function normalizeJobRetry(value: any): {
     delayMs: any;
 };
 export declare function cancelJob(database: LooseRecord, context: any, id: any): Promise<any>;
+export declare function commitPendingJobCancellationAborts(context: LooseRecord | undefined): void;
+export declare function dropPendingJobCancellationAborts(context: LooseRecord | undefined): void;
 export declare function jobSummary(row: any): {
     id: any;
     handler: any;

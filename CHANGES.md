@@ -27,7 +27,8 @@ Changes since v0.8.5.
   recovered execution until runtime initialization, and use attempt-scoped
   claim ownership so stale shutdown, recovery, completion, or cancellation
   work cannot mutate a newer attempt. Active handlers are aborted and settled
-  before runtime resources close.
+  before runtime resources close; transactional cancellation aborts only after
+  commit, and shutdown alone cannot misclassify retained work as user-cancelled.
 - Reject query argument array subclasses while continuing to accept arrays
   created in another JavaScript realm (2171b61).
 
