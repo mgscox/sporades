@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Declare unique constraints on Capsule tables
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The conflict-field tuple must exactly match one declared unique constraint in its declared order; undeclared, partial, reordered, empty, or malformed targets fail before writing.
 - [ ] Value normalization, reference integrity, and insert ACL authorization run through the same authoritative path as an ordinary insert before the atomic write is attempted.
