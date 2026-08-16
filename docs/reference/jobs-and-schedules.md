@@ -57,7 +57,9 @@ their `availableAt` time. The initial runtime uses a single worker. A running
 attempt holds a lease, and lease recovery after interruption may execute that
 attempt again. Storage recovery records an expired attempt before Capsule
 initialization, but no recovered handler or retry wake starts until the runtime
-has completed its `init()` boundary.
+has completed its `init()` boundary. Long `availableAt` and retry waits are
+re-armed in bounded native-timer chunks, so dates beyond the platform timer
+limit do not cause early execution or repeated queue scans.
 
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
@@ -76,6 +78,10 @@ may finish or observe the abort signal during shutdown. A shutdown abort without
 a persisted `cancelRequestedAt` marker is not terminal cancellation and follows
 the Job's ordinary retry or exhausted-attempt transition; an unclean
 interruption still follows the lease-recovery and at-least-once rules above.
+If shutdown wins after a claim but before the Capsule handler boundary, the
+worker relinquishes that exact claim without consuming an attempt; a concurrent
+durable cancellation marker remains terminal instead of being restored to
+queued state.
 If enqueue commits while a worker is completing an empty queue scan, the worker
 records and runs another scan before relinquishing ownership; committed work is
 not left waiting for another enqueue or restart. Signal shutdown stops accepting
@@ -84,7 +90,9 @@ failure still proceeds to Database adapter closure. Candidate initialization is
 the Dev replacement ownership boundary: if teardown of the prior runtime then
 reports a failure after closing its resources, Sporades promotes the viable
 candidate and records a bounded warning instead of retaining a closed runtime or
-closing its only usable replacement.
+closing its only usable replacement. Runtime close independently attempts mail,
+Database adapter, and file-storage closure; if more than one fails, it reports
+the failures together after every closer has been attempted.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its

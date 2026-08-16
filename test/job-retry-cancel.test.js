@@ -281,6 +281,40 @@ test("closing the runtime relinquishes a Job whose claim settles after shutdown 
  } finally {releaseClaim();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
+test("closing the runtime relinquishes a Job paused at claimed-state reconciliation", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-claimed-state-close-"));const file=path.join(dir,"data.db");const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let releaseRead=()=>{};let readStarted;const readBegan=new Promise(resolve=>readStarted=resolve);let releaseHandler=()=>{};let handlerCalls=0;let db;let closing;
+ try {
+  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(async(ctx)=>{handlerCalls+=1;await new Promise(resolve=>{releaseHandler=resolve;ctx.signal.addEventListener("abort",resolve,{once:true});});})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]);
+  db.adapter=pauseJobClaimedStateRead(db.adapter,()=>readStarted(),release=>{releaseRead=release;});
+  const draining=clock.runDueTimers();await readBegan;closing=Promise.resolve(db.close());releaseRead();releaseRead=()=>{};
+  const closeSettled=await Promise.race([closing.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),50))]);
+  assert.equal(closeSettled,true,"close must not wait on a handler that had not started when shutdown won");
+  await draining;db=null;
+  assert.equal(handlerCalls,0);
+  const reopened=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  try {const state=(await runMutation(reopened,auth,"get",[queued.data.id])).data;assert.equal(state.status,"queued");assert.equal(state.attempts,0);} finally {await reopened.close();}
+ } finally {releaseRead();releaseHandler();if(closing){await closing.catch(()=>{});db=null;}await Promise.resolve().then(()=>db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("closing the runtime relinquishes a Job paused at current-user lookup", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-user-read-close-"));const file=path.join(dir,"data.db");const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let releaseRead=()=>{};let readStarted;const readBegan=new Promise(resolve=>readStarted=resolve);let releaseHandler=()=>{};let handlerCalls=0;let db;let closing;
+ try {
+  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(async(ctx)=>{handlerCalls+=1;await new Promise(resolve=>{releaseHandler=resolve;ctx.signal.addEventListener("abort",resolve,{once:true});});})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]);
+  db.adapter=pauseJobActorRead(db.adapter,()=>readStarted(),release=>{releaseRead=release;});
+  const draining=clock.runDueTimers();await readBegan;closing=Promise.resolve(db.close());releaseRead();releaseRead=()=>{};
+  const closeSettled=await Promise.race([closing.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),50))]);
+  assert.equal(closeSettled,true,"close must not wait on a handler that had not started when shutdown won");
+  await draining;db=null;
+  assert.equal(handlerCalls,0);
+  const reopened=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  try {const state=(await runMutation(reopened,auth,"get",[queued.data.id])).data;assert.equal(state.status,"queued");assert.equal(state.attempts,0);} finally {await reopened.close();}
+ } finally {releaseRead();releaseHandler();if(closing){await closing.catch(()=>{});db=null;}await Promise.resolve().then(()=>db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("a stale shutdown owner cannot relinquish a newer PostgreSQL Job attempt", {
  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL Job ownership race.",
 }, async () => {
@@ -364,6 +398,36 @@ test("runtime initialization wakes queued and delayed Jobs retained by an orderl
  finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
+test("far-future Jobs re-arm bounded timer chunks without tight rescans", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-future-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);const seen=[];let db;
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))},mutations:{enqueue:mutation((ctx,availableAt)=>ctx.jobs.enqueue("record",{},{availableAt}))}},{clock:tracked.clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",tracked.clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const availableAt=new Date(tracked.clock.now().getTime()+maximumDelay+1_000).toISOString();
+  await runMutation(db,auth,"enqueue",[availableAt]);await db.init();await tracked.runDueTimers();
+  assert.ok(tracked.requestedDelays().every(delay=>delay<=maximumDelay),"every native timer request must fit Node's supported delay range");
+  const requestsAfterFirstScan=tracked.requestedDelays().length;
+  tracked.clock.advanceBy(1);await tracked.runDueTimers();
+  assert.equal(tracked.requestedDelays().length,requestsAfterFirstScan,"a native overflow clamp must not cause an immediate rescan");
+  tracked.clock.advanceBy(maximumDelay);await tracked.runDueTimers();assert.deepEqual(seen,[]);
+  tracked.clock.advanceBy(1_001);await tracked.runDueTimers();assert.deepEqual(seen,["ran"]);
+ } finally {await Promise.resolve().then(()=>db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("far-future Job retries use the same bounded timer chunks", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-retry-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);let attempts=0;let db;
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>{attempts+=1;if(attempts===1) throw new Error("retry");})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:maximumDelay+1_000}}))}},{clock:tracked.clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",tracked.clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  await runMutation(db,auth,"enqueue",[]);await db.init();await tracked.runDueTimers();assert.equal(attempts,1);
+  assert.ok(tracked.requestedDelays().every(delay=>delay<=maximumDelay),"retry wakes must fit Node's supported delay range");
+  const requestsAfterFailure=tracked.requestedDelays().length;
+  tracked.clock.advanceBy(1);await tracked.runDueTimers();assert.equal(tracked.requestedDelays().length,requestsAfterFailure);assert.equal(attempts,1);
+  tracked.clock.advanceBy(maximumDelay);await tracked.runDueTimers();assert.equal(attempts,1);
+  tracked.clock.advanceBy(1_001);await tracked.runDueTimers();assert.equal(attempts,2);
+ } finally {await Promise.resolve().then(()=>db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("closing the runtime closes resources when the active Job worker rejects", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-rejected-close-")); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{}); const closed={mail:0,adapter:0,storage:0};
  const originalMailClose=db.mail.close.bind(db.mail); const originalAdapterClose=db.adapter.close.bind(db.adapter); const originalStorageClose=db.fileStorage.close.bind(db.fileStorage);
@@ -422,6 +486,35 @@ function pauseJobClaimAfterCommit(adapter,onStarted,onRelease) {
        await new Promise(resolve=>onRelease(resolve));
        return result;
       };
+     },
+    });
+   };
+  },
+ });
+}
+
+function pauseJobClaimedStateRead(adapter,onStarted,onRelease) {
+ return pauseJobRead(adapter,/SELECT .*cancelRequestedAt.*sporades_jobs.*status.*running.*claimToken/i,onStarted,onRelease);
+}
+
+function pauseJobActorRead(adapter,onStarted,onRelease) {
+ return pauseJobRead(adapter,/SELECT .*displayName.*sporades_auth_users.*WHERE .*id/i,onStarted,onRelease);
+}
+
+function pauseJobRead(adapter,pattern,onStarted,onRelease) {
+ let paused=false;
+ return new Proxy(adapter,{
+  get(target,property,receiver) {
+   const value=Reflect.get(target,property,receiver);
+   if(property!=="prepare"||typeof value!=="function") return value;
+   return statement=>{
+    const prepared=value.call(target,statement);
+    if(paused||!pattern.test(String(statement))) return prepared;
+    return new Proxy(prepared,{
+     get(preparedTarget,preparedProperty,preparedReceiver) {
+      const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);
+      if(preparedProperty!=="get"||typeof method!=="function") return method;
+      return async(...args)=>{const result=await method.apply(preparedTarget,args);paused=true;onStarted();await new Promise(resolve=>onRelease(resolve));return result;};
      },
     });
    };
@@ -494,4 +587,13 @@ function trackedRuntimeClock(initialInstant) {
   clearTimer(id) {active.delete(id);base.clearTimer(id);},
  };
  return {clock,activeCount:()=>active.size,runDueTimers:base.runDueTimers};
+}
+
+function nodeTimerCeilingClock(initialInstant,maximumDelay) {
+ const base=createControllableRuntimeClock(initialInstant);const requested=[];
+ const clock={
+  now:base.now,setInstant:base.setInstant,advanceBy:base.advanceBy,clearTimer:base.clearTimer,
+  setTimer(callback,delayMs){requested.push(delayMs);return base.setTimer(callback,delayMs>maximumDelay?1:delayMs);},
+ };
+ return {clock,requestedDelays:()=>[...requested],runDueTimers:()=>base.runDueTimers()};
 }

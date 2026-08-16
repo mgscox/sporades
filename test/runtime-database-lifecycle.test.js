@@ -34,6 +34,52 @@ test("runtime database shutdown always attempts close and preserves lifecycle fa
   );
 });
 
+test("runtime close attempts every resource after a synchronous closer failure", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-resource-close-"));
+  const database = await runtime.openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "close" }, {});
+  const baseAdapter = database.adapter;
+  const mailError = new Error("mail close failed");
+  const calls = [];
+  database.mail = { close() { calls.push("mail"); throw mailError; } };
+  database.adapter = { close() { calls.push("adapter"); baseAdapter.close(); } };
+  database.fileStorage = { close() { calls.push("storage"); } };
+  try {
+    await assert.rejects(Promise.resolve().then(() => database.close()), (error) => error === mailError);
+    assert.deepEqual(calls, ["mail", "adapter", "storage"]);
+  } finally {
+    await Promise.resolve().then(() => baseAdapter.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runtime close aggregates multiple resource failures after attempting every closer", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-resource-close-multiple-"));
+  const database = await runtime.openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "close" }, {});
+  const baseAdapter = database.adapter;
+  const mailError = new Error("mail close failed");
+  const adapterError = new Error("adapter close failed");
+  const storageError = new Error("storage close failed");
+  const calls = [];
+  database.mail = { close() { calls.push("mail"); throw mailError; } };
+  database.adapter = { close() { calls.push("adapter"); baseAdapter.close(); throw adapterError; } };
+  database.fileStorage = { close() { calls.push("storage"); throw storageError; } };
+  try {
+    await assert.rejects(
+      Promise.resolve().then(() => database.close()),
+      (error) => error instanceof AggregateError
+        && error.errors[0] === mailError
+        && error.errors[1] === adapterError
+        && error.errors[2] === storageError,
+    );
+    assert.deepEqual(calls, ["mail", "adapter", "storage"]);
+  } finally {
+    await Promise.resolve().then(() => baseAdapter.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runtime database replacement promotes the initialized candidate when old teardown fails", async () => {
   const runtime = await import("../dist/server-runtime-source.js");
   assert.equal(typeof runtime.replaceRuntimeDatabase, "function");

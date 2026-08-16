@@ -878,7 +878,9 @@ rollback discards both. That pending abort is transaction-owned even when
 context middleware replaces its context object. After registering the running
 attempt's controller, the worker rechecks the exact claim token before entering
 the handler so cancellation committed in the claim-registration window is
-already visible through `ctx.signal`.
+already visible through `ctx.signal`. If orderly shutdown wins during any
+pre-handler reconciliation, the worker relinquishes that exact claim without
+consuming an attempt; a concurrent durable cancellation remains terminal.
 
 Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
 delayed, and retry worker timers, abort active Job handlers, and await scheduled
@@ -891,7 +893,11 @@ waiting for a later enqueue or restart. Signal shutdown stops accepting and
 drains HTTP requests before runtime resources close. A shutdown abort without a
 durable `cancelRequestedAt` marker is not user cancellation: it follows the
 ordinary retry or exhausted-attempt transition for that Job.
-Capsule shutdown hook failure does not skip Database adapter closure. Candidate
+Long `availableAt` and retry waits re-arm in bounded native-timer chunks rather
+than overflowing into immediate queue rescans. Capsule shutdown hook failure
+does not skip Database adapter closure. Runtime close attempts mail, Database
+adapter, and file-storage closure independently and aggregates multiple failures
+only after every closer has been attempted. Candidate
 initialization is the Dev replacement ownership boundary. If teardown of the
 prior runtime subsequently reports a failure after closing its resources,
 Sporades promotes the viable candidate and records a bounded warning; it does

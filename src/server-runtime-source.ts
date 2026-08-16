@@ -613,11 +613,32 @@ export async function openDevDatabase(
       database.__scheduleTimers?.clear?.();
       const workerSettlement = stopCurrentUserJobWorker(database);
       const closeResources = () => {
-        const mailResult = database.mail.close();
-        const sqliteResult = database.adapter.close();
-        const storageResult = database.fileStorage.close();
-        const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
-        return pending.length > 0 ? Promise.all(pending) : undefined;
+        const failures: Array<{ index: number; error: unknown }> = [];
+        const pending: Promise<void>[] = [];
+        const resources = [
+          () => database.mail.close(),
+          () => database.adapter.close(),
+          () => database.fileStorage.close(),
+        ];
+        for (const [index, closeResource] of resources.entries()) {
+          const captureFailure = (error: unknown) => {
+            failures.push({ index, error });
+          };
+          try {
+            const result = closeResource();
+            if (result && typeof result.then === "function") {
+              pending.push(Promise.resolve(result).then(undefined, captureFailure));
+            }
+          } catch (error) {
+            captureFailure(error);
+          }
+        }
+        const finish = () => {
+          const errors = failures.sort((left, right) => left.index - right.index).map(({ error }) => error);
+          if (errors.length > 1) throw new AggregateError(errors, "Multiple runtime resources failed to close.");
+          if (errors.length === 1) throw errors[0];
+        };
+        return pending.length > 0 ? Promise.all(pending).then(finish) : finish();
       };
       if (!workerSettlement) return closeResources();
       return (async () => {
@@ -4436,13 +4457,27 @@ function scheduleCurrentUserJobWorker(database: LooseRecord) {
   }
 }
 
+const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
+
 function scheduleJobWorkerWake(database: LooseRecord, delayMs: number) {
   if (database.__jobStopped) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => {
     database.__jobWakeTimer = null;
     scheduleCurrentUserJobWorker(database);
-  }, delayMs);
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, delayMs)));
+}
+
+async function relinquishUnstartedJobClaim(database: LooseRecord, jobId: string, claimToken: string) {
+  const sql = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql(
+    "UPDATE [sporades_jobs] SET " +
+    "[status] = CASE WHEN [cancelRequestedAt] IS NULL THEN 'queued' ELSE 'cancelled' END, " +
+    "[attempts] = CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, " +
+    "[startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL, " +
+    "[completedAt] = CASE WHEN [cancelRequestedAt] IS NULL THEN [completedAt] ELSE [cancelRequestedAt] END " +
+    "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+  )).run(jobId, claimToken);
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
@@ -4472,18 +4507,12 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         // flight. The Job has not reached its handler boundary yet, so return
         // the claim without consuming an attempt. A cancellation that raced
         // the claim remains terminal instead of being resurrected as queued.
-        await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET " +
-          "[status] = CASE WHEN [cancelRequestedAt] IS NULL THEN 'queued' ELSE 'cancelled' END, " +
-          "[attempts] = CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, " +
-          "[startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL, " +
-          "[completedAt] = CASE WHEN [cancelRequestedAt] IS NULL THEN [completedAt] ELSE [cancelRequestedAt] END " +
-          "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
-        )).run(row.id, claimToken);
+        await relinquishUnstartedJobClaim(database, row.id, claimToken);
         return;
       }
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
+      let handlerStarted = false;
       try {
         // Cancellation may commit after the durable claim but before its
         // in-memory controller is registered. Reconcile the exact owned claim
@@ -4493,12 +4522,17 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
         )).get(row.id, claimToken);
         if (!claimedState) continue;
+        if (database.__jobStopped) {
+          await relinquishUnstartedJobClaim(database, row.id, claimToken);
+          return;
+        }
         if (claimedState?.cancelRequestedAt) abortController.abort();
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+            handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try { return await handler.handler(privilegedCtx, JSON.parse(row.payload)); }
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
@@ -4510,6 +4544,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
               "FROM [sporades_auth_users] WHERE [id] = ?",
             ),
           ).get(row.actorUserId);
+          if (database.__jobStopped) {
+            await relinquishUnstartedJobClaim(database, row.id, claimToken);
+            return;
+          }
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = {
             userId: user.id,
@@ -4521,6 +4559,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
           };
           const context = createMutationContext(database, auth); context.signal = abortController.signal;
+          handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try { result = await handler.handler(context, JSON.parse(row.payload)); }
           finally { database.__runtimeJobAttempts.delete(context); }
@@ -4534,6 +4573,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
       } catch (error: any) {
+        if (database.__jobStopped && !handlerStarted) {
+          await relinquishUnstartedJobClaim(database, row.id, claimToken);
+          return;
+        }
         const failure = safeJobFailure(error);
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");

@@ -30,10 +30,15 @@ Changes since v0.8.5.
   before runtime resources close; transactional cancellation aborts only after
   commit even across middleware context replacement, the worker reconciles a
   cancellation committed during claim registration before entering the handler,
+  shutdown that wins during pre-handler reconciliation relinquishes the exact
+  claim without consuming an attempt, far-future and retry wakes use bounded
+  native-timer chunks instead of overflow-clamped rescans,
   a commit during an active empty queue scan guarantees another worker pass,
   and shutdown alone cannot misclassify retained work as user-cancelled. Signal
   shutdown stops accepting and drains HTTP requests before runtime resources
-  close. Shutdown failures still close database resources, and when prior-runtime
+  close. Every runtime resource closer is attempted even when another closer
+  throws synchronously, with multiple failures reported together. Shutdown
+  failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
 - Allocate additive-migration temporary table names without colliding with valid
