@@ -57,8 +57,10 @@ duplicate-safe and use idempotency keys for caller retries.
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
 clears immediate, delayed, and retry worker timers, aborts active Job handlers,
 and awaits scheduled worker settlement before the Database adapter and other
-runtime resources close. Durable queued and delayed Job state remains stored
-and recovers on runtime restart. Cooperative handlers may finish or observe the
+runtime resources close. An active worker settles its current attempt without
+claiming another queued Job, and worker settlement failure does not skip
+resource closure. Durable queued and delayed Job state remains stored and
+recovers on runtime restart. Cooperative handlers may finish or observe the
 abort signal during shutdown; an unclean interruption still follows the lease
 recovery and at-least-once rules above.
 

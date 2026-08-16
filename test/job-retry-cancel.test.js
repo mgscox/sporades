@@ -55,3 +55,18 @@ test("closing the runtime cancels scheduled Job work before its adapter closes",
  try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",[]); assert.equal(db.__jobWorkerScheduled,true); await db.close(); await clock.runDueTimers(); assert.deepEqual(seen,[]);}
  finally {await rm(dir,{recursive:true,force:true});}
 });
+
+test("closing the runtime finishes the active Job without claiming queued work", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-active-close-")); const seen=[]; const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z"); let started; let release=()=>{}; let closed=false;
+ const began=new Promise(r=>started=r); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{block:job(async()=>{seen.push("block");started();await new Promise(r=>release=r);}),record:job(()=>seen.push("queued"))},mutations:{enqueue:mutation((ctx,handler)=>ctx.jobs.enqueue(handler,{}))}},{clock});
+ try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",["block"]); const draining=clock.runDueTimers(); await began; const queued=await runMutation(db,auth,"enqueue",["record"]); assert.equal(queued.data.status,"queued"); const closing=db.close(); release(); await Promise.all([draining,closing]); closed=true; assert.deepEqual(seen,["block"]);}
+ finally {release();if(!closed) await db.close().catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("closing the runtime closes resources when the active Job worker rejects", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-rejected-close-")); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{}); const closed={mail:0,adapter:0,storage:0};
+ const originalMailClose=db.mail.close.bind(db.mail); const originalAdapterClose=db.adapter.close.bind(db.adapter); const originalStorageClose=db.fileStorage.close.bind(db.fileStorage);
+ db.mail.close=()=>{closed.mail++;return originalMailClose();}; db.adapter.close=()=>{closed.adapter++;return originalAdapterClose();}; db.fileStorage.close=()=>{closed.storage++;return originalStorageClose();};
+ try {let rejectWorker; const workerError=new Error("worker settlement failed"); db.__jobWorkerPromise=new Promise((resolve,reject)=>{rejectWorker=reject;}); const closing=db.close(); rejectWorker(workerError); await assert.rejects(closing,error=>error===workerError); assert.deepEqual(closed,{mail:1,adapter:1,storage:1});}
+ finally {if(!closed.mail) await originalMailClose();if(!closed.storage) await originalStorageClose();if(!closed.adapter) await originalAdapterClose();await rm(dir,{recursive:true,force:true});}
+});

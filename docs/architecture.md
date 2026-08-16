@@ -174,9 +174,11 @@ An orderly restart or runtime shutdown stops scheduling new Job work, clears
 immediate, delayed, and retry worker timers, aborts active Job handlers, and
 awaits scheduled worker settlement before the Database adapter, database
 connection, mail transport, and file storage close. Durable queued and delayed
-Job state remains in the database and recovers on runtime restart. The same
-close ordering is used by Dev lifecycle transitions and the bundled process
-signal path, so a worker cannot continue against an already closed adapter.
+Job state remains in the database and recovers on runtime restart. An active
+worker settles its current attempt without claiming another queued Job, and a
+worker settlement failure does not skip resource closure. The same close
+ordering is used by Dev lifecycle transitions and the bundled process signal
+path, so a worker cannot continue against an already closed adapter.
 
 ### Local Container Session
 

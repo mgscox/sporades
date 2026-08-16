@@ -870,8 +870,10 @@ safe to repeat after lease recovery.
 Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
 delayed, and retry worker timers, abort active Job handlers, and await scheduled
 worker settlement before the Database adapter and other runtime resources
-close. Durable queued and delayed Job state remains stored and recovers on
-runtime restart. Unclean interruption retains the ordinary lease-recovery and
+close. An active worker settles its current attempt without claiming another
+queued Job, and worker settlement failure does not skip resource closure.
+Durable queued and delayed Job state remains stored and recovers on runtime
+restart. Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.
 
 Administrators inspect all bounded Job state using the JSON-only `sporades

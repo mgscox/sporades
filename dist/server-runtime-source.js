@@ -466,7 +466,34 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
                 return pending.length > 0 ? Promise.all(pending) : undefined;
             };
-            return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise).then(closeResources) : closeResources();
+            if (!database.__jobWorkerPromise)
+                return closeResources();
+            return (async () => {
+                let workerError;
+                let closeError;
+                let workerRejected = false;
+                let closeRejected = false;
+                try {
+                    await database.__jobWorkerPromise;
+                }
+                catch (error) {
+                    workerRejected = true;
+                    workerError = error;
+                }
+                try {
+                    await closeResources();
+                }
+                catch (error) {
+                    closeRejected = true;
+                    closeError = error;
+                }
+                if (workerRejected && closeRejected)
+                    throw new AggregateError([workerError, closeError], "Job worker settlement and runtime resource closure both failed.");
+                if (workerRejected)
+                    throw workerError;
+                if (closeRejected)
+                    throw closeError;
+            })();
         },
     };
     database.init = async () => {
@@ -4061,8 +4088,14 @@ export async function runCurrentUserJobWorker(database) {
     const sql = database.adapter.dialect.sql;
     try {
         while (true) {
+            if (database.__jobStopped)
+                return;
             await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
+            if (database.__jobStopped)
+                return;
             const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
+            if (database.__jobStopped)
+                return;
             if (!row) {
                 await scheduleNextDelayedJob(database);
                 return;

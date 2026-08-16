@@ -926,6 +926,8 @@ test("canonical Job and architecture docs describe settled runtime shutdown", as
     assert.match(document, /clear(?:s)?[\s\S]*(?:immediate|delayed|retry)[\s\S]*timers/i);
     assert.match(document, /abort(?:s)?[\s\S]*(?:active|running) Job handlers/i);
     assert.match(document, /await(?:s)?[\s\S]*(?:worker|Job work)[\s\S]*before[\s\S]*(?:Database adapter|database connection)/i);
+    assert.match(document, /active[\s\S]*worker[\s\S]*current attempt[\s\S]*without[\s\S]*claiming another/i);
+    assert.match(document, /worker settlement failure[\s\S]*does not skip[\s\S]*resource closure/i);
     assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
   }
 });
