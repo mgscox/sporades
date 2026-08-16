@@ -170,6 +170,14 @@ refresh what is served to the browser. Failed rebuilds keep the last successful
 Bundle active, which is critical for agent loops: the app stays inspectable
 while the agent fixes the error.
 
+An orderly restart or runtime shutdown stops scheduling new Job work, clears
+immediate, delayed, and retry worker timers, aborts active Job handlers, and
+awaits scheduled worker settlement before the Database adapter, database
+connection, mail transport, and file storage close. Durable queued and delayed
+Job state remains in the database and recovers on runtime restart. The same
+close ordering is used by Dev lifecycle transitions and the bundled process
+signal path, so a worker cannot continue against an already closed adapter.
+
 ### Local Container Session
 
 `sporades deploy` runs the bundled Capsule in Docker using the Sporades Base

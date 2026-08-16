@@ -71,12 +71,20 @@ PostgreSQL: a `NULL` in any constrained field does not conflict with another
 row. A unique declaration does not make a field required; validate required
 business fields separately.
 
-An existing table may add a new unique declaration. Sporades rebuilds the table
-inside one Database adapter transaction, preserving every non-conflicting row
-and then recording the new schema metadata. If existing data conflicts, the
-migration is rolled back completely and reports only `Unable to apply unique
-constraint migration.`; conflicting values and database-engine diagnostics are
-not exposed.
+Adding a new unique constraint declaration to an existing table is supported.
+Sporades rebuilds it inside one Database adapter transaction, preserving every
+non-conflicting row and then recording the new schema metadata. If existing
+data conflicts, the migration is rolled back completely and reports only
+`Unable to apply unique constraint migration.`; conflicting values and
+database-engine diagnostics are not exposed. That opaque translation applies
+only when the newly added constraint's row copy detects conflicting existing
+data. Foreign-key failures,
+unrelated unique failures, and adapter or infrastructure failures retain their
+ordinary error path instead of being mislabeled as duplicate migration data.
+
+Every failed attempt preserves the original table, all original rows, and the
+prior schema metadata and hash. It leaves no temporary table or other rebuild
+debris behind.
 
 Removing, replacing, weakening, or changing the field order of an existing
 constraint remains an unsupported Capsule schema change. Keep the existing

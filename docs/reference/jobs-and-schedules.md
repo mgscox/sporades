@@ -54,6 +54,14 @@ Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
 duplicate-safe and use idempotency keys for caller retries.
 
+An orderly runtime shutdown or Dev restart stops scheduling new Job work,
+clears immediate, delayed, and retry worker timers, aborts active Job handlers,
+and awaits scheduled worker settlement before the Database adapter and other
+runtime resources close. Durable queued and delayed Job state remains stored
+and recovers on runtime restart. Cooperative handlers may finish or observe the
+abort signal during shutdown; an unclean interruption still follows the lease
+recovery and at-least-once rules above.
+
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its
 captured execution actor. Privileged inspection through an explicit

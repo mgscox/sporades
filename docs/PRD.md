@@ -106,7 +106,8 @@ The repository currently includes:
   context middleware, pre/post mutation hooks, and App messages.
 - Field builders for `String()`, `Boolean()`, `Number()`, `Date()`, `Json()`,
   and `Reference()`.
-- Additive migrations for new tables and fields. Unsupported destructive or
+- Additive migrations for new tables, fields, and unique constraints, plus
+  exact-constraint `insertOrIgnore` writes. Unsupported destructive or
   shape-changing schema changes fail with a structured error instead of
   silently dropping app data.
 - Runtime-owned auth with anonymous sessions, email sign-up/sign-in, Google
@@ -462,11 +463,21 @@ Additive migrations support:
 - creating new app tables,
 - adding new fields to existing tables,
 - default values for newly added fields,
+- adding a unique constraint to an existing table,
 - reference-target validation for `Reference()` fields.
 
-Removing tables, removing fields, or changing existing field definitions is an
+Adding a unique constraint rebuilds the table inside one Database adapter
+transaction. If the newly added constraint's row copy finds duplicate
+existing data, Sporades returns one opaque unique-migration error and rolls back
+the attempt. The original table, rows, schema metadata, and hash remain intact,
+with no temporary table or rebuild debris. Foreign-key failures and unrelated
+unique failures retain their original error instead of being translated as
+duplicate migration data.
+
+Removing tables or fields, changing existing field definitions, or removing,
+replacing, weakening, or reordering an existing unique constraint is an
 unsupported schema change today. The runtime reports a structured error with a
-hint to revert the change or move data aside and recreate the Runtime directory.
+hint to revert the change or move data safely through a separately named table.
 
 ## Auth
 
@@ -855,6 +866,13 @@ and `cancelled`; only `queued` means ready to run. V1 uses a single worker,
 bounded retry, cooperative cancellation, leases, and restart recovery. Delivery
 is at least once rather than exactly once, so handlers must be idempotent and
 safe to repeat after lease recovery.
+
+Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
+delayed, and retry worker timers, abort active Job handlers, and await scheduled
+worker settlement before the Database adapter and other runtime resources
+close. Durable queued and delayed Job state remains stored and recovers on
+runtime restart. Unclean interruption retains the ordinary lease-recovery and
+at-least-once behavior.
 
 Administrators inspect all bounded Job state using the JSON-only `sporades
 jobs`, `sporades deploy jobs`, and `sporades host jobs` commands. This operator

@@ -128,6 +128,25 @@ test("the idempotent insert example awaits both asynchronous database paths", as
   );
 });
 
+test("canonical database docs scope additive unique migration errors and rollback", async () => {
+  const [prd, serverReference, roadmap] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/ROADMAP.md"),
+  ]);
+
+  for (const document of [prd, serverReference]) {
+    assert.match(document, /add(?:ing|itive)[\s\S]*unique constraint/i);
+    assert.match(document, /newly\s+added\s+constraint[\s\S]*row copy/i);
+    assert.match(document, /foreign-key[\s\S]*unrelated\s+unique[\s\S]*(?:remain|retain)[\s\S]*(?:original|ordinary) error/i);
+    assert.match(document, /original table[\s\S]*rows[\s\S]*schema metadata[\s\S]*hash/i);
+    assert.match(document, /no temporary table[\s\S]*debris/i);
+  }
+  assert.match(roadmap, /Capsule table uniqueness \| implemented/);
+  assert.match(roadmap, /`insertOrIgnore`/);
+  assert.match(roadmap, /SQLite, libSQL, and PostgreSQL/);
+});
+
 test("README documentation links resolve from the npm package page", async () => {
   const readme = await readProjectFile("README.md");
   assert.doesNotMatch(readme, /\]\(docs\/[A-Za-z0-9_./-]+\.md(?:#[^)]+)?\)/);
@@ -892,6 +911,22 @@ test("canonical, feature, and reference Job docs describe transaction-bound enqu
     assert.doesNotMatch(document, /queue writes are not atomic with Capsule app mutation writes/i);
     assert.doesNotMatch(document, /prove enqueue does not claim atomicity with Capsule mutation writes/i);
     assert.doesNotMatch(document, /do not promise[\s\S]*transactional enqueue with Capsule app mutations/i);
+  }
+});
+
+test("canonical Job and architecture docs describe settled runtime shutdown", async () => {
+  const [canonicalPrd, jobReference, architecture] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+    readProjectFile("docs/architecture.md"),
+  ]);
+
+  for (const document of [canonicalPrd, jobReference, architecture]) {
+    assert.match(document, /stop(?:s)? scheduling new Job work/i);
+    assert.match(document, /clear(?:s)?[\s\S]*(?:immediate|delayed|retry)[\s\S]*timers/i);
+    assert.match(document, /abort(?:s)?[\s\S]*(?:active|running) Job handlers/i);
+    assert.match(document, /await(?:s)?[\s\S]*(?:worker|Job work)[\s\S]*before[\s\S]*(?:Database adapter|database connection)/i);
+    assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
   }
 });
 
