@@ -11,15 +11,19 @@ async function assertNestedTransactionModesRejectPromptly(adapter) {
   for (const outerMode of ["withTransaction", "withReadOnlySnapshot"]) {
     for (const nestedMode of ["withTransaction", "withReadOnlySnapshot"]) {
       let nestedCallbackEntered = false;
-      const outcome = await Promise.race([
-        adapter[outerMode](async (transaction) => {
-          await transaction[nestedMode](async () => { nestedCallbackEntered = true; });
-        }).then(
-          () => ({ kind: "resolved" }),
-          (error) => ({ kind: "rejected", error }),
-        ),
-        new Promise((resolve) => setTimeout(() => resolve({ kind: "timed-out" }), 100)),
-      ]);
+      const outcome = await adapter[outerMode](async (transaction) => {
+        let timeout;
+        const timedOut = new Promise((resolve) => { timeout = setTimeout(() => resolve({ kind: "timed-out" }), 100); });
+        try {
+          return await Promise.race([
+            Promise.resolve().then(() => transaction[nestedMode](async () => { nestedCallbackEntered = true; })).then(
+              () => ({ kind: "resolved" }),
+              (error) => ({ kind: "rejected", error }),
+            ),
+            timedOut,
+          ]);
+        } finally { clearTimeout(timeout); }
+      });
       assert.equal(outcome.kind, "rejected", `${outerMode} -> ${nestedMode} rejects instead of waiting on its own connection queue`);
       assert.match(outcome.error.message, /nested database transactions are not supported/i);
       assert.equal(nestedCallbackEntered, false);
@@ -130,6 +134,25 @@ async function assertChainedPublicOperationsResumeAfterTransaction(adapter, pref
   assert.equal(outcome, "completed", "a chained public operation must not be stranded after transaction release");
   assert.deepEqual(observed, [2, 2]);
 }
+
+test("nested transaction deadlines begin after a cold adapter enters its callback", async () => {
+  const nestedError = new Error("Nested database transactions are not supported.");
+  const transaction = {
+    withTransaction: async () => { throw nestedError; },
+    withReadOnlySnapshot: async () => { throw nestedError; },
+  };
+  const coldAdapter = {
+    withTransaction: async (callback) => {
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      return await callback(transaction);
+    },
+    withReadOnlySnapshot: async (callback) => {
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      return await callback(transaction);
+    },
+  };
+  await assertNestedTransactionModesRejectPromptly(coldAdapter);
+});
 
 test("a single connection does not begin a second transaction until the first has completed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-serialization-"));

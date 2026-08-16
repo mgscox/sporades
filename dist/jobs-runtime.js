@@ -599,7 +599,8 @@ export async function cancelJob(database, context, id) { const sql = database.ad
     await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
     return jobState({ ...row, status: "cancelled", completedAt: now }, true);
 } if (row.status === "running") {
-    database.__jobAbortControllers?.get(id)?.abort();
+    const runtimeDatabase = database.__rootDatabase ?? database;
+    runtimeDatabase.__jobAbortControllers?.get(id)?.abort();
     await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
     return jobState({ ...row, cancelRequestedAt: now }, true);
 } throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled."); }

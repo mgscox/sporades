@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createControllableRuntimeClock, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { cancelJob, createControllableRuntimeClock, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 const auth = { userId: "u", displayName: "u", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 test("Jobs support delayed availability, bounded retries, and cancellation", async () => {
@@ -76,4 +76,10 @@ test("runtime shutdown settles the active Job before the Capsule shutdown hook",
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{block:job(async(ctx)=>{activeSignal=ctx.signal;events.push("job-start");started();await new Promise(r=>release=r);events.push(`job-end:${ctx.signal.aborted}`);}),record:job(()=>events.push("queued"))},mutations:{enqueue:mutation((ctx,handler)=>ctx.jobs.enqueue(handler,{}))},hooks:{shutdown:()=>events.push("shutdown-hook")}},{clock}); let shutdown;
  try {await db.init();db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["block"]);const draining=clock.runDueTimers();await began;await runMutation(db,auth,"enqueue",["record"]);shutdown=db.shutdown();await new Promise(r=>setImmediate(r));assert.equal(db.__jobStopped,true);assert.equal(activeSignal.aborted,true);assert.deepEqual(events,["job-start"]);release();await Promise.all([draining,shutdown]);assert.deepEqual(events,["job-start","job-end:true","shutdown-hook"]);}
  finally {release();await shutdown?.catch(()=>{});await Promise.resolve(db.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("transaction-scoped cancellation aborts a controller created later on the root runtime", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-root-cancel-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{}))}},{clock});
+ try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");const queued=await runMutation(db,auth,"enqueue",[]);db.adapter.prepare("UPDATE sporades_jobs SET status='running' WHERE id=?").run(queued.data.id);await db.adapter.withTransaction(async(transactionAdapter)=>{const transactionDatabase={...db,adapter:transactionAdapter,__transactionActive:true,__rootDatabase:db};const controller=new AbortController();db.__jobAbortControllers=new Map([[queued.data.id,controller]]);const cancelled=await cancelJob(transactionDatabase,{auth},queued.data.id);assert.equal(cancelled.cancelRequestedAt,clock.now().toISOString());assert.equal(controller.signal.aborted,true);});}
+ finally {await Promise.resolve(db.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
