@@ -186,11 +186,17 @@ occurrence, then resumes normal recurrence; it never replays an unbounded
 backlog. Schedule state and pending occurrences survive runtime restarts through
 the configured Database adapter. A deterministic identity based on Capsule,
 Schedule name, and scheduled UTC instant prevents overlapping starts or crash
-recovery from creating duplicate Jobs for one occurrence. Payload calculation
-can be repeated after a claim expires, but the runtime rechecks claim ownership
-before writing: deterministic Job enqueue, occurrence terminal state, and the
-Schedule's latest-occurrence summary commit in one transaction. A stale owner
-therefore cannot enqueue or overwrite the replacement owner's durable outcome.
+recovery from creating duplicate Jobs for one occurrence. Recovery validates all
+three retained identity components together and quarantines a malformed or
+mismatched row without letting its unique key fail startup or spin a timer.
+Payload calculation can be repeated after a claim expires, but every pending
+occurrence also carries its Schedule definition fingerprint. The runtime
+rechecks both claim ownership and the live enabled definition inside the write
+transaction: deterministic Job enqueue, occurrence terminal state, and the
+Schedule's latest-occurrence summary commit together. A stale owner therefore
+cannot enqueue or overwrite a replacement generation's cursor or durable
+outcome. Once transaction-time validation rejects a superseded generation, that
+runtime stops re-arming its local copy of the Schedule.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into
@@ -205,10 +211,14 @@ is terminally quarantined with the stable opaque
 `SCHEDULE_OCCURRENCE_INVALID` code and is never left permanently pending.
 
 Changing an expression, timezone, payload, retry policy, or enabled state affects
-future occurrences only and does not rewrite historical Jobs. Removing a
-Schedule forgets its runtime state while retaining its Jobs; adding the same name
-again or renaming a Schedule creates a fresh identity. Disabling or cancelling a
-created Job does not disable its Schedule.
+future occurrences only and does not rewrite historical Jobs. Pending
+occurrences from a changed or disabled definition are terminally quarantined as
+`SCHEDULE_OCCURRENCE_SUPERSEDED`. Removing a Schedule forgets its runtime state,
+supersedes its pending occurrences, and retains its Jobs; adding the same name
+again, re-enabling it, or renaming a Schedule starts from the next future
+occurrence and cannot resurrect old pending work. Legacy pending rows without a
+definition fingerprint are likewise superseded safely. Disabling or cancelling
+a created Job does not disable its Schedule.
 
 Every successfully created Scheduled occurrence becomes an ordinary Job that
 executes as the Privileged server role. It retains Job Queue **at least once**

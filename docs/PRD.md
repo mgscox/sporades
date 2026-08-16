@@ -971,12 +971,20 @@ next future one. `latest` creates at most the most recent missed occurrence and
 then resumes. Runtime state survives restarts through the configured Database
 adapter. Declaration changes affect only future occurrences; removal forgets
 Schedule state without deleting historical Jobs, and later reuse of the name is
-a fresh identity. Deterministic occurrence identity and durable reconciliation
-prevent duplicate Job creation across overlapping starts and crashes.
+a fresh future-only generation. Reconciliation terminally quarantines pending
+occurrences from changed, disabled, removed, or legacy unversioned definitions,
+so later reuse or re-enabling cannot resurrect them. Deterministic occurrence
+identity and durable reconciliation prevent duplicate Job creation across
+overlapping starts and crashes.
 Payload evaluation may repeat after occurrence-claim expiry, but persistence is
 claim-owned: deterministic Job enqueue, occurrence terminalization, and the
-Schedule latest-occurrence summary are one Database transaction. A stale owner
-cannot enqueue or finalize after another runtime reclaims the occurrence.
+Schedule latest-occurrence summary are one Database transaction. Each pending
+occurrence carries its Schedule definition fingerprint, which is revalidated
+against the enabled durable definition inside that transaction. A stale owner
+cannot enqueue, finalize, or overwrite a replacement generation's cursor or
+summary after another runtime reclaims or replaces the occurrence. A still-live
+outgoing runtime stops that superseded local Schedule generation instead of
+re-arming it.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long
@@ -985,8 +993,11 @@ tracked, chunked to the native timer limit, and rechecks the durable expiry
 before reconciliation. Transient recovery failures install a bounded retry wake,
 and orderly close waits for active Schedule recovery before closing the adapter.
 Retained occurrence and claim-expiry timestamps are canonical four-digit UTC
-instants; malformed retained timing state is terminally quarantined with the
-opaque stable `SCHEDULE_OCCURRENCE_INVALID` error rather than remaining pending.
+instants. Recovery validates the retained id, Schedule name, and scheduled UTC
+instant as one deterministic identity. Malformed or mismatched retained state is
+terminally quarantined with the opaque stable `SCHEDULE_OCCURRENCE_INVALID`
+error without blocking startup or spinning the Schedule timer; superseded
+definition state uses the opaque stable `SCHEDULE_OCCURRENCE_SUPERSEDED` error.
 
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the

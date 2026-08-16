@@ -9,9 +9,15 @@ export declare function ensureScheduleStorage(sqlite: LooseRecord): Promise<void
 export declare function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any, claimToken: string): Promise<{
     finished: boolean;
     nextOccurrence: null;
+    superseded: boolean;
+} | {
+    finished: boolean;
+    nextOccurrence: null;
+    superseded?: undefined;
 } | {
     finished: boolean;
     nextOccurrence: string;
+    superseded?: undefined;
 }>;
 export declare function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string): string;
 export declare function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord): Promise<{

@@ -207,10 +207,11 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
   await sqlite.exec(
     sql(
       "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
-      "[scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
+      "[definitionFingerprint] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
       "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     ),
   );
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
   await sqlite.exec(
     sql(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
@@ -225,10 +226,16 @@ export async function finishFailedScheduledOccurrence(database: LooseRecord, def
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
   const sql = database.adapter.dialect.sql;
-  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=?")).run(code, completedAt, id, claimToken);
+  const generation = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=?")).run(definition.name, definition.fingerprint);
+  if (Number(generation.changes) !== 1) {
+    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=?")).run(completedAt, id, claimToken, definition.fingerprint);
+    return { finished: false, nextOccurrence: null, superseded: true };
+  }
+  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=?")).run(code, completedAt, id, claimToken, definition.fingerprint);
   if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=?")).run(next, scheduledFor, code, definition.name);
+  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=?")).run(next, scheduledFor, code, definition.name, definition.fingerprint);
+  if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
   return { finished: true, nextOccurrence: next };
 }
 

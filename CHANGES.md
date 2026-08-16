@@ -59,6 +59,12 @@ Changes since v0.8.5.
   the nominal instant is due before persisting or enqueueing, preventing monthly
   and annual recurrences from firing immediately when Node clamps a long delay.
   Apply the same bounded, tracked recheck to future retained occurrence claims.
+- Bind every pending Schedule occurrence to its complete deterministic identity
+  and definition fingerprint. Malformed retained rows are quarantined without
+  blocking their unique occurrence slot, while changed, disabled, or removed
+  definitions terminally supersede old pending work. Transaction-time generation
+  checks prevent an outgoing Dev runtime from enqueueing a Job or overwriting the
+  replacement Schedule's cursor and summary.
 - Apply the transaction ownership gate consistently to libSQL root transactions,
   read-only snapshots, and public operations so captured-root re-entry rejects
   promptly while external callers remain serialized. Closing libSQL now seals
