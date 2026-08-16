@@ -13099,7 +13099,9 @@ function createConnectionTransactionGate() {
       release();
     }
   };
-  return { runOperation, runTransaction };
+  const whenIdle = async () => await transactionTail.catch(() => {
+  });
+  return { runOperation, runTransaction, whenIdle };
 }
 async function rejectNestedTransactionScope() {
   throw commandError2(
@@ -14528,27 +14530,39 @@ async function createLibsqlDatabaseAdapter(options) {
     exec(sql) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql) ? { type: "sequence", sql } : { type: "execute", stmt: { sql } };
-      return run2(() => libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0));
+      return run2(() => {
+        assertLibsqlOpen(closed);
+        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
+      });
     },
     prepare(sql) {
       assertLibsqlOpen(closed);
       return {
         all(...params) {
-          return run2(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
-            (result) => libsqlRowsFromResult(normalization, result)
-          ));
+          return run2(() => {
+            assertLibsqlOpen(closed);
+            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
+              (result) => libsqlRowsFromResult(normalization, result)
+            );
+          });
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-            lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
-          })));
+          return run2(() => {
+            assertLibsqlOpen(closed);
+            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+              lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
+            }));
+          });
         },
         columns() {
-          return run2(() => libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction }));
+          return run2(() => {
+            assertLibsqlOpen(closed);
+            return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+          });
         }
       };
     }
@@ -14564,7 +14578,9 @@ async function createLibsqlDatabaseAdapter(options) {
     // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
     // body instead.
     async withTransaction(fn) {
+      assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
+        assertLibsqlOpen(closed);
         const transaction = { baton: null, baseUrl: endpoint };
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
@@ -14593,7 +14609,9 @@ async function createLibsqlDatabaseAdapter(options) {
       });
     },
     async withReadOnlySnapshot(fn) {
+      assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
+        assertLibsqlOpen(closed);
         const transaction = { baton: null, baseUrl: endpoint };
         const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
         activeTransactions.add(transaction);
@@ -14620,6 +14638,10 @@ async function createLibsqlDatabaseAdapter(options) {
       });
     },
     async close() {
+      if (closed) {
+        await connectionGate.whenIdle();
+        return;
+      }
       closed = true;
       for (const transaction of activeTransactions) {
         if (transaction.baton) {
@@ -14627,6 +14649,7 @@ async function createLibsqlDatabaseAdapter(options) {
           });
         }
       }
+      await connectionGate.whenIdle();
       activeTransactions.clear();
     }
   };
@@ -15539,12 +15562,16 @@ function schedulePendingOccurrenceRecovery(database, claimExpiresAt) {
     database.__scheduleRecoveryTimer = null;
     database.__scheduleRecoveryDueAt = null;
     if (database.__scheduleStopped) return;
+    if (dueAt > database.clock.now().getTime()) {
+      schedulePendingOccurrenceRecovery(database, claimExpiresAt);
+      return;
+    }
     const active = recoverPendingScheduleOccurrences(database).catch((error) => {
       database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
     }).finally(() => database.__activeScheduleOccurrences?.delete(active));
     database.__activeScheduleOccurrences?.add(active);
     return active;
-  }, Math.max(0, dueAt - database.clock.now().getTime()));
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, dueAt - database.clock.now().getTime())));
   database.__scheduleRecoveryTimer = timer;
   database.__scheduleTimers?.add(timer);
 }
@@ -15568,6 +15595,16 @@ async function recoverExpiredJobLeases(database) {
   const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
   let earliestFutureLeaseAt = null;
   for (const row of rows) {
+    if (jobClaimTokenIsMalformed(row.claimToken)) {
+      const failure = { code: "JOB_CLAIM_INVALID", message: "The stored Job claim ownership is invalid." };
+      const ownership2 = jobClaimOwnership(row.claimToken);
+      const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
+      const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
+      )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
+      continue;
+    }
     if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
       const failure = { code: "JOB_LEASE_INVALID", message: "The stored Job claim lease is invalid." };
       const ownership2 = jobClaimOwnership(row.claimToken);
@@ -15650,16 +15687,23 @@ function invalidStoredJobFailure(row, referenceInstant) {
   const attempts = Number(row.attempts);
   const attemptsValid = Number.isInteger(attempts) && (row.status === "running" ? attempts >= 1 && attempts <= (retry?.maxAttempts ?? -1) : attempts >= 0 && attempts < (retry?.maxAttempts ?? -1));
   if (retry === null || !attemptsValid) return invalidJobRetryPolicyFailure();
-  const firstAttemptMilliseconds = Math.max(referenceInstant.getTime(), Date.parse(row.availableAt));
-  const firstAttempt = new Date(firstAttemptMilliseconds);
-  if (jobTimestampAfter(firstAttempt, RUNTIME_CLAIM_LEASE_MS) === null) {
-    return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time cannot support a canonical claim lease." };
-  }
-  const retryAvailableAt = jobTimestampAfter(firstAttempt, retry.delayMs);
-  if (retryAvailableAt === null || jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS) === null) {
-    return invalidJobRetryPolicyFailure();
-  }
+  const remainingAttempts = retry.maxAttempts - attempts;
+  if (remainingAttempts === 0) return null;
+  const firstAttempt = row.status === "running" ? jobTimestampAfter(referenceInstant, retry.delayMs) : new Date(Math.max(referenceInstant.getTime(), Date.parse(row.availableAt))).toISOString();
+  if (firstAttempt === null) return invalidJobRetryPolicyFailure();
+  if (!jobRetryHorizonFits(new Date(firstAttempt), retry, remainingAttempts)) return invalidJobRetryPolicyFailure();
   return null;
+}
+function jobRetryHorizonFits(firstAttempt, retry, attemptCount) {
+  let attemptAt = firstAttempt;
+  for (let attempt = 0; attempt < attemptCount; attempt += 1) {
+    if (jobTimestampAfter(attemptAt, RUNTIME_CLAIM_LEASE_MS) === null) return false;
+    if (attempt === attemptCount - 1) return true;
+    const nextAttempt = jobTimestampAfter(attemptAt, retry.delayMs);
+    if (nextAttempt === null) return false;
+    attemptAt = new Date(nextAttempt);
+  }
+  return true;
 }
 async function failInvalidQueuedJob(database, row, failure) {
   const sql = database.adapter.dialect.sql;
@@ -15684,7 +15728,10 @@ async function recoverInvalidRetainedJobState(database) {
   }
 }
 function jobClaimOwnership(claimToken) {
-  return typeof claimToken === "string" && claimToken.length > 0 ? { predicate: "[claimToken] = ?", params: [claimToken] } : { predicate: "[claimToken] IS NULL", params: [] };
+  return claimToken === null || claimToken === void 0 ? { predicate: "[claimToken] IS NULL", params: [] } : { predicate: "[claimToken] = ?", params: [claimToken] };
+}
+function jobClaimTokenIsMalformed(claimToken) {
+  return claimToken !== null && claimToken !== void 0 && (typeof claimToken !== "string" || claimToken.length === 0);
 }
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
@@ -18723,12 +18770,8 @@ function createCurrentUserJobApi(database, contextGetter) {
       if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value with room for a canonical runtime claim lease.");
       }
-      if (jobTimestampAfter(firstAttemptInstant, retry.delayMs) === null) {
-        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs within the supported Job timestamp range.");
-      }
-      const firstRetryAt = jobTimestampAfter(firstAttemptInstant, retry.delayMs);
-      if (jobTimestampAfter(new Date(firstRetryAt), RUNTIME_CLAIM_LEASE_MS) === null) {
-        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for a canonical runtime claim lease.");
+      if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts)) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {
@@ -19067,7 +19110,9 @@ async function runCurrentUserJobWorker(database) {
         )).get(row.id, claimToken) : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
         const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
-        const retryAvailableAt = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
+        const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
+        const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
+        const retryAvailableAt = retryAvailableAtCandidate !== null && retry !== null && jobRetryHorizonFits(new Date(retryAvailableAtCandidate), retry, remainingAttempts) ? retryAvailableAtCandidate : null;
         const retryPolicyInvalid = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && (retry === null || retryEligible && retryAvailableAt === null);
         const failure = retryPolicyInvalid ? invalidJobRetryPolicyFailure() : handlerFailure;
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });

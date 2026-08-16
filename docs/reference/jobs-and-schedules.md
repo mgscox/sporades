@@ -46,8 +46,9 @@ four-digit UTC timestamp range (`0000` through `9999`); invalid dates and
 extended-year timestamps are rejected with `INVALID_JOB_OPTIONS`. Pass a
 `string` or `Date`; other coercible scalars such as numbers, booleans, or
 `null` are invalid rather than implicit epoch timestamps. Retry policies
-allow 1–20 attempts and a non-negative integer `delayMs`, provided applying the
-delay remains inside the same timestamp range. Legacy stored Jobs with an
+allow 1–20 attempts and a non-negative integer `delayMs`, provided every
+configured attempt, intervening delay, and attempt claim lease remains inside
+the same timestamp range. Legacy stored Jobs with an
 invalid availability time or retry policy fail terminally during recovery
 and are revalidated before worker claim instead of executing early or blocking
 startup. Availability and retry instants must also leave room for the runtime's
@@ -77,7 +78,8 @@ before a retained running attempt's lease expires, initialization tracks the
 earliest canonical expiry and re-arms recovery in the same bounded chunks. The
 attempt is reconciled only after its lease is actually due. A retained running
 attempt with a missing or noncanonical lease fails terminally with
-`JOB_LEASE_INVALID` instead of executing or leaving startup permanently stuck.
+`JOB_LEASE_INVALID`; malformed non-null claim ownership fails with
+`JOB_CLAIM_INVALID` instead of executing or leaving startup permanently stuck.
 
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
@@ -188,7 +190,9 @@ recovery from creating duplicate Jobs for one occurrence.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into
-an immediate occurrence by the host timer implementation.
+an immediate occurrence by the host timer implementation. Recovery waits for a
+retained pending occurrence claim use the same bounded, tracked chunks and
+recheck the durable expiry before attempting reconciliation.
 
 Changing an expression, timezone, payload, retry policy, or enabled state affects
 future occurrences only and does not rewrite historical Jobs. Removing a

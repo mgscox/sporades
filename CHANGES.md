@@ -45,7 +45,9 @@ Changes since v0.8.5.
   retry delays outside the supported four-digit UTC time domain; retained
   invalid state fails safely at recovery and worker-claim boundaries
   instead of executing early or blocking restart. Claim leases remain in the
-  same domain, and retry policies reject unsupported members. A missing
+  same domain, the full configured retry horizon is reserved, and retry
+  policies reject unsupported members. Malformed retained claim ownership
+  fails terminally instead of stranding a running Job. A missing
   captured Job actor is terminal even when retry attempts remain. Shutdown
   failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
@@ -56,9 +58,11 @@ Changes since v0.8.5.
 - Re-arm distant Schedule occurrences in bounded native-timer chunks and verify
   the nominal instant is due before persisting or enqueueing, preventing monthly
   and annual recurrences from firing immediately when Node clamps a long delay.
+  Apply the same bounded, tracked recheck to future retained occurrence claims.
 - Apply the transaction ownership gate consistently to libSQL root transactions,
   read-only snapshots, and public operations so captured-root re-entry rejects
-  promptly while external callers remain serialized.
+  promptly while external callers remain serialized. Closing libSQL now seals
+  and drains queued ownership so no transaction or snapshot begins after close.
 - Seal generated JavaScript, declarations, source maps, CLI bundles, and their
   generator inputs in the generated-source manifest so corruption or deletion
   cannot pass the freshness check.

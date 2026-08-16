@@ -75,6 +75,28 @@ test("Job enqueue rejects a retry delay that cannot be represented from the runt
   }
 });
 
+test("Job enqueue reserves timestamp headroom for every promised retry attempt", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-full-retry-horizon-"));
+  const clock = createControllableRuntimeClock("9999-12-31T23:58:45.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, {
+    jobs: { noop: job(() => null) },
+    mutations: {
+      enqueue: mutation((ctx) => ctx.jobs.enqueue("noop", null, {
+        retry: { maxAttempts: 3, delayMs: 30_000 },
+      })),
+    },
+  }, { clock });
+  try {
+    const result = await runMutation(database, auth, "enqueue", []);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "INVALID_JOB_OPTIONS");
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+  } finally {
+    await Promise.resolve().then(() => database.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Job enqueue rejects a retry delay outside the time domain of its first availability", async () => {
   await withJobDatabase(async ({ database }) => {
     const result = await runMutation(database, auth, "enqueue", [{
@@ -354,6 +376,12 @@ test("startup terminally fails retained retry relationships that cannot execute 
       availableAt: "9999-12-31T23:59:00.000Z",
       attempts: 0,
       retry: { maxAttempts: 2, delayMs: 30_000 },
+    },
+    {
+      id: "multi-attempt-retry-outside-domain",
+      availableAt: "9999-12-31T23:58:45.000Z",
+      attempts: 0,
+      retry: { maxAttempts: 3, delayMs: 30_000 },
     },
     {
       id: "attempts-exhausted",

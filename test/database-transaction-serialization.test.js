@@ -260,6 +260,52 @@ test("libSQL resumes chained public operations after a transaction completes", a
   }, { isolateProcess: true });
 });
 
+test("libSQL rejects transaction modes after close without entering their callbacks", async () => {
+  await withLibsqlAdapter(async (adapter) => {
+    await adapter.close();
+    for (const mode of ["withTransaction", "withReadOnlySnapshot"]) {
+      let entered = false;
+      await assert.rejects(
+        adapter[mode](async () => { entered = true; }),
+        /database is not open/i,
+      );
+      assert.equal(entered, false, `${mode} must not begin after close`);
+    }
+  }, { isolateProcess: true });
+});
+
+test("libSQL close prevents queued transaction modes from beginning after their owner releases", async () => {
+  for (const queuedMode of ["withTransaction", "withReadOnlySnapshot"]) {
+    await withLibsqlAdapter(async (adapter) => {
+      let releaseFirst;
+      let firstEntered;
+      let queuedEntered = false;
+      const entered = new Promise((resolve) => { firstEntered = resolve; });
+      const release = new Promise((resolve) => { releaseFirst = resolve; });
+      const first = adapter.withTransaction(async () => {
+        firstEntered();
+        await release;
+      });
+      await entered;
+      const queued = adapter[queuedMode](async () => { queuedEntered = true; }).then(
+        () => ({ resolved: true }),
+        (error) => ({ resolved: false, error }),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const closing = adapter.close();
+      await new Promise((resolve) => setImmediate(resolve));
+      releaseFirst();
+      await first.catch(() => {});
+      await closing;
+      const outcome = await queued;
+      assert.equal(outcome.resolved, false);
+      assert.match(outcome.error.message, /database is not open/i);
+      assert.equal(queuedEntered, false, `${queuedMode} must not begin after close`);
+    }, { isolateProcess: true });
+  }
+});
+
 test("Postgres transaction callbacks reject nested transaction modes without deadlocking", {
   skip: POSTGRES_SKIP_REASON,
 }, async () => {

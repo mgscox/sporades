@@ -229,7 +229,9 @@ function createConnectionTransactionGate() {
     }
   };
 
-  return { runOperation, runTransaction };
+  const whenIdle = async () => await transactionTail.catch(() => {});
+
+  return { runOperation, runTransaction, whenIdle };
 }
 
 async function rejectNestedTransactionScope(): Promise<never> {
@@ -1913,30 +1915,42 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       const request = libsqlHasMultipleStatements(sql)
         ? { type: "sequence", sql }
         : { type: "execute", stmt: { sql } };
-      return run(() => libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined));
+      return run(() => {
+        assertLibsqlOpen(closed);
+        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
+      });
     },
     prepare(sql: string) {
       assertLibsqlOpen(closed);
       return {
         all(...params: (number | undefined)[]) {
-          return run(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
-            libsqlRowsFromResult(normalization, result),
-          ));
+          return run(() => {
+            assertLibsqlOpen(closed);
+            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
+              libsqlRowsFromResult(normalization, result),
+            );
+          });
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return run(() => libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-            lastInsertRowid:
-              result.last_insert_rowid === null || result.last_insert_rowid === undefined
-                ? undefined
-                : BigInt(result.last_insert_rowid),
-          })));
+          return run(() => {
+            assertLibsqlOpen(closed);
+            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+              lastInsertRowid:
+                result.last_insert_rowid === null || result.last_insert_rowid === undefined
+                  ? undefined
+                  : BigInt(result.last_insert_rowid),
+            }));
+          });
         },
         columns() {
-          return run(() => libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction }));
+          return run(() => {
+            assertLibsqlOpen(closed);
+            return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+          });
         },
       };
     },
@@ -1953,7 +1967,9 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
     // body instead.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+      assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
+        assertLibsqlOpen(closed);
         const transaction = { baton: null as any, baseUrl: endpoint };
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
@@ -1978,7 +1994,9 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
+      assertLibsqlOpen(closed);
       return await connectionGate.runTransaction(async () => {
+        assertLibsqlOpen(closed);
         const transaction = { baton: null as any, baseUrl: endpoint };
         const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
         activeTransactions.add(transaction);
@@ -1995,12 +2013,17 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       });
     },
     async close() {
+      if (closed) {
+        await connectionGate.whenIdle();
+        return;
+      }
       closed = true;
       for (const transaction of activeTransactions as Set<any>) {
         if (transaction.baton) {
           await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => { });
         }
       }
+      await connectionGate.whenIdle();
       activeTransactions.clear();
     },
   };

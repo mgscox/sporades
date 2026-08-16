@@ -70,6 +70,51 @@ test("a far-future Schedule rechecks its occurrence after each native-timer chun
   }
 });
 
+test("a distant retained occurrence claim is revisited after a bounded timer chunk", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-retained-long-chunk-"));
+  const controlled = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const armedDelays = [];
+  const clock = {
+    ...controlled,
+    setTimer(callback, delayMs) {
+      armedDelays.push(delayMs);
+      return controlled.setTimer(callback, delayMs);
+    },
+  };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-retained-long-chunk" }, {
+    jobs: { work: job(() => null) },
+    schedules: { annual: schedule({ expression: "0 0 1 1 *", timezone: "UTC", job: "work" }) },
+  }, { clock });
+  try {
+    const createdAt = clock.now().toISOString();
+    database.adapter.prepare(
+      "INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+    ).run(
+      "retained-distant-claim",
+      "annual",
+      "2030-01-02T00:00:00.000Z",
+      "prior-runtime-claim",
+      "2031-01-01T00:00:00.000Z",
+      createdAt,
+      createdAt,
+    );
+    await database.init();
+    assert.ok(armedDelays.length > 0);
+    assert.equal(armedDelays.every((delayMs) => delayMs <= 2_147_483_647), true);
+
+    clock.advanceBy(2_147_483_647);
+    await clock.runDueTimers();
+
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.adapter.prepare("SELECT status FROM sporades_schedule_occurrences WHERE id = ?").get("retained-distant-claim").status, "pending");
+    assert.equal(armedDelays.every((delayMs) => delayMs <= 2_147_483_647), true);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a matching static Schedule enqueues and runs one ordinary Privileged Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");

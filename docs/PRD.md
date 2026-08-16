@@ -899,8 +899,9 @@ durable `cancelRequestedAt` marker is not user cancellation: it follows the
 ordinary retry or exhausted-attempt transition for that Job.
 Long `availableAt` and retry waits re-arm in bounded native-timer chunks rather
 than overflowing into immediate queue rescans. Job availability is restricted
-to canonical four-digit UTC timestamps, and every retry delay must remain in
-that same representable time domain. Invalid public values return
+to canonical four-digit UTC timestamps, and every configured retry attempt,
+intervening delay, and attempt claim lease must remain in that same representable
+time domain. Invalid public values return
 `INVALID_JOB_OPTIONS`; availability accepts only timestamp strings or `Date`
 objects, never coercible scalar epoch values. Invalid retained availability or
 retry state fails terminally during recovery and is revalidated before worker
@@ -912,7 +913,8 @@ earliest expiry and re-arms recovery in bounded native-timer chunks; it does not
 strand the attempt merely because the lease was not expired during storage
 open. Recovery rechecks the durable lease and exact claim before transition.
 Missing or noncanonical retained running leases fail terminally with the safe
-`JOB_LEASE_INVALID` code. Orderly close clears the tracked recovery wake. A
+`JOB_LEASE_INVALID` code; malformed non-null claim ownership fails with
+`JOB_CLAIM_INVALID`. Orderly close clears the tracked recovery wake. A
 missing captured actor is terminal regardless of unused retry attempts. Capsule
 shutdown hook failure does not skip Database adapter closure. Runtime close
 attempts mail, Database adapter, and file-storage closure independently and
@@ -974,7 +976,9 @@ prevent duplicate Job creation across overlapping starts and crashes.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long
-delay.
+delay. A retained pending occurrence claim's future recovery wake is likewise
+tracked, chunked to the native timer limit, and rechecks the durable expiry
+before reconciliation.
 
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the

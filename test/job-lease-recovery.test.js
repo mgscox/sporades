@@ -141,6 +141,48 @@ test("startup fails running Jobs with missing or noncanonical leases without exe
   }
 });
 
+test("startup terminally classifies a running Job with malformed claim ownership", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-invalid-running-claim-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let executions = 0;
+  const capsule = { jobs: { work: job(() => { executions += 1; return null; }) } };
+  let database;
+  try {
+    database = await openDevDatabase(file, "", {}, { name: "jobs" }, capsule, { clock });
+    const now = clock.now().toISOString();
+    database.adapter.prepare(
+      "INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory,leaseExpiresAt,claimToken) VALUES (?,?,?,?,?,'running',?,1,?,?,?,?,?)",
+    ).run(
+      "malformed-claim",
+      "work",
+      "u",
+      "u",
+      "null",
+      now,
+      now,
+      '{"maxAttempts":2,"delayMs":0}',
+      "[]",
+      "2029-12-31T23:59:59.000Z",
+      "",
+    );
+    await database.close();
+
+    database = await openDevDatabase(file, "", {}, { name: "jobs" }, capsule, { clock });
+    const row = database.adapter.prepare("SELECT status, failure, leaseExpiresAt, claimToken FROM sporades_jobs WHERE id = ?").get("malformed-claim");
+    assert.equal(row.status, "failed");
+    assert.equal(JSON.parse(row.failure).code, "JOB_CLAIM_INVALID");
+    assert.equal(row.leaseExpiresAt, null);
+    assert.equal(row.claimToken, null);
+    await database.init();
+    await clock.runDueTimers();
+    assert.equal(executions, 0);
+  } finally {
+    await Promise.resolve().then(() => database?.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("close clears a future running-lease recovery wake", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-close-future-lease-"));
   const file = path.join(dir, "data.db");
