@@ -306,10 +306,13 @@ async function countPrivilegedTeamMembers(database, teamId) {
     });
 }
 async function listPrivilegedTeamMembers(database, teamId, options = {}) {
-    const page = normalizeTeamMemberPage(options);
     return withTeamTransaction(database, async (tx) => {
         const sql = tx.dialect.sql;
         await requireExistingPrivilegedTeam(tx, teamId);
+        // Exact-Team existence is the stable outer boundary for this userless
+        // inspection. Only validate paging after it, so malformed paging cannot
+        // turn an absent Team into a different observable result.
+        const page = normalizeTeamMemberPage(options);
         const total = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
         const cursorClause = page.cursor
             ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) "
@@ -344,7 +347,7 @@ async function listPrivilegedTeamJoinLinks(database, teamId) {
         // This is deliberately a read-only view: unlike admin link management it
         // does not prune expired rows as a side effect.
         const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?")).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
-        return { links: rows.map((row) => ({ id: String(row.id), email: String(row.email), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
+        return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
     });
 }
 // Post-auth validation is deliberately read-only. It proves only that this

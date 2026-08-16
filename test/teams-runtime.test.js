@@ -954,14 +954,14 @@ test("Privileged callbacks expose only safe Team inspections during their active
         { displayName: "Member", role: "member" },
       ]);
       assert.equal(result.data.members.totalCount, 2);
-      assert.deepEqual(result.data.links.links.map((link) => ({ email: link.email, id: link.id, createdAt: link.createdAt, expiresAt: link.expiresAt })), [{
-        email: "invitee@example.com", id: result.data.links.links[0].id, createdAt: result.data.links.links[0].createdAt, expiresAt: result.data.links.links[0].expiresAt,
+      assert.deepEqual(result.data.links.links.map((link) => ({ id: link.id, createdAt: link.createdAt, expiresAt: link.expiresAt })), [{
+        id: result.data.links.links[0].id, createdAt: result.data.links.links[0].createdAt, expiresAt: result.data.links.links[0].expiresAt,
       }]);
       assert.deepEqual(result.data.inspection.team, { id: team.id, name: "My Team" });
       assert.equal(result.data.inspection.usable, true);
       assert.deepEqual(result.data.invalidInspection, { team: null, expiresAt: null, usable: false });
       assert.deepEqual(result.data.unavailable, ["countMembers", "inspectJoinLink", "listJoinLinks", "listMembers"]);
-      assert.doesNotMatch(JSON.stringify(result.data), /v1\.|privileged-owner@example\.com|password-123/i);
+      assert.doesNotMatch(JSON.stringify(result.data), /v1\.|privileged-owner@example\.com|invitee@example\.com|password-123/i);
     } finally {
       await database.close();
     }
@@ -992,6 +992,13 @@ test("Privileged Team inspection fails closed for absent Teams, aborts, and reta
             catch (error) { return error.code; }
           },
         )),
+        absentWithInvalidPage: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.absent-invalid-page", targetResourceKind: "team" },
+          async (privileged) => {
+            try { await privileged.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 0 }); }
+            catch (error) { return error.code; }
+          },
+        )),
         aborted: mutation((ctx) => ctx.privileged.run(
           { operation: "teams.aborted", targetResourceKind: "team", signal: abortController.signal },
           async (privileged) => {
@@ -1005,6 +1012,7 @@ test("Privileged Team inspection fails closed for absent Teams, aborts, and reta
       const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-lifecycle@example.com", password: "password-123", name: "Owner" });
       team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
       assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "absent", []), { ok: true, data: "TEAM_NOT_FOUND", error: null });
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "absentWithInvalidPage", []), { ok: true, data: "TEAM_NOT_FOUND", error: null });
       await deleteCurrentUserTeam(database, owner.auth, team.id);
       assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "deleted", []), { ok: true, data: "TEAM_NOT_FOUND", error: null });
       const aborted = await runMutation(database, linkedAuth("unrelated-user"), "aborted", []);
@@ -1017,6 +1025,7 @@ test("Privileged Team inspection fails closed for absent Teams, aborts, and reta
       const audits = (await database.log.tail(20)).filter((event) => event.category === "audit" && event.data?.schema === "sporades.privileged-audit.v1" && `${event.data?.operation ?? ""}`.startsWith("teams."));
       assert.deepEqual(audits.map((event) => [event.data.operation, event.data.outcome]), [
         ["teams.absent", "started"], ["teams.absent", "completed"], ["teams.absent", "finished"],
+        ["teams.absent-invalid-page", "started"], ["teams.absent-invalid-page", "completed"], ["teams.absent-invalid-page", "finished"],
         ["teams.deleted", "started"], ["teams.deleted", "completed"], ["teams.deleted", "finished"],
         ["teams.aborted", "started"], ["teams.aborted", "errored"], ["teams.aborted", "finished"],
       ]);

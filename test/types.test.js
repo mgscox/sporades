@@ -253,6 +253,8 @@ const app = capsule({
         const privilegedMembers = await privilegedCtx.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 25 });
         privilegedMembers.members[0]?.displayName.toUpperCase();
         const privilegedLinks = await privilegedCtx.teams.listJoinLinks("00000000-0000-4000-8000-000000000000");
+        privilegedLinks.links[0]?.expiresAt.toUpperCase();
+        // @ts-expect-error Privileged Join-link inspection never exposes the target email.
         privilegedLinks.links[0]?.email.toUpperCase();
         const privilegedLink = await privilegedCtx.teams.inspectJoinLink("opaque-join-code");
         privilegedLink.usable.valueOf();

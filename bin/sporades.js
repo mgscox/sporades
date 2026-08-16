@@ -8823,10 +8823,10 @@ async function countPrivilegedTeamMembers(database, teamId) {
   });
 }
 async function listPrivilegedTeamMembers(database, teamId, options = {}) {
-  const page = normalizeTeamMemberPage(options);
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
     await requireExistingPrivilegedTeam(tx, teamId);
+    const page = normalizeTeamMemberPage(options);
     const total = await tx.prepare(sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
@@ -8858,7 +8858,7 @@ async function listPrivilegedTeamJoinLinks(database, teamId) {
     const rows = await tx.prepare(tx.dialect.sql(
       "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
     )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
-    return { links: rows.map((row) => ({ id: String(row.id), email: String(row.email), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
+    return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
   });
 }
 async function validateTeamJoinLink(database, auth, code) {

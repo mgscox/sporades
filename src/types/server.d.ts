@@ -400,6 +400,8 @@ export type TeamMembersListResult = { members: TeamMemberSummary[]; nextCursor?:
 /** Exact accepted-membership total for one Team the current linked user belongs to. */
 export type TeamMemberCountResult = { totalCount: number };
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+/** Safe active Join-link metadata for userless Privileged inspection. Target email is admin-only. */
+export type PrivilegedTeamJoinLink = { id: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
 export type TeamJoinLinkValidation = { valid: boolean };
@@ -456,8 +458,8 @@ export type PrivilegedTeamsApi = {
   countMembers(teamId: string): Promise<TeamMemberCountResult>;
   /** Lists the existing safe member projection for an existing Team. */
   listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
-  /** Lists active safe Join-link metadata without recovering a capability. */
-  listJoinLinks(teamId: string): Promise<{ links: TeamJoinLink[] }>;
+  /** Lists active safe Join-link metadata without target email or a recoverable capability. */
+  listJoinLinks(teamId: string): Promise<{ links: PrivilegedTeamJoinLink[] }>;
   /** Safely inspects a Join link without authentication or consumption. */
   inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
 };
