@@ -15,10 +15,11 @@ import {
   signInWithEmail,
   signUpWithEmail,
   runMutation,
+  runQuery,
   sendEmailPasswordResetLink,
   verifyPasswordResetCode,
 } from "../dist/server-runtime-source.js";
-import { mutation } from "../dist/server.js";
+import { mutation, query } from "../dist/server.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const emailAuthConfig = {
@@ -434,6 +435,8 @@ test("a service-backed password reset Job starts only after its mutation commits
         auth: { providers: { email: { enabled: true } } },
       };
       const capsule = {
+        hooks: { init: () => null },
+        queries: { mappingProbe: query(() => "ok") },
         mutations: {
           requestReset: mutation(async (ctx, email) => {
             await ctx.serverAuth.sendEmailPasswordResetLink(email);
@@ -463,9 +466,13 @@ test("a service-backed password reset Job starts only after its mutation commits
         }),
       });
       try {
+        assert.equal(database.__handlerContextMappingCount, 0, "root runtime contexts are never registered for post-commit dispatch");
+        assert.equal((await runQuery(database, capsuleUser, "mappingProbe")).data, "ok");
+        assert.equal(database.__handlerContextMappingCount, 0, "completed root query contexts are not retained for dispatch");
         await registerEmailAccount(database, "owner@example.com", "original-password");
         const mutationResult = runMutation(database, capsuleUser, "requestReset", ["owner@example.com"]);
         await paused;
+        assert.equal(database.__handlerContextMappingCount, 1, "the active transaction has one live handler-context mapping");
 
         await clock.runDueTimers();
         assert.equal(sent.length, 0, "the worker must not deliver reset mail before the mutation commits");
@@ -473,12 +480,15 @@ test("a service-backed password reset Job starts only after its mutation commits
         releaseMutation();
         const result = await mutationResult;
         assert.equal(result.ok, true, result.error?.message);
+        assert.equal(database.__handlerContextMappingCount, 0, "the committed transaction releases its handler-context mapping");
         await drainJobQueue(clock);
         assert.equal(sent.length, 1, "the committed reset Job must receive one post-commit wake");
+        assert.equal(database.__handlerContextMappingCount, 0, "the root Job worker does not retain its execution context");
 
         const rolledBack = await runMutation(database, capsuleUser, "rollbackReset", ["owner@example.com"]);
         assert.equal(rolledBack.ok, false);
         assert.match(rolledBack.error.message, /rollback reset request/);
+        assert.equal(database.__handlerContextMappingCount, 0, "the rolled-back transaction releases its handler-context mapping");
         await drainJobQueue(clock);
         assert.equal(sent.length, 1, "a rolled-back reset Job must never deliver mail");
         assert.equal(

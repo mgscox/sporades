@@ -512,6 +512,7 @@ export async function openDevDatabase(
     runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
     jobScheduleProvenanceByContext: new WeakMap(),
     __runtimeJobAttempts: new WeakMap(),
+    __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
     mail,
@@ -1873,15 +1874,19 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
-      context = (endpoint as LooseRecord).runtimeOwnedEmailEvent
-        ? endpointContext
-        : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
       try {
+        const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
+        context = (endpoint as LooseRecord).runtimeOwnedEmailEvent
+          ? endpointContext
+          : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
         return await handler(context);
       } finally {
-        await drainPendingAclWrites(context);
-        transactionDatabase.rowCache.clear();
+        try {
+          if (context) await drainPendingAclWrites(context);
+          transactionDatabase.rowCache.clear();
+        } finally {
+          releaseHandlerContextMapping(transactionDatabase);
+        }
       }
     });
     flushTeamSecurityEvents(database, context);
@@ -1984,7 +1989,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   const holder = createContextHolder(context);
-  handlerContextByDatabase.set(database, () => holder.current);
+  registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -2033,6 +2038,23 @@ function createContextHolder(context: LooseRecord) {
 }
 
 const handlerContextByDatabase = new WeakMap<object, () => LooseRecord>();
+
+function registerHandlerContextMapping(database: LooseRecord, holder: { current: LooseRecord; }) {
+  if (!database.__transactionActive) return;
+  releaseHandlerContextMapping(database);
+  const rootDatabase = database.__rootDatabase ?? database;
+  handlerContextByDatabase.set(database, () => holder.current);
+  rootDatabase.__handlerContextMappingCount += 1;
+  database.__releaseHandlerContextMapping = () => {
+    if (!handlerContextByDatabase.delete(database)) return;
+    rootDatabase.__handlerContextMappingCount -= 1;
+  };
+}
+
+function releaseHandlerContextMapping(database: LooseRecord) {
+  database.__releaseHandlerContextMapping?.();
+  delete database.__releaseHandlerContextMapping;
+}
 
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
   let context: LooseRecord = {
@@ -3813,28 +3835,32 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   try {
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
-      context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
+      try {
+        context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
 
-      for (const hookSource of database.mutationHooks.beforeMutation) {
-        await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
-      }
+        for (const hookSource of database.mutationHooks.beforeMutation) {
+          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+        }
 
-      result = await runCustomMutation(transactionDatabase, context, mutationName, args);
-      if (!result) {
-        result = mutationName.startsWith("update")
-          ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
-          : await runInsertMutation(transactionDatabase, context, mutationName, args);
-      }
-      await drainPendingAclWrites(context);
-
-      if (result.ok) {
-        for (const hookSource of database.mutationHooks.afterMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+        result = await runCustomMutation(transactionDatabase, context, mutationName, args);
+        if (!result) {
+          result = mutationName.startsWith("update")
+            ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
+            : await runInsertMutation(transactionDatabase, context, mutationName, args);
         }
         await drainPendingAclWrites(context);
-      }
 
-      return result;
+        if (result.ok) {
+          for (const hookSource of database.mutationHooks.afterMutation) {
+            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+          }
+          await drainPendingAclWrites(context);
+        }
+
+        return result;
+      } finally {
+        releaseHandlerContextMapping(transactionDatabase);
+      }
     });
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
@@ -3922,22 +3948,25 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     const createHandler = new Function(`return (${handler.handlerSource});`);
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(
-        transactionDatabase,
-        createMessageContext(transactionDatabase, auth, options.sendAppMessage),
-        "message",
-      );
-      let result;
       try {
-        result = await createHandler()(context, data);
+        context = await applyContextMiddleware(
+          transactionDatabase,
+          createMessageContext(transactionDatabase, auth, options.sendAppMessage),
+          "message",
+        );
+        const result = await createHandler()(context, data);
+        if (result !== undefined) {
+          assertJsonCompatible(result);
+        }
+        return { data: result ?? null, error: null as any };
       } finally {
-        await drainPendingAclWrites(context);
-        transactionDatabase.rowCache.clear();
+        try {
+          if (context) await drainPendingAclWrites(context);
+          transactionDatabase.rowCache.clear();
+        } finally {
+          releaseHandlerContextMapping(transactionDatabase);
+        }
       }
-      if (result !== undefined) {
-        assertJsonCompatible(result);
-      }
-      return { data: result ?? null, error: null as any };
     });
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
@@ -4023,7 +4052,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
     __pendingAclWrites: [],
   };
   const holder = createContextHolder(context);
-  handlerContextByDatabase.set(database, () => holder.current);
+  registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { String, mutation, query, table } from "../dist/server.js";
+import { Number as NumberField, Reference, String, mutation, query, table } from "../dist/server.js";
 import { createEndpointDatabaseApi, createWebSocketHub, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 
@@ -32,6 +32,46 @@ test("insertOrIgnore inserts a declared singleton once and returns null only for
       );
     } finally {
       database.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("insertOrIgnore preserves insert ACL and field-integrity errors for an exact named constraint", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-insert-or-ignore-errors-"));
+  try {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "insert-or-ignore-errors" }, {
+      schema: {
+        parents: table({ slug: String() }).unique("slug"),
+        children: table({
+          key: String(),
+          parentId: Reference("parents"),
+          score: NumberField(),
+        }).unique("key").acl({
+          insert: ({ next }) => next.key !== "denied",
+        }),
+      },
+    });
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const parent = await db.parents.insert({ slug: "parent" });
+
+      await assert.rejects(
+        async () => db.children.insertOrIgnore({ key: "denied", parentId: parent.id, score: 1 }, "key"),
+        { code: "DENIED", message: "Denied." },
+      );
+      await assert.rejects(
+        async () => db.children.insertOrIgnore({ key: "missing-parent", parentId: "missing", score: 1 }, "key"),
+        { message: "Invalid reference for field: parentId" },
+      );
+      await assert.rejects(
+        async () => db.children.insertOrIgnore({ key: "invalid-score", parentId: parent.id, score: Number.POSITIVE_INFINITY }, "key"),
+        { message: "Invalid number for field: score" },
+      );
+      assert.equal((await db.children.all()).length, 0, "ordinary insert errors never become null conflict results or rows");
+    } finally {
+      await database.close();
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
