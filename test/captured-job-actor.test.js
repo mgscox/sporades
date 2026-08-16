@@ -15,13 +15,13 @@ test("captured Jobs fail for missing actors and re-evaluate ACL at execution tim
     schema: { notes: table({ text: String(), ownerId: String() }).acl({ write: () => allowWrites }) },
     jobs: { write: job((ctx, input) => ctx.db.notes.insert({ text: input.text, ownerId: ctx.auth.userId })) },
     mutations: {
-      enqueue: mutation((ctx, text) => ctx.jobs.enqueue("write", { text })),
+      enqueue: mutation((ctx, text, options) => ctx.jobs.enqueue("write", { text }, options)),
       get: mutation((ctx, id) => ctx.jobs.get(id)),
     },
   });
   try {
     for (const userId of ["gone", "denied"]) database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(userId, new Date().toISOString(), userId, null, null, 0, 1, "anonymous");
-    const missing = await runMutation(database, auth("gone"), "enqueue", ["missing"]);
+    const missing = await runMutation(database, auth("gone"), "enqueue", ["missing", { retry: { maxAttempts: 3, delayMs: 0 } }]);
     database.adapter.prepare("DELETE FROM sporades_auth_users WHERE id = ?").run("gone");
     const denied = await runMutation(database, auth("denied"), "enqueue", ["denied"]);
     allowWrites = false;
@@ -30,6 +30,7 @@ test("captured Jobs fail for missing actors and re-evaluate ACL at execution tim
     const deniedState = await runMutation(database, auth("denied"), "get", [denied.data.id]);
     assert.equal(missingState.data.status, "failed");
     assert.equal(missingState.data.failure.code, "JOB_ACTOR_UNAVAILABLE");
+    assert.equal(missingState.data.attempts, 1, "a missing captured actor is terminal even when retry attempts remain");
     assert.equal(deniedState.data.status, "failed");
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM notes").get().count, 0);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }

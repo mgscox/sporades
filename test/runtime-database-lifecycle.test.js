@@ -34,6 +34,31 @@ test("runtime database shutdown always attempts close and preserves lifecycle fa
   );
 });
 
+test("real runtime shutdown aggregates a hook failure with mail closure failure", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-shutdown-mail-errors-"));
+  const hookError = new Error("shutdown hook failed");
+  const mailError = new Error("mail close failed");
+  const database = await runtime.openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "close" }, {
+    hooks: { shutdown() { throw hookError; } },
+  });
+  const originalMailClose = database.mail.close.bind(database.mail);
+  try {
+    await database.init();
+    database.mail.close = () => { throw mailError; };
+    await assert.rejects(
+      database.shutdown(),
+      (error) => error instanceof AggregateError
+        && error.errors[0] === hookError
+        && error.errors[1] === mailError,
+    );
+  } finally {
+    database.mail.close = originalMailClose;
+    await Promise.resolve().then(() => database.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runtime close attempts every resource after a synchronous closer failure", async () => {
   const runtime = await import("../dist/server-runtime-source.js");
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-resource-close-"));

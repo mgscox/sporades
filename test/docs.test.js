@@ -452,6 +452,9 @@ test("published docs describe the complete Job scheduling contract", async () =>
   assert.match(guide, /payload factor(?:y|ies)[\s\S]*may run more than once/i);
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
+  assert.match(guide, /four-digit UTC timestamp/i);
+  assert.match(guide, /JOB_ACTOR_UNAVAILABLE[\s\S]*remaining retry attempts/i);
+  assert.match(guide, /shutdown hook[\s\S]*mail closure[\s\S]*both failures/i);
   assert.match(guide, /import \{ capsule, job, schedule \} from "sporades\/server"/);
   assert.match(guide, /sendDigest:\s*job\(/);
   assert.match(guide, /jobs:\s*\{[\s\S]*sendDigest[\s\S]*schedules:\s*\{/);

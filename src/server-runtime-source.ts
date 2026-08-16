@@ -95,8 +95,9 @@ import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
   commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
   dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
-  finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition,
-  jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload,
+  finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
+  jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, nextScheduleOccurrence,
+  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
   resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
   scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
@@ -576,6 +577,7 @@ export async function openDevDatabase(
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
+    jobRecoveryFault: options?.jobRecoveryFault,
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
     schedulePayloadFactoryWaiters: [],
@@ -679,6 +681,10 @@ export async function openDevDatabase(
   database.shutdown = () => {
     if (database.__shutdownPromise) return database.__shutdownPromise;
     database.__shutdownPromise = (async () => {
+      let shutdownError: unknown;
+      let mailCloseError: unknown;
+      let shutdownRejected = false;
+      let mailCloseRejected = false;
       try {
         database.__scheduleStopped = true;
         const workerSettlement = stopCurrentUserJobWorker(database);
@@ -693,10 +699,19 @@ export async function openDevDatabase(
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
           await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
         }
+      } catch (error) {
+        shutdownRejected = true;
+        shutdownError = error;
       } finally {
         database.__runtimeInitialized = false;
-        await database.mail.close();
       }
+      try { await database.mail.close(); }
+      catch (error) { mailCloseRejected = true; mailCloseError = error; }
+      if (shutdownRejected && mailCloseRejected) {
+        throw new AggregateError([shutdownError, mailCloseError], "Runtime shutdown and mail closure both failed.");
+      }
+      if (shutdownRejected) throw shutdownError;
+      if (mailCloseRejected) throw mailCloseError;
     })();
     return database.__shutdownPromise;
   };
@@ -716,6 +731,7 @@ export async function openDevDatabase(
   await ensureScheduleStorage(sqlite);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  await recoverInvalidRetainedJobState(database);
   await recoverExpiredJobLeases(database);
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
@@ -838,7 +854,10 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
   const token = randomUUID();
   const now = database.clock.now();
   const nowIso = now.toISOString();
-  const expiresAt = new Date(now.getTime() + 30_000).toISOString();
+  const expiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
+  if (expiresAt === null) {
+    throw commandError("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
+  }
   const sql = database.adapter.dialect.sql;
   try {
     await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
@@ -909,22 +928,82 @@ async function recoverExpiredJobLeases(database: LooseRecord) {
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
   for (const row of rows) {
-    const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
+    const retry = parsePersistedJobRetry(row.retryJson);
+    const storedFailure = invalidStoredJobFailure(row, recoveredAt);
     const history = JSON.parse(row.attemptHistory || "[]");
     history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
     const ownership = jobClaimOwnership(row.claimToken);
-    if (Number(row.attempts) < retry.maxAttempts) {
-      const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
+    const retryEligible = storedFailure === null && retry !== null && Number(row.attempts) < retry.maxAttempts;
+    const retryAvailableAt = retryEligible ? jobTimestampAfter(recoveredAt, retry.delayMs) : null;
+    const retryLeaseExpiresAt = retryAvailableAt === null
+      ? null
+      : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
+    if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
       await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
         "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate,
-      )).run(availableAt, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+      )).run(retryAvailableAt, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
     } else {
+      const failure = storedFailure ?? (retry === null || retryEligible
+        ? invalidJobRetryPolicyFailure()
+        : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
       await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
         "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate,
-      )).run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+      )).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
     }
+  }
+}
+
+const RUNTIME_CLAIM_LEASE_MS = 30_000;
+
+function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
+  if (!isCanonicalJobTimestamp(row.availableAt)) {
+    return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time is invalid." };
+  }
+  const retry = parsePersistedJobRetry(row.retryJson);
+  const attempts = Number(row.attempts);
+  const attemptsValid = Number.isInteger(attempts)
+    && (row.status === "running"
+      ? attempts >= 1 && attempts <= (retry?.maxAttempts ?? -1)
+      : attempts >= 0 && attempts < (retry?.maxAttempts ?? -1));
+  if (retry === null || !attemptsValid) return invalidJobRetryPolicyFailure();
+  const firstAttemptMilliseconds = Math.max(referenceInstant.getTime(), Date.parse(row.availableAt));
+  const firstAttempt = new Date(firstAttemptMilliseconds);
+  if (jobTimestampAfter(firstAttempt, RUNTIME_CLAIM_LEASE_MS) === null) {
+    return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time cannot support a canonical claim lease." };
+  }
+  const retryAvailableAt = jobTimestampAfter(firstAttempt, retry.delayMs);
+  if (retryAvailableAt === null
+    || jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS) === null) {
+    return invalidJobRetryPolicyFailure();
+  }
+  return null;
+}
+
+async function failInvalidQueuedJob(database: LooseRecord, row: LooseRecord, failure: LooseRecord) {
+  const sql = database.adapter.dialect.sql;
+  return await database.adapter.prepare(sql(
+    "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+    "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+  )).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
+}
+
+async function recoverInvalidRetainedJobState(database: LooseRecord) {
+  const recoveredAt = database.clock.now();
+  const failedAt = recoveredAt.toISOString();
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [id], [status], [availableAt], [attempts], [retryJson] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
+  )).all();
+  await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row: LooseRecord) => String(row.id)) });
+  for (const row of rows) {
+    const failure = invalidStoredJobFailure(row, recoveredAt);
+    if (!failure) continue;
+    await database.adapter.prepare(sql(
+      "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+      "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+    )).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
   }
 }
 
@@ -4324,10 +4403,21 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
       }
       const id = crypto.randomUUID();
-      const now = queueDatabase.clock.now().toISOString();
-      const availableAt = options.availableAt === undefined ? now : new Date(options.availableAt).toISOString();
-      if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
+      const nowInstant = queueDatabase.clock.now();
+      const now = normalizeJobAvailableAt(nowInstant);
+      const availableAt = options.availableAt === undefined ? now : normalizeJobAvailableAt(options.availableAt);
       const retry = normalizeJobRetry(options.retry);
+      const firstAttemptInstant = availableAt > now ? new Date(availableAt) : nowInstant;
+      if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value with room for a canonical runtime claim lease.");
+      }
+      if (jobTimestampAfter(firstAttemptInstant, retry.delayMs) === null) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs within the supported Job timestamp range.");
+      }
+      const firstRetryAt = jobTimestampAfter(firstAttemptInstant, retry.delayMs)!;
+      if (jobTimestampAfter(new Date(firstRetryAt), RUNTIME_CLAIM_LEASE_MS) === null) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for a canonical runtime claim lease.");
+      }
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
       // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
@@ -4481,9 +4571,17 @@ async function relinquishUnstartedJobClaim(database: LooseRecord, jobId: string,
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
-  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
-  if (!row) return;
-  scheduleJobWorkerWake(database, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
+  while (true) {
+    const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
+    if (!row) return;
+    const failure = invalidStoredJobFailure(row, database.clock.now());
+    if (failure) {
+      await failInvalidQueuedJob(database, row, failure);
+      continue;
+    }
+    scheduleJobWorkerWake(database, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
+    return;
+  }
 }
 
 export async function runCurrentUserJobWorker(database: LooseRecord) {
@@ -4493,14 +4591,29 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
   try {
     while (true) {
       if (database.__jobStopped) return;
-      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
+      const workerNow = database.clock.now();
+      const workerNowIso = workerNow.toISOString();
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(workerNowIso);
       if (database.__jobStopped) return;
-      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
+      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(workerNowIso);
       if (database.__jobStopped) return;
       if (!row) { await scheduleNextDelayedJob(database); return; }
-      const startedAt = database.clock.now().toISOString();
+      const storedFailure = invalidStoredJobFailure(row, workerNow);
+      if (storedFailure) {
+        await failInvalidQueuedJob(database, row, storedFailure);
+        continue;
+      }
+      const startedAt = workerNowIso;
+      const leaseExpiresAt = jobTimestampAfter(workerNow, RUNTIME_CLAIM_LEASE_MS);
+      if (leaseExpiresAt === null) {
+        await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
+        continue;
+      }
       const claimToken = randomUUID();
-      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), claimToken, row.id);
+      const claimed = await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? " +
+        "WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+      )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
       if (!claimed?.changes) continue;
       if (database.__jobStopped) {
         // Shutdown can begin while the asynchronous claim statement is in
@@ -4577,10 +4690,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           await relinquishUnstartedJobClaim(database, row.id, claimToken);
           return;
         }
-        const failure = safeJobFailure(error);
+        const handlerFailure = safeJobFailure(error);
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
-        const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
+        const retry = parsePersistedJobRetry(row.retryJson);
         const abortError = error?.cause ?? error;
         const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         const cancellation = abortShaped
@@ -4589,19 +4702,26 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           )).get(row.id, claimToken)
           : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
+        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+          && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
+        const retryAvailableAt = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
+        const retryPolicyInvalid = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+          && (retry === null || (retryEligible && retryAvailableAt === null));
+        const failure = retryPolicyInvalid
+          ? invalidJobRetryPolicyFailure()
+          : handlerFailure;
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
           await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
             "WHERE [id]=? AND [status]='running' AND [claimToken]=?",
           )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
-        } else if (Number(row.attempts) + 1 < retry.maxAttempts) {
-          const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
+        } else if (retryAvailableAt !== null) {
           const changed = await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
             "WHERE [id]=? AND [status]='running' AND [claimToken]=?",
-          )).run(availableAt, JSON.stringify(history), row.id, claimToken);
-          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry.delayMs + 1);
+          )).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry!.delayMs + 1);
         } else {
           await database.adapter.prepare(sql(
             "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +

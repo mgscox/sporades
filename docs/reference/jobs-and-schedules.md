@@ -41,8 +41,21 @@ retained Job.
 
 Jobs may use a one-time future `availableAt` and become `delayed` until then;
 this is not recurring scheduling. A bounded `retry` policy records attempts and
-uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
-work, or cooperatively requests cancellation of running work through its signal.
+uses a deterministic delay. `availableAt` must resolve to the canonical
+four-digit UTC timestamp range (`0000` through `9999`); invalid dates and
+extended-year timestamps are rejected with `INVALID_JOB_OPTIONS`. Pass a
+`string` or `Date`; other coercible scalars such as numbers, booleans, or
+`null` are invalid rather than implicit epoch timestamps. Retry policies
+allow 1–20 attempts and a non-negative integer `delayMs`, provided applying the
+delay remains inside the same timestamp range. Legacy stored Jobs with an
+invalid availability time or retry policy fail terminally during recovery
+and are revalidated before worker claim instead of executing early or blocking
+startup. Availability and retry instants must also leave room for the runtime's
+bounded claim lease. Retry objects accept only `maxAttempts` and optional
+`delayMs`; unsupported members and explicit `null` values are rejected.
+`ctx.jobs.cancel(id)` cancels
+queued or delayed work, or cooperatively requests cancellation of running work
+through its signal.
 For transactional mutation, App message, and Custom endpoint handlers, the
 running handler is aborted only after the cancellation transaction commits; a
 rollback discards the marker and the pending abort together. The pending abort
@@ -92,7 +105,9 @@ reports a failure after closing its resources, Sporades promotes the viable
 candidate and records a bounded warning instead of retaining a closed runtime or
 closing its only usable replacement. Runtime close independently attempts mail,
 Database adapter, and file-storage closure; if more than one fails, it reports
-the failures together after every closer has been attempted.
+the failures together after every closer has been attempted. If worker
+settlement or the Capsule shutdown hook fails alongside mail closure, shutdown
+preserves and reports both failures.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its
@@ -100,7 +115,9 @@ captured execution actor. Privileged inspection through an explicit
 `ctx.privileged.run(...)` may see all Jobs. In either view, `enqueuedBy` is
 provenance—the user who caused the Job to be created—and is distinct from the
 captured current-user or Privileged server role actor under which the handler
-executes.
+executes. If a captured user no longer exists when execution begins, the Job
+fails terminally with `JOB_ACTOR_UNAVAILABLE`; remaining retry attempts are not
+consumed.
 
 One-time delayed availability is Job Queue behavior. For recurring work,
 Capsule server code declares a named Schedule alongside its named Jobs:

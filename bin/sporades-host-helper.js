@@ -165,6 +165,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 
 // src/runtime-log-policy.ts
 function isSensitiveLogKey(key) {

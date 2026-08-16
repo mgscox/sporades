@@ -894,10 +894,22 @@ drains HTTP requests before runtime resources close. A shutdown abort without a
 durable `cancelRequestedAt` marker is not user cancellation: it follows the
 ordinary retry or exhausted-attempt transition for that Job.
 Long `availableAt` and retry waits re-arm in bounded native-timer chunks rather
-than overflowing into immediate queue rescans. Capsule shutdown hook failure
-does not skip Database adapter closure. Runtime close attempts mail, Database
-adapter, and file-storage closure independently and aggregates multiple failures
-only after every closer has been attempted. Candidate
+than overflowing into immediate queue rescans. Job availability is restricted
+to canonical four-digit UTC timestamps, and every retry delay must remain in
+that same representable time domain. Invalid public values return
+`INVALID_JOB_OPTIONS`; availability accepts only timestamp strings or `Date`
+objects, never coercible scalar epoch values. Invalid retained availability or
+retry state fails terminally during recovery and is revalidated before worker
+claim rather than executing early or blocking startup. Availability and retry
+instants reserve enough time-domain headroom for their runtime claim lease;
+retry policy objects reject members other than `maxAttempts` and optional
+`delayMs`. A
+missing captured actor is terminal regardless of unused retry attempts. Capsule
+shutdown hook failure does not skip Database adapter closure. Runtime close
+attempts mail, Database adapter, and file-storage closure independently and
+aggregates multiple failures only after every closer has been attempted. A
+worker-settlement or shutdown-hook failure is preserved and aggregated when
+mail closure also fails. Candidate
 initialization is the Dev replacement ownership boundary. If teardown of the
 prior runtime subsequently reports a failure after closing its resources,
 Sporades promotes the viable candidate and records a bounded warning; it does

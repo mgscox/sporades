@@ -565,7 +565,71 @@ export async function inspectRuntimeSchedules(adapter: LooseRecord) {
   return await adapter.withReadOnlySnapshot(read);
 }
 
-export function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
+export const MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+export const MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
+
+export function normalizeJobAvailableAt(value: any) {
+  let milliseconds = Number.NaN;
+  try {
+    if (typeof value === "string") {
+      if (/^[+-]?\d+(?:\.\d+)?$/.test(value.trim())) throw new TypeError("Unsupported Job availability value.");
+      milliseconds = new Date(value).getTime();
+    } else {
+      milliseconds = Date.prototype.getTime.call(value);
+    }
+  }
+  catch { }
+  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) {
+    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value in the supported four-digit UTC timestamp range.");
+  }
+  return new Date(milliseconds).toISOString();
+}
+
+export function isCanonicalJobTimestamp(value: any) {
+  if (typeof value !== "string") return false;
+  try { return normalizeJobAvailableAt(value) === value; }
+  catch { return false; }
+}
+
+export function normalizeJobRetry(value: any) {
+  if (value === undefined) return { maxAttempts: 1, delayMs: 0 };
+  let maxAttempts;
+  let delayMs;
+  let hasMaxAttempts = false;
+  let keys: PropertyKey[] = [];
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid Job retry policy.");
+    keys = Reflect.ownKeys(value);
+    hasMaxAttempts = Object.prototype.hasOwnProperty.call(value, "maxAttempts");
+    maxAttempts = value.maxAttempts;
+    delayMs = Object.prototype.hasOwnProperty.call(value, "delayMs") ? value.delayMs : 0;
+  } catch { }
+  if (!hasMaxAttempts || keys.some((key) => typeof key !== "string" || !["maxAttempts", "delayMs"].includes(key))
+    || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20
+    || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_JOB_TIMESTAMP_MS) {
+    throw jobError(
+      "INVALID_JOB_OPTIONS",
+      "Invalid Job retry policy.",
+      "Pass retry.maxAttempts (1-20) and retry.delayMs within the supported Job timestamp range.",
+    );
+  }
+  return { maxAttempts, delayMs };
+}
+
+export function parsePersistedJobRetry(value: any) {
+  try { return normalizeJobRetry(value ? JSON.parse(value) : undefined); }
+  catch { return null; }
+}
+
+export function jobTimestampAfter(instant: Date, delayMs: number) {
+  const milliseconds = instant.getTime() + delayMs;
+  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) return null;
+  return new Date(milliseconds).toISOString();
+}
+
+export function invalidJobRetryPolicyFailure() {
+  return { code: "JOB_RETRY_POLICY_INVALID", message: "The stored Job retry policy is invalid." };
+}
 
 export async function cancelJob(database: LooseRecord, context: any, id: any) {
   const sql = database.adapter.dialect.sql;

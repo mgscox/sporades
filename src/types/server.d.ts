@@ -791,6 +791,7 @@ export type JobState = JobSummary & {
  * access may inspect all Jobs when used explicitly through `ctx.privileged`.
  */
 export type JobApi = {
+  /** Availability and retry instants, including runtime claim leases, must remain within canonical four-digit UTC timestamps. Retry accepts only `maxAttempts` and optional `delayMs`. */
   enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string; availableAt?: string | Date; retry?: { maxAttempts: number; delayMs?: number } }): Promise<JobState>;
   cancel(id: string): Promise<JobState | null>;
   get(id: string): Promise<JobState | null>;

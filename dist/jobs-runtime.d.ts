@@ -62,9 +62,22 @@ export declare function jobActorProvider(auth: LooseRecord): string;
 export declare function inspectRuntimeJobs(adapter: LooseRecord): Promise<any>;
 /** Read the bounded operator view of every Schedule in one adapter snapshot. */
 export declare function inspectRuntimeSchedules(adapter: LooseRecord): Promise<any>;
+export declare const MAX_JOB_TIMESTAMP_MS: number;
+export declare const MIN_JOB_TIMESTAMP_MS: number;
+export declare function normalizeJobAvailableAt(value: any): string;
+export declare function isCanonicalJobTimestamp(value: any): boolean;
 export declare function normalizeJobRetry(value: any): {
     maxAttempts: any;
     delayMs: any;
+};
+export declare function parsePersistedJobRetry(value: any): {
+    maxAttempts: any;
+    delayMs: any;
+} | null;
+export declare function jobTimestampAfter(instant: Date, delayMs: number): string | null;
+export declare function invalidJobRetryPolicyFailure(): {
+    code: string;
+    message: string;
 };
 export declare function cancelJob(database: LooseRecord, context: any, id: any): Promise<any>;
 export declare function commitPendingJobCancellationAborts(context: LooseRecord | undefined): void;

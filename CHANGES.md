@@ -37,7 +37,14 @@ Changes since v0.8.5.
   and shutdown alone cannot misclassify retained work as user-cancelled. Signal
   shutdown stops accepting and drains HTTP requests before runtime resources
   close. Every runtime resource closer is attempted even when another closer
-  throws synchronously, with multiple failures reported together. Shutdown
+  throws synchronously, with multiple failures reported together. Worker or
+  shutdown-hook failures are preserved alongside mail-closure failures. Jobs
+  reject coercible non-date values, invalid or extended-year availability, and
+  retry delays outside the supported four-digit UTC time domain; retained
+  invalid state fails safely at recovery and worker-claim boundaries
+  instead of executing early or blocking restart. Claim leases remain in the
+  same domain, and retry policies reject unsupported members. A missing
+  captured Job actor is terminal even when retry attempts remain. Shutdown
   failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
