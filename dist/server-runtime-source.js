@@ -501,6 +501,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         database.__scheduleRecoveryDueAt = null;
         await reconcileSchedules(database);
         await startStaticSchedules(database);
+        // Orderly shutdown deliberately retains queued and delayed Jobs. A fresh
+        // runtime has no inherited worker/wake timer, so one normal worker pass
+        // must rediscover ready work and recreate the earliest delayed wake.
+        scheduleCurrentUserJobWorker(database);
         database.__runtimeInitialized = true;
     };
     database.shutdown = () => {

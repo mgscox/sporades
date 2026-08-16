@@ -15088,6 +15088,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database.__scheduleRecoveryDueAt = null;
     await reconcileSchedules(database);
     await startStaticSchedules(database);
+    scheduleCurrentUserJobWorker(database);
     database.__runtimeInitialized = true;
   };
   database.shutdown = () => {

@@ -63,6 +63,12 @@ test("closing the runtime finishes the active Job without claiming queued work",
  finally {release();if(!closed) await db.close().catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
+test("runtime initialization wakes queued and delayed Jobs retained by an orderly restart", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-restart-wake-"));const file=path.join(dir,"data.db");const seen=[];const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const capsule={jobs:{record:job((ctx,p)=>seen.push(p.id))},mutations:{enqueue:mutation((ctx,id,options)=>ctx.jobs.enqueue("record",{id},options))}};let db;
+ try {db=await openDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["queued",{}]);await runMutation(db,auth,"enqueue",["delayed",{availableAt:new Date(clock.now().getTime()+100).toISOString()}]);await db.close();db=await openDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});await db.init();assert.equal(db.__jobWorkerScheduled,true);await clock.runDueTimers();assert.deepEqual(seen,["queued"]);clock.advanceBy(101);await clock.runDueTimers();assert.deepEqual(seen,["queued","delayed"]);}
+ finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("closing the runtime closes resources when the active Job worker rejects", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-rejected-close-")); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{}); const closed={mail:0,adapter:0,storage:0};
  const originalMailClose=db.mail.close.bind(db.mail); const originalAdapterClose=db.adapter.close.bind(db.adapter); const originalStorageClose=db.fileStorage.close.bind(db.fileStorage);
