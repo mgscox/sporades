@@ -174,11 +174,24 @@ lists, ranges, and positive steps are supported; seconds, years, nicknames such
 as `@daily`, and implementation-specific extensions are rejected. Schedule
 declarations are server-only: browser code cannot create or invoke recurring
 Privileged work. `payload` is either a JSON-safe value (defaulting to `null`) or
-an async-capable payload factory evaluated for each occurrence. Payload
-factories may run more than once during crash recovery, so any explicitly
-privileged side effects must tolerate repetition. `retry` is the ordinary Job
-Queue retry policy applied after enqueue; a failed payload factory is skipped
-and is not retried as a Job.
+an async-capable payload factory evaluated for each occurrence. Every factory
+must also declare a stable `payloadVersion` string of 1 through 128 characters:
+
+```ts
+payloadVersion: "weekday-digest-v2",
+payload: async (occurrence, ctx) => ({ generatedFor: occurrence.scheduledFor }),
+```
+
+Treat `payloadVersion` as the identity of both the factory code and every value
+it captures; bump it whenever either changes. Sporades deliberately does not use
+`String(payload)` because JavaScript source text cannot reveal closure state.
+Static JSON payloads are fingerprinted directly and must not set
+`payloadVersion`. Payload factories may run more than once during crash
+recovery, so any explicitly privileged side effects must tolerate repetition.
+Shutdown aborts active factories and removes queued factories before slot
+acquisition; queued factories never start after scheduling stops.
+`retry` is the ordinary Job Queue retry policy applied after enqueue; a failed
+payload factory is skipped and is not retried as a Job.
 
 The default missed-run policy is `skip`, which resumes at the next future
 occurrence after downtime. `latest` enqueues at most the most recent missed
@@ -191,12 +204,13 @@ three retained identity components together and quarantines a malformed or
 mismatched row without letting its unique key fail startup or spin a timer.
 Payload calculation can be repeated after a claim expires, but every pending
 occurrence also carries its Schedule definition fingerprint. The runtime
-rechecks both claim ownership and the live enabled definition inside the write
-transaction: deterministic Job enqueue, occurrence terminal state, and the
-Schedule's latest-occurrence summary commit together. A stale owner therefore
-cannot enqueue or overwrite a replacement generation's cursor or durable
-outcome. Once transaction-time validation rejects a superseded generation, that
-runtime stops re-arming its local copy of the Schedule.
+rechecks both claim ownership and the live enabled durable definition inside the
+write transaction: deterministic Job enqueue, occurrence terminal state, and
+the Schedule's latest-occurrence summary commit together. Claim and recovery
+use that durable definition as generation authority. A stale runtime therefore
+leaves replacement-owned pending work untouched, cannot enqueue or overwrite
+the replacement generation's cursor or durable outcome, and stops re-arming its
+local copy of the Schedule.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into
@@ -210,13 +224,15 @@ expiries must be canonical four-digit UTC timestamps; malformed retained state
 is terminally quarantined with the stable opaque
 `SCHEDULE_OCCURRENCE_INVALID` code and is never left permanently pending.
 
-Changing an expression, timezone, payload, retry policy, or enabled state affects
-future occurrences only and does not rewrite historical Jobs. Pending
+Changing an expression, timezone, static payload, factory `payloadVersion`,
+retry policy, or enabled state affects future occurrences only and does not
+rewrite historical Jobs. Pending
 occurrences from a changed or disabled definition are terminally quarantined as
 `SCHEDULE_OCCURRENCE_SUPERSEDED`. Removing a Schedule forgets its runtime state,
 supersedes its pending occurrences, and retains its Jobs; adding the same name
-again, re-enabling it, or renaming a Schedule starts from the next future
-occurrence and cannot resurrect old pending work. Legacy pending rows without a
+again after removal creates a fresh identity, while re-enabling it or renaming a
+Schedule starts from the next future occurrence and cannot resurrect old
+pending work. Legacy pending rows without a
 definition fingerprint are likewise superseded safely. Disabling or cancelling
 a created Job does not disable its Schedule.
 

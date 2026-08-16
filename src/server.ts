@@ -40,15 +40,22 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
  * A server-only recurring Job declaration using numeric five-field cron.
  * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
  */
+type ScheduleJsonValue = null | boolean | number | string | ScheduleJsonValue[] | { [key: string]: ScheduleJsonValue };
 export type ScheduleDefinition = {
   expression: string;
   timezone?: string;
   job: string;
-  payload?: unknown | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   missedRun?: "skip" | "latest";
   enabled?: boolean;
-};
+} & (
+  | { payload?: ScheduleJsonValue; payloadVersion?: never }
+  | {
+    payload: SchedulePayloadFactory;
+    /** Stable identity for the factory source and every captured/configured input. Change it when any of those inputs change. */
+    payloadVersion: string;
+  }
+);
 
 export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
 /**
@@ -57,7 +64,7 @@ export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: 
  * state mutation. Explicit Privileged side effects must tolerate repetition.
  * Timeout cancellation is cooperative and cannot undo completed side effects.
  */
-export type SchedulePayloadFactory = (occurrence: ScheduleOccurrence, ctx: Readonly<{ signal: AbortSignal; privileged: unknown }>) => unknown | Promise<unknown>;
+export type SchedulePayloadFactory = (occurrence: ScheduleOccurrence, ctx: Readonly<{ signal: AbortSignal; privileged: unknown }>) => ScheduleJsonValue | Promise<ScheduleJsonValue>;
 
 export type FieldDefinition<Value = unknown> = {
   kind: FieldKind;
@@ -195,8 +202,9 @@ export function job<const HandlerType extends Handler>(handler: HandlerType): Jo
  * Declare a named, server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
- * attempt semantics.
+ * up at most one occurrence. Dynamic payload factories require a stable
+ * `payloadVersion` that changes with their code or captured configuration.
+ * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" } {
   return { kind: "schedule", ...definition };

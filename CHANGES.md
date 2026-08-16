@@ -63,8 +63,15 @@ Changes since v0.8.5.
   and definition fingerprint. Malformed retained rows are quarantined without
   blocking their unique occurrence slot, while changed, disabled, or removed
   definitions terminally supersede old pending work. Transaction-time generation
-  checks prevent an outgoing Dev runtime from enqueueing a Job or overwriting the
-  replacement Schedule's cursor and summary.
+  checks use the enabled durable Schedule definition as authority, so an outgoing
+  runtime cannot quarantine replacement-owned work, enqueue a Job, or overwrite
+  the replacement Schedule's cursor and summary.
+- Require every dynamic Schedule payload factory to declare a stable
+  `payloadVersion`, because JavaScript source text cannot identify captured
+  configuration. Changing the version creates a future-only Schedule generation;
+  static-payload fingerprints remain backward compatible. Shutdown now removes
+  queued payload factories before they acquire one of the four evaluation slots,
+  so stopped runtimes cannot begin new factory work or wait for its timeout.
 - Apply the transaction ownership gate consistently to libSQL root transactions,
   read-only snapshots, and public operations so captured-root re-entry rejects
   promptly while external callers remain serialized. Closing libSQL now seals

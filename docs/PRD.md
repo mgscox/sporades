@@ -955,7 +955,10 @@ Job Queue. Capsule authors declare named Schedules with `schedule()` alongside
 named `job()` handlers. A declaration contains a numeric five-field cron
 expression (minute, hour, day-of-month, month, day-of-week), an optional IANA
 timezone, JSON-safe payload or bounded async payload factory, ordinary enqueue
-retry options, an enabled state, and a `skip` or `latest` missed-run policy.
+retry options, an enabled state, and a `skip` or `latest` missed-run policy. A
+payload factory must declare a stable non-empty `payloadVersion` of at most 128
+characters and change it whenever its code or captured configuration changes;
+JavaScript function source text is not a definition identity.
 Seconds, years, cron nicknames, browser declarations, Sessions, captured users,
 and dynamically created Schedules are unsupported.
 
@@ -980,11 +983,13 @@ Payload evaluation may repeat after occurrence-claim expiry, but persistence is
 claim-owned: deterministic Job enqueue, occurrence terminalization, and the
 Schedule latest-occurrence summary are one Database transaction. Each pending
 occurrence carries its Schedule definition fingerprint, which is revalidated
-against the enabled durable definition inside that transaction. A stale owner
-cannot enqueue, finalize, or overwrite a replacement generation's cursor or
-summary after another runtime reclaims or replaces the occurrence. A still-live
-outgoing runtime stops that superseded local Schedule generation instead of
-re-arming it.
+against the enabled durable definition inside that transaction. Claim and
+recovery decisions use that durable row as generation authority. A stale owner
+cannot quarantine replacement-owned pending work, enqueue, finalize, or
+overwrite a replacement generation's cursor or summary after another runtime
+reclaims or replaces the occurrence. It leaves that work for the matching
+runtime and stops its superseded local Schedule generation instead of re-arming
+it.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long
@@ -1002,8 +1007,10 @@ definition state uses the opaque stable `SCHEDULE_OCCURRENCE_SUPERSEDED` error.
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the
 declared payload and retry policy. Payload factories may run more than once
-during recovery and must tolerate repeated side effects. After enqueue, the Job
-Queue exclusively owns execution, retries, cancellation, leases, and results.
+during recovery and must tolerate repeated side effects. Shutdown aborts active
+factories and removes queued factories before they acquire a concurrency slot;
+queued work never starts after scheduling stops. After enqueue, the Job Queue
+exclusively owns execution, retries, cancellation, leases, and results.
 Delivery remains **at least once**, so duplicate-safe occurrence creation is not
 an exactly-once execution promise. One-time `availableAt` remains Job Queue
 behavior and is not recurring scheduling.

@@ -11,14 +11,21 @@ must tolerate duplicate execution because delivery is at least once.
 Declare `schedule()` only for recurrence. Pin an IANA timezone when wall-clock
 meaning must remain consistent across Dev, Container, and Hosted environments.
 Schedules enqueue Jobs; retry and execution semantics remain Job Queue semantics.
+Dynamic Schedule payload factories require an explicit `payloadVersion`; bump it
+whenever factory code or captured configuration changes, because closure state
+cannot be derived from JavaScript source text. Static JSON payloads are
+fingerprinted directly.
 Occurrence claim ownership, deterministic enqueue, terminal occurrence state,
 and latest Schedule summary are committed together under the live Schedule
-definition fingerprint. Payload factories may be evaluated again after claim
-recovery, but a stale evaluator cannot persist a Job or overwrite a replacement
-generation's cursor or winning outcome. A runtime that loses this generation
-check stops re-arming its stale local Schedule. Changing, disabling, or removing
-a Schedule terminally supersedes its pending occurrences; later reuse starts
-with the next future occurrence instead of resurrecting old work.
+definition fingerprint. The enabled durable definition is the authority during
+claim and recovery. Payload factories may be evaluated again after claim
+recovery, but a stale evaluator leaves replacement-owned pending work untouched
+and cannot persist a Job or overwrite a replacement generation's cursor or
+winning outcome. A runtime that loses this generation check stops re-arming its
+stale local Schedule. Shutdown removes queued factories before they can acquire
+an evaluation slot. Changing, disabling, or removing a Schedule terminally
+supersedes its own pending occurrences; later reuse starts with the next future
+occurrence instead of resurrecting old work.
 
 One-time `availableAt` values and retry instants stay within canonical
 four-digit UTC timestamps. Supply availability as a timestamp string or `Date`;

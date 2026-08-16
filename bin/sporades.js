@@ -5913,21 +5913,35 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError2(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
     if (schedules.some((candidate) => candidate.name === name)) throw commandError2(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
     if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError2(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
     const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
     const payload = definition.payload === void 0 ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    let payloadFingerprint;
+    let payloadVersion;
+    if (typeof payload === "function") {
+      if (typeof definition.payloadVersion !== "string" || definition.payloadVersion.length < 1 || definition.payloadVersion.length > 128 || definition.payloadVersion.trim() !== definition.payloadVersion) {
+        throw commandError2(`Invalid Schedule payloadVersion: ${name}`, "Give every payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+      }
+      payloadFingerprint = null;
+      payloadVersion = definition.payloadVersion;
+    } else {
+      if (definition.payloadVersion !== void 0) {
+        throw commandError2(`Invalid Schedule payloadVersion: ${name}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
+      }
+      boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+      payloadFingerprint = payload;
+    }
     const retry = normalizeJobRetry(definition.retry);
     const missedRun = definition.missedRun ?? "skip";
     if (missedRun !== "skip" && missedRun !== "latest") throw commandError2(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
     if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError2(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
     const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
     const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...payloadVersion === void 0 ? {} : { payloadVersion } });
+    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, payloadVersion: definition.payloadVersion, retry, missedRun, enabled, fingerprint });
   }
   return schedules;
 }
@@ -6050,15 +6064,42 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
 function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
   return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
 }
-async function acquireSchedulePayloadFactorySlot(database) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
+function schedulePayloadFactoryAbortError() {
+  const error = new Error("Schedule payload factory aborted.");
+  error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+  return error;
+}
+async function acquireSchedulePayloadFactorySlot(database, signal) {
+  if (signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+  if (database.schedulePayloadFactoryActive < 4 && database.schedulePayloadFactoryWaiters.length === 0) {
+    database.schedulePayloadFactoryActive += 1;
+  } else {
+    await new Promise((resolve, reject) => {
+      const waiter = {};
+      const remove = () => {
+        const index = database.schedulePayloadFactoryWaiters.indexOf(waiter);
+        if (index >= 0) database.schedulePayloadFactoryWaiters.splice(index, 1);
+      };
+      const onAbort = () => {
+        remove();
+        reject(schedulePayloadFactoryAbortError());
+      };
+      waiter.grant = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      database.schedulePayloadFactoryWaiters.push(waiter);
+      if (signal.aborted || database.__scheduleStopped) onAbort();
+    });
+  }
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
+    const waiter = database.schedulePayloadFactoryWaiters.shift();
+    if (waiter) waiter.grant();
+    else database.schedulePayloadFactoryActive -= 1;
   };
 }
 async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
@@ -6080,7 +6121,7 @@ async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
 }
 async function resolveSchedulePayload(database, definition, scheduledFor, context) {
   if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+  let releaseLane;
   let releaseSlot;
   const controller = new AbortController();
   const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
@@ -6089,8 +6130,12 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
   const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
   const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
   let timeout;
+  let removeAbortListener;
   try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
+    releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
     const timeoutFailure = new Promise((_resolve, reject) => {
       timeout = database.clock.setTimer(() => {
         controller.abort();
@@ -6099,11 +6144,12 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
         reject(error);
       }, database.schedulePayloadFactoryTimeoutMs);
     });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
+    const aborted = new Promise((_resolve, reject) => {
+      const onAbort = () => reject(schedulePayloadFactoryAbortError());
+      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
     const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
     database.clock.clearTimer(timeout);
     boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
@@ -6114,10 +6160,11 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
     await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
     return { ok: false };
   } finally {
+    removeAbortListener?.();
     controllers.delete(controller);
     if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
     releaseSlot?.();
-    releaseLane();
+    releaseLane?.();
   }
 }
 function abortSchedulePayloadFactories(database) {
@@ -15602,32 +15649,41 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   if (expiresAt === null) {
     throw commandError2("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
   }
-  const sql = database.adapter.dialect.sql;
-  try {
-    await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, definition.fingerprint, scheduledFor, token, expiresAt, nowIso, nowIso);
-    return { id, token };
-  } catch (error) {
-    let existing = await database.adapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
+  let recoveryAt = null;
+  const claimed = await database.adapter.withTransaction(async (transactionAdapter) => {
+    const sql = transactionAdapter.dialect.sql;
+    const generation = await transactionAdapter.prepare(sql(
+      "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=?"
+    )).run(definition.name, definition.fingerprint);
+    if (Number(generation.changes) !== 1) return { claim: null, superseded: true };
+    const inserted = await transactionAdapter.prepare(sql(
+      "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING"
+    )).run(id, definition.name, definition.fingerprint, scheduledFor, token, expiresAt, nowIso, nowIso);
+    if (Number(inserted.changes) === 1) return { claim: { id, token }, superseded: false };
+    let existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
     if (!existing) {
-      existing = await database.adapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=? AND [scheduledFor]=?")).get(definition.name, scheduledFor);
-      if (!existing) throw error;
+      existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=? AND [scheduledFor]=?")).get(definition.name, scheduledFor);
+      if (!existing) throw new Error("Schedule occurrence conflict could not be resolved.");
     }
-    if (existing.status !== "pending") return null;
     if (!validRetainedScheduleOccurrenceIdentity(database, existing) || String(existing.scheduleName) !== definition.name || String(existing.scheduledFor) !== scheduledFor || existing.claimExpiresAt !== null && !isCanonicalJobTimestamp(existing.claimExpiresAt)) {
-      await finishInvalidRetainedScheduleOccurrence(database, existing);
-      return null;
+      await finishInvalidRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      return { claim: null, superseded: false };
     }
     if (existing.definitionFingerprint !== definition.fingerprint) {
-      await finishSupersededRetainedScheduleOccurrence(database, { id, ...existing });
-      return null;
+      if (existing.status === "pending") await finishSupersededRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      return { claim: null, superseded: false };
     }
+    if (existing.status !== "pending") return { claim: null, superseded: false };
     if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
-      schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
-      return null;
+      recoveryAt = existing.claimExpiresAt;
+      return { claim: null, superseded: false };
     }
-    const result = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, nowIso);
-    return Number(result.changes) === 1 ? { id, token } : null;
-  }
+    const result = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, definition.fingerprint, nowIso);
+    return { claim: Number(result.changes) === 1 ? { id, token } : null, superseded: false };
+  });
+  if (claimed.superseded) definition.enabled = false;
+  if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
+  return claimed.claim;
 }
 async function recoverPendingScheduleOccurrences(database) {
   const sql = database.adapter.dialect.sql;
@@ -15639,9 +15695,20 @@ async function recoverPendingScheduleOccurrences(database) {
       await finishInvalidRetainedScheduleOccurrence(database, row);
       continue;
     }
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [enabled] FROM [sporades_schedules] WHERE [name]=?"
+    )).get(row.scheduleName);
     const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
-    if (!definition || row.definitionFingerprint !== definition.fingerprint) {
+    if (!durable || !Boolean(durable.enabled)) {
       await finishSupersededRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    if (!definition || definition.fingerprint !== durable.definitionFingerprint) {
+      if (definition) definition.enabled = false;
+      continue;
+    }
+    if (row.definitionFingerprint !== durable.definitionFingerprint) {
+      await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
       continue;
     }
     const claimExpiresAt = row.claimExpiresAt === null ? null : Date.parse(row.claimExpiresAt);
@@ -15656,21 +15723,23 @@ async function recoverPendingScheduleOccurrences(database) {
 function validRetainedScheduleOccurrenceIdentity(database, row) {
   return typeof row.id === "string" && row.id.length > 0 && typeof row.scheduleName === "string" && row.scheduleName.length > 0 && isCanonicalJobTimestamp(row.scheduledFor) && row.id === scheduledOccurrenceIdentity(database, row.scheduleName, row.scheduledFor);
 }
-async function finishInvalidRetainedScheduleOccurrence(database, row) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID");
+async function finishInvalidRetainedScheduleOccurrence(database, row, adapter = database.adapter) {
+  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
 }
-async function finishSupersededRetainedScheduleOccurrence(database, row) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED");
+async function finishSupersededRetainedScheduleOccurrence(database, row, adapter = database.adapter) {
+  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
 }
-async function finishRetainedScheduleOccurrence(database, row, errorCode3) {
-  const sql = database.adapter.dialect.sql;
+async function finishRetainedScheduleOccurrence(database, row, errorCode3, adapter = database.adapter) {
+  const sql = adapter.dialect.sql;
   const completedAt = database.clock.now().toISOString();
   const definitionFingerprint = row.definitionFingerprint ?? null;
-  const result = await database.adapter.prepare(sql(
-    "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [scheduledFor]=? AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)) AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))"
-  )).run(errorCode3, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt);
+  const liveGenerationGuard = errorCode3 === "SCHEDULE_OCCURRENCE_SUPERSEDED" ? " AND NOT EXISTS (SELECT 1 FROM [sporades_schedules] WHERE [name]=? AND [enabled]=1 AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)))" : "";
+  const liveGenerationParams = errorCode3 === "SCHEDULE_OCCURRENCE_SUPERSEDED" ? [row.scheduleName, definitionFingerprint, definitionFingerprint] : [];
+  const result = await adapter.prepare(sql(
+    "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [scheduledFor]=? AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)) AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))" + liveGenerationGuard
+  )).run(errorCode3, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt, ...liveGenerationParams);
   if (Number(result.changes) === 1) return true;
-  const current = await database.adapter.prepare(sql(
+  const current = await adapter.prepare(sql(
     "SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?"
   )).get(row.id);
   if (current?.status === "pending") {

@@ -98,6 +98,10 @@ async function awaitInsertOrIgnore() {
 }
 void serviceInsertOrIgnoreResult;
 void awaitInsertOrIgnore;
+// @ts-expect-error Dynamic Schedule payloads need explicit stable identity for captured inputs.
+schedule({ expression: "* * * * *", job: "summarise", payload: () => ({ text: "dynamic" }) });
+// @ts-expect-error Static Schedule payloads are fingerprinted directly and cannot declare payloadVersion.
+schedule({ expression: "* * * * *", job: "summarise", payload: { text: "static" }, payloadVersion: "unused" });
 // @ts-expect-error An idempotent insert names at least one conflict field.
 typedUsers.insertOrIgnore({ email: "person@example.test" });
 // @ts-expect-error Conflict fields are limited to the table row shape.
@@ -159,6 +163,7 @@ const app = capsule({
       expression: "* * * * *",
       job: "summarise",
       missedRun: "latest",
+      payloadVersion: "dynamic-summary-v1",
       payload: async (occurrence, ctx) => {
         occurrence.scheduleName.toUpperCase();
         occurrence.scheduledFor.toUpperCase();

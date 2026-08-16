@@ -19,8 +19,9 @@
 <div class="tsd-comment tsd-typography"><p>Declare a named server-only recurring Privileged Job in
 <code>capsule({ schedules })</code>. The map key is its durable identity. Expressions use
 numeric five-field cron; <code>missedRun</code> defaults to <code>skip</code> and <code>latest</code> catches
-up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
-attempt semantics.</p>
+up at most one occurrence. Dynamic payload factories require a stable
+<code>payloadVersion</code> that changes with their code or captured configuration.
+Scheduled Jobs retain Job Queue at-least-once attempt semantics.</p>
 </div>
 <section class="tsd-panel">
 <h4>Type Parameters</h4>
@@ -32,7 +33,7 @@ attempt semantics.</p>
 <li><span><span class="tsd-kind-parameter">definition</span>: <a class="tsd-signature-type tsd-kind-type-parameter" href="#scheduledefinition">Definition</a></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <a class="tsd-signature-type tsd-kind-type-parameter" href="#scheduledefinition">Definition</a> <span class="tsd-signature-symbol">&amp;</span> <span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">kind</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;schedule&quot;</span> <span class="tsd-signature-symbol">}</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L922">server.d.ts:922</a></li></ul></aside></div></li></ul></section></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L929">server.d.ts:929</a></li></ul></aside></div></li></ul></section></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

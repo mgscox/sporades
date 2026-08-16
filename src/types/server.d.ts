@@ -834,11 +834,17 @@ export type ScheduleDefinition = {
   expression: string;
   timezone?: string;
   job: string;
-  payload?: JsonValue | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   enabled?: boolean;
   missedRun?: "skip" | "latest";
-};
+} & (
+  | { payload?: JsonValue; payloadVersion?: never }
+  | {
+    payload: SchedulePayloadFactory;
+    /** Stable identity for the factory source and every captured/configured input. Change it when any of those inputs change. */
+    payloadVersion: string;
+  }
+);
 
 /**
  * Top-level Capsule definition passed to `capsule()`.
@@ -916,8 +922,9 @@ export function job<Payload extends JsonValue, Result extends JsonValue>(
  * Declare a named server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
- * attempt semantics.
+ * up at most one occurrence. Dynamic payload factories require a stable
+ * `payloadVersion` that changes with their code or captured configuration.
+ * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" };
 /** Define a Capsule table from field builders. */

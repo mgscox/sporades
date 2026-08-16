@@ -103,21 +103,38 @@ export function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any
   const schedules: any[] = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {}) as [string, any][]) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
     if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
     if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
     const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
     const payload = definition.payload === undefined ? null : definition.payload;
-    if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    let payloadFingerprint: any;
+    let payloadVersion: string | undefined;
+    if (typeof payload === "function") {
+      if (typeof definition.payloadVersion !== "string"
+        || definition.payloadVersion.length < 1
+        || definition.payloadVersion.length > 128
+        || definition.payloadVersion.trim() !== definition.payloadVersion) {
+        throw commandError(`Invalid Schedule payloadVersion: ${name}`, "Give every payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+      }
+      payloadFingerprint = null;
+      payloadVersion = definition.payloadVersion;
+    } else {
+      if (definition.payloadVersion !== undefined) {
+        throw commandError(`Invalid Schedule payloadVersion: ${name}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
+      }
+      boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+      payloadFingerprint = payload;
+    }
     const retry = normalizeJobRetry(definition.retry);
     const missedRun = definition.missedRun ?? "skip";
     if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
     if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
     const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
     const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...(payloadVersion === undefined ? {} : { payloadVersion }) });
+    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, payloadVersion: definition.payloadVersion, retry, missedRun, enabled, fingerprint });
   }
   return schedules;
 }
@@ -243,15 +260,43 @@ export function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName:
   return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
 }
 
-async function acquireSchedulePayloadFactorySlot(database: LooseRecord) {
-  if (database.schedulePayloadFactoryActive >= 4) await new Promise<void>((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-  database.schedulePayloadFactoryActive += 1;
+function schedulePayloadFactoryAbortError() {
+  const error: any = new Error("Schedule payload factory aborted.");
+  error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+  return error;
+}
+
+async function acquireSchedulePayloadFactorySlot(database: LooseRecord, signal: AbortSignal) {
+  if (signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+  if (database.schedulePayloadFactoryActive < 4 && database.schedulePayloadFactoryWaiters.length === 0) {
+    database.schedulePayloadFactoryActive += 1;
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      const waiter: LooseRecord = {};
+      const remove = () => {
+        const index = database.schedulePayloadFactoryWaiters.indexOf(waiter);
+        if (index >= 0) database.schedulePayloadFactoryWaiters.splice(index, 1);
+      };
+      const onAbort = () => {
+        remove();
+        reject(schedulePayloadFactoryAbortError());
+      };
+      waiter.grant = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      database.schedulePayloadFactoryWaiters.push(waiter);
+      if (signal.aborted || database.__scheduleStopped) onAbort();
+    });
+  }
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    database.schedulePayloadFactoryActive -= 1;
-    database.schedulePayloadFactoryWaiters.shift()?.();
+    const waiter = database.schedulePayloadFactoryWaiters.shift();
+    if (waiter) waiter.grant();
+    else database.schedulePayloadFactoryActive -= 1;
   };
 }
 
@@ -272,7 +317,7 @@ async function acquireSchedulePayloadFactoryLane(database: LooseRecord, schedule
 
 export async function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord) {
   if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+  let releaseLane: (() => void) | undefined;
   let releaseSlot: (() => void) | undefined;
   const controller = new AbortController();
   const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? new Set();
@@ -281,8 +326,12 @@ export async function resolveSchedulePayload(database: LooseRecord, definition: 
   const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
   const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
   let timeout: any;
+  let removeAbortListener: (() => void) | undefined;
   try {
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
+    releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
     const timeoutFailure = new Promise((_resolve, reject) => {
       timeout = database.clock.setTimer(() => {
         controller.abort();
@@ -291,11 +340,12 @@ export async function resolveSchedulePayload(database: LooseRecord, definition: 
         reject(error);
       }, database.schedulePayloadFactoryTimeoutMs);
     });
-    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-      const error: any = new Error("Schedule payload factory aborted.");
-      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-      reject(error);
-    }, { once: true }));
+    const aborted = new Promise((_resolve, reject) => {
+      const onAbort = () => reject(schedulePayloadFactoryAbortError());
+      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
     const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
     database.clock.clearTimer(timeout);
     boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
@@ -308,10 +358,11 @@ export async function resolveSchedulePayload(database: LooseRecord, definition: 
     await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
     return { ok: false };
   } finally {
+    removeAbortListener?.();
     controllers.delete(controller);
     if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
     releaseSlot?.();
-    releaseLane();
+    releaseLane?.();
   }
 }
 

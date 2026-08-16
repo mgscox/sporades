@@ -587,6 +587,7 @@ test("Schedule payload factories receive immutable occurrence input and resolve 
       dynamic: schedule({
         expression: "* * * * *",
         job: "record",
+        payloadVersion: "generated-for-v1",
         payload: async (occurrence, ctx) => {
           factoryCalls.push({ occurrence, keys: Object.keys(ctx).sort(), aborted: ctx.signal.aborted });
           return { generatedFor: occurrence.scheduledFor };
@@ -614,8 +615,8 @@ test("Schedule payload factories may explicitly enter Privileged access without 
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { record: job(() => null) },
     schedules: {
-      plain: schedule({ expression: "* * * * *", job: "record", payload: () => ({ kind: "plain" }) }),
-      explicit: schedule({ expression: "* * * * *", job: "record", payload: (_occurrence, ctx) => ctx.privileged.run({ operation: "schedules.payload.read", targetResourceKind: "database" }, () => ({ kind: "explicit" })) }),
+      plain: schedule({ expression: "* * * * *", job: "record", payloadVersion: "plain-v1", payload: () => ({ kind: "plain" }) }),
+      explicit: schedule({ expression: "* * * * *", job: "record", payloadVersion: "explicit-v1", payload: (_occurrence, ctx) => ctx.privileged.run({ operation: "schedules.payload.read", targetResourceKind: "database" }, () => ({ kind: "explicit" })) }),
     },
   }, { clock });
   try {
@@ -636,7 +637,7 @@ test("payload factory failures skip one occurrence safely and re-arm the Schedul
   const seen = [];
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { record: job((_ctx, payload) => { seen.push(payload); return null; }) },
-    schedules: { resilient: schedule({ expression: "* * * * *", job: "record", payload: async () => { calls += 1; if (calls === 1) throw new Error("secret detail"); return { calls }; } }) },
+    schedules: { resilient: schedule({ expression: "* * * * *", job: "record", payloadVersion: "resilient-v1", payload: async () => { calls += 1; if (calls === 1) throw new Error("secret detail"); return { calls }; } }) },
   }, { clock });
   try {
     await database.init();
@@ -660,8 +661,8 @@ test("rejected and invalid resolved factory payloads create no Job", async () =>
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { record: job(() => null) },
     schedules: {
-      rejected: schedule({ expression: "* * * * *", job: "record", payload: () => Promise.reject(new Error("private rejection")) }),
-      invalid: schedule({ expression: "* * * * *", job: "record", payload: () => ({ value: 1n }) }),
+      rejected: schedule({ expression: "* * * * *", job: "record", payloadVersion: "rejected-v1", payload: () => Promise.reject(new Error("private rejection")) }),
+      invalid: schedule({ expression: "* * * * *", job: "record", payloadVersion: "invalid-v1", payload: () => ({ value: 1n }) }),
     },
   }, { clock });
   try {
@@ -681,7 +682,7 @@ test("payload factory timeout aborts cooperatively and discards a late result", 
   let resolveFactory;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled", scheduling: { payloadFactoryTimeoutSeconds: 1 } }, {
     jobs: { record: job(() => null) },
-    schedules: { slow: schedule({ expression: "* * * * *", job: "record", payload: (_occurrence, ctx) => { signal = ctx.signal; return new Promise((resolve) => { resolveFactory = resolve; }); } }) },
+    schedules: { slow: schedule({ expression: "* * * * *", job: "record", payloadVersion: "slow-v1", payload: (_occurrence, ctx) => { signal = ctx.signal; return new Promise((resolve) => { resolveFactory = resolve; }); } }) },
   }, { clock });
   try {
     const pending = enqueueScheduledOccurrence(database, database.schedules[0], new Date("2030-01-01T00:01:00.000Z"));
@@ -707,7 +708,7 @@ test("payload factories use four FIFO Capsule-wide slots", async () => {
   for (let index = 0; index < 6; index += 1) {
     const name = `schedule${index}`;
     jobs[name] = job(() => null);
-    schedules[name] = schedule({ expression: "* * * * *", job: name, payload: () => new Promise((resolve) => { started.push(name); releases.push(() => resolve({ name })); }) });
+    schedules[name] = schedule({ expression: "* * * * *", job: name, payloadVersion: "1", payload: () => new Promise((resolve) => { started.push(name); releases.push(() => resolve({ name })); }) });
   }
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, { jobs, schedules }, { clock });
   try {
@@ -724,6 +725,74 @@ test("payload factories use four FIFO Capsule-wide slots", async () => {
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("shutdown removes a queued fifth payload factory without starting it", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-shutdown-queue-"));
+  let nowMs = Date.parse("2030-01-01T00:00:30.000Z");
+  let nextTimerId = 1;
+  const timers = new Map();
+  const clock = {
+    now: () => new Date(nowMs),
+    setTimer(callback, delayMs) {
+      const id = nextTimerId++;
+      timers.set(id, { id, dueAt: nowMs + Math.max(0, delayMs), callback });
+      return id;
+    },
+    clearTimer(id) { timers.delete(id); },
+    advanceBy(delayMs) { nowMs += delayMs; },
+    async runDueTimers() {
+      while (true) {
+        const due = [...timers.values()].filter((timer) => timer.dueAt <= nowMs)
+          .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id);
+        if (due.length === 0) return;
+        for (const timer of due) timers.delete(timer.id);
+        await Promise.all(due.map((timer) => timer.callback()));
+      }
+    },
+  };
+  const started = [];
+  const releases = [];
+  const schedules = {};
+  const jobs = {};
+  for (let index = 0; index < 5; index += 1) {
+    const name = `shutdown${index}`;
+    jobs[name] = job(() => null);
+    schedules[name] = schedule({
+      expression: "* * * * *",
+      job: name,
+      payloadVersion: "1",
+      payload: () => new Promise((resolve) => {
+        started.push(name);
+        releases.push(() => resolve({ name }));
+      }),
+    });
+  }
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-factory-shutdown-queue" }, { jobs, schedules }, { clock });
+  let dueWork;
+  let closing;
+  try {
+    await database.init();
+    clock.advanceBy(30_000);
+    dueWork = clock.runDueTimers();
+    while (started.length < 4) await Promise.resolve();
+    assert.deepEqual(started, ["shutdown0", "shutdown1", "shutdown2", "shutdown3"]);
+
+    let closed = false;
+    closing = database.shutdown().then(() => { closed = true; });
+    for (let turn = 0; turn < 20 && !closed; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(closed, true);
+    assert.deepEqual(started, ["shutdown0", "shutdown1", "shutdown2", "shutdown3"]);
+    await dueWork;
+  } finally {
+    for (const release of releases.splice(0)) release();
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const release of releases.splice(0)) release();
+    await Promise.allSettled([closing, dueWork]);
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent occurrences of one Schedule serialize payload factory evaluation", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-lane-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
@@ -732,7 +801,7 @@ test("concurrent occurrences of one Schedule serialize payload factory evaluatio
   const releases = [];
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { record: job(() => null) },
-    schedules: { serial: schedule({ expression: "* * * * *", job: "record", payload: () => new Promise((resolve) => {
+    schedules: { serial: schedule({ expression: "* * * * *", job: "record", payloadVersion: "serial-v1", payload: () => new Promise((resolve) => {
       active += 1;
       maxActive = Math.max(maxActive, active);
       releases.push(() => { active -= 1; resolve(null); });
@@ -857,6 +926,64 @@ test("Schedule reconciliation treats changes and re-enabling as future-only and 
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("payload factory versions distinguish declarations with identical source and changed captured values", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-payload-version-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const config = { name: "scheduled-payload-version" };
+  const payloadFactory = (version) => () => ({ version });
+  const open = (version) => openDevDatabase(file, "", {}, config, {
+    jobs: { record: job(() => null) },
+    schedules: {
+      recurring: schedule({
+        expression: "* * * * *",
+        timezone: "UTC",
+        job: "record",
+        payload: payloadFactory(version),
+        payloadVersion: String(version),
+      }),
+    },
+  }, { clock });
+  let database = await open(1);
+  try {
+    await database.init();
+    const firstFingerprint = database.adapter.prepare("SELECT definitionFingerprint FROM sporades_schedules WHERE name='recurring'").get().definitionFingerprint;
+    await database.shutdown();
+    await database.close();
+
+    database = await open(2);
+    await database.init();
+    const secondFingerprint = database.adapter.prepare("SELECT definitionFingerprint FROM sporades_schedules WHERE name='recurring'").get().definitionFingerprint;
+    assert.notEqual(secondFingerprint, firstFingerprint);
+  } finally {
+    try { await database.shutdown(); } catch {}
+    try { await database.close(); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("static Schedule fingerprints remain compatible across payload-version identity adoption", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-static-fingerprint-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-static-fingerprint" }, {
+    jobs: { record: job(() => null) },
+    schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: { version: 1 } }) },
+  });
+  try {
+    const expected = JSON.stringify({
+      expression: "* * * * *",
+      timezone: "UTC",
+      job: "record",
+      payload: { version: 1 },
+      retry: { maxAttempts: 1, delayMs: 0 },
+      missedRun: "skip",
+    });
+    assert.equal(database.schedules[0].fingerprint, expected);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("changed, disabled, and removed Schedule generations quarantine pending occurrences before later reuse", async (t) => {
   for (const scenario of [
     { name: "changed", replacement: { recurring: schedule({ expression: "*/5 * * * *", timezone: "UTC", job: "record" }) } },
@@ -935,21 +1062,30 @@ test("a lost superseded-occurrence quarantine race schedules recovery for the wi
       jobs: { record: job(() => null) },
       schedules: { recurring: schedule({ expression: "*/5 * * * *", job: "record" }) },
     }, { clock });
-    const originalPrepare = database.adapter.prepare.bind(database.adapter);
-    let stealQuarantine = true;
-    database.adapter.prepare = (sql) => {
-      const statement = originalPrepare(sql);
-      if (stealQuarantine && String(sql).includes("sporades_schedule_occurrences") && String(sql).includes("enqueue-failed")) {
-        return { ...statement, run(...args) {
-          stealQuarantine = false;
-          originalPrepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=? WHERE id=?")
-            .run("winning-claim", "2030-01-01T00:00:31.000Z", occurrenceId);
-          return statement.run(...args);
-        } };
-      }
-      return statement;
+    const injectWinningClaim = (adapter) => {
+      const originalPrepare = adapter.prepare.bind(adapter);
+      adapter.prepare = (sql) => {
+        const statement = originalPrepare(sql);
+        if (stealQuarantine && String(sql).includes("sporades_schedule_occurrences") && String(sql).includes("enqueue-failed")) {
+          return { ...statement, run(...args) {
+            stealQuarantine = false;
+            originalPrepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=? WHERE id=?")
+              .run("winning-claim", "2030-01-01T00:00:31.000Z", occurrenceId);
+            return statement.run(...args);
+          } };
+        }
+        return statement;
+      };
     };
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    let stealQuarantine = true;
+    database.adapter.withTransaction = (callback) => originalWithTransaction((transactionAdapter) => {
+      injectWinningClaim(transactionAdapter);
+      return callback(transactionAdapter);
+    });
+    injectWinningClaim(database.adapter);
     await database.init();
+    assert.equal(stealQuarantine, false, "the superseded-occurrence quarantine was attempted");
     assert.equal(database.__scheduleRecoveryDueAt, Date.parse("2030-01-01T00:00:31.000Z"));
     clock.advanceBy(1_000);
     await clock.runDueTimers();
@@ -959,6 +1095,99 @@ test("a lost superseded-occurrence quarantine race schedules recovery for the wi
     try { await database.close(); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+async function proveReplacementScheduleGenerationSurvivesStaleRuntime(openPair, scheduleName) {
+  const staleClock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const replacementClock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const executions = [];
+  let releaseReplacementClaim;
+  let markReplacementClaimed;
+  const replacementClaimed = new Promise((resolve) => { markReplacementClaimed = resolve; });
+  const jobs = { work: job((_ctx, payload) => { executions.push(payload.version); return null; }) };
+  const staleCapsule = {
+    jobs,
+    schedules: {
+      [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "work", payload: { version: "stale" } }),
+    },
+  };
+  const replacementCapsule = {
+    jobs,
+    schedules: {
+      [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "work", payload: { version: "replacement" } }),
+    },
+  };
+  const { stale, openReplacement } = await openPair(staleCapsule, replacementCapsule, staleClock, replacementClock, {
+    scheduleOccurrenceFault: async (boundary) => {
+      if (boundary !== "after-pending") return;
+      markReplacementClaimed();
+      await new Promise((resolve) => { releaseReplacementClaim = resolve; });
+    },
+  });
+  let replacement;
+  try {
+    await stale.init();
+    replacement = await openReplacement();
+    await replacement.init();
+
+    replacementClock.advanceBy(30_000);
+    const replacementOccurrence = replacementClock.runDueTimers();
+    await replacementClaimed;
+
+    staleClock.advanceBy(30_000);
+    await staleClock.runDueTimers();
+    releaseReplacementClaim();
+    await replacementOccurrence;
+
+    assert.deepEqual(executions, ["replacement"]);
+  } finally {
+    releaseReplacementClaim?.();
+    await Promise.allSettled([stale.shutdown(), replacement?.shutdown()]);
+    await Promise.allSettled([stale.close(), replacement?.close()]);
+  }
+}
+
+test("a stale SQLite Schedule generation cannot quarantine the replacement generation's occurrence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-replacement-owner-sqlite-"));
+  const file = path.join(dir, "data.db");
+  const config = { name: "scheduled-replacement-owner-sqlite" };
+  try {
+    await proveReplacementScheduleGenerationSurvivesStaleRuntime(async (staleCapsule, replacementCapsule, staleClock, replacementClock, replacementOptions) => ({
+      stale: await openDevDatabase(file, "", {}, config, staleCapsule, { clock: staleClock }),
+      openReplacement: () => openDevDatabase(file, "", {}, config, replacementCapsule, { clock: replacementClock, ...replacementOptions }),
+    }), "sharedSqlite");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a stale libSQL Schedule generation cannot quarantine the replacement generation's occurrence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-replacement-owner-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-replacement-owner-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveReplacementScheduleGenerationSurvivesStaleRuntime(async (staleCapsule, replacementCapsule, staleClock, replacementClock, replacementOptions) => ({
+        stale: await openDevDatabase(path.join(dir, "unused-a.db"), "", {}, config, staleCapsule, { clock: staleClock, serviceEnv }),
+        openReplacement: () => openDevDatabase(path.join(dir, "unused-b.db"), "", {}, config, replacementCapsule, { clock: replacementClock, serviceEnv, ...replacementOptions }),
+      }), "sharedLibsqlGeneration");
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a stale PostgreSQL Schedule generation cannot quarantine the replacement generation's occurrence", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL Schedule-generation race." }, async () => {
+  const scheduleName = "sharedPostgresGeneration";
+  const config = { name: "scheduled-replacement-owner-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await proveReplacementScheduleGenerationSurvivesStaleRuntime(async (staleCapsule, replacementCapsule, staleClock, replacementClock, replacementOptions) => {
+    const stale = await openDevDatabase("unused-a.db", "", {}, config, staleCapsule, { clock: staleClock, serviceEnv });
+    const sql = stale.adapter.dialect.sql;
+    await stale.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+    await stale.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+    await stale.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+    return {
+      stale,
+      openReplacement: () => openDevDatabase("unused-b.db", "", {}, config, replacementCapsule, { clock: replacementClock, serviceEnv, ...replacementOptions }),
+    };
+  }, scheduleName);
 });
 
 test("a live superseded Schedule generation stops its local timer", async () => {
@@ -1008,6 +1237,7 @@ test("Dev replacement cannot let an old Schedule generation overwrite the candid
       expression: "* * * * *",
       timezone: "UTC",
       job: "work",
+      payloadVersion: "blocking-v1",
       payload: (_occurrence, context) => {
         markPayloadStarted();
         return new Promise((_resolve, reject) => context.signal.addEventListener("abort", () => reject(Object.assign(new Error("stopped"), { name: "AbortError" })), { once: true }));
@@ -1077,7 +1307,7 @@ test("disabling the runtime aborts an active payload factory and creates no Job"
   let signal;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { record: job(() => null) },
-    schedules: { active: schedule({ expression: "* * * * *", job: "record", payload: (_occurrence, ctx) => {
+    schedules: { active: schedule({ expression: "* * * * *", job: "record", payloadVersion: "active-v1", payload: (_occurrence, ctx) => {
       signal = ctx.signal;
       return new Promise(() => {});
     } }) },
@@ -1255,6 +1485,7 @@ test("an expired Schedule owner cannot enqueue after a replacement owner termina
       shared: schedule({
         expression: "* * * * *",
         job: "work",
+        payloadVersion: "shared-v1",
         payload: async () => {
           payloadCalls += 1;
           if (payloadCalls === 1) {
@@ -1313,6 +1544,7 @@ async function proveStaleScheduleOwnerCannotCommit(openPair, scheduleName) {
       [scheduleName]: schedule({
         expression: "* * * * *",
         job: "work",
+        payloadVersion: "shared-v1",
         payload: async () => {
           payloadCalls += 1;
           if (payloadCalls === 1) {
@@ -1577,6 +1809,10 @@ test("invalid Schedule declarations reject Capsule startup as one unit", async (
     ["six fields", { valid: schedule({ expression: "0 * * * * *", job: "record" }) }],
     ["nickname", { valid: schedule({ expression: "@daily", job: "record" }) }],
     ["invalid payload", { valid: schedule({ expression: "* * * * *", job: "record", payload: Symbol("invalid") }) }],
+    ["factory without payload version", { valid: schedule({ expression: "* * * * *", job: "record", payload: () => null }) }],
+    ["blank factory payload version", { valid: schedule({ expression: "* * * * *", job: "record", payload: () => null, payloadVersion: " " }) }],
+    ["oversized factory payload version", { valid: schedule({ expression: "* * * * *", job: "record", payload: () => null, payloadVersion: "x".repeat(129) }) }],
+    ["static payload version", { valid: schedule({ expression: "* * * * *", job: "record", payload: null, payloadVersion: "not-a-factory" }) }],
     ["invalid retry", { valid: schedule({ expression: "* * * * *", job: "record", retry: { maxAttempts: 0 } }) }],
     ["invalid missed-run policy", { valid: schedule({ expression: "* * * * *", job: "record", missedRun: "all" }) }],
   ];
