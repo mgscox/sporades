@@ -1703,6 +1703,7 @@ function normalizeSchema(schema) {
                 targetTable: field.targetTable,
                 defaultValue: field.defaultValue,
             })),
+            uniqueConstraints: table.uniqueConstraints ?? [],
         }))
             .sort((left, right) => left.name.localeCompare(right.name)),
     };
@@ -1784,6 +1785,7 @@ function appTableColumnDefinitions(dialect, table) {
         `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
         `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
         ...table.fields.map((field) => appFieldColumnDefinition(dialect, field)),
+        ...(table.uniqueConstraints ?? []).map((fields) => `UNIQUE (${fields.map((field) => dialect.quoteIdentifier(field)).join(", ")})`),
     ];
 }
 function appFieldColumnDefinition(dialect, field) {

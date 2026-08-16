@@ -205,7 +205,14 @@ export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = 
   kind: "table";
   fields: Fields;
   aclRules?: TableAclRules;
+  uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: TableAclRules<RowFromFields<Fields>>): TableDefinition<Fields>;
+  unique(...fields: string[]): TableDefinition<Fields>;
+};
+
+export type CapsuleTableDefinition<Fields extends Record<string, AnyFieldDefinition>> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
+  acl(rules: TableAclRules<RowFromFields<Fields>>): CapsuleTableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 
 export type SchemaDefinition = Record<string, TableDefinition>;
@@ -891,7 +898,7 @@ export function job<Payload extends JsonValue, Result extends JsonValue>(
  */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" };
 /** Define a Capsule table from field builders. */
-export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
+export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): CapsuleTableDefinition<Fields>;
 
 /** Text field stored as SQLite `TEXT` and exposed as a JavaScript string. */
 export function String(): FieldBuilder<string>;

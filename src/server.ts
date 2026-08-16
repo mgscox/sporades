@@ -79,7 +79,14 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
   kind: "table";
   fields: Fields;
   aclRules?: unknown;
+  uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: unknown): TableDefinition<Fields>;
+  unique(...fields: string[]): TableDefinition<Fields>;
+};
+
+export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
+  acl(rules: unknown): CapsuleTableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 
 export type AuthContext = {
@@ -195,18 +202,22 @@ export function schedule<const Definition extends ScheduleDefinition>(definition
   return { kind: "schedule", ...definition };
 }
 
-export function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields> {
+export function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields> {
   return tableDefinition(fields);
 }
 
-function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, aclRules?: unknown): TableDefinition<Fields> {
+function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, aclRules?: unknown, uniqueConstraints: readonly (readonly (keyof Fields & string)[])[] = []): CapsuleTableDefinition<Fields> {
   return {
     kind: "table",
     fields,
     acl(rules: unknown) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames: readonly (keyof Fields & string)[]) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 
@@ -339,14 +350,18 @@ export function table(fields) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
   return {
     kind: "table",
     fields,
     acl(rules) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 

@@ -1083,7 +1083,31 @@ function schemaTableFromCapsuleTable(name, table) {
         name,
         acl: normalizeTableAcl(name, table.aclRules),
         fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
+        uniqueConstraints: normalizeUniqueConstraints(name, table.fields, table.uniqueConstraints),
     };
+}
+function normalizeUniqueConstraints(tableName, fields, declarations) {
+    if (declarations === undefined)
+        return [];
+    if (!Array.isArray(declarations)) {
+        throw commandError(`Invalid unique declaration on Capsule table: ${tableName}`, "Declare uniqueness with .unique(\"field\") or .unique(\"firstField\", \"secondField\").");
+    }
+    const declaredFields = new Set(Object.keys(fields));
+    const seen = new Set();
+    return declarations.map((declaration) => {
+        if (!Array.isArray(declaration) || declaration.length === 0 || declaration.some((field) => typeof field !== "string" || !declaredFields.has(field))) {
+            throw commandError(`Invalid unique declaration on Capsule table: ${tableName}`, "Each unique declaration must name one or more declared Capsule fields.");
+        }
+        if (new Set(declaration).size !== declaration.length) {
+            throw commandError(`Invalid unique declaration on Capsule table: ${tableName}`, "A unique declaration cannot repeat a Capsule field.");
+        }
+        const identity = [...declaration].sort().join("\u0000");
+        if (seen.has(identity)) {
+            throw commandError(`Duplicate unique declaration on Capsule table: ${tableName}`, "Declare each set of unique Capsule fields only once; field order does not make a new constraint.");
+        }
+        seen.add(identity);
+        return [...declaration];
+    }).sort((left, right) => [...left].sort().join("\u0000").localeCompare([...right].sort().join("\u0000")));
 }
 function assertNotReservedTeamTableName(name) {
     if (name.toLowerCase().startsWith("sporades_team")) {

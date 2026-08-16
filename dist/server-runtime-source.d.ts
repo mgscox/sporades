@@ -64,6 +64,7 @@ export declare function schemaFromCapsuleDefinition(definition: any): {
             targetTable: string | undefined;
             defaultValue: any;
         }[];
+        uniqueConstraints: any[][];
     }[];
 };
 export declare function extractEndpoints(serverSource: string): {

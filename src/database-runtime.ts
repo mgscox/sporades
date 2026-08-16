@@ -2042,7 +2042,7 @@ function migrateAppSchemaInTransaction(sqlite: LooseRecord, schema: LooseRecord)
 function normalizeSchema(schema: LooseRecord) {
   return {
     tables: schema.tables
-      .map((table: { name: any; fields: any[]; }) => ({
+      .map((table: { name: any; fields: any[]; uniqueConstraints?: string[][]; }) => ({
         name: table.name,
         fields: table.fields.map((field: { name: any; kind: any; sqliteType: any; targetTable: any; defaultValue: any; }) => ({
           name: field.name,
@@ -2051,6 +2051,7 @@ function normalizeSchema(schema: LooseRecord) {
           targetTable: field.targetTable,
           defaultValue: field.defaultValue,
         })),
+        uniqueConstraints: table.uniqueConstraints ?? [],
       }))
       .sort((left: { name: string; }, right: { name: any; }) => left.name.localeCompare(right.name)),
   };
@@ -2154,6 +2155,9 @@ function appTableColumnDefinitions(dialect: LooseRecord, table: LooseRecord) {
     `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
     `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
     ...table.fields.map((field: any) => appFieldColumnDefinition(dialect, field)),
+    ...(table.uniqueConstraints ?? []).map((fields: string[]) =>
+      `UNIQUE (${fields.map((field) => dialect.quoteIdentifier(field)).join(", ")})`,
+    ),
   ];
 }
 

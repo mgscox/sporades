@@ -70,6 +70,13 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
+const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
+uniqueUsers.fields.email.kind.toUpperCase();
+// @ts-expect-error Unique declarations may name only declared table fields.
+table({ email: String() }).unique("missing");
+// @ts-expect-error A unique declaration needs at least one field.
+table({ email: String() }).unique();
+
 const app = capsule({
   name: "typed island",
   teams: {

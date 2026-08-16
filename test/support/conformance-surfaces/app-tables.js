@@ -74,6 +74,15 @@ const STANDALONE_TABLE = {
 
 const STANDALONE_ALIAS_TABLE_NAME = "conformance_standalone_alias";
 
+const UNIQUE_TABLE = {
+  name: "conformance_unique_table",
+  fields: [
+    { name: "email", kind: "String", sqliteType: "TEXT" },
+    { name: "select", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["email"], ["select", "email"]],
+};
+
 // A Capsule table whose fields are named exactly the way the deleted Postgres column-name table
 // used to rename them. Created from inside a case rather than declared in the base schema, so the
 // inspection cases' exact table dump is unaffected.
@@ -848,6 +857,20 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "createAppTable enforces quoted single and composite unique constraints with ordinary SQL null semantics",
+    async run(adapter) {
+      await adapter.createAppTable(UNIQUE_TABLE);
+      const first = { id: "unique-one", createdAt: NOW, updatedAt: NOW, email: "one@example.test", select: "reserved-word" };
+      await adapter.insertAppRow(UNIQUE_TABLE, first);
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", select: "other" }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", email: null, select: "reserved-word" });
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", email: null, select: "reserved-word" });
+    },
+  },
+  {
     // The names that used to be renamed on the way out. The Postgres adapter restored the runtime's
     // declared spellings through a table of them, applied per result key with no table provenance,
     // so a Capsule field literally called `errorcode` or `jobid` came back as `errorCode` or
@@ -1018,6 +1041,7 @@ export const CONFORMANCE_SURFACE = {
     STANDALONE_TABLE.name,
     STANDALONE_ALIAS_TABLE_NAME,
     COLLIDING_NAMES_TABLE.name,
+    UNIQUE_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,

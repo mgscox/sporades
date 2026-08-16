@@ -43,6 +43,34 @@ you add one to a table that already has rows, existing rows read the new field
 as `null`; fresh tables use the same nullable column definition. Validate
 required business fields in your mutations before calling `ctx.db`.
 
+### Declare unique fields
+
+Use `.unique(...)` to enforce a single-field or composite unique constraint.
+It is chainable with `.acl(...)` in either order.
+
+```ts
+schema: {
+  projectSlugs: table({
+    teamId: String(),
+    slug: String(),
+    externalId: String(),
+  })
+    .unique("externalId")
+    .unique("teamId", "slug"),
+}
+```
+
+Every named field must be declared on that table. Repeating a field, or
+declaring the same set of fields again in another order, is rejected while the
+Capsule schema is being loaded. Constraint field order is retained for a
+composite declaration; constraints themselves have deterministic schema
+metadata ordering.
+
+Unique constraints use ordinary SQL `NULL` semantics on SQLite, libSQL, and
+PostgreSQL: a `NULL` in any constrained field does not conflict with another
+row. A unique declaration does not make a field required; validate required
+business fields separately.
+
 Tables can also declare ACL rules next to their fields. ACL rules are an
 invisible accept/reject authorization policy around normal `ctx.db` table
 operations; app code still reads and writes through the table API instead of

@@ -2228,14 +2228,18 @@ export function table(fields) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
   return {
     kind: "table",
     fields,
     acl(rules) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 
@@ -14390,7 +14394,8 @@ function normalizeSchema(schema) {
         sqliteType: field.sqliteType,
         targetTable: field.targetTable,
         defaultValue: field.defaultValue
-      }))
+      })),
+      uniqueConstraints: table.uniqueConstraints ?? []
     })).sort((left, right) => left.name.localeCompare(right.name))
   };
 }
@@ -14464,7 +14469,10 @@ function appTableColumnDefinitions(dialect, table) {
     `${dialect.quoteIdentifier("id")} TEXT PRIMARY KEY`,
     `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
     `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field) => appFieldColumnDefinition(dialect, field))
+    ...table.fields.map((field) => appFieldColumnDefinition(dialect, field)),
+    ...(table.uniqueConstraints ?? []).map(
+      (fields) => `UNIQUE (${fields.map((field) => dialect.quoteIdentifier(field)).join(", ")})`
+    )
   ];
 }
 function appFieldColumnDefinition(dialect, field) {
@@ -15281,8 +15289,43 @@ function schemaTableFromCapsuleTable(name, table) {
   return {
     name,
     acl: normalizeTableAcl(name, table.aclRules),
-    fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field))
+    fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
+    uniqueConstraints: normalizeUniqueConstraints(name, table.fields, table.uniqueConstraints)
   };
+}
+function normalizeUniqueConstraints(tableName, fields, declarations) {
+  if (declarations === void 0) return [];
+  if (!Array.isArray(declarations)) {
+    throw commandError2(
+      `Invalid unique declaration on Capsule table: ${tableName}`,
+      'Declare uniqueness with .unique("field") or .unique("firstField", "secondField").'
+    );
+  }
+  const declaredFields = new Set(Object.keys(fields));
+  const seen = /* @__PURE__ */ new Set();
+  return declarations.map((declaration) => {
+    if (!Array.isArray(declaration) || declaration.length === 0 || declaration.some((field) => typeof field !== "string" || !declaredFields.has(field))) {
+      throw commandError2(
+        `Invalid unique declaration on Capsule table: ${tableName}`,
+        "Each unique declaration must name one or more declared Capsule fields."
+      );
+    }
+    if (new Set(declaration).size !== declaration.length) {
+      throw commandError2(
+        `Invalid unique declaration on Capsule table: ${tableName}`,
+        "A unique declaration cannot repeat a Capsule field."
+      );
+    }
+    const identity = [...declaration].sort().join("\0");
+    if (seen.has(identity)) {
+      throw commandError2(
+        `Duplicate unique declaration on Capsule table: ${tableName}`,
+        "Declare each set of unique Capsule fields only once; field order does not make a new constraint."
+      );
+    }
+    seen.add(identity);
+    return [...declaration];
+  }).sort((left, right) => [...left].sort().join("\0").localeCompare([...right].sort().join("\0")));
 }
 function assertNotReservedTeamTableName(name) {
   if (name.toLowerCase().startsWith("sporades_team")) {

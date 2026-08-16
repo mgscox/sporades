@@ -73,14 +73,18 @@ export function schedule(definition) {
 export function table(fields) {
     return tableDefinition(fields);
 }
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
     return {
         kind: "table",
         fields,
         acl(rules) {
-            return tableDefinition(fields, rules);
+            return tableDefinition(fields, rules, uniqueConstraints);
+        },
+        unique(...fieldNames) {
+            return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
         },
         ...(aclRules === undefined ? {} : { aclRules }),
+        ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
     };
 }
 export function String() {
@@ -205,14 +209,18 @@ export function table(fields) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
   return {
     kind: "table",
     fields,
     acl(rules) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 

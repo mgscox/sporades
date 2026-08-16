@@ -78,7 +78,13 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
     kind: "table";
     fields: Fields;
     aclRules?: unknown;
+    uniqueConstraints?: readonly (readonly string[])[];
     acl(rules: unknown): TableDefinition<Fields>;
+    unique(...fields: string[]): TableDefinition<Fields>;
+};
+export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
+    acl(rules: unknown): CapsuleTableDefinition<Fields>;
+    unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 export type AuthContext = {
     userId: string;
@@ -116,7 +122,7 @@ export declare function job<const HandlerType extends Handler>(handler: HandlerT
 export declare function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & {
     kind: "schedule";
 };
-export declare function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields>;
+export declare function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields>;
 export declare function String(): FieldBuilder<unknown>;
 export declare function Boolean(): FieldBuilder<unknown>;
 export declare function Number(): FieldBuilder<unknown>;
