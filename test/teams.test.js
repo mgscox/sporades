@@ -834,6 +834,8 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
       const joined = await send(recipient, { id: `${id}-join`, type: "teams.join", code: new URL(issued.data.link).searchParams.get("code"), sessionToken: token });
       assert.equal(joined.error, null, JSON.stringify(joined.error));
     }
+    const afterJoinCount = await send(firstMember, { id: "lifecycle-after-join-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterJoinCount, { id: "lifecycle-after-join-count", type: "teams.countMembers.result", data: { totalCount: 3 }, error: null });
 
     const promoted = await sendWithTimeout(owner, { id: "lifecycle-promote", type: "teams.promote", teamId: team.id, userId: firstSignUp.data.auth.userId });
     assert.deepEqual(promoted, { id: "lifecycle-promote", type: "teams.promote.result", data: { updated: true }, error: null });
@@ -845,16 +847,27 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
     assert.deepEqual(removedByAdmin, { id: "lifecycle-remove", type: "teams.removeMember.result", data: { removed: true }, error: null });
     const afterRemoval = await send(firstMember, { id: "lifecycle-after-remove", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(afterRemoval.data.totalCount, 2, "admin removal frees committed capacity immediately");
+    const afterRemovalCount = await send(firstMember, { id: "lifecycle-after-remove-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterRemovalCount, { id: "lifecycle-after-remove-count", type: "teams.countMembers.result", data: { totalCount: 2 }, error: null });
 
     const left = await send(owner, { id: "lifecycle-leave", type: "teams.leave", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
     assert.deepEqual(left, { id: "lifecycle-leave", type: "teams.leave.result", data: { left: true }, error: null });
     const afterLeave = await send(firstMember, { id: "lifecycle-after-leave", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(afterLeave.data.totalCount, 1, "leave frees committed capacity immediately");
+    const afterLeaveCount = await send(firstMember, { id: "lifecycle-after-leave-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterLeaveCount, { id: "lifecycle-after-leave-count", type: "teams.countMembers.result", data: { totalCount: 1 }, error: null });
     const lastAdminDemotion = await send(firstMember, { id: "lifecycle-last-demotion", type: "teams.demote", teamId: team.id, userId: firstSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminDemotion.error.code, "DENIED");
     const lastAdminLeave = await send(firstMember, { id: "lifecycle-last-leave", type: "teams.leave", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminLeave.error.code, "DENIED");
     assert.deepEqual(await runMutation(runtime.database, firstSignUp.data.auth, "deleteOwnedTeam", [team.id]), { ok: true, data: { deleted: true }, error: null });
+    const deletedCount = await send(firstMember, { id: "lifecycle-after-delete-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(deletedCount, {
+      id: "lifecycle-after-delete-count",
+      type: "error",
+      data: null,
+      error: { code: "DENIED", message: "Could not read this Team's member count.", hint: "Sign in as a current Team member and retry." },
+    });
     const afterDelete = (await send(firstMember, { id: "lifecycle-after-delete", type: "teams.list", sessionToken: firstSignUp.data.sessionToken })).data;
     assert.deepEqual(afterDelete, { teams: firstMemberSingleton }, "deleting an unrelated sole-member Team preserves the caller's existing singleton without recreating the deleted Team");
     assert.ok(!afterDelete.teams.some((entry) => entry.id === team.id), "bootstrap history prevents deleted singleton Team recreation");
