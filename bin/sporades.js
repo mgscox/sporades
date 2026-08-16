@@ -14422,6 +14422,12 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
         );
       }
     }
+    if (JSON.stringify(existingTable.uniqueConstraints ?? []) !== JSON.stringify(nextTable.uniqueConstraints ?? [])) {
+      throw commandError2(
+        "Unsupported Capsule schema change.",
+        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
+      );
+    }
   }
 }
 function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {

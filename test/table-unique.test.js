@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { String, table } from "../dist/server.js";
-import { openDevDatabase } from "../dist/server-runtime-source.js";
+import { createSqliteDatabaseAdapter, openDevDatabase } from "../dist/server-runtime-source.js";
 
 test("table definitions declare a single-field unique constraint", () => {
   const users = table({ email: String() }).unique("email");
@@ -87,6 +87,61 @@ test("normalized unique metadata orders constraints by field set without reorder
       assert.deepEqual(database.schema.tables[0].uniqueConstraints, [["beta", "alpha"], ["gamma"]]);
     } finally {
       database.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("existing tables reject unique-constraint changes before migration can rebuild or copy them", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-table-unique-"));
+  const initial = { tables: [{ name: "users", fields: [{ name: "email", kind: "String", sqliteType: "TEXT" }] }] };
+  const addingUnique = { tables: [{ name: "users", fields: [{ name: "email", kind: "String", sqliteType: "TEXT" }], uniqueConstraints: [["email"]] }] };
+  try {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+    try {
+      await adapter.ensureSystemTable();
+      await adapter.migrateAppSchema(initial);
+      await adapter.insertAppRow(initial.tables[0], { id: "kept", email: "kept@example.test", createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-16T00:00:00.000Z" });
+      const metadataBefore = (await adapter.readSchemaMetadata()).value;
+
+      await assert.rejects(
+        async () => adapter.migrateAppSchema(addingUnique),
+        /Unsupported Capsule schema change/,
+      );
+
+      assert.equal((await adapter.readSchemaMetadata()).value, metadataBefore);
+      assert.deepEqual((await adapter.selectAppRows(initial.tables[0])).map((row) => ({ ...row })), [{ id: "kept", email: "kept@example.test", createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-16T00:00:00.000Z" }]);
+      assert.equal((await adapter.listInspectableTables()).includes("__sporades_migrating_users"), false);
+    } finally {
+      adapter.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("existing-table unique constraint removal, replacement, and composite-field reordering stay deferred", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-table-unique-"));
+  const initial = { tables: [{ name: "users", fields: [{ name: "email", kind: "String", sqliteType: "TEXT" }, { name: "teamId", kind: "String", sqliteType: "TEXT" }], uniqueConstraints: [["email", "teamId"]] }] };
+  const changes = [
+    [],
+    [["email"]],
+    [["teamId", "email"]],
+  ];
+  try {
+    for (const uniqueConstraints of changes) {
+      const adapter = await createSqliteDatabaseAdapter(path.join(dir, `${JSON.stringify(uniqueConstraints)}.db`));
+      try {
+        await adapter.ensureSystemTable();
+        await adapter.migrateAppSchema(initial);
+        await assert.rejects(
+          async () => adapter.migrateAppSchema({ tables: [{ ...initial.tables[0], uniqueConstraints }] }),
+          /Unsupported Capsule schema change/,
+        );
+      } finally {
+        adapter.close();
+      }
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
