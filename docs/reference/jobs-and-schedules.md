@@ -48,7 +48,9 @@ The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
 and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
 their `availableAt` time. The initial runtime uses a single worker. A running
 attempt holds a lease, and lease recovery after interruption may execute that
-attempt again.
+attempt again. Storage recovery records an expired attempt before Capsule
+initialization, but no recovered handler or retry wake starts until the runtime
+has completed its `init()` boundary.
 
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
@@ -60,8 +62,9 @@ and awaits scheduled worker settlement before the Capsule shutdown hook and
 before mail, the Database adapter, and other runtime resources close. An active
 worker settles its current attempt without claiming another queued Job, and
 worker settlement failure does not skip resource closure. Durable queued and
-delayed Job state remains stored and
-recovers on runtime restart. Cooperative handlers may finish or observe the
+delayed Job state remains stored and recovers on runtime restart. Each running
+attempt owns an opaque claim, so a stale shutdown, recovery, completion, or
+cancellation transition cannot overwrite a newer attempt. Cooperative handlers may finish or observe the
 abort signal during shutdown; an unclean interruption still follows the lease
 recovery and at-least-once rules above.
 

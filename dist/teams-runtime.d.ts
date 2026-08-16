@@ -1,4 +1,16 @@
 type LooseRecord = Record<string, any>;
+type TeamJoinLinkInspection = {
+    team: null;
+    expiresAt: null;
+    usable: boolean;
+} | {
+    team: {
+        id: string;
+        name: string;
+    };
+    expiresAt: string;
+    usable: boolean;
+};
 export declare const TEAM_MEMBER_LIST_MAX = 100;
 export declare const TEAM_MEMBER_LIST_DEFAULT = 100;
 export declare const TEAM_MEMBERSHIP_MAX = 25;
@@ -35,18 +47,7 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
     revokeJoinLink(teamId: any, joinLinkId: any): Promise<{
         revoked: boolean;
     }>;
-    inspectJoinLink(code: any): Promise<{
-        team: null;
-        expiresAt: null;
-        usable: boolean;
-    } | {
-        team: {
-            id: string;
-            name: string;
-        };
-        expiresAt: string;
-        usable: boolean;
-    }>;
+    inspectJoinLink(code: any): Promise<TeamJoinLinkInspection>;
     validateJoinLink(code: any): Promise<{
         valid: any;
     }>;
@@ -79,18 +80,7 @@ export declare function createPrivilegedTeamsApi(database: LooseRecord, contextG
     countMembers(teamId: any): Promise<any>;
     listMembers(teamId: any, options?: LooseRecord): Promise<any>;
     listJoinLinks(teamId: any): Promise<any>;
-    inspectJoinLink(code: any): Promise<{
-        team: null;
-        expiresAt: null;
-        usable: boolean;
-    } | {
-        team: {
-            id: string;
-            name: string;
-        };
-        expiresAt: string;
-        usable: boolean;
-    }>;
+    inspectJoinLink(code: any): Promise<TeamJoinLinkInspection>;
 }>;
 export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     path: string;
@@ -113,18 +103,7 @@ export declare function listTeamJoinLinks(database: LooseRecord, auth: LooseReco
 export declare function revokeTeamJoinLink(database: LooseRecord, auth: LooseRecord, teamId: any, joinLinkId: any, eventContext?: LooseRecord): Promise<{
     revoked: boolean;
 }>;
-export declare function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<{
-    team: null;
-    expiresAt: null;
-    usable: boolean;
-} | {
-    team: {
-        id: string;
-        name: string;
-    };
-    expiresAt: string;
-    usable: boolean;
-}>;
+export declare function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<TeamJoinLinkInspection>;
 export declare function validateTeamJoinLink(database: LooseRecord, auth: LooseRecord, code: any): Promise<{
     valid: any;
 }>;

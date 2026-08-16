@@ -865,7 +865,10 @@ The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
 and `cancelled`; only `queued` means ready to run. V1 uses a single worker,
 bounded retry, cooperative cancellation, leases, and restart recovery. Delivery
 is at least once rather than exactly once, so handlers must be idempotent and
-safe to repeat after lease recovery.
+safe to repeat after lease recovery. Expired durable state may be reconciled
+while storage opens, but recovered handlers and retry wakes begin only after
+the Capsule runtime completes initialization. Every running attempt owns an
+opaque claim so stale lifecycle work cannot mutate a newer attempt.
 
 Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
 delayed, and retry worker timers, abort active Job handlers, and await scheduled

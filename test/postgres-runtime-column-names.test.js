@@ -292,8 +292,8 @@ for (const engine of ENGINES) {
             sql(
               "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], " +
               "[status], [availableAt], [attempts], [idempotencyKey], [createdAt], [startedAt], [retryJson], " +
-              "[attemptHistory], [leaseExpiresAt], [scheduleName], [scheduledFor]) " +
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "[attemptHistory], [leaseExpiresAt], [claimToken], [scheduleName], [scheduledFor]) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
           )
           .run(
@@ -312,6 +312,7 @@ for (const engine of ENGINES) {
             '{"maxAttempts":3,"delayMs":250}',
             "[]",
             NEXT_OCCURRENCE,
+            "job-claim-token",
             "nightly",
             NOW,
           );
@@ -333,6 +334,7 @@ for (const engine of ENGINES) {
             retryJson: row?.retryJson,
             attemptHistory: row?.attemptHistory,
             leaseExpiresAt: row?.leaseExpiresAt,
+            claimToken: row?.claimToken,
             scheduleName: row?.scheduleName,
             scheduledFor: row?.scheduledFor,
             completedAt: row?.completedAt,
@@ -354,6 +356,7 @@ for (const engine of ENGINES) {
             retryJson: '{"maxAttempts":3,"delayMs":250}',
             attemptHistory: "[]",
             leaseExpiresAt: NEXT_OCCURRENCE,
+            claimToken: "job-claim-token",
             scheduleName: "nightly",
             scheduledFor: NOW,
             completedAt: null,
@@ -372,6 +375,7 @@ for (const engine of ENGINES) {
           "attempts",
           "availableAt",
           "cancelRequestedAt",
+          "claimToken",
           "completedAt",
           "createdAt",
           "enqueuedByUserId",

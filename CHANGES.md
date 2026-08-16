@@ -8,9 +8,26 @@ Changes since v0.8.5.
 
 - Let current Team members read exact accepted membership totals through the
   count-only `teams.countMembers(teamId)` API without directory access.
+- Give audited Privileged server callbacks safe read-only Team inspections for
+  exact member counts, bounded member pages, active Join-link metadata, and
+  Join-link capability previews without current-user or mutation authority.
+- Let Capsule tables declare single-field and composite unique constraints,
+  use atomic `insertOrIgnore(...)` writes against an exact declared constraint,
+  and add unique constraints through atomic additive schema migration.
+- Persist `ctx.jobs.enqueue(...)` inside the mutation, App message, or Custom
+  endpoint transaction so handler writes and Job creation commit or roll back
+  together while worker dispatch begins only after commit.
 
 ### 🐛 Bug Fixes
 
+- Serialize multi-statement Team inspections with Team lifecycle writers,
+  including a post-lock Join-link capability re-read, so PostgreSQL
+  `READ COMMITTED` callers never combine stale authorization and projections.
+- Make orderly shutdown and Dev restart clear every Job worker wake, defer
+  recovered execution until runtime initialization, and use attempt-scoped
+  claim ownership so stale shutdown, recovery, completion, or cancellation
+  work cannot mutate a newer attempt. Active handlers are aborted and settled
+  before runtime resources close.
 - Reject query argument array subclasses while continuing to accept arrays
   created in another JavaScript realm (2171b61).
 

@@ -6184,7 +6184,7 @@ async function ensureJobStorage(sqlite) {
   await sqlite.exec(
     sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
   await sqlite.exec(
     sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
   );
@@ -6274,20 +6274,33 @@ function normalizeJobRetry(value) {
 }
 async function cancelJob(database, context, id) {
   const sql = database.adapter.dialect.sql;
-  const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
-  if (!row) return null;
-  const now = database.clock.now().toISOString();
-  if (["queued", "delayed"].includes(row.status)) {
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
+  const read = () => context.__privilegedJobAccess ? database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
+  for (let transition = 0; transition < 8; transition += 1) {
+    const row = await read();
+    if (!row) return null;
+    const now = database.clock.now().toISOString();
+    if (["queued", "delayed"].includes(row.status)) {
+      const changed = await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?"
+      )).run(now, id, row.status);
+      if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now, startedAt: null, leaseExpiresAt: null }, true);
+      continue;
+    }
+    if (row.status === "running") {
+      const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
+      const changed = await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " + (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL")
+      )).run(now, id, ...hasClaimToken ? [row.claimToken] : []);
+      if (Number(changed?.changes ?? 0) !== 1) continue;
+      const runtimeDatabase = database.__rootDatabase ?? database;
+      const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+      const controller = activeClaim?.controller ?? activeClaim;
+      if (!activeClaim?.claimToken || activeClaim.claimToken === row.claimToken) controller?.abort?.();
+      return jobState({ ...row, cancelRequestedAt: now }, true);
+    }
+    throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
   }
-  if (row.status === "running") {
-    const runtimeDatabase = database.__rootDatabase ?? database;
-    runtimeDatabase.__jobAbortControllers?.get(id)?.abort();
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, cancelRequestedAt: now }, true);
-  }
-  throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+  throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
 }
 function jobSummary(row) {
   return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
@@ -8764,6 +8777,7 @@ async function listTeamJoinLinks(database, auth, teamId) {
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
     if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
     const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
     await pruneExpiredTeamJoinLinks(tx, now);
@@ -8800,32 +8814,43 @@ async function inspectTeamJoinLink(database, code) {
 async function inspectTeamJoinLinkWithActivity(database, code, assertActive = void 0) {
   const parsed = parseTeamJoinCode(code);
   if (!parsed) return { team: null, expiresAt: null, usable: false };
-  const row = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
-  )).get(parsed.selector);
-  assertActive?.();
-  const secretRow = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
-  )).get(TEAM_JOIN_LINK_SECRET_ID);
-  assertActive?.();
-  const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-  const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-  const expectedSignature = Buffer.from(row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
-  const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
-  const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
-  const usable = Boolean(row && verifierMatches && signatureMatches && !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > now);
-  if (!usable) return { team: null, expiresAt: null, usable: false };
-  const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
-  assertActive?.();
-  if (!team) return { team: null, expiresAt: null, usable: false };
-  return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
+  return withTeamTransaction(database, async (tx) => {
+    const readCapability = () => tx.prepare(tx.dialect.sql(
+      "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+    )).get(parsed.selector);
+    const row = await readCapability();
+    assertActive?.();
+    const secretRow = await tx.prepare(tx.dialect.sql(
+      "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
+    )).get(TEAM_JOIN_LINK_SECRET_ID);
+    assertActive?.();
+    const usable = (candidate) => {
+      const expectedVerifier = Buffer.from(candidate?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+      const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
+      const actualSignature = Buffer.from(parsed.signature, "base64url");
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
+    };
+    if (!usable(row)) return { team: null, expiresAt: null, usable: false };
+    if (!await tryLockTeamLifecycle(tx, String(row.teamId))) {
+      return { team: null, expiresAt: null, usable: false };
+    }
+    assertActive?.();
+    const lockedRow = await readCapability();
+    assertActive?.();
+    if (!usable(lockedRow) || String(lockedRow.teamId) !== String(row.teamId)) return { team: null, expiresAt: null, usable: false };
+    const team = await tx.prepare(tx.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(lockedRow.teamId);
+    assertActive?.();
+    if (!team) return { team: null, expiresAt: null, usable: false };
+    return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(lockedRow.expiresAt), usable: true };
+  });
 }
 async function countPrivilegedTeamMembers(database, teamId, assertActive) {
   return withTeamTransaction(database, async (tx) => {
     assertActive();
-    await requireExistingPrivilegedTeam(tx, teamId);
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
     assertActive();
     const total = await tx.prepare(tx.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
@@ -8838,7 +8863,7 @@ async function listPrivilegedTeamMembers(database, teamId, options = {}, assertA
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
     assertActive();
-    await requireExistingPrivilegedTeam(tx, teamId);
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
     assertActive();
     const page = normalizeTeamMemberPage(options);
     const total = await tx.prepare(sql(
@@ -8870,7 +8895,7 @@ async function listPrivilegedTeamMembers(database, teamId, options = {}, assertA
 async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
   return withTeamTransaction(database, async (tx) => {
     assertActive();
-    await requireExistingPrivilegedTeam(tx, teamId);
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
     assertActive();
     const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
     const rows = await tx.prepare(tx.dialect.sql(
@@ -9064,11 +9089,14 @@ async function countTeamAdmins(tx, teamId) {
   )).get(teamId);
   return Number(row?.count ?? 0);
 }
-async function lockTeamLifecycle(tx, teamId) {
+async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
+  if (!isOpaqueTeamId(teamId) || !await tryLockTeamLifecycle(tx, teamId)) throw missingTeamError();
+}
+async function tryLockTeamLifecycle(tx, teamId) {
   const claimed = await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?"
   )).run(teamId);
-  if (Number(claimed?.changes ?? 0) !== 1) throw teamDenied();
+  return Number(claimed?.changes ?? 0) === 1;
 }
 async function releaseTeamMembershipSlot(tx, userId) {
   await tx.prepare(tx.dialect.sql(
@@ -9359,6 +9387,7 @@ async function listTeamMembers(database, auth, teamId, options = {}) {
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId);
     const callerMembership = await tx.prepare(sql(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
@@ -9393,6 +9422,7 @@ async function countTeamMembers(database, auth, teamId) {
   if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
     const callerMembership = await tx.prepare(sql(
       "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, auth.userId);
@@ -9592,13 +9622,6 @@ function assertActivePrivilegedTeamAccess(contextGetter) {
     "Start a new ctx.privileged.run callback before inspecting Team state.",
     "PRIVILEGED_TEAM_ACCESS_INACTIVE"
   );
-}
-async function requireExistingPrivilegedTeam(adapter, teamId) {
-  if (!isOpaqueTeamId(teamId)) throw privilegedTeamNotFound();
-  const team = await adapter.prepare(adapter.dialect.sql(
-    "SELECT [id] FROM [sporades_teams] WHERE [id] = ?"
-  )).get(teamId);
-  if (!team) throw privilegedTeamNotFound();
 }
 function privilegedTeamNotFound() {
   return commandError2(
@@ -15318,13 +15341,21 @@ async function recoverExpiredJobLeases(database) {
     const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
     const history = JSON.parse(row.attemptHistory || "[]");
     history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
+    const ownership = jobClaimOwnership(row.claimToken);
     if (Number(row.attempts) < retry.maxAttempts) {
       const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
-      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt, JSON.stringify(history), row.id);
-      database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-    } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate
+      )).run(availableAt, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+    } else {
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] <= ? AND " + ownership.predicate
+      )).run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id, recoveredIso, ...ownership.params);
+    }
   }
-  if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
+}
+function jobClaimOwnership(claimToken) {
+  return typeof claimToken === "string" && claimToken.length > 0 ? { predicate: "[claimToken] = ?", params: [claimToken] } : { predicate: "[claimToken] IS NULL", params: [] };
 }
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
@@ -18506,7 +18537,7 @@ function stopCurrentUserJobWorker(database) {
     database.clock.clearTimer(database.__jobWakeTimer);
     database.__jobWakeTimer = null;
   }
-  for (const controller of database.__jobAbortControllers?.values?.() ?? []) controller.abort();
+  for (const activeClaim of database.__jobAbortControllers?.values?.() ?? []) (activeClaim?.controller ?? activeClaim)?.abort?.();
   return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise) : void 0;
 }
 function scheduleCurrentUserJobWorker(database) {
@@ -18559,12 +18590,19 @@ async function runCurrentUserJobWorker(database) {
         return;
       }
       const startedAt = database.clock.now().toISOString();
-      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
+      const claimToken = randomUUID2();
+      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), claimToken, row.id);
       if (!claimed?.changes) continue;
+      if (database.__jobStopped) {
+        await database.adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [status] = CASE WHEN [cancelRequestedAt] IS NULL THEN 'queued' ELSE 'cancelled' END, [attempts] = CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL, [completedAt] = CASE WHEN [cancelRequestedAt] IS NULL THEN [completedAt] ELSE [cancelRequestedAt] END WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+        )).run(row.id, claimToken);
+        return;
+      }
       const handler = database.jobs?.find((candidate) => candidate.name === row.handler);
       database.__jobAbortControllers ??= /* @__PURE__ */ new Map();
       const abortController = new AbortController();
-      database.__jobAbortControllers.set(row.id, abortController);
+      database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       try {
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
@@ -18607,7 +18645,9 @@ async function runCurrentUserJobWorker(database) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
+        await database.adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+        )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
       } catch (error) {
         const failure = safeJobFailure(error);
         const failedAt = database.clock.now().toISOString();
@@ -18616,14 +18656,24 @@ async function runCurrentUserJobWorker(database) {
         const abortError = error?.cause ?? error;
         const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
-        if (cancelled) await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
-        else if (Number(row.attempts) + 1 < retry.maxAttempts) {
+        if (cancelled) {
+          await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+          )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
+        } else if (Number(row.attempts) + 1 < retry.maxAttempts) {
           const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
-          await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt, JSON.stringify(history), row.id);
-          scheduleJobWorkerWake(database, retry.delayMs + 1);
-        } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
+          const changed = await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+          )).run(availableAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry.delayMs + 1);
+        } else {
+          await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id] = ? AND [status]='running' AND [claimToken]=?"
+          )).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
+        }
       } finally {
-        database.__jobAbortControllers?.delete(row.id);
+        const activeClaim = database.__jobAbortControllers?.get(row.id);
+        if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
       }
     }
   } finally {

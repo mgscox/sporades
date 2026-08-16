@@ -423,7 +423,7 @@ export async function ensureJobStorage(sqlite) {
     // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
     // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
     // "PRAGMA"` before the Job queue existed.
-    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
+    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
         await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
     await sqlite.exec(sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"));
 }
@@ -594,16 +594,43 @@ export async function inspectRuntimeSchedules(adapter) {
 export function normalizeJobRetry(value) { if (value === undefined)
     return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0)
     throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
-export async function cancelJob(database, context, id) { const sql = database.adapter.dialect.sql; const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId); if (!row)
-    return null; const now = database.clock.now().toISOString(); if (["queued", "delayed"].includes(row.status)) {
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
-} if (row.status === "running") {
-    const runtimeDatabase = database.__rootDatabase ?? database;
-    runtimeDatabase.__jobAbortControllers?.get(id)?.abort();
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, cancelRequestedAt: now }, true);
-} throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled."); }
+export async function cancelJob(database, context, id) {
+    const sql = database.adapter.dialect.sql;
+    const read = () => context.__privilegedJobAccess
+        ? database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id)
+        : database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
+    // Cancellation is a state transition, not a stale projection update. Retry
+    // when another runtime wins between the authorized read and the guarded
+    // write so a queued cancellation cannot overwrite a newly running claim.
+    for (let transition = 0; transition < 8; transition += 1) {
+        const row = await read();
+        if (!row)
+            return null;
+        const now = database.clock.now().toISOString();
+        if (["queued", "delayed"].includes(row.status)) {
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, " +
+                "[leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?")).run(now, id, row.status);
+            if (Number(changed?.changes ?? 0) === 1)
+                return jobState({ ...row, status: "cancelled", completedAt: now, startedAt: null, leaseExpiresAt: null }, true);
+            continue;
+        }
+        if (row.status === "running") {
+            const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " +
+                (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL"))).run(now, id, ...(hasClaimToken ? [row.claimToken] : []));
+            if (Number(changed?.changes ?? 0) !== 1)
+                continue;
+            const runtimeDatabase = database.__rootDatabase ?? database;
+            const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+            const controller = activeClaim?.controller ?? activeClaim;
+            if (!activeClaim?.claimToken || activeClaim.claimToken === row.claimToken)
+                controller?.abort?.();
+            return jobState({ ...row, cancelRequestedAt: now }, true);
+        }
+        throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+    }
+    throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
 export function jobSummary(row) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 export function encodeJobCursor(row) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
 export function decodeJobCursor(value) {

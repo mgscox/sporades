@@ -242,6 +242,7 @@ export async function listTeamJoinLinks(database, auth, teamId) {
     if (!isOpaqueTeamId(teamId))
         throw teamDenied();
     return withTeamTransaction(database, async (tx) => {
+        await lockTeamLifecycle(tx, teamId);
         if (!await currentTeamAdmin(tx, teamId, auth.userId))
             throw teamDenied();
         const now = (database.clock?.now?.() ?? new Date()).toISOString();
@@ -280,30 +281,44 @@ async function inspectTeamJoinLinkWithActivity(database, code, assertActive = un
     const parsed = parseTeamJoinCode(code);
     if (!parsed)
         return { team: null, expiresAt: null, usable: false };
-    const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?")).get(parsed.selector);
-    assertActive?.();
-    const secretRow = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
-    assertActive?.();
-    const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-    const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-    const expectedSignature = Buffer.from(row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
-    const actualSignature = Buffer.from(parsed.signature, "base64url");
-    const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-    const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
-    const now = (database.clock?.now?.() ?? new Date()).getTime();
-    const usable = Boolean(row && verifierMatches && signatureMatches && !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > now);
-    if (!usable)
-        return { team: null, expiresAt: null, usable: false };
-    const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
-    assertActive?.();
-    if (!team)
-        return { team: null, expiresAt: null, usable: false };
-    return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
+    return withTeamTransaction(database, async (tx) => {
+        const readCapability = () => tx.prepare(tx.dialect.sql("SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?")).get(parsed.selector);
+        const row = await readCapability();
+        assertActive?.();
+        const secretRow = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+        assertActive?.();
+        const usable = (candidate) => {
+            const expectedVerifier = Buffer.from(candidate?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+            const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+            const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
+            const actualSignature = Buffer.from(parsed.signature, "base64url");
+            const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
+            const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+            return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? new Date()).getTime());
+        };
+        if (!usable(row))
+            return { team: null, expiresAt: null, usable: false };
+        if (!await tryLockTeamLifecycle(tx, String(row.teamId))) {
+            return { team: null, expiresAt: null, usable: false };
+        }
+        assertActive?.();
+        // Lifecycle writers take the same Team lock. Re-read after acquiring it so
+        // revoke, redemption, deletion, and rename cannot produce a mixed view.
+        const lockedRow = await readCapability();
+        assertActive?.();
+        if (!usable(lockedRow) || String(lockedRow.teamId) !== String(row.teamId))
+            return { team: null, expiresAt: null, usable: false };
+        const team = await tx.prepare(tx.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(lockedRow.teamId);
+        assertActive?.();
+        if (!team)
+            return { team: null, expiresAt: null, usable: false };
+        return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(lockedRow.expiresAt), usable: true };
+    });
 }
 async function countPrivilegedTeamMembers(database, teamId, assertActive) {
     return withTeamTransaction(database, async (tx) => {
         assertActive();
-        await requireExistingPrivilegedTeam(tx, teamId);
+        await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
         assertActive();
         const total = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
         assertActive();
@@ -314,7 +329,7 @@ async function listPrivilegedTeamMembers(database, teamId, options = {}, assertA
     return withTeamTransaction(database, async (tx) => {
         const sql = tx.dialect.sql;
         assertActive();
-        await requireExistingPrivilegedTeam(tx, teamId);
+        await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
         assertActive();
         // Exact-Team existence is the stable outer boundary for this userless
         // inspection. Only validate paging after it, so malformed paging cannot
@@ -352,7 +367,7 @@ async function listPrivilegedTeamMembers(database, teamId, options = {}, assertA
 async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
     return withTeamTransaction(database, async (tx) => {
         assertActive();
-        await requireExistingPrivilegedTeam(tx, teamId);
+        await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
         assertActive();
         const now = (database.clock?.now?.() ?? new Date()).toISOString();
         // This is deliberately a read-only view: unlike admin link management it
@@ -548,14 +563,17 @@ async function countTeamAdmins(tx, teamId) {
     const row = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'")).get(teamId);
     return Number(row?.count ?? 0);
 }
-async function lockTeamLifecycle(tx, teamId) {
+async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
     // A no-op row update is a portable per-Team write lock: under Postgres the
     // next lifecycle transaction waits and then observes the prior commit;
     // SQLite/libSQL retain their adapter transaction serialization. This keeps
     // the admin predicate and its write one linearizable operation.
+    if (!isOpaqueTeamId(teamId) || !await tryLockTeamLifecycle(tx, teamId))
+        throw missingTeamError();
+}
+async function tryLockTeamLifecycle(tx, teamId) {
     const claimed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?")).run(teamId);
-    if (Number(claimed?.changes ?? 0) !== 1)
-        throw teamDenied();
+    return Number(claimed?.changes ?? 0) === 1;
 }
 async function releaseTeamMembershipSlot(tx, userId) {
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] - 1 WHERE [userId] = ? AND [membershipCount] > 0")).run(userId);
@@ -849,6 +867,7 @@ export async function listTeamMembers(database, auth, teamId, options = {}) {
         throw teamDenied();
     return withTeamTransaction(database, async (tx) => {
         const sql = tx.dialect.sql;
+        await lockTeamLifecycle(tx, teamId);
         // Check the caller's current, persisted membership before querying member
         // profiles. Missing Teams, non-members, and ordinary members are one
         // opaque public denial, so this API cannot become a Team-existence probe.
@@ -891,6 +910,7 @@ export async function countTeamMembers(database, auth, teamId) {
         throw teamMemberCountDenied();
     return withTeamTransaction(database, async (tx) => {
         const sql = tx.dialect.sql;
+        await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
         // Authorize against the same transaction snapshot used for the count. This
         // keeps unknown Teams and non-members indistinguishable and never joins
         // membership data to profile or role presentation fields.

@@ -7,9 +7,10 @@ import { test } from "node:test";
 import {
   linkProviderIdentity, openDevDatabase, resolveAnonymousSession, runMutation, runQuery, signInWithEmail, signUpWithEmail, simulateLocalIdentitySession,
 } from "../dist/server-runtime-source.js";
-import { createAdditionalTeam, createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
+import { countTeamMembers, createAdditionalTeam, createTeamJoinLink, createTeamTables, deleteCurrentUserTeam, demoteTeamMember, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, promoteTeamMember, removeTeamMember, revokeTeamJoinLink, updateTeamMemberApplicationRoles } from "../dist/teams-runtime.js";
 import { mutation, String, table } from "../dist/server.js";
 import { createPendingFileUpload } from "../dist/file-storage-runtime.js";
+import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 test("Capsules cannot adopt runtime-owned Team tables through ctx.db schema", async () => {
   await withDatabase(async (databasePath) => {
@@ -325,6 +326,24 @@ test("Join-link inspection rejects tampering, expiry, and revocation without rec
       await revokeTeamJoinLink(database, linked.auth, team.id, created.id);
       assert.equal((await inspectTeamJoinLink(database, code)).usable, false, "revocation invalidates inspection");
     } finally { await database.close(); }
+  });
+});
+
+test("Join-link inspection re-reads a capability after acquiring its Team lifecycle lock", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-inspect-reread", auth: { providers: { anonymous: true, email: true } } }, { name: "teams-inspect-reread", schema: {} });
+    const baseAdapter = database.adapter;
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "inspect-reread-owner@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "inspect-reread-invitee@example.com", { ttlSeconds: 300 });
+      const code = new URL(issued.link).searchParams.get("code");
+      database.adapter = revokeJoinLinkBeforeLifecycleClaim(baseAdapter, issued.id, new Date().toISOString());
+      assert.deepEqual(await inspectTeamJoinLink(database, code), { team: null, expiresAt: null, usable: false });
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
   });
 });
 
@@ -950,6 +969,8 @@ test("Privileged callbacks expose only safe Team inspections during their active
       const joinLinkReads = captureTeamJoinLinkReads(baseAdapter);
       database.adapter = joinLinkReads.adapter;
       const result = await runMutation(database, linkedAuth("user-one"), "probe", []);
+      const lifecycleLocks = joinLinkReads.statements.filter((statement) => normalizedSql(statement).includes("UPDATE sporades_teams SET name = name WHERE id = ?"));
+      assert.equal(lifecycleLocks.length, 4, JSON.stringify(joinLinkReads.statements));
       const privilegedListRead = joinLinkReads.statements.filter((statement) => statement.includes("sporades_team_join_links") && statement.includes("WHERE \"teamId\""));
       assert.equal(privilegedListRead.length, 1, JSON.stringify(joinLinkReads.statements));
       assert.doesNotMatch(privilegedListRead[0], /["\[]email["\]]/i);
@@ -973,6 +994,144 @@ test("Privileged callbacks expose only safe Team inspections during their active
       await database.close();
     }
   });
+});
+
+test("multi-statement Team inspections acquire the lifecycle lock before authorization and projection reads", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-inspection-locks", auth: { providers: { anonymous: true, email: true } } }, { name: "teams-inspection-locks", schema: {} });
+    const baseAdapter = database.adapter;
+    const statements = [];
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "inspection-lock-owner@example.com", password: "password-123", name: "Owner" });
+      const team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      await createTeamJoinLink(database, owner.auth, team.id, "inspection-lock-invitee@example.com", { ttlSeconds: 300 });
+      database.adapter = recordTeamStatements(baseAdapter, statements);
+      for (const inspect of [
+        () => countTeamMembers(database, owner.auth, team.id),
+        () => listTeamMembers(database, owner.auth, team.id),
+        () => listTeamJoinLinks(database, owner.auth, team.id),
+      ]) {
+        statements.length = 0;
+        await inspect();
+        assert.match(normalizedSql(statements[0] ?? ""), /UPDATE sporades_teams SET name = name WHERE id = \?/);
+      }
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
+test("Postgres public Team count observes a committed caller removal before authorizing", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres Team inspection race.",
+}, async () => {
+  await withPostgresAdapter(async () => {});
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-count-postgres-"));
+  const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  const config = { name: "teams-count-postgres", auth: { providers: { anonymous: true, email: true } }, services: { database: { engine: "postgres" } } };
+  const capsule = { name: "teams-count-postgres", schema: {} };
+  const first = await openDevDatabase(path.join(dir, "first.db"), "", serverEnv, config, capsule, { serviceEnv: serverEnv });
+  let second;
+  const firstAdapter = first.adapter;
+  try {
+    const owner = await signUpWithEmail(first, await resolveAnonymousSession(first, null), "email", { email: "pg-count-owner@example.com", password: "password-123", name: "Owner" });
+    const member = await signUpWithEmail(first, await resolveAnonymousSession(first, null), "email", { email: "pg-count-member@example.com", password: "password-123", name: "Member" });
+    const team = (await listCurrentUserTeams(first, owner.auth)).teams[0];
+    const issued = await createTeamJoinLink(first, owner.auth, team.id, member.auth.email, { ttlSeconds: 300 });
+    await joinCurrentUserTeam(first, member.auth, new URL(issued.link).searchParams.get("code"));
+    second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, config, capsule, { serviceEnv: serverEnv });
+
+    const removalPause = pauseAfterTeamStatement(firstAdapter, "DELETE FROM sporades_team_memberships WHERE teamId = ? AND userId = ?");
+    first.adapter = removalPause.adapter;
+    const removal = removeTeamMember(first, owner.auth, team.id, member.auth.userId);
+    await removalPause.started;
+
+    const countAttempt = observeTeamLifecycleClaim(second.adapter);
+    const secondAdapter = second.adapter;
+    second.adapter = countAttempt.adapter;
+    const count = countTeamMembers(second, member.auth, team.id);
+    await countAttempt.started;
+    removalPause.release();
+    await removal;
+    await assert.rejects(count, (error) => error?.code === "DENIED");
+    assert.deepEqual(await countTeamMembers(second, owner.auth, team.id), { totalCount: 1 });
+    second.adapter = secondAdapter;
+  } finally {
+    first.adapter = firstAdapter;
+    await second?.close();
+    await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Postgres Privileged member inspection observes committed removal and deletion", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres Privileged Team inspection races.",
+}, async () => {
+  await withPostgresAdapter(async () => {});
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-privileged-postgres-"));
+  const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  const config = { name: "teams-privileged-postgres", auth: { providers: { anonymous: true, email: true } }, services: { database: { engine: "postgres" } } };
+  const capsule = {
+    name: "teams-privileged-postgres",
+    schema: {},
+    mutations: {
+      inspectMembers: mutation((ctx, teamId) => ctx.privileged.run(
+        { operation: "teams.postgres.inspect", targetResourceKind: "team" },
+        async (privileged) => {
+          try { return { members: await privileged.teams.listMembers(teamId) }; }
+          catch (error) { return { errorCode: error?.code ?? null }; }
+        },
+      )),
+    },
+  };
+  const first = await openDevDatabase(path.join(dir, "first.db"), "", serverEnv, config, capsule, { serviceEnv: serverEnv });
+  let second;
+  const firstAdapter = first.adapter;
+  try {
+    const owner = await signUpWithEmail(first, await resolveAnonymousSession(first, null), "email", { email: "pg-privileged-owner@example.com", password: "password-123", name: "Owner" });
+    const member = await signUpWithEmail(first, await resolveAnonymousSession(first, null), "email", { email: "pg-privileged-member@example.com", password: "password-123", name: "Member" });
+    const team = (await listCurrentUserTeams(first, owner.auth)).teams[0];
+    const issued = await createTeamJoinLink(first, owner.auth, team.id, member.auth.email, { ttlSeconds: 300 });
+    await joinCurrentUserTeam(first, member.auth, new URL(issued.link).searchParams.get("code"));
+    second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, config, capsule, { serviceEnv: serverEnv });
+
+    const removalPause = pauseAfterTeamStatement(firstAdapter, "DELETE FROM sporades_team_memberships WHERE teamId = ? AND userId = ?");
+    first.adapter = removalPause.adapter;
+    const removal = removeTeamMember(first, owner.auth, team.id, member.auth.userId);
+    await removalPause.started;
+    let secondAdapter = second.adapter;
+    let inspectionAttempt = observeTeamLifecycleClaim(secondAdapter);
+    second.adapter = inspectionAttempt.adapter;
+    const afterRemoval = runMutation(second, linkedAuth("privileged-probe"), "inspectMembers", [team.id]);
+    await inspectionAttempt.started;
+    removalPause.release();
+    await removal;
+    const removalResult = await afterRemoval;
+    assert.equal(removalResult.ok, true);
+    assert.equal(removalResult.data.members.totalCount, 1);
+    assert.equal(removalResult.data.members.members.length, 1);
+    assert.equal(removalResult.data.members.members[0].userId, owner.auth.userId);
+    second.adapter = secondAdapter;
+
+    const deletionPause = pauseAfterTeamStatement(firstAdapter, "DELETE FROM sporades_teams WHERE id = ?");
+    first.adapter = deletionPause.adapter;
+    const deletion = deleteCurrentUserTeam(first, owner.auth, team.id);
+    await deletionPause.started;
+    secondAdapter = second.adapter;
+    inspectionAttempt = observeTeamLifecycleClaim(secondAdapter);
+    second.adapter = inspectionAttempt.adapter;
+    const afterDeletion = runMutation(second, linkedAuth("privileged-probe"), "inspectMembers", [team.id]);
+    await inspectionAttempt.started;
+    deletionPause.release();
+    await deletion;
+    assert.deepEqual((await afterDeletion).data, { errorCode: "TEAM_NOT_FOUND" });
+    second.adapter = secondAdapter;
+  } finally {
+    first.adapter = firstAdapter;
+    await second?.close();
+    await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("detached and aborted Privileged Team inspections fail closed after their callback scope ends", async () => {
@@ -1086,9 +1245,9 @@ test("Privileged Join-link inspection stops at every paused read boundary after 
 
       database.adapter = teamRowPause.adapter;
       assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "abortAtTeamRow", []), { ok: true, data: { aborted: true }, error: null });
-      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_team_join_links")).length, 1);
+      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_team_join_links")).length, 2);
       assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_team_join_link_secrets")).length, 1);
-      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_teams")).length, 1);
+      assert.equal(teamRowPause.statements.filter((statement) => statement.includes("sporades_teams")).length, 2);
     } finally {
       database.adapter = baseAdapter;
       await database.close();
@@ -1199,6 +1358,53 @@ test("a Capsule that never uses Teams retains auth, query, mutation, file, and A
   });
 });
 
+test("every Privileged exact-Team inspection rejects malformed identifiers before adapter access", async () => {
+  await withDatabase(async (databasePath) => {
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged-malformed" }, {
+      name: "teams-privileged-malformed",
+      schema: {},
+      mutations: {
+        inspectMalformed: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.malformed", targetResourceKind: "team" },
+          async (privileged) => {
+            // A malformed string is deliberately bindable. That means the
+            // error code alone cannot hide an accidental existence query;
+            // the statement assertion below proves validation precedes SQL.
+            const malformedTeamId = "not-a-team-id";
+            const codes = [];
+            for (const inspect of [
+              () => privileged.teams.countMembers(malformedTeamId),
+              () => privileged.teams.listMembers(malformedTeamId),
+              () => privileged.teams.listJoinLinks(malformedTeamId),
+            ]) {
+              try { await inspect(); codes.push("NO_ERROR"); }
+              catch (error) { codes.push(error?.code ?? null); }
+            }
+            return codes;
+          },
+        )),
+      },
+    });
+    const baseAdapter = database.adapter;
+    const statements = [];
+    try {
+      database.adapter = recordTeamStatements(baseAdapter, statements);
+      assert.deepEqual(
+        await runMutation(database, linkedAuth("malformed-team-probe"), "inspectMalformed", []),
+        { ok: true, data: ["TEAM_NOT_FOUND", "TEAM_NOT_FOUND", "TEAM_NOT_FOUND"], error: null },
+      );
+      assert.equal(
+        statements.filter((statement) => normalizedSql(statement).includes("UPDATE sporades_teams SET name = name WHERE id = ?")).length,
+        0,
+        JSON.stringify(statements),
+      );
+    } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
 function linkedAuth(userId) {
   return { userId, displayName: "Owner", email: "owner@example.com", picture: null, isAuthenticated: true, isGuest: false, provider: "email" };
 }
@@ -1222,7 +1428,7 @@ function captureTeamJoinLinkReads(adapter) {
       const value = Reflect.get(currentTarget, property, receiver);
       if (property !== "prepare" || typeof value !== "function") return value;
       return (statement) => {
-        if (`${statement}`.includes("sporades_team_join_links")) statements.push(`${statement}`);
+        statements.push(`${statement}`);
         return value.call(currentTarget, statement);
       };
     },
@@ -1294,6 +1500,37 @@ function failTeamApplicationRoleInsert(adapter, error) {
   return wrap(adapter);
 }
 
+function revokeJoinLinkBeforeLifecycleClaim(adapter, joinLinkId, revokedAt) {
+  let revoked = false;
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (revoked || !normalizedSql(statement).includes("UPDATE sporades_teams SET name = name WHERE id = ?")) return prepared;
+        return new Proxy(prepared, {
+          get(preparedTarget, preparedProperty, preparedReceiver) {
+            const method = Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+            if (preparedProperty !== "run" || typeof method !== "function") return method;
+            return async (...args) => {
+              revoked = true;
+              await currentTarget.prepare(currentTarget.dialect.sql(
+                "UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ?",
+              )).run(revokedAt, joinLinkId);
+              return method.apply(preparedTarget, args);
+            };
+          },
+        });
+      };
+    },
+  });
+  return wrap(adapter);
+}
+
 function failTeamBootstrapMembershipInsert(adapter, error) {
   const wrap = (target) => new Proxy(target, {
     get(currentTarget, property, receiver) {
@@ -1346,6 +1583,72 @@ function recordTeamStatements(adapter, statements) {
     },
   });
   return wrap(adapter);
+}
+
+function pauseAfterTeamStatement(adapter, expectedSql) {
+  let releaseStatement = () => {};
+  let startedResolve;
+  let paused = false;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (paused || !normalizedSql(statement).includes(expectedSql)) return prepared;
+        return new Proxy(prepared, {
+          get(preparedTarget, preparedProperty, preparedReceiver) {
+            const method = Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+            if (preparedProperty !== "run" || typeof method !== "function") return method;
+            return async (...args) => {
+              const result = await method.apply(preparedTarget, args);
+              paused = true;
+              startedResolve();
+              await new Promise((resolve) => { releaseStatement = resolve; });
+              return result;
+            };
+          },
+        });
+      };
+    },
+  });
+  return { adapter: wrap(adapter), started, release() { releaseStatement(); } };
+}
+
+function observeTeamLifecycleClaim(adapter) {
+  let startedResolve;
+  let observed = false;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (observed || !normalizedSql(statement).includes("UPDATE sporades_teams SET name = name WHERE id = ?")) return prepared;
+        return new Proxy(prepared, {
+          get(preparedTarget, preparedProperty, preparedReceiver) {
+            const method = Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+            if (preparedProperty !== "run" || typeof method !== "function") return method;
+            return (...args) => {
+              const result = method.apply(preparedTarget, args);
+              observed = true;
+              startedResolve();
+              return result;
+            };
+          },
+        });
+      };
+    },
+  });
+  return { adapter: wrap(adapter), started };
 }
 
 function assertLifecycleLockPrecedes(statements, mutableStatement, operation) {
