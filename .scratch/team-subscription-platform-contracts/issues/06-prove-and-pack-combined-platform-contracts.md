@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Expose the complete Privileged Team inspection surface; 04 — Insert rows idempotently against declared uniqueness; 05 — Add uniqueness through atomic Capsule schema migration
 
-**Status:** review
+**Status:** done
 
 - [ ] The candidate starts from the reconciled main history containing the published `v0.8.5` ancestry and contains only focused implementation, documentation, generated-artifact, and test changes.
 - [ ] Focused Team, privilege-lifecycle, schema, ACL, migration, and cross-engine conformance tests pass.
