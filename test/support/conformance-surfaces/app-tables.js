@@ -157,6 +157,16 @@ const UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID = {
   uniqueConstraints: [["teamId", "slug"], ["externalId"]],
 };
 
+const UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_migration_unrelated_unique",
+};
+
+const UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
 const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE] };
@@ -186,6 +196,26 @@ const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID = {
     UNIQUE_MUTABILITY_TABLE,
     UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
     UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE_EXTERNAL_ID = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE_WITH_EXTERNAL_ID,
   ],
 };
 
@@ -280,6 +310,21 @@ async function indexedLogMessages(adapter, limit = 50) {
 // against a fresh object literal built from the columns the case is actually asserting.
 function pick(row, keys) {
   return Object.fromEntries(keys.map((key) => [key, row?.[key]]));
+}
+
+function injectMigrationTemporaryTableError(adapter, tableName, error) {
+  const originalWithTransaction = adapter.withTransaction;
+  adapter.withTransaction = (fn) => originalWithTransaction.call(adapter, (transaction) => {
+    const originalCreateAppTable = transaction.createAppTable;
+    transaction.createAppTable = (table, temporaryTableName) => {
+      if (temporaryTableName === `__sporades_migrating_${tableName}`) {
+        throw error;
+      }
+      return originalCreateAppTable.call(transaction, table, temporaryTableName);
+    };
+    return fn(transaction);
+  });
+  return () => { adapter.withTransaction = originalWithTransaction; };
 }
 
 async function prepareAppTableStorage(adapter) {
@@ -1194,7 +1239,7 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
-    name: "migrateAppSchema preserves an unrelated unique engine error outside the constraint-copy step",
+    name: "migrateAppSchema preserves a foreign-key engine error during the unique-constraint rebuild",
     async run(adapter) {
       await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE);
       await adapter.insertAppRow(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, {
@@ -1206,33 +1251,65 @@ const APP_TABLE_CONFORMANCE_CASES = [
         externalId: "external-a",
       });
 
-      const originalWithTransaction = adapter.withTransaction;
       // The Database engine is the system boundary below this conformance seam. Injecting its
-      // unique outcome verifies that the public migration only redacts a duplicate from the exact
-      // constraint-copy step, rather than every unique error a Database engine may report.
-      adapter.withTransaction = () => {
-        const error = new Error("UNIQUE constraint failed: injected unrelated migration failure");
-        if (adapter.engine === "postgres") {
-          error.code = "23505";
-        } else {
-          error.errcode = 2067;
-        }
-        return Promise.reject(error);
-      };
+      // foreign-key outcome after the transaction callback begins verifies that only duplicate
+      // copy failures are redacted, not every engine constraint failure during a rebuild.
+      const injected = new Error("FOREIGN KEY constraint failed: injected migration rebuild failure");
+      if (adapter.engine === "postgres") {
+        injected.code = "23503";
+      }
+      const restoreWithTransaction = injectMigrationTemporaryTableError(adapter, UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name, injected);
       try {
         await assert.rejects(
           adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID),
           (error) => {
-            assert.equal(error.message, "UNIQUE constraint failed: injected unrelated migration failure");
+            assert.equal(error.message, "FOREIGN KEY constraint failed: injected migration rebuild failure");
+            assert.equal(error.code, adapter.engine === "postgres" ? "23503" : undefined);
+            return true;
+          },
+        );
+      } finally {
+        restoreWithTransaction();
+      }
+
+      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, "unique-infrastructure-kept");
+      assert.equal(stored.externalId, "external-a");
+    },
+  },
+  {
+    name: "migrateAppSchema preserves an unrelated unique engine error during the unique-constraint rebuild",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE, {
+        id: "unrelated-unique-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      const injected = new Error("UNIQUE constraint failed: injected unrelated migration rebuild failure");
+      if (adapter.engine === "postgres") {
+        injected.code = "23505";
+      } else {
+        injected.errcode = 2067;
+      }
+      const restoreWithTransaction = injectMigrationTemporaryTableError(adapter, UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name, injected);
+      try {
+        await assert.rejects(
+          adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE_EXTERNAL_ID),
+          (error) => {
+            assert.equal(error.message, "UNIQUE constraint failed: injected unrelated migration rebuild failure");
             assert.equal(error.code, adapter.engine === "postgres" ? "23505" : undefined);
             return true;
           },
         );
       } finally {
-        adapter.withTransaction = originalWithTransaction;
+        restoreWithTransaction();
       }
 
-      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, "unique-infrastructure-kept");
+      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE, "unrelated-unique-kept");
       assert.equal(stored.externalId, "external-a");
     },
   },
@@ -1327,12 +1404,14 @@ export const CONFORMANCE_SURFACE = {
     UNIQUE_MIGRATION_TABLE.name,
     UNIQUE_DUPLICATE_MIGRATION_TABLE.name,
     UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
     `__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`,
     `__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`,
     `__sporades_migrating_${UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name}`,
   ],
   prepareStorage: prepareAppTableStorage,
   cases: APP_TABLE_CONFORMANCE_CASES,
