@@ -111,8 +111,14 @@ const MIGRATED_ENTRIES_TABLE = {
   fields: [...ENTRIES_TABLE.fields, { name: "status", kind: "String", sqliteType: "TEXT", defaultValue: "open" }],
 };
 
+const MIGRATED_ENTRIES_WITH_UNIQUE_TABLE = {
+  ...MIGRATED_ENTRIES_TABLE,
+  uniqueConstraints: [["note"]],
+};
+
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_WITH_UNIQUE_TABLE, ARCHIVE_TABLE] };
 
 // The two tables of the migration that must fail partway. A migration walks the schema's tables in
 // order, so putting a table that migrates cleanly ahead of one that cannot is what makes the
@@ -687,6 +693,32 @@ const APP_TABLE_CONFORMANCE_CASES = [
         storedSchema.tables.find((table) => table.name === ENTRIES_TABLE.name).fields.map((field) => field.name),
         ["note", "ownerId", "accountId", "status"],
       );
+    },
+  },
+  {
+    // Unique declarations are supported for newly created tables in this slice. Altering the
+    // constraint set of a stored table needs its own compatibility, duplicate-data, and error
+    // contract, so the additive migration boundary must reject it before it reaches the rebuild.
+    name: "migrateAppSchema rejects an existing table unique change without rebuilding, copying, or rewriting metadata",
+    async run(adapter) {
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const entriesBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === ENTRIES_TABLE.name);
+
+      await assert.rejects(adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE), {
+        message: "Unsupported Capsule schema change.",
+        hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+      });
+
+      const entriesAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === ENTRIES_TABLE.name);
+      assert.deepEqual(entriesAfter.columns, entriesBefore.columns);
+      assert.deepEqual(
+        entriesAfter.rows.map((row) => pick(row, entriesBefore.columns)),
+        entriesBefore.rows.map((row) => pick(row, entriesBefore.columns)),
+      );
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${ENTRIES_TABLE.name}`), false);
+      assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore);
+      assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore);
     },
   },
   {

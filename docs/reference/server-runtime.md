@@ -71,6 +71,14 @@ PostgreSQL: a `NULL` in any constrained field does not conflict with another
 row. A unique declaration does not make a field required; validate required
 business fields separately.
 
+Unique declarations are immutable once a table has been created. Adding,
+removing, replacing, or changing the field order of a constraint on an existing
+table is rejected as an unsupported Capsule schema change; Sporades does not
+attempt to rebuild that table or resolve duplicate data. Keep the existing
+declaration, or create a new table and move data through an explicit Capsule
+migration when you can safely do so. Support for in-place unique-constraint
+migration is deferred.
+
 Tables can also declare ACL rules next to their fields. ACL rules are an
 invisible accept/reject authorization policy around normal `ctx.db` table
 operations; app code still reads and writes through the table API instead of
