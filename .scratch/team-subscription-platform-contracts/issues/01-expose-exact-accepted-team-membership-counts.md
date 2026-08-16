@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A current ordinary member and a current admin can each retrieve the exact accepted membership count for their exact Team.
 - [ ] Counts above 100 remain exact while the Team-summary presentation count remains bounded by its existing cap.

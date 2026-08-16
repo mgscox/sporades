@@ -4,11 +4,11 @@ Coordinator base: `494a086`
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | ready | None | `494a086` | pending | pending | pending | pending | pending | pending | pending | pending |
-| 02 | blocked | 01 | pending | pending | pending | pending | pending | pending | pending | pending | pending |
-| 03 | ready | None | `494a086` | pending | pending | pending | pending | pending | pending | pending | pending |
-| 04 | blocked | 03 | pending | pending | pending | pending | pending | pending | pending | pending | pending |
-| 05 | blocked | 03 | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| 01 | done | None | `494a086` | `codex/team-contracts-01` / `/private/tmp/sporades-team-contracts-01` | `/root/ticket_01_exact_counts_takeover` | `5b3b409` | `/root/rereview_ticket_01_exact_counts` | ACCEPT | `6893db7`, `80d6cd7` | integration: 20 pass, 0 fail, 1 PostgreSQL skip on Node 22; typecheck/generated-bin passed | pending |
+| 02 | done | 01 | `80d6cd7` | `codex/team-contracts-02` / `/private/tmp/sporades-team-contracts-02` | `/root/ticket_02_privileged_inspections` | `319bd4a` | `/root/acceptance_review_ticket_02` | ACCEPT | `16d784a`..`dea4ebc` | integration: focused 67/67; typecheck/build/docs/generated-bin passed | pending |
+| 03 | done | None | `494a086` | `codex/team-contracts-03` / `/private/tmp/sporades-team-contracts-03` | `/root/ticket_03_unique_declarations` | `28e0d12` | `/root/definitive_review_ticket_03` | ACCEPT | `f638b36`..`20baabb` | integration: 59 pass, 0 fail, 1 PostgreSQL skip; typecheck/build/docs/generated-bin passed | pending |
+| 04 | rework | 03 | `20baabb` | `codex/team-contracts-04` / `/private/tmp/sporades-team-contracts-04` | `/root/ticket_04_insert_or_ignore` | `b4cf257` | `/root/review_ticket_04_insert_or_ignore` | REQUEST_CHANGES: whole-transaction Postgres concurrency plus real race proof | pending | RED captured; focused green; shared conformance 54 pass on SQLite/libSQL, Postgres config skip | pending |
+| 05 | ready | 03 | `20baabb` | pending | pending | pending | pending | pending | pending | pending | pending |
 | 06 | blocked | 02, 04, 05 | pending | pending | pending | pending | pending | pending | pending | pending | pending |
 
 ## Baseline

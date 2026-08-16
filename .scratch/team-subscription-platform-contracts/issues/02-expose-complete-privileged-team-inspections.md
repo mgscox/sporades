@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Expose exact accepted Team membership counts
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Privileged callbacks can count accepted members, enumerate the existing safe member projection, list safe active Join-link metadata, and perform the existing safe Join-link inspection.
 - [ ] Privileged Team inspections perform no current-user membership or admin check and do not invent or capture a Sporades user identity.

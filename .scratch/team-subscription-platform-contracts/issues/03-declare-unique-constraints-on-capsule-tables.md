@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A table accepts one or more chainable unique declarations, each containing at least one declared Capsule field.
 - [ ] Compile-time key checking and runtime validation reject empty, unknown, malformed, or repeated field declarations before schema migration begins.
