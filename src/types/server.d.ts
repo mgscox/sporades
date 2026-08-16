@@ -452,6 +452,8 @@ export type CurrentUserTeamsApi = {
 /**
  * Read-only exact-Team inspection available only inside an active Privileged
  * callback. It carries no current-user membership or administration authority.
+ * In-flight inspection rejects if the callback ends or its AbortSignal aborts
+ * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
   /** Returns the exact accepted-membership total for an existing Team. */

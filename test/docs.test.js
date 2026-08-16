@@ -816,6 +816,8 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(prd, /read-only exact-Team inspection surface/);
   assert.match(prd, /`TEAM_NOT_FOUND`/);
   assert.match(prd, /Join-link metadata without\s+the target email/);
+  assert.match(prd, /detached or aborted in-flight work fails closed/i);
+  assert.match(apiPrivilegedTeams, /In-flight inspection rejects/);
   assert.match(prd, /Current-user\s+Team listing and email-bound Join-link validation remain unavailable/);
 
   for (const command of ["sporades jobs", "sporades deploy jobs", "sporades host jobs"]) {

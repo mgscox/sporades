@@ -173,20 +173,16 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
 export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return Object.freeze({
     async countMembers(teamId: any) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return countPrivilegedTeamMembers(database, teamId);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
     },
     async listMembers(teamId: any, options: LooseRecord = {}) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return listPrivilegedTeamMembers(database, teamId, options);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamMembers(database, teamId, options, assertActive));
     },
     async listJoinLinks(teamId: any) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return listPrivilegedTeamJoinLinks(database, teamId);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
     },
     async inspectJoinLink(code: any) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return inspectTeamJoinLink(database, code);
+      return runPrivilegedTeamInspection(contextGetter, () => inspectTeamJoinLink(database, code));
     },
   });
 }
@@ -328,20 +324,25 @@ export async function inspectTeamJoinLink(database: LooseRecord, code: any) {
   return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
 }
 
-async function countPrivilegedTeamMembers(database: LooseRecord, teamId: any) {
+async function countPrivilegedTeamMembers(database: LooseRecord, teamId: any, assertActive: () => void) {
   return withTeamTransaction(database, async (tx) => {
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     const total = await tx.prepare(tx.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(teamId);
+    assertActive();
     return { totalCount: Number(total?.count ?? 0) };
   });
 }
 
-async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, options: LooseRecord = {}) {
+async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, options: LooseRecord = {}, assertActive: () => void) {
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     // Exact-Team existence is the stable outer boundary for this userless
     // inspection. Only validate paging after it, so malformed paging cannot
     // turn an absent Team into a different observable result.
@@ -349,6 +350,7 @@ async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, opt
     const total = await tx.prepare(sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(teamId);
+    assertActive();
     const cursorClause = page.cursor
       ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) "
       : "";
@@ -361,6 +363,7 @@ async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, opt
       "WHERE [m].[teamId] = ? " + cursorClause +
       "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
     )).all(...params);
+    assertActive();
     const hasMore = rows.length > page.limit;
     const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
     const last = pageRows.at(-1);
@@ -378,15 +381,18 @@ async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, opt
   });
 }
 
-async function listPrivilegedTeamJoinLinks(database: LooseRecord, teamId: any) {
+async function listPrivilegedTeamJoinLinks(database: LooseRecord, teamId: any, assertActive: () => void) {
   return withTeamTransaction(database, async (tx) => {
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     const now = (database.clock?.now?.() ?? new Date()).toISOString();
     // This is deliberately a read-only view: unlike admin link management it
     // does not prune expired rows as a side effect.
     const rows = await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?",
+      "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?",
     )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    assertActive();
     return { links: rows.map((row: LooseRecord) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
   });
 }
@@ -1210,6 +1216,17 @@ async function activeTeamApplicationRoles(adapter: LooseRecord, declared: any, t
 
 function isOpaqueTeamId(value: any) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function runPrivilegedTeamInspection<Result>(contextGetter: () => LooseRecord, inspect: (assertActive: () => void) => Promise<Result>) {
+  const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
+  assertActive();
+  const result = await inspect(assertActive);
+  // A detached inspection can settle after the callback has returned, or an
+  // AbortSignal can change while its adapter work is pending. Never hand that
+  // result back across either boundary.
+  assertActive();
+  return result;
 }
 
 function assertActivePrivilegedTeamAccess(contextGetter: () => LooseRecord) {

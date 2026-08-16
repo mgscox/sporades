@@ -939,6 +939,7 @@ test("Privileged callbacks expose only safe Team inspections during their active
         )),
       },
     });
+    const baseAdapter = database.adapter;
     try {
       const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-owner@example.com", password: "password-123", name: "Owner" });
       const member = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-member@example.com", password: "password-123", name: "Member" });
@@ -946,7 +947,12 @@ test("Privileged callbacks expose only safe Team inspections during their active
       await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, member.auth.userId, new Date().toISOString());
       const issued = await createTeamJoinLink(database, owner.auth, team.id, "invitee@example.com", { ttlSeconds: 300 });
       joinCode = new URL(issued.link).searchParams.get("code");
+      const joinLinkReads = captureTeamJoinLinkReads(baseAdapter);
+      database.adapter = joinLinkReads.adapter;
       const result = await runMutation(database, linkedAuth("user-one"), "probe", []);
+      const privilegedListRead = joinLinkReads.statements.filter((statement) => statement.includes("sporades_team_join_links") && statement.includes("WHERE \"teamId\""));
+      assert.equal(privilegedListRead.length, 1, JSON.stringify(joinLinkReads.statements));
+      assert.doesNotMatch(privilegedListRead[0], /["\[]email["\]]/i);
       assert.equal(result.ok, true);
       assert.deepEqual(result.data.count, { totalCount: 2 });
       assert.deepEqual(result.data.members.members.map((member) => ({ displayName: member.displayName, role: member.role })), [
@@ -963,6 +969,69 @@ test("Privileged callbacks expose only safe Team inspections during their active
       assert.deepEqual(result.data.unavailable, ["countMembers", "inspectJoinLink", "listJoinLinks", "listMembers"]);
       assert.doesNotMatch(JSON.stringify(result.data), /v1\.|privileged-owner@example\.com|invitee@example\.com|password-123/i);
     } finally {
+      database.adapter = baseAdapter;
+      await database.close();
+    }
+  });
+});
+
+test("detached and aborted Privileged Team inspections fail closed after their callback scope ends", async () => {
+  await withDatabase(async (databasePath) => {
+    let team;
+    let joinCode;
+    let detached;
+    let detachedErrors;
+    const abortController = new AbortController();
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged-inflight", auth: { providers: { anonymous: true, email: true } } }, {
+      name: "teams-privileged-inflight",
+      schema: {},
+      mutations: {
+        detach: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.detach", targetResourceKind: "team" },
+          async (privileged) => {
+            detached = [
+              privileged.teams.listMembers(team.id),
+            ];
+            detachedErrors = detached.map((pending) => pending.then(
+              () => null,
+              (error) => error,
+            ));
+            await pause.started;
+            return { scheduled: true };
+          },
+        )),
+        abort: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.abort-inflight", targetResourceKind: "team", signal: abortController.signal },
+          async (privileged) => {
+            const pending = privileged.teams.listJoinLinks(team.id);
+            await abortPause.started;
+            abortController.abort();
+            abortPause.release();
+            await assert.rejects(pending, (error) => error?.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
+            return { aborted: true };
+          },
+        )),
+      },
+    });
+    const baseAdapter = database.adapter;
+    const pause = pausePrivilegedTeamInspectionRead(baseAdapter);
+    const abortPause = pausePrivilegedTeamInspectionRead(baseAdapter, "sporades_team_join_links");
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-inflight@example.com", password: "password-123", name: "Owner" });
+      team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "inflight-invitee@example.com", { ttlSeconds: 300 });
+      joinCode = new URL(issued.link).searchParams.get("code");
+      database.adapter = pause.adapter;
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "detach", []), { ok: true, data: { scheduled: true }, error: null });
+      await pause.started;
+      pause.release();
+      for (const error of await Promise.all(detachedErrors)) {
+        assert.equal(error?.code, "PRIVILEGED_TEAM_ACCESS_INACTIVE");
+      }
+      database.adapter = abortPause.adapter;
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "abort", []), { ok: true, data: { aborted: true }, error: null });
+    } finally {
+      database.adapter = baseAdapter;
       await database.close();
     }
   });
@@ -1082,6 +1151,62 @@ function teamCount(adapterOrDatabase) {
 
 function teamCountForUser(database, userId) {
   return Number(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?").get(userId).count);
+}
+
+function captureTeamJoinLinkReads(adapter) {
+  const statements = [];
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        if (`${statement}`.includes("sporades_team_join_links")) statements.push(`${statement}`);
+        return value.call(currentTarget, statement);
+      };
+    },
+  });
+  return { adapter: wrap(adapter), statements };
+}
+
+function pausePrivilegedTeamInspectionRead(adapter, table = "sporades_team_memberships") {
+  let releaseRead;
+  let startedResolve;
+  let paused = false;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const wrap = (target) => new Proxy(target, {
+    get(currentTarget, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => currentTarget.withTransaction(async (transactionAdapter) => fn(wrap(transactionAdapter)));
+      }
+      const value = Reflect.get(currentTarget, property, receiver);
+      if (property !== "prepare" || typeof value !== "function") return value;
+      return (statement) => {
+        const prepared = value.call(currentTarget, statement);
+        if (paused || !`${statement}`.includes(table)) return prepared;
+        return new Proxy(prepared, {
+          get(preparedTarget, preparedProperty, preparedReceiver) {
+            const method = Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+            if (paused || (preparedProperty !== "get" && preparedProperty !== "all") || typeof method !== "function") return method;
+            return (...args) => {
+              paused = true;
+              startedResolve();
+              return new Promise((resolve, reject) => {
+                releaseRead = () => Promise.resolve(method.apply(preparedTarget, args)).then(resolve, reject);
+              });
+            };
+          },
+        });
+      };
+    },
+  });
+  return {
+    adapter: wrap(adapter),
+    started,
+    release() { releaseRead?.(); },
+  };
 }
 
 function failTeamApplicationRoleInsert(adapter, error) {

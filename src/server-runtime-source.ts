@@ -909,9 +909,14 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
         try {
           callbackResult = await callback(privilegedContext);
           callbackSettled = true;
+          // The callback boundary, not the trailing audit writes, defines the
+          // lifetime of userless Team inspection. Detached inspection promises
+          // must fail closed while this run records its completion event.
+          privilegedContext.__privilegedRunActive = false;
         } catch (error: any) {
           callbackError = error;
           callbackSettled = true;
+          privilegedContext.__privilegedRunActive = false;
           throw error;
         }
         try {

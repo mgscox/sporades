@@ -812,7 +812,9 @@ Team listing and email-bound Join-link validation remain unavailable, as do all
 Team mutations. An unknown or deleted exact Team fails with `TEAM_NOT_FOUND`;
 Join-link inspection keeps its invalid-capability result. These results never
 include raw rows, Join capabilities, target emails, credentials, sessions, or provider
-subjects.
+subjects. Every inspection rechecks the active callback and AbortSignal after
+runtime reads, so detached or aborted in-flight work fails closed rather than
+returning a result after its Privileged callback ends.
 
 Every privileged run emits Privileged audit events with actor kind
 `privileged-server-role` and the lifecycle outcomes `started`, then

@@ -403,7 +403,7 @@ _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
-Inside an active audited callback it may inspect one explicit existing Team's accepted-member count, safe member projection, and active Join-link metadata (never the target email), or safely inspect a Join link. It cannot list a current user's Teams, validate an email-bound Join link, or mutate Team state; no Team inspection grants or invents user identity or membership authority. Unknown or deleted explicit Teams fail as `TEAM_NOT_FOUND`; safe Join-link inspection preserves its invalid-capability result.
+Inside an active audited callback it may inspect one explicit existing Team's accepted-member count, safe member projection, and active Join-link metadata (never the target email), or safely inspect a Join link. It cannot list a current user's Teams, validate an email-bound Join link, or mutate Team state; no Team inspection grants or invents user identity or membership authority. In-flight inspection fails closed if the callback ends or its AbortSignal aborts before a result returns. Unknown or deleted explicit Teams fail as `TEAM_NOT_FOUND`; safe Join-link inspection preserves its invalid-capability result.
 _Avoid_: root server role, admin user, superuser account, service account, Capsule role
 
 **Privileged audit event**:

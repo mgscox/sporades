@@ -8676,20 +8676,16 @@ function createCurrentUserTeamsApi(database, auth, contextGetter) {
 function createPrivilegedTeamsApi(database, contextGetter) {
   return Object.freeze({
     async countMembers(teamId) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return countPrivilegedTeamMembers(database, teamId);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
     },
     async listMembers(teamId, options = {}) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return listPrivilegedTeamMembers(database, teamId, options);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamMembers(database, teamId, options, assertActive));
     },
     async listJoinLinks(teamId) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return listPrivilegedTeamJoinLinks(database, teamId);
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
     },
     async inspectJoinLink(code) {
-      assertActivePrivilegedTeamAccess(contextGetter);
-      return inspectTeamJoinLink(database, code);
+      return runPrivilegedTeamInspection(contextGetter, () => inspectTeamJoinLink(database, code));
     }
   });
 }
@@ -8813,28 +8809,35 @@ async function inspectTeamJoinLink(database, code) {
   if (!team) return { team: null, expiresAt: null, usable: false };
   return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
 }
-async function countPrivilegedTeamMembers(database, teamId) {
+async function countPrivilegedTeamMembers(database, teamId, assertActive) {
   return withTeamTransaction(database, async (tx) => {
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     const total = await tx.prepare(tx.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
+    assertActive();
     return { totalCount: Number(total?.count ?? 0) };
   });
 }
-async function listPrivilegedTeamMembers(database, teamId, options = {}) {
+async function listPrivilegedTeamMembers(database, teamId, options = {}, assertActive) {
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     const page = normalizeTeamMemberPage(options);
     const total = await tx.prepare(sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
     )).get(teamId);
+    assertActive();
     const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
     const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
     const rows = await tx.prepare(sql(
       "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role], [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
     )).all(...params);
+    assertActive();
     const hasMore = rows.length > page.limit;
     const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
     const last = pageRows.at(-1);
@@ -8851,13 +8854,16 @@ async function listPrivilegedTeamMembers(database, teamId, options = {}) {
     };
   });
 }
-async function listPrivilegedTeamJoinLinks(database, teamId) {
+async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
   return withTeamTransaction(database, async (tx) => {
+    assertActive();
     await requireExistingPrivilegedTeam(tx, teamId);
+    assertActive();
     const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
     const rows = await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
+      "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
     )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    assertActive();
     return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
   });
 }
@@ -9551,6 +9557,13 @@ async function activeTeamApplicationRoles(adapter, declared, teamId, userId) {
 }
 function isOpaqueTeamId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+async function runPrivilegedTeamInspection(contextGetter, inspect) {
+  const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
+  assertActive();
+  const result = await inspect(assertActive);
+  assertActive();
+  return result;
 }
 function assertActivePrivilegedTeamAccess(contextGetter) {
   const context = contextGetter?.();
@@ -15174,9 +15187,11 @@ function createContextPrivilegedApi(database, contextGetter) {
         try {
           callbackResult = await callback(privilegedContext);
           callbackSettled = true;
+          privilegedContext.__privilegedRunActive = false;
         } catch (error) {
           callbackError = error;
           callbackSettled = true;
+          privilegedContext.__privilegedRunActive = false;
           throw error;
         }
         try {
