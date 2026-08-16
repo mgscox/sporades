@@ -777,6 +777,7 @@ function logPayloadMaxBytes(config = {}) {
 function logRedactedValue() {
     return "[REDACTED]";
 }
+const transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 export function createRuntimeLogSink(options) {
     const path = requirePathModule();
     const logPath = options.config.logs?.jsonlPath ??
@@ -809,7 +810,11 @@ export function createRuntimeLogSink(options) {
             if (process.env.SPORADES_LOG_STDOUT === "1") {
                 process.stdout.write(`${JSON.stringify(event)}\n`);
             }
-            return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+            const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+            const pendingWrites = options.database?.[transactionPendingLogWrites];
+            if (isPromiseLike(settled) && pendingWrites)
+                pendingWrites.push(settled);
+            return settled;
         },
         recent(limit = logIndexLimit(options.config)) {
             return options.database.readRecentLogEvents(limit);
@@ -1753,12 +1758,17 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     const adapter = writeState ? createWriteTrackingAdapter(transactionAdapter, writeState) : transactionAdapter;
     if (!transactionAdapter)
         return database;
+    const pendingLogWrites = transactionAdapter[transactionPendingLogWrites] ?? [];
+    if (!transactionAdapter[transactionPendingLogWrites]) {
+        Object.defineProperty(transactionAdapter, transactionPendingLogWrites, { value: pendingLogWrites });
+    }
     const transactionDatabase = {
         ...database,
         adapter,
         sqlite: adapter,
         __transactionActive: true,
         __rootDatabase: database.__rootDatabase ?? database,
+        __pendingLogWrites: pendingLogWrites,
     };
     if (typeof database.log?.withDatabase === "function") {
         transactionDatabase.log = database.log.withDatabase(adapter);
@@ -1879,6 +1889,7 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     try {
         if (context)
             await drainPendingAclWrites(context);
+        await drainPendingLogWrites(database);
     }
     catch (error) {
         cleanupFailed = true;
@@ -1893,6 +1904,12 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
         finally {
             releaseHandlerContextMapping(database);
         }
+    }
+}
+async function drainPendingLogWrites(database) {
+    const pending = database.__pendingLogWrites;
+    while (pending?.length > 0) {
+        await Promise.allSettled(pending.splice(0));
     }
 }
 async function applyContextMiddleware(database, baseContext, kind) {

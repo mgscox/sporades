@@ -1100,7 +1100,17 @@ function isOpaqueTeamId(value) {
 async function runPrivilegedTeamInspection(contextGetter, inspect) {
     const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
     assertActive();
-    const result = await inspect(assertActive);
+    let result;
+    try {
+        result = await inspect(assertActive);
+    }
+    catch (error) {
+        // Preserve ordinary inspection failures while the capability is live, but
+        // never leak a lower-level revoked-adapter error after the privileged scope
+        // has ended or its signal has been aborted.
+        assertActive();
+        throw error;
+    }
     // A detached inspection can settle after the callback has returned, or an
     // AbortSignal can change while its adapter work is pending. Never hand that
     // result back across either boundary.

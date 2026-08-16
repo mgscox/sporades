@@ -42,6 +42,7 @@ import {
   simulateLocalIdentitySession,
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
+import { mutation } from "../dist/server.js";
 import {
   POSTGRES_SKIP_REASON,
   postgresTestUrl,
@@ -937,6 +938,46 @@ test("runtime selects libSQL only when declared services provide server-only con
     } finally {
       await embedded.close();
     }
+  });
+});
+
+test("transactional ctx.log pruning settles before a libSQL mutation scope closes", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "transaction-log-index.db"), async ({ url }) => {
+      const config = {
+        name: "transaction-log-index",
+        logs: { indexLimit: 1 },
+        services: { database: { kind: "database", engine: "libsql" } },
+      };
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        "",
+        {},
+        config,
+        {
+          mutations: {
+            log: mutation((ctx, message) => {
+              ctx.log.info(message);
+              return message;
+            }),
+          },
+        },
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+            SPORADES_SERVICE_DATABASE_URL: url,
+          },
+        },
+      );
+      const auth = { userId: "logger", displayName: "Logger", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
+      try {
+        assert.equal((await runMutation(database, auth, "log", ["first"])).ok, true);
+        assert.equal((await runMutation(database, auth, "log", ["second"])).ok, true);
+        assert.deepEqual((await database.log.recent(10)).map((event) => event.message), ["second"]);
+      } finally {
+        await database.close();
+      }
+    });
   });
 });
 

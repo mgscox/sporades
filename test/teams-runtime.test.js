@@ -1255,7 +1255,7 @@ function pausePrivilegedTeamInspectionRead(adapter, table = "sporades_team_membe
               paused = true;
               startedResolve();
               return new Promise((resolve, reject) => {
-                releaseRead = () => Promise.resolve(method.apply(preparedTarget, args)).then(resolve, reject);
+                releaseRead = () => Promise.resolve().then(() => method.apply(preparedTarget, args)).then(resolve, reject);
               });
             };
           },

@@ -9574,7 +9574,13 @@ function isOpaqueTeamId(value) {
 async function runPrivilegedTeamInspection(contextGetter, inspect) {
   const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
   assertActive();
-  const result = await inspect(assertActive);
+  let result;
+  try {
+    result = await inspect(assertActive);
+  } catch (error) {
+    assertActive();
+    throw error;
+  }
   assertActive();
   return result;
 }
@@ -15326,6 +15332,7 @@ function logPayloadMaxBytes(config = {}) {
 function logRedactedValue() {
   return "[REDACTED]";
 }
+var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createRuntimeLogSink(options) {
   const path12 = requirePathModule();
   const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path12.join(options.dataDir, "logs", "events.jsonl");
@@ -15354,7 +15361,10 @@ function createRuntimeLogSink(options) {
         process.stdout.write(`${JSON.stringify(event)}
 `);
       }
-      return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+      const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+      const pendingWrites = options.database?.[transactionPendingLogWrites];
+      if (isPromiseLike(settled) && pendingWrites) pendingWrites.push(settled);
+      return settled;
     },
     recent(limit = logIndexLimit(options.config)) {
       return options.database.readRecentLogEvents(limit);
@@ -16291,12 +16301,17 @@ function createWriteTrackingAdapter(transactionAdapter, writeState) {
 function createTransactionDatabase(database, transactionAdapter, writeState) {
   const adapter = writeState ? createWriteTrackingAdapter(transactionAdapter, writeState) : transactionAdapter;
   if (!transactionAdapter) return database;
+  const pendingLogWrites = transactionAdapter[transactionPendingLogWrites] ?? [];
+  if (!transactionAdapter[transactionPendingLogWrites]) {
+    Object.defineProperty(transactionAdapter, transactionPendingLogWrites, { value: pendingLogWrites });
+  }
   const transactionDatabase = {
     ...database,
     adapter,
     sqlite: adapter,
     __transactionActive: true,
-    __rootDatabase: database.__rootDatabase ?? database
+    __rootDatabase: database.__rootDatabase ?? database,
+    __pendingLogWrites: pendingLogWrites
   };
   if (typeof database.log?.withDatabase === "function") {
     transactionDatabase.log = database.log.withDatabase(adapter);
@@ -16414,6 +16429,7 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
   let cleanupFailed = false;
   try {
     if (context) await drainPendingAclWrites(context);
+    await drainPendingLogWrites(database);
   } catch (error) {
     cleanupFailed = true;
     if (!preservePrimaryError) throw error;
@@ -16423,6 +16439,12 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
     } finally {
       releaseHandlerContextMapping(database);
     }
+  }
+}
+async function drainPendingLogWrites(database) {
+  const pending = database.__pendingLogWrites;
+  while (pending?.length > 0) {
+    await Promise.allSettled(pending.splice(0));
   }
 }
 async function applyContextMiddleware(database, baseContext, kind) {

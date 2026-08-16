@@ -272,6 +272,7 @@ function logPayloadMaxBytes(config = {}) {
 function logRedactedValue() {
   return "[REDACTED]";
 }
+var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};
