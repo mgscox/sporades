@@ -275,8 +275,17 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
       )).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
     }
   };
-  if (typeof sqlite.withTransaction === "function") await sqlite.withTransaction(migrateLegacyScheduleIdentity);
-  else await migrateLegacyScheduleIdentity(sqlite);
+  if (typeof sqlite.withTransaction === "function") {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await sqlite.withTransaction(migrateLegacyScheduleIdentity);
+        break;
+      } catch (error: any) {
+        if (sqlite.engine !== "sqlite" || attempt >= 100 || String(error?.message ?? "") !== "database is locked") throw error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+      }
+    }
+  } else await migrateLegacyScheduleIdentity(sqlite);
   await sqlite.exec(
     sql(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +

@@ -1050,6 +1050,61 @@ test("a v0.8.5 pending occurrence is migrated into the published restart incarna
   }
 });
 
+test("overlapping SQLite opens migrate one v0.8.5 Schedule identity without rejecting either runtime", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-overlapping-legacy-upgrade-"));
+  const file = path.join(dir, "data.db");
+  const capsuleName = "scheduled-overlapping-legacy-upgrade";
+  const scheduleName = "recurring";
+  const scheduledFor = "2030-01-01T00:01:00.000Z";
+  const occurrenceId = createHash("sha256").update(JSON.stringify([capsuleName, scheduleName, scheduledFor])).digest("hex");
+  const fingerprint = JSON.stringify({
+    expression: "* * * * *",
+    timezone: "UTC",
+    job: "record",
+    payload: "legacy",
+    retry: { maxAttempts: 1, delayMs: 0 },
+    missedRun: "skip",
+  });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(
+    "CREATE TABLE sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL);" +
+    "CREATE TABLE sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT);" +
+    "CREATE TABLE sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);" +
+    "CREATE UNIQUE INDEX sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor);",
+  );
+  legacy.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, 1, ?)")
+    .run(scheduleName, fingerprint, "* * * * *", "UTC", "skip", "2030-01-01T00:02:00.000Z");
+  legacy.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")
+    .run(occurrenceId, scheduleName, scheduledFor, "legacy-claim", "2030-01-01T00:01:30.000Z", scheduledFor, scheduledFor);
+  legacy.close();
+
+  const capsule = {
+    jobs: { record: job(() => null) },
+    schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: "legacy" }) },
+  };
+  const opens = await Promise.allSettled([
+    openDevDatabase(file, "", {}, { name: capsuleName }, capsule),
+    openDevDatabase(file, "", {}, { name: capsuleName }, capsule),
+  ]);
+  try {
+    assert.deepEqual(
+      opens.map(({ status }) => status),
+      ["fulfilled", "fulfilled"],
+      opens.find(({ status }) => status === "rejected")?.reason?.message,
+    );
+    const databases = opens.map(({ value }) => value);
+    const migratedSchedule = databases[0].adapter.prepare("SELECT definitionFingerprint, generationToken FROM sporades_schedules WHERE name=?").get(scheduleName);
+    const migratedOccurrence = databases[1].adapter.prepare("SELECT definitionFingerprint, generationToken FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId);
+    assert.equal(migratedSchedule.definitionFingerprint, fingerprint);
+    assert.equal(typeof migratedSchedule.generationToken, "string");
+    assert.notEqual(migratedSchedule.generationToken, "");
+    assert.deepEqual(migratedOccurrence, migratedSchedule);
+  } finally {
+    await Promise.allSettled(opens.filter(({ status }) => status === "fulfilled").map(({ value }) => value.close()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function proveLegacyPendingOccurrenceUpgrade(openRuntime, capsuleName, scheduleName) {
   const originalClock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
   const restartClock = createControllableRuntimeClock("2030-01-01T00:02:00.000Z");
