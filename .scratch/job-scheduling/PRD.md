@@ -98,7 +98,7 @@ effective timezone.
 30. As a Capsule author, I want Schedule evaluation to use the timezone database shipped with the runtime, so that explicit and server-default timezone behavior is defined by the executing environment.
 31. As a Capsule author, I want removing a declaration to delete its runtime Schedule state, so that redeclaring the name later starts fresh.
 32. As an operator, I want historical Jobs from a removed schedule to remain inspectable, so that changing configuration does not erase operational history.
-33. As a Capsule author, I want changing a schedule expression, timezone, static payload, factory `payloadVersion`, or retry policy to affect future occurrences only, so that deployed definition changes do not rewrite completed history.
+33. As a Capsule author, I want changing a schedule expression, timezone, static payload, optional factory `payloadVersion`, or retry policy to affect future occurrences only, so that deployed definition changes do not rewrite completed history.
 34. As a Capsule author, I want changing a definition not to backfill occurrences under the old definition, so that deployments do not surprise me with stale work.
 35. As a Capsule author, I want renaming a schedule to create a new schedule identity, so that identity changes are explicit rather than guessed.
 36. As an operator, I want malformed persisted schedule state to fail closed with a bounded structured error, so that corruption does not cause a duplicate storm.
@@ -118,7 +118,7 @@ effective timezone.
 50. As a Capsule author, I want retries to remain attempts of the same occurrence's Job, so that a retry is not confused with a new scheduled occurrence.
 51. As a Capsule author, I want the scheduler to pass exactly the payload declared by the schedule, so that ordinary Job handlers receive no hidden scheduling-specific input.
 52. As a Capsule author, I want to declare schedules in a named map alongside my named Jobs, so that schedule identity and handler references are explicit.
-53. As a Capsule author, I want a schedule payload to be either a JSON-safe value or a payload factory evaluated for each occurrence with an explicit stable `payloadVersion`, so that recurring Jobs can receive occurrence-specific ordinary input and captured configuration changes create a new generation.
+53. As a Capsule author, I want a schedule payload to be either a JSON-safe value or a payload factory evaluated for each occurrence with an optional stable `payloadVersion`, so that recurring Jobs can receive occurrence-specific ordinary input, existing v0.8.5 factories remain valid, and versioned captured configuration changes create a new generation.
 54. As a Capsule author, I want to declare a Schedule disabled, so that I can retain and inspect its definition without allowing it to run.
 55. As a Capsule author, I want removing a Schedule declaration to forget its runtime Schedule state, so that redeclaring the same name later starts fresh rather than remapping historical state.
 
@@ -153,11 +153,11 @@ effective timezone.
   evaluated when an occurrence is being scheduled. The factory produces the
   ordinary JSON payload passed to Job Queue enqueue; it does not change the
   `job()` handler contract.
-- Every payload factory declares a stable non-empty `payloadVersion` of at most
-  128 characters and changes it whenever factory code or captured configuration
-  changes. JavaScript source text does not reveal closure state and is not used
-  as generation identity. Static payloads are fingerprinted directly and do not
-  accept `payloadVersion`.
+- A payload factory may declare a stable non-empty `payloadVersion` of at most
+  128 characters and should change it whenever factory code or captured
+  configuration changes. Omission preserves the v0.8.5 source-text fingerprint
+  for backward compatibility, though source text cannot reveal closure state.
+  Static payloads are fingerprinted directly and do not accept `payloadVersion`.
 - `payload` defaults to JSON `null` when omitted. Authors use an explicit value
   or payload factory only when the Job needs input.
 - A payload factory receives immutable occurrence metadata plus a scheduling
@@ -252,8 +252,8 @@ effective timezone.
   Handlers must still tolerate duplicate execution attempts.
 - Scheduler evaluation is single-writer per claimed schedule evaluation, with
   conditional persistent claims protecting against overlapping workers or
-  runtime starts. Expired claims are recoverable. The enabled durable Schedule
-  row is generation authority during claim and recovery; a stale runtime leaves
+  runtime starts. Expired claims are recoverable. A fresh incarnation token on
+  the enabled durable Schedule row is authority during claim and recovery; a stale runtime leaves
   replacement-owned pending occurrences untouched and disables its local
   generation.
 - Schedule state records the stable name, normalized expression, timezone,
@@ -263,6 +263,11 @@ effective timezone.
   `payload-failed`), the Job ID when enqueued, or a safe error code when payload
   creation failed. Payload contents are not included in inspection output.
 - Runtime startup reconciles declared schedules with persisted definitions.
+  The complete declaration set and fresh incarnation tokens publish atomically
+  only after candidate recovery can be validated and timers can be armed, so failed candidate initialization
+  leaves the previous scheduler functional. Same-definition restart transfers
+  compatible pending occurrences; upgrade migration first binds legacy pending
+  rows to the pre-reconciliation durable Schedule identity.
   New declarations begin from startup time and do not backfill time before they
   existed. `enabled` defaults to `true`; a declaration may set `enabled: false`,
   in which case it remains persisted and inspectable but creates no

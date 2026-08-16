@@ -98,7 +98,7 @@ async function awaitInsertOrIgnore() {
 }
 void serviceInsertOrIgnoreResult;
 void awaitInsertOrIgnore;
-// @ts-expect-error Dynamic Schedule payloads need explicit stable identity for captured inputs.
+// v0.8.5 dynamic Schedule payloads retain their legacy source-text identity.
 schedule({ expression: "* * * * *", job: "summarise", payload: () => ({ text: "dynamic" }) });
 // @ts-expect-error Static Schedule payloads are fingerprinted directly and cannot declare payloadVersion.
 schedule({ expression: "* * * * *", job: "summarise", payload: { text: "static" }, payloadVersion: "unused" });

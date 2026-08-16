@@ -51,7 +51,7 @@ export type ScheduleDefinition = {
 } | {
     payload: SchedulePayloadFactory;
     /** Stable identity for the factory source and every captured/configured input. Change it when any of those inputs change. */
-    payloadVersion: string;
+    payloadVersion?: string;
 });
 export type ScheduleOccurrence = Readonly<{
     scheduleName: string;
@@ -125,8 +125,9 @@ export declare function job<const HandlerType extends Handler>(handler: HandlerT
  * Declare a named, server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Dynamic payload factories require a stable
- * `payloadVersion` that changes with their code or captured configuration.
+ * up at most one occurrence. Dynamic payload factories may supply a stable
+ * `payloadVersion` that changes with their code or captured configuration;
+ * omission preserves the weaker v0.8.5 source-text identity.
  * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export declare function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & {

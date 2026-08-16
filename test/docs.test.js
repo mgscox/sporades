@@ -451,7 +451,9 @@ test("published docs describe the complete Job scheduling contract", async () =>
 
   assert.match(guide, /payload factor(?:y|ies)[\s\S]*may run more than once/i);
   assert.match(guide, /payloadVersion[\s\S]*captured configuration/i);
-  assert.match(guide, /durable definition[\s\S]*generation authority/i);
+  assert.match(guide, /payloadVersion[\s\S]*(?:optional|v0\.8\.5)/i);
+  assert.match(guide, /durable incarnation[\s\S]*(?:generation )?authority/i);
+  assert.match(guide, /failed candidate[\s\S]*(?:live|previous|prior) scheduler/i);
   assert.match(guide, /queued factories[\s\S]*never starts?/i);
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);

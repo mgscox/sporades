@@ -956,9 +956,10 @@ named `job()` handlers. A declaration contains a numeric five-field cron
 expression (minute, hour, day-of-month, month, day-of-week), an optional IANA
 timezone, JSON-safe payload or bounded async payload factory, ordinary enqueue
 retry options, an enabled state, and a `skip` or `latest` missed-run policy. A
-payload factory must declare a stable non-empty `payloadVersion` of at most 128
-characters and change it whenever its code or captured configuration changes;
-JavaScript function source text is not a definition identity.
+payload factory may declare a stable non-empty `payloadVersion` of at most 128
+characters and should change it whenever its code or captured configuration
+changes. Omission preserves the v0.8.5 source-text fingerprint for backward
+compatibility, but that weaker identity cannot detect captured values.
 Seconds, years, cron nicknames, browser declarations, Sessions, captured users,
 and dynamically created Schedules are unsupported.
 
@@ -975,21 +976,29 @@ then resumes. Runtime state survives restarts through the configured Database
 adapter. Declaration changes affect only future occurrences; removal forgets
 Schedule state without deleting historical Jobs, and later reuse of the name is
 a fresh future-only generation. Reconciliation terminally quarantines pending
-occurrences from changed, disabled, removed, or legacy unversioned definitions,
+occurrences from changed, disabled, or removed definitions,
 so later reuse or re-enabling cannot resurrect them. Deterministic occurrence
 identity and durable reconciliation prevent duplicate Job creation across
 overlapping starts and crashes.
 Payload evaluation may repeat after occurrence-claim expiry, but persistence is
 claim-owned: deterministic Job enqueue, occurrence terminalization, and the
 Schedule latest-occurrence summary are one Database transaction. Each pending
-occurrence carries its Schedule definition fingerprint, which is revalidated
-against the enabled durable definition inside that transaction. Claim and
-recovery decisions use that durable row as generation authority. A stale owner
+occurrence carries its Schedule definition fingerprint and a distinct durable
+incarnation token, which are revalidated against the enabled durable Schedule
+inside that transaction. Each successful runtime publication rotates the token,
+including same-definition restart, A-B-A, removal/re-addition, and
+disable/re-enable transitions. Claim and recovery decisions use that incarnation
+as authority. A stale owner
 cannot quarantine replacement-owned pending work, enqueue, finalize, or
 overwrite a replacement generation's cursor or summary after another runtime
 reclaims or replaces the occurrence. It leaves that work for the matching
 runtime and stops its superseded local Schedule generation instead of re-arming
-it.
+it. The full declaration reconciliation and ownership publication are atomic and
+occur only after candidate recovery can be validated and timers can be armed. A candidate failure rolls back
+its state so the old scheduler remains functional. Same-definition restart
+transfers matching pending occurrences to the new incarnation. During upgrade,
+legacy pending occurrences first inherit the pre-reconciliation durable
+definition and incarnation; removed or disabled work is not resurrected.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long

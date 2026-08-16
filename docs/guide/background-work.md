@@ -11,21 +11,28 @@ must tolerate duplicate execution because delivery is at least once.
 Declare `schedule()` only for recurrence. Pin an IANA timezone when wall-clock
 meaning must remain consistent across Dev, Container, and Hosted environments.
 Schedules enqueue Jobs; retry and execution semantics remain Job Queue semantics.
-Dynamic Schedule payload factories require an explicit `payloadVersion`; bump it
+Dynamic Schedule payload factories should declare `payloadVersion`; bump it
 whenever factory code or captured configuration changes, because closure state
-cannot be derived from JavaScript source text. Static JSON payloads are
-fingerprinted directly.
+cannot be derived from JavaScript source text. The field is optional only for
+compatibility with v0.8.5 declarations, whose factory source text remains their
+weaker identity. Static JSON payloads are fingerprinted directly.
 Occurrence claim ownership, deterministic enqueue, terminal occurrence state,
 and latest Schedule summary are committed together under the live Schedule
-definition fingerprint. The enabled durable definition is the authority during
+incarnation token. Each successful runtime publication rotates that token; the
+enabled durable incarnation is the authority during
 claim and recovery. Payload factories may be evaluated again after claim
 recovery, but a stale evaluator leaves replacement-owned pending work untouched
 and cannot persist a Job or overwrite a replacement generation's cursor or
 winning outcome. A runtime that loses this generation check stops re-arming its
-stale local Schedule. Shutdown removes queued factories before they can acquire
+stale local Schedule. Declaration reconciliation and ownership publication are
+one transaction and occur only after a candidate can validate retained recovery
+state and arm its timers, so a failed
+candidate leaves the previous scheduler functional. Shutdown removes queued factories before they can acquire
 an evaluation slot. Changing, disabling, or removing a Schedule terminally
 supersedes its own pending occurrences; later reuse starts with the next future
-occurrence instead of resurrecting old work.
+occurrence instead of resurrecting old work. During upgrade, legacy pending
+occurrences inherit their matching pre-reconciliation durable identity before a
+compatible runtime publication transfers them; removed or disabled work does not.
 
 One-time `availableAt` values and retry instants stay within canonical
 four-digit UTC timestamps. Supply availability as a timestamp string or `Date`;

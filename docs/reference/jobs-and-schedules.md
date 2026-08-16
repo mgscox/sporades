@@ -174,8 +174,8 @@ lists, ranges, and positive steps are supported; seconds, years, nicknames such
 as `@daily`, and implementation-specific extensions are rejected. Schedule
 declarations are server-only: browser code cannot create or invoke recurring
 Privileged work. `payload` is either a JSON-safe value (defaulting to `null`) or
-an async-capable payload factory evaluated for each occurrence. Every factory
-must also declare a stable `payloadVersion` string of 1 through 128 characters:
+an async-capable payload factory evaluated for each occurrence. A factory can
+declare a stable `payloadVersion` string of 1 through 128 characters:
 
 ```ts
 payloadVersion: "weekday-digest-v2",
@@ -183,8 +183,10 @@ payload: async (occurrence, ctx) => ({ generatedFor: occurrence.scheduledFor }),
 ```
 
 Treat `payloadVersion` as the identity of both the factory code and every value
-it captures; bump it whenever either changes. Sporades deliberately does not use
-`String(payload)` because JavaScript source text cannot reveal closure state.
+it captures; bump it whenever either changes. It is optional for compatibility
+with v0.8.5 declarations. Without it, Sporades preserves the legacy
+`String(payload)` fingerprint, which cannot reveal closure state and therefore
+cannot detect captured configuration changes.
 Static JSON payloads are fingerprinted directly and must not set
 `payloadVersion`. Payload factories may run more than once during crash
 recovery, so any explicitly privileged side effects must tolerate repetition.
@@ -203,14 +205,24 @@ recovery from creating duplicate Jobs for one occurrence. Recovery validates all
 three retained identity components together and quarantines a malformed or
 mismatched row without letting its unique key fail startup or spin a timer.
 Payload calculation can be repeated after a claim expires, but every pending
-occurrence also carries its Schedule definition fingerprint. The runtime
-rechecks both claim ownership and the live enabled durable definition inside the
+occurrence also carries its Schedule definition fingerprint and a distinct
+per-publication incarnation token. The runtime rechecks claim ownership and the
+live enabled durable incarnation inside the
 write transaction: deterministic Job enqueue, occurrence terminal state, and
 the Schedule's latest-occurrence summary commit together. Claim and recovery
-use that durable definition as generation authority. A stale runtime therefore
+use that durable incarnation as generation authority. Every successful runtime
+publication rotates the token, including same-definition restarts, so an older
+runtime cannot regain authority after A-B-A replacement, removal and re-addition,
+or disable and re-enable. A stale runtime therefore
 leaves replacement-owned pending work untouched, cannot enqueue or overwrite
 the replacement generation's cursor or durable outcome, and stops re-arming its
-local copy of the Schedule.
+local copy of the Schedule. The complete declaration set and its new incarnations
+publish in one Database transaction only after candidate recovery validation and
+timer setup succeed. A
+failed candidate rolls back that publication and leaves the live scheduler
+authoritative. Compatible pending work is transferred during a same-definition
+restart; legacy rows are first backfilled from the pre-reconciliation durable
+Schedule. Changed, disabled, removed, or later-restored work is never transferred.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into
@@ -232,8 +244,9 @@ occurrences from a changed or disabled definition are terminally quarantined as
 supersedes its pending occurrences, and retains its Jobs; adding the same name
 again after removal creates a fresh identity, while re-enabling it or renaming a
 Schedule starts from the next future occurrence and cannot resurrect old
-pending work. Legacy pending rows without a
-definition fingerprint are likewise superseded safely. Disabling or cancelling
+pending work. Legacy pending rows without a definition fingerprint are migrated
+from a matching pre-reconciliation durable Schedule before publication; if no
+matching enabled declaration remains, they are superseded safely. Disabling or cancelling
 a created Job does not disable its Schedule.
 
 Every successfully created Scheduled occurrence becomes an ordinary Job that

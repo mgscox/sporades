@@ -13,7 +13,7 @@ Status: done
 .scratch/job-scheduling/issues/02-declare-and-run-static-recurring-privileged-job.md
 
 - [ ] A Schedule payload factory may return synchronously or asynchronously; Sporades awaits and validates the resolved JSON-safe value before ordinary enqueue.
-- [ ] Every factory declares a stable `payloadVersion` covering its code and captured configuration; changing it creates a new future-only Schedule generation, while static payload fingerprints remain compatible.
+- [ ] A factory may declare a stable `payloadVersion` covering its code and captured configuration; changing it creates a new future-only Schedule generation. Omission preserves the v0.8.5 source-text fingerprint for compatibility, while static payload fingerprints remain compatible.
 - [ ] Shutdown removes queued factories before they acquire one of the four Capsule-wide slots, so no factory begins after scheduling stops.
 - [ ] The factory receives only `{ scheduleName, scheduledFor }` plus scheduling context containing `signal` and the lazy `privileged` accessor, without internal occurrence IDs, claims, or queue state.
 - [ ] Payload calculation alone emits no Privileged audit event; explicitly entering `ctx.privileged.run(...)` retains the existing audit contract.

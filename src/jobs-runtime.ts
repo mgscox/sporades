@@ -112,13 +112,17 @@ export function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any
     let payloadFingerprint: any;
     let payloadVersion: string | undefined;
     if (typeof payload === "function") {
-      if (typeof definition.payloadVersion !== "string"
-        || definition.payloadVersion.length < 1
-        || definition.payloadVersion.length > 128
-        || definition.payloadVersion.trim() !== definition.payloadVersion) {
-        throw commandError(`Invalid Schedule payloadVersion: ${name}`, "Give every payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+      if (definition.payloadVersion !== undefined
+        && (typeof definition.payloadVersion !== "string"
+          || definition.payloadVersion.length < 1
+          || definition.payloadVersion.length > 128
+          || definition.payloadVersion.trim() !== definition.payloadVersion)) {
+        throw commandError(`Invalid Schedule payloadVersion: ${name}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
       }
-      payloadFingerprint = null;
+      // v0.8.5 identified factories by source text. Keep that exact serialized
+      // shape for existing declarations; payloadVersion is the explicit,
+      // closure-safe identity available to new and upgraded declarations.
+      payloadFingerprint = definition.payloadVersion === undefined ? String(payload) : null;
       payloadVersion = definition.payloadVersion;
     } else {
       if (definition.payloadVersion !== undefined) {
@@ -215,7 +219,7 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
   const sql = sqlite.dialect.sql;
   await sqlite.exec(
     sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, " +
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, " +
       "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
       "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
       "[latestJobId] TEXT, [latestErrorCode] TEXT)",
@@ -224,11 +228,55 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
   await sqlite.exec(
     sql(
       "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
-      "[definitionFingerprint] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
+      "[definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
       "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     ),
   );
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
+  await sqlite.prepare(sql(
+    "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING",
+  )).run();
+  const migrateLegacyScheduleIdentity = async (adapter: LooseRecord) => {
+    const migrationSql = adapter.dialect.sql;
+    await adapter.prepare(migrationSql(
+      "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'",
+    )).run();
+    const schedules = await adapter.prepare(migrationSql(
+      "SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC",
+    )).all();
+    const scheduleByName = new Map<string, LooseRecord>();
+    for (const row of schedules) {
+      let generationToken = row.generationToken;
+      if (typeof generationToken !== "string" || generationToken.length === 0) {
+        const proposed = nodeCryptoModule.randomUUID();
+        await adapter.prepare(migrationSql(
+          "UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')",
+        )).run(proposed, row.name);
+        const current = await adapter.prepare(migrationSql(
+          "SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?",
+        )).get(row.name);
+        generationToken = current?.generationToken ?? proposed;
+        row.definitionFingerprint = current?.definitionFingerprint ?? row.definitionFingerprint;
+      }
+      scheduleByName.set(String(row.name), { definitionFingerprint: row.definitionFingerprint, generationToken });
+    }
+    const pending = await adapter.prepare(migrationSql(
+      "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC",
+    )).all();
+    for (const row of pending) {
+      const schedule = scheduleByName.get(String(row.scheduleName));
+      if (!schedule) continue;
+      if (row.definitionFingerprint !== null && row.definitionFingerprint !== undefined
+        && row.definitionFingerprint !== schedule.definitionFingerprint) continue;
+      await adapter.prepare(migrationSql(
+        "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')",
+      )).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
+    }
+  };
+  if (typeof sqlite.withTransaction === "function") await sqlite.withTransaction(migrateLegacyScheduleIdentity);
+  else await migrateLegacyScheduleIdentity(sqlite);
   await sqlite.exec(
     sql(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
@@ -243,15 +291,15 @@ export async function finishFailedScheduledOccurrence(database: LooseRecord, def
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
   const sql = database.adapter.dialect.sql;
-  const generation = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=?")).run(definition.name, definition.fingerprint);
+  const generation = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
   if (Number(generation.changes) !== 1) {
-    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=?")).run(completedAt, id, claimToken, definition.fingerprint);
+    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
     return { finished: false, nextOccurrence: null, superseded: true };
   }
-  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=?")).run(code, completedAt, id, claimToken, definition.fingerprint);
+  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
   if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=?")).run(next, scheduledFor, code, definition.name, definition.fingerprint);
+  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(next, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
   if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
   return { finished: true, nextOccurrence: next };
 }

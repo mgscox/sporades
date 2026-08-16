@@ -153,11 +153,11 @@ A deliberate non-terminal Job-handler outcome that keeps the same Job identity a
 _Avoid_: retry, replacement Job, recursive enqueue
 
 **Schedule**:
-A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management. A dynamic payload factory has an explicit declaration-owned `payloadVersion`; source text cannot identify its captured configuration.
+A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management. A dynamic payload factory may opt into a declaration-owned `payloadVersion`; omission preserves the weaker v0.8.5 source-text identity, which cannot identify captured configuration.
 _Avoid_: cron job, recurring Job, timer
 
 **Scheduled occurrence**:
-One UTC instant produced by one fingerprinted generation of a Schedule. Its complete retained identity binds the Capsule, Schedule name, and UTC instant; its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds. The enabled durable Schedule row is generation authority, so a stale runtime leaves replacement-owned pending work untouched and stops its local generation. Payload calculation itself may be repeated during recovery, but a changed, disabled, or removed generation supersedes its own pending occurrences.
+One UTC instant produced by one fingerprinted definition and per-publication incarnation of a Schedule. Its complete retained identity binds the Capsule, Schedule name, and UTC instant; its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds. The enabled durable Schedule incarnation is authority, so a stale runtime leaves replacement-owned pending work untouched and stops its local generation. Payload calculation itself may be repeated during recovery, but a changed, disabled, or removed generation supersedes its own pending occurrences.
 _Avoid_: run, tick, retry
 
 **Job inspection action**:
