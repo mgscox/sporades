@@ -10,3 +10,4 @@ client_secret_*
 dummy/
 *.env*
 *.tgz
+.DS_Store
