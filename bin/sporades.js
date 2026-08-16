@@ -12973,8 +12973,8 @@ function createConnectionTransactionGate() {
     try {
       return await operation();
     } finally {
-      await drainPending();
       transactionActive = false;
+      await drainPending();
       release();
     }
   };

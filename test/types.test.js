@@ -85,6 +85,19 @@ annotatedUniqueUsers.unique("missing");
 
 declare const typedUsers: TableApi<{ id: string; createdAt: string; updatedAt: string; email: string; teamId: string }>;
 typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
+const serviceInsertOrIgnoreResult: ReturnType<typeof typedUsers.insertOrIgnore> = Promise.resolve({
+  id: "user-1",
+  createdAt: "2026-08-16T00:00:00.000Z",
+  updatedAt: "2026-08-16T00:00:00.000Z",
+  email: "person@example.test",
+  teamId: "team-a",
+});
+async function awaitInsertOrIgnore() {
+  const inserted = await typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
+  return inserted?.email ?? null;
+}
+void serviceInsertOrIgnoreResult;
+void awaitInsertOrIgnore;
 // @ts-expect-error An idempotent insert names at least one conflict field.
 typedUsers.insertOrIgnore({ email: "person@example.test" });
 // @ts-expect-error Conflict fields are limited to the table row shape.

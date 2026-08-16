@@ -72,6 +72,40 @@ async function assertPublicOperationsWaitForTransactionOwner(adapter, prefix) {
   }
 }
 
+async function assertChainedPublicOperationsResumeAfterTransaction(adapter, prefix) {
+  const table = `${prefix}_rows`;
+  await adapter.exec(`CREATE TABLE ${table} (id TEXT PRIMARY KEY)`);
+  await adapter.prepare(`INSERT INTO ${table} (id) VALUES (?)`).run("one");
+
+  let releaseOwner;
+  let ownerEntered;
+  const entered = new Promise((resolve) => { ownerEntered = resolve; });
+  const release = new Promise((resolve) => { releaseOwner = resolve; });
+  const transaction = adapter.withTransaction(async (owner) => {
+    await owner.prepare(`INSERT INTO ${table} (id) VALUES (?)`).run("two");
+    ownerEntered();
+    await release;
+  });
+  await entered;
+
+  const observed = [];
+  const chainedReads = (async () => {
+    observed.push(Number((await adapter.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).count));
+    observed.push(Number((await adapter.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).count));
+  })();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(observed, []);
+
+  releaseOwner();
+  await transaction;
+  const outcome = await Promise.race([
+    chainedReads.then(() => "completed"),
+    new Promise((resolve) => setTimeout(() => resolve("timed-out"), 100)),
+  ]);
+  assert.equal(outcome, "completed", "a chained public operation must not be stranded after transaction release");
+  assert.deepEqual(observed, [2, 2]);
+}
+
 test("a single connection does not begin a second transaction until the first has completed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-serialization-"));
   try {
@@ -131,6 +165,17 @@ test("SQLite keeps public operations outside a transaction while owner operation
   }
 });
 
+test("SQLite resumes chained public operations after a transaction completes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-chain-sqlite-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  try {
+    await assertChainedPublicOperationsResumeAfterTransaction(adapter, "ticket04_sqlite_chain");
+  } finally {
+    adapter.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Postgres keeps public operations outside a transaction while owner operations proceed", {
   skip: POSTGRES_SKIP_REASON,
 }, async () => {
@@ -142,5 +187,15 @@ test("Postgres keeps public operations outside a transaction while owner operati
       "ticket04_postgres_gate_commit_outside",
       "ticket04_postgres_gate_rollback_outside",
     ],
+  });
+});
+
+test("Postgres resumes chained public operations after a transaction completes", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await assertChainedPublicOperationsResumeAfterTransaction(adapter, "ticket04_postgres_chain");
+  }, {
+    appTableNames: ["ticket04_postgres_chain_rows"],
   });
 });

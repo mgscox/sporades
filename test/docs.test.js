@@ -110,7 +110,10 @@ test("the feature reference is split by lookup intent behind a compatible index"
 });
 
 test("the idempotent insert example awaits both asynchronous database paths", async () => {
-  const server = await readProjectFile("docs/reference/server-runtime.md");
+  const [server, tableApi] = await Promise.all([
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/api/types/server.TableApi.html"),
+  ]);
   assert.match(
     server,
     /const inserted = await ctx\.db\.subscriptions\.insertOrIgnore\(\{ teamId, plan: "pro" \}, "teamId"\);/,
@@ -118,6 +121,10 @@ test("the idempotent insert example awaits both asynchronous database paths", as
   assert.match(
     server,
     /return inserted \?\? await ctx\.db\.subscriptions\.where\("teamId", teamId\)\.get\(\);/,
+  );
+  assert.match(
+    tableApi,
+    /id="insertorignore-1"[\s\S]*?MaybePromise[\s\S]*?Row[\s\S]*?null/,
   );
 });
 
