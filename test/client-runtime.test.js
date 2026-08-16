@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 import { normalizeJourneyPolicy, normalizeJourneyState } from "../dist/server-runtime-source.js";
@@ -66,6 +67,8 @@ test("query argument normalization snapshots safe JSON values, rejects hostile i
     class CustomValue {}
     class CustomArray extends Array {}
     assert.throws(() => runtime.queries.subscribe("invalid", () => {}, new CustomArray("custom")), /plain JSON arrays/);
+    const crossRealmArray = runInNewContext('["ordinary"]');
+    assert.doesNotThrow(() => runtime.queries.subscribe("cross-realm", () => {}, crossRealmArray));
     for (const value of [undefined, () => {}, Symbol("nope"), 1n, NaN, Infinity, cyclic, symbolKeyed, nonEnumerable, arrayWithProperty, new Date(), new CustomValue(), [, "sparse"]]) {
       assert.throws(() => runtime.queries.subscribe("invalid", () => {}, value), /Query arguments/);
     }
@@ -77,6 +80,7 @@ test("query argument normalization snapshots safe JSON values, rejects hostile i
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.deepEqual(frames.find((frame) => frame.query === "safe").args, [JSON.parse('{"__proto__":{"polluted":true},"constructor":"ordinary","prototype":"ordinary"}')]);
+    assert.deepEqual(frames.find((frame) => frame.query === "cross-realm").args, [["ordinary"]]);
     assert.equal(({}).polluted, undefined);
     assert.equal(frames.find((frame) => frame.query === "boundary").args[0], exact);
   } finally { browser.cleanup(); }
