@@ -1194,7 +1194,7 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
-    name: "migrateAppSchema preserves a non-unique engine constraint error during a unique migration",
+    name: "migrateAppSchema preserves an unrelated unique engine error outside the constraint-copy step",
     async run(adapter) {
       await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE);
       await adapter.insertAppRow(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, {
@@ -1208,12 +1208,14 @@ const APP_TABLE_CONFORMANCE_CASES = [
 
       const originalWithTransaction = adapter.withTransaction;
       // The Database engine is the system boundary below this conformance seam. Injecting its
-      // non-unique constraint outcome verifies that the public migration only redacts duplicate
-      // diagnostics, rather than treating every engine error that says "constraint" as duplicate data.
+      // unique outcome verifies that the public migration only redacts a duplicate from the exact
+      // constraint-copy step, rather than every unique error a Database engine may report.
       adapter.withTransaction = () => {
-        const error = new Error("FOREIGN KEY constraint failed: injected migration failure");
+        const error = new Error("UNIQUE constraint failed: injected unrelated migration failure");
         if (adapter.engine === "postgres") {
-          error.code = "23503";
+          error.code = "23505";
+        } else {
+          error.errcode = 2067;
         }
         return Promise.reject(error);
       };
@@ -1221,8 +1223,8 @@ const APP_TABLE_CONFORMANCE_CASES = [
         await assert.rejects(
           adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID),
           (error) => {
-            assert.equal(error.message, "FOREIGN KEY constraint failed: injected migration failure");
-            assert.equal(error.code, adapter.engine === "postgres" ? "23503" : undefined);
+            assert.equal(error.message, "UNIQUE constraint failed: injected unrelated migration failure");
+            assert.equal(error.code, adapter.engine === "postgres" ? "23505" : undefined);
             return true;
           },
         );

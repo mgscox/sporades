@@ -13584,14 +13584,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
     // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
     migrateAppSchema(schema) {
-      try {
-        const result = this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
-        return isPromiseLike(result) ? result.catch((error) => {
-          throw translateUniqueConstraintMigrationError(error);
-        }) : result;
-      } catch (error) {
-        throw translateUniqueConstraintMigrationError(error);
-      }
+      return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
     },
     createAppTable(table, tableName = table.name) {
       return createAppTable(this, table, tableName);
@@ -14643,6 +14636,11 @@ function uniqueConstraintsAreAdditive(existingConstraints, nextConstraints) {
     (existing) => nextConstraints.some((next) => JSON.stringify(next) === JSON.stringify(existing))
   );
 }
+function hasAddedUniqueConstraints(existingConstraints, nextConstraints) {
+  return nextConstraints.some(
+    (next) => !existingConstraints.some((existing) => JSON.stringify(existing) === JSON.stringify(next))
+  );
+}
 function translateUniqueConstraintMigrationError(error) {
   if (!isUniqueConstraintError2(error)) {
     return error;
@@ -14659,8 +14657,22 @@ function isUniqueConstraintError2(error) {
   const message = String(error?.message ?? "");
   return /\bUNIQUE constraint failed(?::|$)|\bduplicate key value violates unique constraint\b/i.test(message);
 }
+function translateUniqueConstraintCopyFailure(operation) {
+  try {
+    const result = operation();
+    return isPromiseLike(result) ? result.catch((error) => {
+      throw translateUniqueConstraintMigrationError(error);
+    }) : result;
+  } catch (error) {
+    throw translateUniqueConstraintMigrationError(error);
+  }
+}
 function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
   const dialect = sqlite.dialect;
+  const addsUniqueConstraints = hasAddedUniqueConstraints(
+    existingTable.uniqueConstraints ?? [],
+    nextTable.uniqueConstraints ?? []
+  );
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
   return chainMaybePromise([
@@ -14673,9 +14685,12 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     ),
     () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
     () => sqlite.createAppTable(nextTable, tempTableName),
-    () => sqlite.exec(
-      `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
-    ),
+    () => {
+      const copyRows = () => sqlite.exec(
+        `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
+      );
+      return addsUniqueConstraints ? translateUniqueConstraintCopyFailure(copyRows) : copyRows();
+    },
     () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
     () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
   ]);
