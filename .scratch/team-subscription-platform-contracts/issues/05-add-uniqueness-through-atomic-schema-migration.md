@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Declare unique constraints on Capsule tables
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Adding a new unique constraint to an existing table is accepted as an additive Capsule schema migration.
 - [ ] Removing, weakening, changing, or replacing an existing unique constraint remains an unsupported schema change with a clear command error.

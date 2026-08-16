@@ -8,8 +8,8 @@ Coordinator base: `494a086`
 | 02 | done | 01 | `80d6cd7` | `codex/team-contracts-02` / `/private/tmp/sporades-team-contracts-02` | `/root/ticket_02_privileged_inspections` | `319bd4a` | `/root/acceptance_review_ticket_02` | ACCEPT | `16d784a`..`dea4ebc` | integration: focused 67/67; typecheck/build/docs/generated-bin passed | pending |
 | 03 | done | None | `494a086` | `codex/team-contracts-03` / `/private/tmp/sporades-team-contracts-03` | `/root/ticket_03_unique_declarations` | `28e0d12` | `/root/definitive_review_ticket_03` | ACCEPT | `f638b36`..`20baabb` | integration: 59 pass, 0 fail, 1 PostgreSQL skip; typecheck/build/docs/generated-bin passed | pending |
 | 04 | done | 03 | `20baabb` | `codex/team-contracts-04` / `/private/tmp/sporades-team-contracts-04` | `/root/ticket_04_postgres_takeover` | `74b118d` | `/root/review_ticket_04_74b` | ACCEPT | `bd2aeaa`..`8542eb9` | integration: Node24 libSQL/reactive pass; Node22 SQLite/libSQL/PostgreSQL 125/125; typecheck/build/docs/generated-bin passed | pending |
-| 05 | ready | 03 | `8542eb9` | pending | pending | pending | pending | pending | pending | pending | pending |
-| 06 | blocked | 02, 04, 05 | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| 05 | done | 03 | `19e7b63` | `codex/team-contracts-05` / `/private/tmp/sporades-team-contracts-05` | `/root/ticket_05_atomic_unique_migration` | `417a8182` | `/root/acceptance_review_ticket_05` | ACCEPT | `2cf8381`..`4605ec5` | integration: SQLite/libSQL/PostgreSQL 99/99; typecheck/build/docs/generated-bin passed | pending |
+| 06 | ready | 02, 04, 05 | `4605ec5` | pending | pending | pending | pending | pending | pending | pending | pending |
 
 ## Baseline
 
