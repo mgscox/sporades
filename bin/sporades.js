@@ -12943,6 +12943,9 @@ function chainSchemaOperation(previous, operation) {
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
 function createConnectionTransactionGate() {
+  const AsyncLocalStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+  const transactionOwnership = new AsyncLocalStorage();
+  const transactionOwner = Object.freeze({});
   let transactionTail = Promise.resolve();
   let transactionActive = false;
   const pending = [];
@@ -12961,6 +12964,7 @@ function createConnectionTransactionGate() {
     return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
   };
   const runTransaction = async (operation) => {
+    if (transactionOwnership.getStore() === transactionOwner) return await rejectNestedTransactionScope();
     const previous = transactionTail;
     let release = () => {
     };
@@ -12971,7 +12975,7 @@ function createConnectionTransactionGate() {
     });
     transactionActive = true;
     try {
-      return await operation();
+      return await transactionOwnership.run(transactionOwner, operation);
     } finally {
       transactionActive = false;
       await drainPending();
@@ -16106,7 +16110,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     return result;
   } catch (error) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobEnqueues(context);
     throw error;
   }
 }
@@ -17891,7 +17895,7 @@ async function runMutation(database, auth, mutationName, args) {
     return committed;
   } catch (error) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobEnqueues(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.sporadesAclDenialLogData) {
@@ -17981,7 +17985,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     return response;
   } catch (error) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobEnqueues(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -18270,6 +18274,12 @@ async function flushPendingJobEnqueues(context) {
   }
   scheduleCurrentUserJobWorker(queueDatabase);
   return didWrite;
+}
+function dropPendingJobEnqueues(context) {
+  if (!context) return;
+  context.__pendingJobEnqueues = [];
+  context.__pendingJobsFlushed = true;
+  delete context.__jobQueueDatabase;
 }
 function scheduleCurrentUserJobWorker(database) {
   if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;

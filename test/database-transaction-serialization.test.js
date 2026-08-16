@@ -27,6 +27,31 @@ async function assertNestedTransactionModesRejectPromptly(adapter) {
   }
 }
 
+async function assertCapturedRootTransactionReentryRejectsPromptly(adapter) {
+  for (const timing of ["before await", "after await"]) {
+    let nested;
+    let nestedCallbackEntered = false;
+    const outcome = await adapter.withTransaction(async () => {
+      if (timing === "after await") await Promise.resolve();
+      nested = adapter.withTransaction(async () => { nestedCallbackEntered = true; });
+      const nestedOutcome = await Promise.race([
+        nested.then(
+          () => ({ kind: "resolved" }),
+          (error) => ({ kind: "rejected", error }),
+        ),
+        new Promise((resolve) => setTimeout(() => resolve({ kind: "timed-out" }), 100)),
+      ]);
+      if (nestedOutcome.kind === "timed-out") throw new Error(`captured root reentry timed out ${timing}`);
+      return nestedOutcome;
+    }).catch((error) => ({ kind: "outer-rejected", error }));
+
+    if (nested) await nested.catch(() => {});
+    assert.equal(outcome.kind, "rejected", `captured root reentry ${timing} rejects instead of waiting on its own connection queue`);
+    assert.match(outcome.error.message, /nested database transactions are not supported/i);
+    assert.equal(nestedCallbackEntered, false);
+  }
+}
+
 async function assertPublicOperationsWaitForTransactionOwner(adapter, prefix) {
   const rowsTable = `${prefix}_rows`;
   await adapter.exec(`CREATE TABLE ${rowsTable} (id TEXT PRIMARY KEY)`);
@@ -140,6 +165,17 @@ test("SQLite transaction callbacks reject nested transaction modes without deadl
   }
 });
 
+test("SQLite rejects captured root transaction reentry before and after await", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-captured-root-transaction-sqlite-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  try {
+    await assertCapturedRootTransactionReentryRejectsPromptly(adapter);
+  } finally {
+    adapter.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("libSQL transaction callbacks reject nested transaction modes without deadlocking", async () => {
   await withLibsqlAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
@@ -151,6 +187,14 @@ test("Postgres transaction callbacks reject nested transaction modes without dea
 }, async () => {
   await withPostgresAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
+  });
+});
+
+test("Postgres rejects captured root transaction reentry before and after await", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await assertCapturedRootTransactionReentryRejectsPromptly(adapter);
   });
 });
 

@@ -190,6 +190,9 @@ type RuntimeEnv = Record<string, string | undefined>;
 // sequences of two callers. Adapters backed by one connection use this gate for every transaction
 // mode, preserving the transaction boundary that the runtime has already chosen (ADR-0026).
 function createConnectionTransactionGate() {
+  const AsyncLocalStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+  const transactionOwnership = new AsyncLocalStorage();
+  const transactionOwner = Object.freeze({});
   let transactionTail: Promise<void> = Promise.resolve();
   let transactionActive = false;
   const pending: Array<{ operation: () => any; resolve: (value: any) => void; reject: (error: any) => void; }> = [];
@@ -211,13 +214,14 @@ function createConnectionTransactionGate() {
   };
 
   const runTransaction = async <Value>(operation: () => Value): Promise<Awaited<Value>> => {
+    if (transactionOwnership.getStore() === transactionOwner) return await rejectNestedTransactionScope();
     const previous = transactionTail;
     let release: () => void = () => {};
     transactionTail = new Promise<void>((resolve) => { release = resolve; });
     await previous.catch(() => {});
     transactionActive = true;
     try {
-      return await operation();
+      return await transactionOwnership.run(transactionOwner, operation);
     } finally {
       transactionActive = false;
       await drainPending();
@@ -228,7 +232,7 @@ function createConnectionTransactionGate() {
   return { runOperation, runTransaction };
 }
 
-async function rejectNestedTransactionScope() {
+async function rejectNestedTransactionScope(): Promise<never> {
   throw commandError(
     "Nested database transactions are not supported.",
     "Keep mutation work inside a single Sporades mutation transaction.",

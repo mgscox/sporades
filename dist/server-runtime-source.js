@@ -1684,7 +1684,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     }
     catch (error) {
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
-        await flushPendingJobEnqueues(context);
+        dropPendingJobEnqueues(context);
         throw error;
     }
 }
@@ -3548,7 +3548,7 @@ export async function runMutation(database, auth, mutationName, args) {
     }
     catch (error) {
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
-        await flushPendingJobEnqueues(context);
+        dropPendingJobEnqueues(context);
         database.rowCache.clear();
         await reindexPrivilegedAuditEventsAfterRollback(database, context);
         if (error?.sporadesAclDenialLogData) {
@@ -3640,7 +3640,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
     }
     catch (error) {
         flushTeamSecurityEvents(database, context, { deniedOnly: true });
-        await flushPendingJobEnqueues(context);
+        dropPendingJobEnqueues(context);
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
@@ -3924,6 +3924,13 @@ async function flushPendingJobEnqueues(context) {
     }
     scheduleCurrentUserJobWorker(queueDatabase);
     return didWrite;
+}
+function dropPendingJobEnqueues(context) {
+    if (!context)
+        return;
+    context.__pendingJobEnqueues = [];
+    context.__pendingJobsFlushed = true;
+    delete context.__jobQueueDatabase;
 }
 function scheduleCurrentUserJobWorker(database) {
     if (database.__jobWorkerScheduled || database.__jobWorkerRunning)

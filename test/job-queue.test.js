@@ -5,11 +5,76 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createControllableRuntimeClock, openDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
-import { job, mutation } from "../dist/server.js";
+import { String, job, mutation, table } from "../dist/server.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 }
+
+test("a failed mutation drops deferred Job enqueues with its rolled-back data", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-mutation-rollback-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-mutation-rollback" }, {
+    schema: { effects: table({ source: String() }) },
+    jobs: { shouldNotRun: job((_ctx, payload) => payload) },
+    mutations: {
+      failAfterEnqueue: mutation(async (ctx) => {
+        await ctx.db.effects.insert({ source: "mutation" });
+        await ctx.jobs.enqueue("shouldNotRun", { source: "mutation" });
+        throw new Error("mutation failed after enqueue");
+      }),
+      inspectRollback: mutation(async (ctx) => ({
+        effects: await ctx.db.effects.all(),
+        jobs: (await ctx.jobs.list({ handler: "shouldNotRun" })).jobs,
+      })),
+    },
+  });
+  try {
+    const failed = await runMutation(database, auth("rollback-user"), "failAfterEnqueue", []);
+    assert.equal(failed.ok, false);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const inspection = await runMutation(database, auth("rollback-user"), "inspectRollback", []);
+    assert.deepEqual(inspection.data, { effects: [], jobs: [] });
+    const audit = await database.adapter.readRecentLogEvents(50);
+    assert.equal(audit.some((event) => event.data?.operation === "jobs.execute"), false);
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed message drops deferred Job enqueues with its rolled-back data", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-message-rollback-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-message-rollback" }, {
+    schema: { effects: table({ source: String() }) },
+    jobs: { shouldNotRun: job((_ctx, payload) => payload) },
+    mutations: {
+      inspectRollback: mutation(async (ctx) => ({
+        effects: await ctx.db.effects.all(),
+        jobs: (await ctx.jobs.list({ handler: "shouldNotRun" })).jobs,
+      })),
+    },
+  });
+  try {
+    database.messages = [{
+      name: "failAfterEnqueue",
+      handlerSource: `async (ctx) => {
+        await ctx.db.effects.insert({ source: "message" });
+        await ctx.jobs.enqueue("shouldNotRun", { source: "message" });
+        throw new Error("message failed after enqueue");
+      }`,
+    }];
+    const failed = await runAppMessage(database, auth("rollback-user"), "failAfterEnqueue", null);
+    assert.match(failed.error.message, /message failed after enqueue/);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const inspection = await runMutation(database, auth("rollback-user"), "inspectRollback", []);
+    assert.deepEqual(inspection.data, { effects: [], jobs: [] });
+    const audit = await database.adapter.readRecentLogEvents(50);
+    assert.equal(audit.some((event) => event.data?.operation === "jobs.execute"), false);
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 
 test("Jobs capture enqueue-time Session provider provenance across later provider switches", async () => {
@@ -170,7 +235,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
         return { first, second };
       }),
       enqueueThenFail: mutation(async (ctx) => {
-        await ctx.jobs.enqueue("record", { value: "survives-rollback" });
+        await ctx.jobs.enqueue("record", { value: "dropped-on-rollback" });
         throw new Error("app mutation rolled back");
       }),
       enqueueFailure: mutation((ctx) => ctx.jobs.enqueue("explode", { value: "secret-payload" })),
@@ -212,7 +277,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     await new Promise((resolve) => setTimeout(resolve, 25));
     const afterRollback = await runMutation(database, auth("user-a"), "listJobs", []);
     assert.equal(afterRollback.data.jobs.some((entry) => entry.handler === "record"), true);
-    assert.equal(seen.some((entry) => entry.input.value === "survives-rollback"), true);
+    assert.equal(seen.some((entry) => entry.input.value === "dropped-on-rollback"), false);
     assert.equal((await runMutation(database, auth("user-a"), "listJobs", [])).data.jobs.filter((entry) => entry.id === repeated.data.first.id).length, 1);
 
     const failed = await runMutation(database, auth("user-a"), "enqueueFailure", []);
