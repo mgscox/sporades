@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 const auth = { userId: "u", displayName: "u", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 test("Jobs support delayed availability, bounded retries, and cancellation", async () => {
@@ -47,4 +47,11 @@ test("queued cancellation prevents execution behind a running Job", async () => 
 test("closing the runtime clears a delayed Job wake timer", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-close-")); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{noop:job(()=>null)},mutations:{enqueue:mutation((ctx)=>ctx.jobs.enqueue("noop",{},{availableAt:new Date(Date.now()+100).toISOString()}))}});
  try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",[]); await new Promise(r=>setTimeout(r,5)); assert.ok(db.__jobWakeTimer); db.close(); assert.equal(db.__jobWakeTimer,null); await new Promise(r=>setTimeout(r,110)); } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("closing the runtime cancels scheduled Job work before its adapter closes", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-scheduled-close-")); const seen=[]; const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))},mutations:{enqueue:mutation((ctx)=>ctx.jobs.enqueue("record",{}))}},{clock});
+ try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",[]); assert.equal(db.__jobWorkerScheduled,true); await db.close(); await clock.runDueTimers(); assert.deepEqual(seen,[]);}
+ finally {await rm(dir,{recursive:true,force:true});}
 });

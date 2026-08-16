@@ -14962,18 +14962,28 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
+      database.__jobStopped = true;
       abortSchedulePayloadFactories(database);
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
+      if (database.__jobWorkerTimer) {
+        database.clock.clearTimer(database.__jobWorkerTimer);
+        database.__jobWorkerTimer = null;
+      }
+      database.__jobWorkerScheduled = false;
       if (database.__jobWakeTimer) {
         database.clock.clearTimer(database.__jobWakeTimer);
         database.__jobWakeTimer = null;
       }
-      const mailResult = database.mail.close();
-      const sqliteResult = database.adapter.close();
-      const storageResult = database.fileStorage.close();
-      const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
-      return pending.length > 0 ? Promise.all(pending) : void 0;
+      for (const controller of database.__jobAbortControllers?.values?.() ?? []) controller.abort();
+      const closeResources = () => {
+        const mailResult = database.mail.close();
+        const sqliteResult = database.adapter.close();
+        const storageResult = database.fileStorage.close();
+        const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
+        return pending.length > 0 ? Promise.all(pending) : void 0;
+      };
+      return database.__jobWorkerPromise ? Promise.resolve(database.__jobWorkerPromise).then(closeResources) : closeResources();
     }
   };
   database.init = async () => {
@@ -14983,6 +14993,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
     }
     database.__scheduleStopped = false;
+    database.__jobStopped = false;
     database.__scheduleTimers = /* @__PURE__ */ new Set();
     database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
     database.__scheduleRecoveryTimer = null;
@@ -18378,28 +18389,41 @@ function dropPendingJobDispatch(context) {
   delete context.__jobQueueDatabase;
 }
 function scheduleCurrentUserJobWorker(database) {
-  if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
+  if (database.__jobStopped || database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
   database.__jobWorkerScheduled = true;
   try {
-    database.clock.setTimer(async () => {
+    database.__jobWorkerTimer = database.clock.setTimer(async () => {
+      database.__jobWorkerTimer = null;
       database.__jobWorkerScheduled = false;
-      await runCurrentUserJobWorker(database);
+      if (database.__jobStopped) return;
+      const worker = runCurrentUserJobWorker(database);
+      database.__jobWorkerPromise = worker;
+      try {
+        await worker;
+      } finally {
+        if (database.__jobWorkerPromise === worker) database.__jobWorkerPromise = null;
+      }
     }, 0);
   } catch {
     database.__jobWorkerScheduled = false;
+    database.__jobWorkerTimer = null;
   }
 }
-async function scheduleNextDelayedJob(database) {
-  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
-  if (!row) return;
+function scheduleJobWorkerWake(database, delayMs) {
+  if (database.__jobStopped) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => {
     database.__jobWakeTimer = null;
     scheduleCurrentUserJobWorker(database);
-  }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
+  }, delayMs);
+}
+async function scheduleNextDelayedJob(database) {
+  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
+  if (!row) return;
+  scheduleJobWorkerWake(database, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
 }
 async function runCurrentUserJobWorker(database) {
-  if (database.__jobWorkerRunning) return;
+  if (database.__jobStopped || database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
   const sql = database.adapter.dialect.sql;
   try {
@@ -18472,7 +18496,7 @@ async function runCurrentUserJobWorker(database) {
         else if (Number(row.attempts) + 1 < retry.maxAttempts) {
           const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
           await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt, JSON.stringify(history), row.id);
-          database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
+          scheduleJobWorkerWake(database, retry.delayMs + 1);
         } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
       } finally {
         database.__jobAbortControllers?.delete(row.id);
