@@ -30,10 +30,14 @@ export default capsule({
 });
 ```
 
-Enqueue is a durable runtime side effect, not part of the Capsule mutation
-Transaction boundary: it is not atomic with `ctx.db` writes. Supply an
-idempotency key when callers can retry a cross-boundary workflow; repeating the
-same key for the same handler and captured user returns the retained Job.
+`ctx.jobs.enqueue` persists the Job atomically inside the same mutation, App
+message, or Custom endpoint transaction as `ctx.db` writes. A handler rollback
+removes the Job. Worker dispatch starts only after the transaction commits. A
+post-commit dispatch registration failure does not reverse or misreport the
+committed handler outcome; the durable Job recovers on a later worker wake or
+runtime restart. Supply an idempotency key when callers can retry a workflow;
+repeating the same key for the same handler and captured user returns the
+retained Job.
 
 Jobs may use a one-time future `availableAt` and become `delayed` until then;
 this is not recurring scheduling. A bounded `retry` policy records attempts and
@@ -48,7 +52,7 @@ attempt again.
 
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
-duplicate-safe and use idempotency keys for cross-boundary caller retries.
+duplicate-safe and use idempotency keys for caller retries.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its

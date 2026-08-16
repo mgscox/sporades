@@ -874,21 +874,24 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.doesNotMatch(apiClient, /JobApi/);
 });
 
-test("canonical and feature Job PRDs describe transaction-bound enqueue lifecycle", async () => {
-  const [canonicalPrd, featurePrd] = await Promise.all([
+test("canonical, feature, and reference Job docs describe transaction-bound enqueue lifecycle", async () => {
+  const [canonicalPrd, featurePrd, jobReference] = await Promise.all([
     readProjectFile("docs/PRD.md"),
     readProjectFile(".scratch/job-queue/PRD.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
   ]);
 
-  for (const prd of [canonicalPrd, featurePrd]) {
-    assert.match(prd, /`ctx\.jobs\.enqueue`[\s\S]*same (?:mutation, App message, or Custom endpoint|handler) transaction/i);
-    assert.match(prd, /handler\s+rollback[\s\S]*removes\s+the\s+Job/i);
-    assert.match(prd, /worker dispatch[\s\S]*only\s+after\s+(?:the\s+)?transaction\s+commits/i);
-    assert.match(prd, /dispatch\s+registration\s+failure[\s\S]*does\s+not\s+(?:reverse|undo)[\s\S]*committed\s+handler[\s\S]*later\s+(?:worker\s+)?wake[\s\S]*runtime\s+restart/i);
-    assert.doesNotMatch(prd, /enqueue is a durable runtime side effect outside the[\s\S]*Transaction boundary/i);
-    assert.doesNotMatch(prd, /queue writes are not atomic with Capsule app mutation writes/i);
-    assert.doesNotMatch(prd, /prove enqueue does not claim atomicity with Capsule mutation writes/i);
-    assert.doesNotMatch(prd, /do not promise[\s\S]*transactional enqueue with Capsule app mutations/i);
+  for (const document of [canonicalPrd, featurePrd, jobReference]) {
+    assert.match(document, /`ctx\.jobs\.enqueue`[\s\S]*same (?:mutation,\s+App\s+message,\s+or\s+Custom\s+endpoint|handler) transaction/i);
+    assert.match(document, /handler\s+rollback[\s\S]*removes\s+the\s+Job/i);
+    assert.match(document, /worker dispatch[\s\S]*only\s+after\s+(?:the\s+)?transaction\s+commits/i);
+    assert.match(document, /dispatch\s+registration\s+failure[\s\S]*does\s+not\s+(?:reverse|undo)[\s\S]*committed\s+handler/i);
+    assert.match(document, /dispatch\s+registration\s+failure[\s\S]*does\s+not[\s\S]*misreport[\s\S]*committed\s+handler/i);
+    assert.match(document, /later\s+(?:worker\s+)?wake[\s\S]*runtime\s+restart/i);
+    assert.doesNotMatch(document, /enqueue is a durable runtime side effect outside the[\s\S]*Transaction boundary/i);
+    assert.doesNotMatch(document, /queue writes are not atomic with Capsule app mutation writes/i);
+    assert.doesNotMatch(document, /prove enqueue does not claim atomicity with Capsule mutation writes/i);
+    assert.doesNotMatch(document, /do not promise[\s\S]*transactional enqueue with Capsule app mutations/i);
   }
 });
 

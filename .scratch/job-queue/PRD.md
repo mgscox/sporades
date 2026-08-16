@@ -120,7 +120,7 @@ commits. A post-commit dispatch registration failure does not reverse or
 misreport committed handler work; the durable Job recovers on a later worker
 wake or runtime restart. An optional idempotency key, unique by Capsule, handler,
 and execution actor for as long as the Job is retained, returns the existing Job
-on a repeated enqueue and converges concurrent callers on that winner.
+on a repeated enqueue.
 
 Payload and metadata limits should reuse an existing Sporades structured-payload
 limit where one applies. Otherwise, the first queue uses 64 KiB limits for
@@ -347,8 +347,7 @@ does not gate completion.
   only after commit, and a dispatch registration failure leaves the committed
   durable Job available to a later worker wake or runtime restart.
 - Optional idempotency keys are scoped by Capsule, handler, and execution actor
-  while the Job is retained and converge retrying or concurrent callers on one
-  durable Job.
+  while the Job is retained and support retry-safe callers.
 - Retry behavior is bounded and deterministic. Delayed Jobs are not runnable
   until `availableAt`; a retry remains another attempt for the same Job ID.
 - Normal server context lists Jobs assigned to the current user. Privileged
@@ -370,8 +369,8 @@ does not gate completion.
   commit or roll back together for mutations, App messages, and Custom
   endpoints; prove worker dispatch begins only after commit and durable Jobs
   recover after a dispatch registration failure.
-- Use concurrency tests to prove idempotency keys prevent duplicate enqueue on
-  caller retry and converge competing database transactions on one Job.
+- Use idempotency tests to prove caller retries return one retained Job rather
+  than enqueueing duplicates.
 - Use client-runtime tests to prove browser code cannot obtain Job Queue or
   Privileged server role authority.
 - Use existing restart and runtime-session seams to prove queued Jobs survive
