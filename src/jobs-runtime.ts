@@ -219,16 +219,17 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
   );
 }
 
-export async function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any) {
+export async function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any, claimToken: string) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
   const sql = database.adapter.dialect.sql;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
+  const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=?")).run(code, completedAt, id, claimToken);
+  if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
+  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=?")).run(next, scheduledFor, code, definition.name);
+  return { finished: true, nextOccurrence: next };
 }
 
 export function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string) {

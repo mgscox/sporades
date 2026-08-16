@@ -186,13 +186,23 @@ occurrence, then resumes normal recurrence; it never replays an unbounded
 backlog. Schedule state and pending occurrences survive runtime restarts through
 the configured Database adapter. A deterministic identity based on Capsule,
 Schedule name, and scheduled UTC instant prevents overlapping starts or crash
-recovery from creating duplicate Jobs for one occurrence.
+recovery from creating duplicate Jobs for one occurrence. Payload calculation
+can be repeated after a claim expires, but the runtime rechecks claim ownership
+before writing: deterministic Job enqueue, occurrence terminal state, and the
+Schedule's latest-occurrence summary commit in one transaction. A stale owner
+therefore cannot enqueue or overwrite the replacement owner's durable outcome.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into
 an immediate occurrence by the host timer implementation. Recovery waits for a
 retained pending occurrence claim use the same bounded, tracked chunks and
-recheck the durable expiry before attempting reconciliation.
+recheck the durable expiry before attempting reconciliation. A transient
+recovery failure installs a bounded retry wake rather than abandoning the
+pending occurrence, and runtime close waits for active occurrence recovery
+before closing its Database adapter. Retained occurrence instants and claim
+expiries must be canonical four-digit UTC timestamps; malformed retained state
+is terminally quarantined with the stable opaque
+`SCHEDULE_OCCURRENCE_INVALID` code and is never left permanently pending.
 
 Changing an expression, timezone, payload, retry policy, or enabled state affects
 future occurrences only and does not rewrite historical Jobs. Removing a

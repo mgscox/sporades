@@ -11,12 +11,19 @@ must tolerate duplicate execution because delivery is at least once.
 Declare `schedule()` only for recurrence. Pin an IANA timezone when wall-clock
 meaning must remain consistent across Dev, Container, and Hosted environments.
 Schedules enqueue Jobs; retry and execution semantics remain Job Queue semantics.
+Occurrence claim ownership, deterministic enqueue, terminal occurrence state,
+and latest Schedule summary are committed together. Payload factories may be
+evaluated again after claim recovery, but a stale evaluator cannot persist a Job
+or overwrite the winning outcome.
 
 One-time `availableAt` values and retry instants stay within canonical
 four-digit UTC timestamps. Supply availability as a timestamp string or `Date`;
 coercible scalar values, invalid dates, and extended-year values are rejected;
 invalid retained timing state fails safely during recovery and is revalidated
-before worker claim. Availability and retry instants leave room for the runtime
+before worker claim. The same canonical timestamp rule applies to retained
+Schedule occurrence and claim-expiry state; malformed values become the opaque
+terminal `SCHEDULE_OCCURRENCE_INVALID` outcome rather than a stranded pending
+occurrence. Availability and retry instants leave room for the runtime
 claim lease, and retry objects contain only `maxAttempts` and optional
 `delayMs`. A missing captured user is also terminal rather than retryable.
 

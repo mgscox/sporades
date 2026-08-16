@@ -6,7 +6,13 @@ export declare function resolveSchedulePayloadFactoryTimeoutMs(config?: RuntimeC
 export declare function parseScheduleExpression(value: any): any;
 export declare function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string): Date;
 export declare function ensureScheduleStorage(sqlite: LooseRecord): Promise<void>;
-export declare function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any): Promise<void>;
+export declare function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any, claimToken: string): Promise<{
+    finished: boolean;
+    nextOccurrence: null;
+} | {
+    finished: boolean;
+    nextOccurrence: string;
+}>;
 export declare function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string): string;
 export declare function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord): Promise<{
     ok: boolean;

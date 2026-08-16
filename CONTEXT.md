@@ -157,7 +157,7 @@ A named Capsule declaration that determines when Sporades should enqueue an ordi
 _Avoid_: cron job, recurring Job, timer
 
 **Scheduled occurrence**:
-One UTC instant produced by a Schedule and associated with one durable Job identity when enqueue succeeds.
+One UTC instant produced by a Schedule. Its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds; payload calculation itself may be repeated during recovery.
 _Avoid_: run, tick, retry
 
 **Job inspection action**:

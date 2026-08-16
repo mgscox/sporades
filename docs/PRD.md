@@ -973,12 +973,20 @@ adapter. Declaration changes affect only future occurrences; removal forgets
 Schedule state without deleting historical Jobs, and later reuse of the name is
 a fresh identity. Deterministic occurrence identity and durable reconciliation
 prevent duplicate Job creation across overlapping starts and crashes.
+Payload evaluation may repeat after occurrence-claim expiry, but persistence is
+claim-owned: deterministic Job enqueue, occurrence terminalization, and the
+Schedule latest-occurrence summary are one Database transaction. A stale owner
+cannot enqueue or finalize after another runtime reclaims the occurrence.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long
 delay. A retained pending occurrence claim's future recovery wake is likewise
 tracked, chunked to the native timer limit, and rechecks the durable expiry
-before reconciliation.
+before reconciliation. Transient recovery failures install a bounded retry wake,
+and orderly close waits for active Schedule recovery before closing the adapter.
+Retained occurrence and claim-expiry timestamps are canonical four-digit UTC
+instants; malformed retained timing state is terminally quarantined with the
+opaque stable `SCHEDULE_OCCURRENCE_INVALID` error rather than remaining pending.
 
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the

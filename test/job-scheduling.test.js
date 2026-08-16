@@ -115,6 +115,138 @@ test("a distant retained occurrence claim is revisited after a bounded timer chu
   }
 });
 
+test("a transient retained-occurrence recovery failure re-arms a bounded retry", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-recovery-retry-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-recovery-retry" }, {
+    jobs: { work: job(() => null) },
+    schedules: { retained: schedule({ expression: "0 0 1 1 *", timezone: "UTC", job: "work" }) },
+  }, { clock });
+  try {
+    const createdAt = clock.now().toISOString();
+    const occurrenceId = createHash("sha256").update(JSON.stringify(["scheduled-recovery-retry", "retained", "2030-01-01T00:00:00.000Z"])).digest("hex");
+    database.adapter.prepare(
+      "INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+    ).run(occurrenceId, "retained", "2030-01-01T00:00:00.000Z", "prior-runtime-claim", "2030-01-01T00:00:01.000Z", createdAt, createdAt);
+    await database.init();
+
+    const originalPrepare = database.adapter.prepare.bind(database.adapter);
+    let failRecoveryOnce = true;
+    database.adapter.prepare = (sql) => {
+      const statement = originalPrepare(sql);
+      if (failRecoveryOnce && String(sql).includes("sporades_schedule_occurrences") && String(sql).includes("status") && String(sql).includes("pending")) {
+        return { ...statement, all(...args) { failRecoveryOnce = false; throw new Error("transient recovery read failure"); } };
+      }
+      return statement;
+    };
+
+    clock.advanceBy(1_000);
+    await clock.runDueTimers();
+    assert.equal(database.adapter.prepare("SELECT status FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId).status, "pending");
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.ok(database.__scheduleRecoveryTimer);
+    assert.equal(database.__scheduleRecoveryDueAt, Date.parse("2030-01-01T00:00:02.000Z"));
+
+    clock.advanceBy(1_000);
+    await clock.runDueTimers();
+    assert.equal(database.adapter.prepare("SELECT status FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId).status, "enqueued");
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("close awaits an active retained-occurrence recovery before closing its adapter", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-recovery-close-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-recovery-close" }, {
+    jobs: { work: job(() => null) },
+    schedules: { retained: schedule({ expression: "0 0 1 1 *", timezone: "UTC", job: "work" }) },
+  }, { clock });
+  let releaseRecovery;
+  let markRecoveryStarted;
+  let closeCompleted = false;
+  const recoveryStarted = new Promise((resolve) => { markRecoveryStarted = resolve; });
+  try {
+    const scheduledFor = "2030-01-01T00:00:00.000Z";
+    const occurrenceId = createHash("sha256").update(JSON.stringify(["scheduled-recovery-close", "retained", scheduledFor])).digest("hex");
+    const createdAt = clock.now().toISOString();
+    database.adapter.prepare(
+      "INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+    ).run(occurrenceId, "retained", scheduledFor, "prior-runtime-claim", "2030-01-01T00:00:01.000Z", createdAt, createdAt);
+    await database.init();
+    const originalPrepare = database.adapter.prepare.bind(database.adapter);
+    let pauseRecovery = true;
+    database.adapter.prepare = (sql) => {
+      const statement = originalPrepare(sql);
+      if (pauseRecovery && String(sql).includes("sporades_schedule_occurrences") && String(sql).includes("status") && String(sql).includes("pending")) {
+        return { ...statement, async all(...args) {
+          pauseRecovery = false;
+          markRecoveryStarted();
+          await new Promise((resolve) => { releaseRecovery = resolve; });
+          return statement.all(...args);
+        } };
+      }
+      return statement;
+    };
+
+    clock.advanceBy(1_000);
+    const recovering = clock.runDueTimers();
+    await recoveryStarted;
+    const closing = Promise.resolve(database.close()).then(() => { closeCompleted = true; });
+    await Promise.resolve();
+    assert.equal(closeCompleted, false);
+    releaseRecovery();
+    await recovering;
+    await closing;
+    assert.equal(closeCompleted, true);
+  } finally {
+    releaseRecovery?.();
+    if (!closeCompleted) await Promise.resolve(database.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("retained Schedule occurrences with malformed timestamps become opaque terminal failures", async (t) => {
+  for (const scenario of [
+    { name: "claim expiry", scheduledFor: "2030-01-01T00:00:00.000Z", claimExpiresAt: "not-a-timestamp" },
+    { name: "scheduled instant", scheduledFor: "not-a-timestamp", claimExpiresAt: null },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-malformed-retained-"));
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+      const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-malformed-retained" }, {
+        jobs: { work: job(() => null) },
+        schedules: { retained: schedule({ expression: "0 0 1 1 *", timezone: "UTC", job: "work" }) },
+      }, { clock });
+      const occurrenceId = createHash("sha256").update(JSON.stringify(["scheduled-malformed-retained", "retained", scenario.scheduledFor])).digest("hex");
+      try {
+        const createdAt = clock.now().toISOString();
+        database.adapter.prepare(
+          "INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+        ).run(occurrenceId, "retained", scenario.scheduledFor, "prior-runtime-claim", scenario.claimExpiresAt, createdAt, createdAt);
+
+        await database.init();
+
+        assert.deepEqual({ ...database.adapter.prepare("SELECT status, claimToken, claimExpiresAt, jobId, errorCode FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId) }, {
+          status: "enqueue-failed",
+          claimToken: null,
+          claimExpiresAt: null,
+          jobId: null,
+          errorCode: "SCHEDULE_OCCURRENCE_INVALID",
+        });
+        assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+      } finally {
+        await database.shutdown();
+        await database.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("a matching static Schedule enqueues and runs one ordinary Privileged Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
@@ -380,13 +512,11 @@ test("Schedule payload factories may explicitly enter Privileged access without 
     },
   }, { clock });
   try {
-    const audits = [];
-    const originalEmit = database.audit.emit.bind(database.audit);
-    database.audit.emit = async (details) => { audits.push(details); return originalEmit(details); };
     await database.init();
     clock.advanceBy(30_000);
     await clock.runDueTimers();
-    assert.deepEqual(audits.filter((event) => event.outcome === "started" && event.operation.startsWith("schedules.")).map((event) => event.operation), [
+    const audits = await database.adapter.readRecentLogEvents(50);
+    assert.deepEqual(audits.filter((event) => event.category === "audit" && event.data?.outcome === "started" && event.data?.operation?.startsWith("schedules.")).map((event) => event.data.operation), [
       "schedules.enqueue", "schedules.payload.read", "schedules.enqueue",
     ]);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
@@ -772,7 +902,7 @@ test("an immediate restart revisits a pending occurrence when its claim expires"
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("a restart after enqueue reuses one deterministic occurrence Job", async () => {
+test("a crash after transactional enqueue rolls back before restart recovery", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-crash-after-enqueue-"));
   const file = path.join(dir, "data.db");
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
@@ -783,14 +913,14 @@ test("a restart after enqueue reuses one deterministic occurrence Job", async ()
   } });
   try {
     await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
-    const firstId = database.adapter.prepare("SELECT id FROM sporades_jobs").get().id;
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     database.close();
     clock.advanceBy(31_000);
     database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
     await database.init();
     const jobs = database.adapter.prepare("SELECT id FROM sporades_jobs").all();
-    assert.deepEqual(jobs.map((row) => row.id), [firstId]);
-    assert.equal(database.adapter.prepare("SELECT jobId FROM sporades_schedule_occurrences").get().jobId, firstId);
+    assert.equal(jobs.length, 1);
+    assert.equal(database.adapter.prepare("SELECT jobId FROM sporades_schedule_occurrences").get().jobId, jobs[0].id);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -811,6 +941,148 @@ test("overlapping runtime starts converge on one occurrence Job identity", async
     assert.equal(jobs.length, 1);
     assert.deepEqual(occurrences.map(({ jobId, status }) => ({ jobId, status })), [{ jobId: jobs[0].id, status: "enqueued" }]);
   } finally { await Promise.all([first.shutdown(), second.shutdown()]); first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("an expired Schedule owner cannot enqueue after a replacement owner terminally fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-stale-owner-"));
+  const file = path.join(dir, "data.db");
+  const clockA = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const clockB = createControllableRuntimeClock("2030-01-01T00:01:31.000Z");
+  let payloadCalls = 0;
+  let releaseFirst;
+  let markFirstPayloadStarted;
+  const firstPayloadStarted = new Promise((resolve) => { markFirstPayloadStarted = resolve; });
+  const capsule = {
+    jobs: { work: job(() => null) },
+    schedules: {
+      shared: schedule({
+        expression: "* * * * *",
+        job: "work",
+        payload: async () => {
+          payloadCalls += 1;
+          if (payloadCalls === 1) {
+            markFirstPayloadStarted();
+            await new Promise((release) => { releaseFirst = release; });
+            return { owner: "expired" };
+          }
+          throw new Error("replacement payload failed");
+        },
+      }),
+    },
+  };
+  const first = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockA });
+  let second;
+  try {
+    await first.init();
+    clockA.advanceBy(30_000);
+    const firstOccurrence = clockA.runDueTimers();
+    await firstPayloadStarted;
+
+    second = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockB });
+    await second.init();
+    releaseFirst();
+    await firstOccurrence;
+
+    assert.equal(payloadCalls, 2);
+    assert.deepEqual({ ...first.adapter.prepare("SELECT status, jobId, errorCode FROM sporades_schedule_occurrences").get() }, {
+      status: "payload-failed",
+      jobId: null,
+      errorCode: "SCHEDULE_PAYLOAD_FAILED",
+    });
+    assert.deepEqual({ ...first.adapter.prepare("SELECT latestOutcome, latestJobId, latestErrorCode FROM sporades_schedules WHERE name='shared'").get() }, {
+      latestOutcome: "payload-failed",
+      latestJobId: null,
+      latestErrorCode: "SCHEDULE_PAYLOAD_FAILED",
+    });
+    assert.equal(first.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+  } finally {
+    releaseFirst?.();
+    await Promise.allSettled([first.shutdown(), second?.shutdown()]);
+    await Promise.allSettled([first.close(), second?.close()]);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function proveStaleScheduleOwnerCannotCommit(openPair, scheduleName) {
+  const clockA = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const clockB = createControllableRuntimeClock("2030-01-01T00:01:31.000Z");
+  let payloadCalls = 0;
+  let releaseFirst;
+  let markFirstPayloadStarted;
+  const firstPayloadStarted = new Promise((resolve) => { markFirstPayloadStarted = resolve; });
+  const capsule = {
+    jobs: { work: job(() => null) },
+    schedules: {
+      [scheduleName]: schedule({
+        expression: "* * * * *",
+        job: "work",
+        payload: async () => {
+          payloadCalls += 1;
+          if (payloadCalls === 1) {
+            markFirstPayloadStarted();
+            await new Promise((resolve) => { releaseFirst = resolve; });
+            return { owner: "expired" };
+          }
+          throw new Error("replacement payload failed");
+        },
+      }),
+    },
+  };
+  const { first, openSecond } = await openPair(capsule, clockA, clockB);
+  let second;
+  try {
+    await first.init();
+    clockA.advanceBy(30_000);
+    const firstOccurrence = clockA.runDueTimers();
+    await firstPayloadStarted;
+    second = await openSecond();
+    await second.init();
+    releaseFirst();
+    await firstOccurrence;
+
+    const sql = first.adapter.dialect.sql;
+    assert.equal(Number((await first.adapter.prepare(sql("SELECT count(*) AS count FROM [sporades_jobs] WHERE [scheduleName]=?")).get(scheduleName)).count), 0);
+    assert.deepEqual(await first.adapter.prepare(sql("SELECT [status], [jobId], [errorCode] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).get(scheduleName), {
+      status: "payload-failed", jobId: null, errorCode: "SCHEDULE_PAYLOAD_FAILED",
+    });
+    assert.deepEqual(await first.adapter.prepare(sql("SELECT [latestOutcome], [latestJobId], [latestErrorCode] FROM [sporades_schedules] WHERE [name]=?")).get(scheduleName), {
+      latestOutcome: "payload-failed", latestJobId: null, latestErrorCode: "SCHEDULE_PAYLOAD_FAILED",
+    });
+  } finally {
+    releaseFirst?.();
+    await Promise.allSettled([first.shutdown(), second?.shutdown()]);
+    await Promise.allSettled([first.close(), second?.close()]);
+  }
+}
+
+test("libSQL rejects a stale Schedule owner before its deterministic Job side effect", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-stale-owner-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-stale-owner-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveStaleScheduleOwnerCannotCommit(async (capsule, clockA, clockB) => ({
+        first: await openDevDatabase(path.join(dir, "unused-a.db"), "", {}, config, capsule, { clock: clockA, serviceEnv }),
+        openSecond: () => openDevDatabase(path.join(dir, "unused-b.db"), "", {}, config, capsule, { clock: clockB, serviceEnv }),
+      }), "sharedLibsql");
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Postgres rejects a stale Schedule owner before its deterministic Job side effect", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter race." }, async () => {
+  const config = { name: "scheduled-stale-owner-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await proveStaleScheduleOwnerCannotCommit(async (capsule, clockA, clockB) => {
+    const first = await openDevDatabase("unused-a.db", "", {}, config, capsule, { clock: clockA, serviceEnv });
+    const sql = first.adapter.dialect.sql;
+    await first.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run("sharedPostgres");
+    await first.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run("sharedPostgres");
+    await first.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run("sharedPostgres");
+    return {
+      first,
+      openSecond: () => openDevDatabase("unused-b.db", "", {}, config, capsule, { clock: clockB, serviceEnv }),
+    };
+  }, "sharedPostgres");
 });
 
 test("an overlapping loser recovers after the winner crashes with an active claim", async () => {
@@ -887,13 +1159,17 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
     mutations: { inspect: mutation((ctx) => ctx.privileged.run({ operation: "test.inspect", targetResourceKind: "schedule-store" }, (privilegedCtx) => privilegedCtx.schedules.get("resilient"))) },
   }, { clock });
   try {
-    const originalPrepare = database.adapter.prepare.bind(database.adapter);
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
     let rejectOnce = true;
-    database.adapter.prepare = (sql) => {
-      const statement = originalPrepare(sql);
-      if (rejectOnce && String(sql).startsWith('INSERT INTO "sporades_jobs"')) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
-      return statement;
-    };
+    database.adapter.withTransaction = (callback) => originalWithTransaction(async (transactionAdapter) => {
+      const originalPrepare = transactionAdapter.prepare.bind(transactionAdapter);
+      transactionAdapter.prepare = (sql) => {
+        const statement = originalPrepare(sql);
+        if (rejectOnce && String(sql).startsWith('INSERT INTO "sporades_jobs"')) return { ...statement, run() { rejectOnce = false; throw new Error("queue unavailable"); } };
+        return statement;
+      };
+      return callback(transactionAdapter);
+    });
     await database.init();
     clock.advanceBy(30_000);
     await clock.runDueTimers();
@@ -912,20 +1188,22 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
 test("shutdown stops future occurrences and awaits an active occurrence", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-shutdown-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
-    jobs: { work: job(() => null) }, schedules: { stopping: schedule({ expression: "* * * * *", job: "work" }) },
-  }, { clock });
   let release;
+  let markOccurrenceStarted;
+  const occurrenceStarted = new Promise((resolve) => { markOccurrenceStarted = resolve; });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { work: job(() => null) },
+    schedules: { stopping: schedule({ expression: "* * * * *", job: "work" }) },
+  }, { clock, scheduleOccurrenceFault: async (boundary) => {
+    if (boundary !== "after-pending") return;
+    markOccurrenceStarted();
+    await new Promise((resolve) => { release = resolve; });
+  } });
   try {
-    const originalEmit = database.audit.emit.bind(database.audit);
-    database.audit.emit = async (details) => {
-      if (details.operation === "schedules.enqueue" && details.outcome === "started") await new Promise((resolve) => { release = resolve; });
-      return originalEmit(details);
-    };
     await database.init();
     clock.advanceBy(30_000);
     const occurrence = clock.runDueTimers();
-    while (!release) await Promise.resolve();
+    await occurrenceStarted;
     let stopped = false;
     const shutdown = database.shutdown().then(() => { stopped = true; });
     await Promise.resolve();
@@ -936,6 +1214,19 @@ test("shutdown stops future occurrences and awaits an active occurrence", async 
     clock.advanceBy(60_000);
     await clock.runDueTimers();
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    const jobId = database.adapter.prepare("SELECT id FROM sporades_jobs").get().id;
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status, jobId, errorCode FROM sporades_schedule_occurrences").get() }, {
+      status: "enqueued",
+      jobId,
+      errorCode: null,
+    });
+    assert.deepEqual({ ...database.adapter.prepare("SELECT nextOccurrence, latestScheduledFor, latestOutcome, latestJobId, latestErrorCode FROM sporades_schedules WHERE name='stopping'").get() }, {
+      nextOccurrence: "2030-01-01T00:02:00.000Z",
+      latestScheduledFor: "2030-01-01T00:01:00.000Z",
+      latestOutcome: "enqueued",
+      latestJobId: jobId,
+      latestErrorCode: null,
+    });
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -216,16 +216,18 @@ export async function ensureScheduleStorage(sqlite) {
     await sqlite.exec(sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
         "ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"));
 }
-export async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
+export async function finishFailedScheduledOccurrence(database, definition, occurrence, error, claimToken) {
     const scheduledFor = occurrence.toISOString();
     const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
     const completedAt = database.clock.now().toISOString();
     const code = "SCHEDULE_ENQUEUE_FAILED";
     const sql = database.adapter.dialect.sql;
-    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
+    const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=?")).run(code, completedAt, id, claimToken);
+    if (Number(terminal.changes) !== 1)
+        return { finished: false, nextOccurrence: null };
     const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-    definition.nextOccurrence = next;
-    await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
+    await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=?")).run(next, scheduledFor, code, definition.name);
+    return { finished: true, nextOccurrence: next };
 }
 export function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
     return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
