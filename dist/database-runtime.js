@@ -192,6 +192,15 @@ function createConnectionTransactionQueue() {
         }
     };
 }
+function createTransactionScopedAdapter(adapter) {
+    const rejectNestedTransaction = async () => {
+        throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
+    };
+    return Object.assign(Object.create(adapter), {
+        withTransaction: rejectNestedTransaction,
+        withReadOnlySnapshot: rejectNestedTransaction,
+    });
+}
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
     if (config.services?.database?.engine === "libsql" &&
         serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
@@ -874,7 +883,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             return await runExclusiveTransaction(async () => {
                 adapter.exec("BEGIN");
                 try {
-                    const result = await fn(adapter);
+                    const result = await fn(createTransactionScopedAdapter(adapter));
                     adapter.exec("COMMIT");
                     return result;
                 }
@@ -886,10 +895,11 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         async withReadOnlySnapshot(fn) {
             return await runExclusiveTransaction(async () => {
+                const transactionAdapter = createTransactionScopedAdapter(adapter);
                 adapter.exec("BEGIN");
                 adapter.exec("PRAGMA query_only = ON");
                 try {
-                    const result = await fn(adapter);
+                    const result = await fn(transactionAdapter);
                     adapter.exec("COMMIT");
                     return result;
                 }
@@ -993,7 +1003,7 @@ export async function createPostgresDatabaseAdapter(options) {
             return await runExclusiveTransaction(async () => {
                 await adapter.exec("BEGIN");
                 try {
-                    const result = await fn(adapter);
+                    const result = await fn(createTransactionScopedAdapter(adapter));
                     await adapter.exec("COMMIT");
                     return result;
                 }
@@ -1008,9 +1018,10 @@ export async function createPostgresDatabaseAdapter(options) {
         },
         async withReadOnlySnapshot(fn) {
             return await runExclusiveTransaction(async () => {
+                const transactionAdapter = createTransactionScopedAdapter(adapter);
                 await adapter.exec("BEGIN TRANSACTION READ ONLY");
                 try {
-                    const result = await fn(adapter);
+                    const result = await fn(transactionAdapter);
                     await adapter.exec("COMMIT");
                     return result;
                 }
@@ -1503,13 +1514,10 @@ export async function createLibsqlDatabaseAdapter(options) {
         // body instead.
         async withTransaction(fn) {
             const transaction = { baton: null, baseUrl: endpoint };
-            const transactionAdapter = {
+            const transactionAdapter = createTransactionScopedAdapter({
                 ...adapter,
                 ...createOperations(transaction),
-                async withTransaction() {
-                    throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
-                },
-            };
+            });
             activeTransactions.add(transaction);
             try {
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -1530,7 +1538,7 @@ export async function createLibsqlDatabaseAdapter(options) {
         },
         async withReadOnlySnapshot(fn) {
             const transaction = { baton: null, baseUrl: endpoint };
-            const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
+            const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction) });
             activeTransactions.add(transaction);
             try {
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });

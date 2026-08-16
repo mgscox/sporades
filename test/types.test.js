@@ -89,6 +89,12 @@ typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "e
 typedUsers.insertOrIgnore({ email: "person@example.test" });
 // @ts-expect-error Conflict fields are limited to the table row shape.
 typedUsers.insertOrIgnore({ email: "person@example.test" }, "missing");
+// @ts-expect-error Managed IDs cannot be declared unique or named as insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "id");
+// @ts-expect-error Managed creation timestamps are not insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "createdAt");
+// @ts-expect-error Managed update timestamps are not insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
 const app = capsule({
   name: "typed island",

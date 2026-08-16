@@ -250,7 +250,7 @@ export type OrderDirection = "asc" | "desc" | "ASC" | "DESC";
 export type TableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
   insert(values: InsertValues<Row>): Row;
   /** Atomically insert, returning null only for the exactly named declared unique constraint. */
-  insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof Row & string, ...(keyof Row & string)[]]): Row | null;
+  insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof InsertValues<Row> & string, ...(keyof InsertValues<Row> & string)[]]): Row | null;
   update(id: string, values: UpdateValues<Row>): Row | null;
   delete(id: string): boolean;
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): TableApi<Row>;
