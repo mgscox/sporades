@@ -19,6 +19,7 @@ import {
   verifyPasswordResetCode,
 } from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const emailAuthConfig = {
   name: "reset",
@@ -407,6 +408,92 @@ test("the delivered reset mail carries a working link on the configured origin a
   } finally {
     await database.shutdown();
     await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a service-backed password reset Job starts only after its mutation commits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-password-reset-libsql-"));
+  const clock = createControllableRuntimeClock("2031-05-01T10:00:00.000Z");
+  const sent = [];
+  let pauseReached;
+  const paused = new Promise((resolve) => { pauseReached = resolve; });
+  let releaseMutation;
+  const release = new Promise((resolve) => { releaseMutation = resolve; });
+  globalThis.__pausePasswordResetMutation = async () => {
+    pauseReached();
+    await release;
+  };
+  try {
+    await withFakeLibsqlService(path.join(dir, "service.db"), async ({ url }) => {
+      const config = {
+        name: "reset-libsql",
+        services: { database: { kind: "database", engine: "libsql" } },
+        mail: smtpConfig,
+        __sporadesPublicOrigin: "https://notes.example.com",
+        auth: { providers: { email: { enabled: true } } },
+      };
+      const capsule = {
+        mutations: {
+          requestReset: mutation(async (ctx, email) => {
+            await ctx.serverAuth.sendEmailPasswordResetLink(email);
+            await globalThis.__pausePasswordResetMutation();
+          }),
+          rollbackReset: mutation(async (ctx, email) => {
+            await ctx.serverAuth.sendEmailPasswordResetLink(email);
+            throw new Error("rollback reset request");
+          }),
+        },
+      };
+      const database = await openDevDatabase(path.join(dir, "unused.db"), "", {
+        SMTP_USERNAME: "user-secret",
+        SMTP_PASSWORD: "password-secret",
+      }, config, capsule, {
+        clock,
+        serviceEnv: {
+          SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+          SPORADES_SERVICE_DATABASE_URL: url,
+        },
+        mailTransportFactory: () => ({
+          async send(message) {
+            sent.push(message);
+            return { messageId: "<libsql-reset@example.com>", accepted: ["owner@example.com"], rejected: [] };
+          },
+          close() {},
+        }),
+      });
+      try {
+        await registerEmailAccount(database, "owner@example.com", "original-password");
+        const mutationResult = runMutation(database, capsuleUser, "requestReset", ["owner@example.com"]);
+        await paused;
+
+        await clock.runDueTimers();
+        assert.equal(sent.length, 0, "the worker must not deliver reset mail before the mutation commits");
+
+        releaseMutation();
+        const result = await mutationResult;
+        assert.equal(result.ok, true, result.error?.message);
+        await drainJobQueue(clock);
+        assert.equal(sent.length, 1, "the committed reset Job must receive one post-commit wake");
+
+        const rolledBack = await runMutation(database, capsuleUser, "rollbackReset", ["owner@example.com"]);
+        assert.equal(rolledBack.ok, false);
+        assert.match(rolledBack.error.message, /rollback reset request/);
+        await drainJobQueue(clock);
+        assert.equal(sent.length, 1, "a rolled-back reset Job must never deliver mail");
+        assert.equal(
+          (await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_jobs WHERE handler = ?").get("_sporades_password_reset_request")).count,
+          1,
+          "only the committed reset Job remains durable",
+        );
+      } finally {
+        releaseMutation();
+        await database.shutdown();
+        await database.close();
+      }
+    });
+  } finally {
+    delete globalThis.__pausePasswordResetMutation;
     await rm(dir, { recursive: true, force: true });
   }
 });

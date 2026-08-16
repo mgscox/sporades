@@ -1769,6 +1769,7 @@ function createEndpointContext(database, endpointRequest, session) {
         },
     };
     const holder = createContextHolder(context);
+    handlerContextByDatabase.set(database, () => holder.current);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -1819,6 +1820,7 @@ function createContextHolder(context) {
     });
     return holder;
 }
+const handlerContextByDatabase = new WeakMap();
 async function applyContextMiddleware(database, baseContext, kind) {
     let context = {
         ...baseContext,
@@ -3212,12 +3214,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         }
     }
 }
-// Enqueues a runtime-owned Job under the reserved privileged actor. This writes
-// the queue row directly rather than going through the current-user Job API:
-// that API batches enqueues onto the calling Capsule context when a transaction
-// is active, and runtime code has no such context, so the row would be dropped.
-// A direct insert joins whatever transaction is already open, so a rolled-back
-// caller discards the Job with it.
+// Enqueues a runtime-owned Job under the reserved privileged actor. The direct
+// insert joins the handler transaction, while dispatch uses that transaction's
+// live context so the worker is not woken until commit. Outside a handler
+// transaction, runtime-owned Jobs retain ordinary immediate scheduling.
 async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = undefined) {
     const queueDatabase = database.__rootDatabase ?? database;
     const jobAdapter = database.adapter;
@@ -3226,7 +3226,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
         "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
         "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, now, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
-    scheduleCurrentUserJobWorker(queueDatabase);
+    deferOrScheduleJobDispatch(database, queueDatabase);
 }
 // Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
 // bounded and private to this Job so Capsule Job defaults and API semantics remain unchanged.
@@ -3704,6 +3704,7 @@ function createMutationContext(database, auth) {
         __pendingAclWrites: [],
     };
     const holder = createContextHolder(context);
+    handlerContextByDatabase.set(database, () => holder.current);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -3754,6 +3755,16 @@ function createTeamJoinAdmissionContext(database, auth) {
     const holder = createContextHolder(context);
     context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
     return context;
+}
+function deferOrScheduleJobDispatch(database, queueDatabase, context = undefined) {
+    const currentContext = context ?? handlerContextByDatabase.get(database)?.();
+    if (database.__transactionActive && currentContext) {
+        const pendingContext = currentContext.__jobParentContext ?? currentContext;
+        pendingContext.__pendingJobDispatch = true;
+        pendingContext.__jobQueueDatabase = queueDatabase;
+        return;
+    }
+    scheduleCurrentUserJobWorker(queueDatabase);
 }
 function createCurrentUserJobApi(database, contextGetter) {
     return {
@@ -3813,13 +3824,9 @@ function createCurrentUserJobApi(database, contextGetter) {
                 }
                 throw error;
             }
-            if (database.__transactionActive) {
-                const pendingContext = context.__jobParentContext ?? context;
-                pendingContext.__pendingJobDispatch = true;
-                pendingContext.__jobQueueDatabase = queueDatabase;
+            deferOrScheduleJobDispatch(database, queueDatabase, context);
+            if (database.__transactionActive)
                 return jobState(row, true);
-            }
-            scheduleCurrentUserJobWorker(queueDatabase);
             return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
         },
         async get(id) {

@@ -1984,6 +1984,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   const holder = createContextHolder(context);
+  handlerContextByDatabase.set(database, () => holder.current);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -2030,6 +2031,9 @@ function createContextHolder(context: LooseRecord) {
   });
   return holder;
 }
+
+const handlerContextByDatabase = new WeakMap<object, () => LooseRecord>();
+
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
   let context: LooseRecord = {
     ...baseContext,
@@ -3474,12 +3478,10 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
 
 
-// Enqueues a runtime-owned Job under the reserved privileged actor. This writes
-// the queue row directly rather than going through the current-user Job API:
-// that API batches enqueues onto the calling Capsule context when a transaction
-// is active, and runtime code has no such context, so the row would be dropped.
-// A direct insert joins whatever transaction is already open, so a rolled-back
-// caller discards the Job with it.
+// Enqueues a runtime-owned Job under the reserved privileged actor. The direct
+// insert joins the handler transaction, while dispatch uses that transaction's
+// live context so the worker is not woken until commit. Outside a handler
+// transaction, runtime-owned Jobs retain ordinary immediate scheduling.
 async function enqueueRuntimeJob(
   database: LooseRecord,
   handlerName: string,
@@ -3509,7 +3511,7 @@ async function enqueueRuntimeJob(
     now,
     JSON.stringify(normalizeJobRetry(retry)),
   );
-  scheduleCurrentUserJobWorker(queueDatabase);
+  deferOrScheduleJobDispatch(database, queueDatabase);
 }
 
 // Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
@@ -4021,6 +4023,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
     __pendingAclWrites: [],
   };
   const holder = createContextHolder(context);
+  handlerContextByDatabase.set(database, () => holder.current);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -4067,6 +4070,17 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
   const holder = createContextHolder(context);
   context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
+}
+
+function deferOrScheduleJobDispatch(database: LooseRecord, queueDatabase: LooseRecord, context: LooseRecord | undefined = undefined) {
+  const currentContext = context ?? handlerContextByDatabase.get(database)?.();
+  if (database.__transactionActive && currentContext) {
+    const pendingContext = currentContext.__jobParentContext ?? currentContext;
+    pendingContext.__pendingJobDispatch = true;
+    pendingContext.__jobQueueDatabase = queueDatabase;
+    return;
+  }
+  scheduleCurrentUserJobWorker(queueDatabase);
 }
 
 function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => LooseRecord) {
@@ -4118,13 +4132,8 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         }
         throw error;
       }
-      if (database.__transactionActive) {
-        const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobDispatch = true;
-        pendingContext.__jobQueueDatabase = queueDatabase;
-        return jobState(row, true);
-      }
-      scheduleCurrentUserJobWorker(queueDatabase);
+      deferOrScheduleJobDispatch(database, queueDatabase, context);
+      if (database.__transactionActive) return jobState(row, true);
       return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id: any) {

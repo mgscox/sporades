@@ -16204,6 +16204,7 @@ function createEndpointContext(database, endpointRequest, session) {
     }
   };
   const holder = createContextHolder(context);
+  handlerContextByDatabase.set(database, () => holder.current);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -16249,6 +16250,7 @@ function createContextHolder(context) {
   });
   return holder;
 }
+var handlerContextByDatabase = /* @__PURE__ */ new WeakMap();
 async function applyContextMiddleware(database, baseContext, kind) {
   let context = {
     ...baseContext,
@@ -17610,7 +17612,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     now,
     JSON.stringify(normalizeJobRetry(retry))
   );
-  scheduleCurrentUserJobWorker(queueDatabase);
+  deferOrScheduleJobDispatch(database, queueDatabase);
 }
 var PASSWORD_RESET_REQUEST_RETRY = { maxAttempts: 3, delayMs: 1e3 };
 async function sendEmailPasswordResetLink(database, session, email, options = {}) {
@@ -18058,6 +18060,7 @@ function createMutationContext(database, auth) {
     __pendingAclWrites: []
   };
   const holder = createContextHolder(context);
+  handlerContextByDatabase.set(database, () => holder.current);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
@@ -18103,6 +18106,16 @@ function createTeamJoinAdmissionContext(database, auth) {
   const holder = createContextHolder(context);
   context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
+}
+function deferOrScheduleJobDispatch(database, queueDatabase, context = void 0) {
+  const currentContext = context ?? handlerContextByDatabase.get(database)?.();
+  if (database.__transactionActive && currentContext) {
+    const pendingContext = currentContext.__jobParentContext ?? currentContext;
+    pendingContext.__pendingJobDispatch = true;
+    pendingContext.__jobQueueDatabase = queueDatabase;
+    return;
+  }
+  scheduleCurrentUserJobWorker(queueDatabase);
 }
 function createCurrentUserJobApi(database, contextGetter) {
   return {
@@ -18158,13 +18171,8 @@ function createCurrentUserJobApi(database, contextGetter) {
         }
         throw error;
       }
-      if (database.__transactionActive) {
-        const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobDispatch = true;
-        pendingContext.__jobQueueDatabase = queueDatabase;
-        return jobState(row, true);
-      }
-      scheduleCurrentUserJobWorker(queueDatabase);
+      deferOrScheduleJobDispatch(database, queueDatabase, context);
+      if (database.__transactionActive) return jobState(row, true);
       return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id) {
