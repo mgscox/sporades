@@ -1237,7 +1237,7 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
   }
 });
 
-test("a committed Team audit flushes before a later pending Job enqueue failure", async () => {
+test("a failed Job enqueue rolls back its Team mutation and success audit", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-audit-flush-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
   const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: "https://example.com/audit.png", isAuthenticated: true, isGuest: false, provider: "email" };
@@ -1245,11 +1245,11 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
   try {
     await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ id: auth.userId, displayName: auth.displayName, email: auth.email, picture: auth.picture, isAuthenticated: 1, isGuest: 0, provider: auth.provider }));
     runtime.database.adapter = failPendingJobInsert(baseAdapter);
-    const result = await runMutation(runtime.database, auth, "createAndQueue", ["Committed before queue failure"]);
+    const result = await runMutation(runtime.database, auth, "createAndQueue", ["Rolled back with queue failure"]);
     assert.equal(result.ok, false);
-    assert.equal(countTeams(baseAdapter), 2, "the initial and additional Teams committed before the Job failure");
-    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 1);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(countTeams(baseAdapter), 0, "the Team creation shares the failed Job enqueue transaction");
+    assert.equal(Number(baseAdapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_jobs]").get().count), 0, "the failed enqueue leaves no Job row");
+    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 0, "a rolled-back Team mutation emits no success audit");
   } finally {
     runtime.database.adapter = baseAdapter;
     await runtime.close();
@@ -1506,6 +1506,9 @@ function failPendingJobInsert(adapter) {
   return new Proxy(adapter, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
+      if (property === "withTransaction" && typeof value === "function") {
+        return (fn) => value.call(target, (transaction) => fn(failPendingJobInsert(transaction)));
+      }
       if (property !== "prepare" || typeof value !== "function") return value;
       return (statement) => {
         const prepared = value.call(target, statement);
