@@ -13547,6 +13547,12 @@ function createSharedDatabaseAdapterMethods(dialect) {
         `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
       ).run(...columns.map((column) => row[column]));
     },
+    insertAppRowOrIgnore(table, row, conflictFields) {
+      const columns = Object.keys(row);
+      return this.prepare(
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictFields.map((field) => dialect.quoteIdentifier(field)).join(", ")}) DO NOTHING`
+      ).run(...columns.map((column) => row[column]));
+    },
     selectAppRowById(table, id) {
       return this.prepare(
         `SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`
@@ -16202,6 +16208,52 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
           const result = database.adapter.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
           database.rowCache.clear();
           return thenIfPromise(result, () => next);
+        });
+      };
+      const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
+      }
+      return operation;
+    },
+    insertOrIgnore(values, ...conflictFields) {
+      if (conflictFields.length === 0 || !table.uniqueConstraints?.some(
+        (constraint) => constraint.length === conflictFields.length && constraint.every((field, index) => field === conflictFields[index])
+      )) {
+        throw new Error(`insertOrIgnore requires an exactly matching declared unique constraint on ${table.name}.`);
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const row = {
+        id: randomUUID2(),
+        createdAt: now,
+        updatedAt: now
+      };
+      const fieldValues = table.fields.map(
+        (field) => fieldValueForWrite(
+          database,
+          field,
+          Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== void 0 ? values[String(field.name)] : field.defaultValue
+        )
+      );
+      const finish = (resolvedValues) => {
+        for (const [index, field] of table.fields.entries()) {
+          row[field.name] = resolvedValues[index];
+        }
+        const columns = Object.keys(row);
+        const next = deserializeRow(table, row);
+        return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+          const result = database.adapter.insertAppRowOrIgnore(
+            table,
+            Object.fromEntries(columns.map((column) => [column, row[column]])),
+            conflictFields
+          );
+          return thenIfPromise(result, (writeResult2) => {
+            if (writeResult2.changes === 0) {
+              return null;
+            }
+            database.rowCache.clear();
+            return next;
+          });
         });
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);

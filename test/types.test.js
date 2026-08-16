@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
@@ -82,6 +82,13 @@ annotatedUniqueUsers.unique("email");
 annotatedUniqueUsers.unique();
 // @ts-expect-error An exported TableDefinition keeps keys scoped to its declared fields.
 annotatedUniqueUsers.unique("missing");
+
+declare const typedUsers: TableApi<{ id: string; createdAt: string; updatedAt: string; email: string; teamId: string }>;
+typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
+// @ts-expect-error An idempotent insert names at least one conflict field.
+typedUsers.insertOrIgnore({ email: "person@example.test" });
+// @ts-expect-error Conflict fields are limited to the table row shape.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "missing");
 
 const app = capsule({
   name: "typed island",

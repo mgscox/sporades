@@ -689,6 +689,13 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 .map((column) => dialect.quoteIdentifier(column))
                 .join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`).run(...columns.map((column) => row[column]));
         },
+        insertAppRowOrIgnore(table, row, conflictFields) {
+            const columns = Object.keys(row);
+            return this.prepare(`INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns
+                .map((column) => dialect.quoteIdentifier(column))
+                .join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
+                `ON CONFLICT (${conflictFields.map((field) => dialect.quoteIdentifier(field)).join(", ")}) DO NOTHING`).run(...columns.map((column) => row[column]));
+        },
         selectAppRowById(table, id) {
             return (this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE ${dialect.quoteIdentifier("id")} = ?`).get(String(id)) ?? null);
         },

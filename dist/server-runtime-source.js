@@ -1870,6 +1870,41 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             }
             return operation;
         },
+        insertOrIgnore(values, ...conflictFields) {
+            if (conflictFields.length === 0 ||
+                !table.uniqueConstraints?.some((constraint) => constraint.length === conflictFields.length && constraint.every((field, index) => field === conflictFields[index]))) {
+                throw new Error(`insertOrIgnore requires an exactly matching declared unique constraint on ${table.name}.`);
+            }
+            const now = new Date().toISOString();
+            const row = {
+                id: randomUUID(),
+                createdAt: now,
+                updatedAt: now,
+            };
+            const fieldValues = table.fields.map((field) => fieldValueForWrite(database, field, Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== undefined ? values[String(field.name)] : field.defaultValue));
+            const finish = (resolvedValues) => {
+                for (const [index, field] of table.fields.entries()) {
+                    row[field.name] = resolvedValues[index];
+                }
+                const columns = Object.keys(row);
+                const next = deserializeRow(table, row);
+                return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+                    const result = database.adapter.insertAppRowOrIgnore(table, Object.fromEntries(columns.map((column) => [column, row[column]])), conflictFields);
+                    return thenIfPromise(result, (writeResult) => {
+                        if (writeResult.changes === 0) {
+                            return null;
+                        }
+                        database.rowCache.clear();
+                        return next;
+                    });
+                });
+            };
+            const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
+            if (isPromiseLike(operation)) {
+                contextGetter?.()?.__pendingAclWrites?.push(operation);
+            }
+            return operation;
+        },
         update(id, values) {
             const finishExisting = (existing) => {
                 if (!existing) {

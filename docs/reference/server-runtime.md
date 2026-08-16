@@ -227,6 +227,27 @@ mutations: {
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
 
+### Idempotent Inserts Against Declared Uniqueness
+
+When a mutation may be retried or raced by another request, declare the exact
+unique constraint on the table and use `insertOrIgnore` with that same field
+tuple in the declared order. It atomically returns the inserted row for the
+winning call, or `null` when that named constraint already has a winner:
+
+```ts
+subscriptions: table({ teamId: String(), plan: String() }).unique("teamId"),
+
+// Inside a mutation:
+const inserted = ctx.db.subscriptions.insertOrIgnore({ teamId, plan: "pro" }, "teamId");
+return inserted ?? ctx.db.subscriptions.where("teamId", teamId).get();
+```
+
+The conflict fields must exactly equal one declared constraint; partial,
+reordered, unknown, or empty targets fail before any write. `insertOrIgnore`
+does not hide a conflict on another constraint, ACL denial, reference or value
+validation failure, or database failure. Ordinary `insert` retains its usual
+error-on-conflict behavior.
+
 ### Gate Handlers With requireAuth
 
 `requireAuth` is the canonical way to gate a handler on authentication. Call it

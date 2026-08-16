@@ -959,6 +959,15 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           .join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
       ).run(...columns.map((column) => row[column]));
     },
+    insertAppRowOrIgnore(table: { name: any; }, row: { [x: string]: any; }, conflictFields: readonly string[]) {
+      const columns = Object.keys(row);
+      return this.prepare(
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns
+          .map((column) => dialect.quoteIdentifier(column))
+          .join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
+        `ON CONFLICT (${conflictFields.map((field) => dialect.quoteIdentifier(field)).join(", ")}) DO NOTHING`,
+      ).run(...columns.map((column) => row[column]));
+    },
     selectAppRowById(table: { name: any; }, id: any) {
       return (
         this.prepare(

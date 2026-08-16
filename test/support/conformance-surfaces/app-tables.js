@@ -887,6 +887,21 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "insertAppRowOrIgnore returns no change only for its named unique constraint",
+    async run(adapter) {
+      const first = { id: "ignore-one", createdAt: NOW, updatedAt: NOW, identity: "ignore-identity", email: "ignore@example.test", select: "ignore-select" };
+      assert.equal((await adapter.insertAppRowOrIgnore(UNIQUE_TABLE, first, ["identity"])).changes, 1);
+      assert.equal(
+        (await adapter.insertAppRowOrIgnore(UNIQUE_TABLE, { ...first, id: "ignore-two", email: "other@example.test", select: "other-select" }, ["identity"])).changes,
+        0,
+      );
+      await assert.rejects(
+        async () => adapter.insertAppRowOrIgnore(UNIQUE_TABLE, { ...first, id: "ignore-three", identity: "other-identity" }, ["identity"]),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
     // The names that used to be renamed on the way out. The Postgres adapter restored the runtime's
     // declared spellings through a table of them, applied per result key with no table provenance,
     // so a Capsule field literally called `errorcode` or `jobid` came back as `errorCode` or

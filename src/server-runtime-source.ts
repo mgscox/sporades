@@ -2090,6 +2090,56 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       }
       return operation;
     },
+    insertOrIgnore(values: LooseRecord, ...conflictFields: string[]) {
+      if (
+        conflictFields.length === 0 ||
+        !table.uniqueConstraints?.some(
+          (constraint: string[]) =>
+            constraint.length === conflictFields.length && constraint.every((field, index) => field === conflictFields[index]),
+        )
+      ) {
+        throw new Error(`insertOrIgnore requires an exactly matching declared unique constraint on ${table.name}.`);
+      }
+      const now = new Date().toISOString();
+      const row: LooseRecord = {
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const fieldValues = table.fields.map((field: { name: PropertyKey; defaultValue: any; }) =>
+        fieldValueForWrite(
+          database,
+          field,
+          Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== undefined ? values[String(field.name)] : field.defaultValue,
+        ),
+      );
+      const finish = (resolvedValues: { [x: string]: any; }) => {
+        for (const [index, field] of table.fields.entries()) {
+          row[field.name] = resolvedValues[index];
+        }
+        const columns = Object.keys(row);
+        const next = deserializeRow(table, row);
+        return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+          const result = database.adapter.insertAppRowOrIgnore(
+            table,
+            Object.fromEntries(columns.map((column) => [column, row[column]])),
+            conflictFields,
+          );
+          return thenIfPromise(result, (writeResult: { changes: number; }) => {
+            if (writeResult.changes === 0) {
+              return null;
+            }
+            database.rowCache.clear();
+            return next;
+          });
+        });
+      };
+      const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
+      }
+      return operation;
+    },
     update(id: any, values: LooseRecord) {
       const finishExisting = (existing: any) => {
         if (!existing) {
