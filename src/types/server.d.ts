@@ -207,7 +207,7 @@ export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = 
   aclRules?: TableAclRules;
   uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: TableAclRules<RowFromFields<Fields>>): TableDefinition<Fields>;
-  unique(...fields: string[]): TableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): TableDefinition<Fields>;
 };
 
 export type CapsuleTableDefinition<Fields extends Record<string, AnyFieldDefinition>> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
@@ -215,7 +215,7 @@ export type CapsuleTableDefinition<Fields extends Record<string, AnyFieldDefinit
   unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 
-export type SchemaDefinition = Record<string, TableDefinition>;
+export type SchemaDefinition = Record<string, TableDefinition<any>>;
 
 /** Sporades-managed fields present on every table row. App code cannot set or update these directly. */
 export type AutoFields = {

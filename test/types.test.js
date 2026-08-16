@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableDefinition } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
@@ -76,6 +76,12 @@ uniqueUsers.fields.email.kind.toUpperCase();
 table({ email: String() }).unique("missing");
 // @ts-expect-error A unique declaration needs at least one field.
 table({ email: String() }).unique();
+const annotatedUniqueUsers: TableDefinition<{ email: ReturnType<typeof String> }> = table({ email: String() });
+annotatedUniqueUsers.unique("email");
+// @ts-expect-error An exported TableDefinition keeps the non-empty unique declaration contract.
+annotatedUniqueUsers.unique();
+// @ts-expect-error An exported TableDefinition keeps keys scoped to its declared fields.
+annotatedUniqueUsers.unique("missing");
 
 const app = capsule({
   name: "typed island",

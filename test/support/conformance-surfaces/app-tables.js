@@ -875,11 +875,15 @@ const APP_TABLE_CONFORMANCE_CASES = [
       const first = { id: "unique-one", createdAt: NOW, updatedAt: NOW, identity: "identity-one", email: "one@example.test", select: "reserved-word" };
       await adapter.insertAppRow(UNIQUE_TABLE, first);
       await assert.rejects(
-        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", identity: "identity-two" }),
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", email: "two@example.test", select: "other" }),
         /unique constraint|duplicate key|constraint failed/i,
       );
-      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", identity: "identity-three", email: null, select: "reserved-word" });
-      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", identity: "identity-four", email: null, select: "reserved-word" });
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", identity: "identity-two" }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", identity: "identity-three", email: null, select: "reserved-word" });
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-five", identity: "identity-four", email: null, select: "reserved-word" });
     },
   },
   {
@@ -1007,6 +1011,18 @@ const APP_TABLE_CONFORMANCE_CASES = [
         assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_MUTABILITY_TABLE.name}`), false, `${change.name} must not create a rebuild table`);
         assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore, `${change.name} must not rewrite schema metadata`);
         assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore, `${change.name} must not rewrite schema metadata hash`);
+        await assert.rejects(
+          async () => adapter.insertAppRow(UNIQUE_MUTABILITY_TABLE, {
+            id: `unique-mutability-${change.name}`,
+            createdAt: NOW,
+            updatedAt: NOW,
+            first: "first",
+            second: "second",
+            third: `after-${change.name}`,
+          }),
+          /unique constraint|duplicate key|constraint failed/i,
+          `${change.name} must preserve the original composite unique constraint`,
+        );
       }
     },
   },

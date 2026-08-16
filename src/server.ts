@@ -81,7 +81,7 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
   aclRules?: unknown;
   uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: unknown): TableDefinition<Fields>;
-  unique(...fields: string[]): TableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): TableDefinition<Fields>;
 };
 
 export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
