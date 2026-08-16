@@ -16097,17 +16097,18 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      let handlerFailed = false;
       try {
-        const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
-        context = endpoint.runtimeOwnedEmailEvent ? endpointContext : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
-        return await handler(context);
-      } finally {
-        try {
-          if (context) await drainPendingAclWrites(context);
-          transactionDatabase.rowCache.clear();
-        } finally {
-          releaseHandlerContextMapping(transactionDatabase);
+        context = createEndpointContext(transactionDatabase, endpointRequest, session);
+        if (!endpoint.runtimeOwnedEmailEvent) {
+          context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
+        return await handler(context);
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
     flushTeamSecurityEvents(database, context);
@@ -16270,6 +16271,19 @@ function registerHandlerContextMapping(database, holder) {
 function releaseHandlerContextMapping(database) {
   database.__releaseHandlerContextMapping?.();
   delete database.__releaseHandlerContextMapping;
+}
+async function cleanupTransactionHandler(database, context, preservePrimaryError) {
+  try {
+    if (context) await drainPendingAclWrites(context);
+  } catch (error) {
+    if (!preservePrimaryError) throw error;
+  } finally {
+    try {
+      database.rowCache.clear();
+    } finally {
+      releaseHandlerContextMapping(database);
+    }
+  }
 }
 async function applyContextMiddleware(database, baseContext, kind) {
   let context = {
@@ -17891,8 +17905,10 @@ async function runMutation(database, auth, mutationName, args) {
   try {
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
+      let handlerFailed = false;
       try {
-        context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
+        context = createMutationContext(transactionDatabase, auth);
+        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
         }
@@ -17908,8 +17924,11 @@ async function runMutation(database, auth, mutationName, args) {
           await drainPendingAclWrites(context);
         }
         return result;
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
       } finally {
-        releaseHandlerContextMapping(transactionDatabase);
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
     flushTeamSecurityEvents(database, context);
@@ -17989,24 +18008,20 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     const createHandler = new Function(`return (${handler.handlerSource});`);
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      let handlerFailed = false;
       try {
-        context = await applyContextMiddleware(
-          transactionDatabase,
-          createMessageContext(transactionDatabase, auth, options.sendAppMessage),
-          "message"
-        );
+        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+        context = await applyContextMiddleware(transactionDatabase, context, "message");
         const result = await createHandler()(context, data);
         if (result !== void 0) {
           assertJsonCompatible(result);
         }
         return { data: result ?? null, error: null };
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
       } finally {
-        try {
-          if (context) await drainPendingAclWrites(context);
-          transactionDatabase.rowCache.clear();
-        } finally {
-          releaseHandlerContextMapping(transactionDatabase);
-        }
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
     flushTeamSecurityEvents(database, context);
