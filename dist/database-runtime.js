@@ -222,11 +222,43 @@ function createConnectionTransactionGate() {
 async function rejectNestedTransactionScope() {
     throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
 }
+const transactionScopeRevokers = new WeakMap();
 function createTransactionScopedAdapter(adapter, operations = {}) {
-    return Object.assign(Object.create(adapter), operations, {
+    let active = true;
+    const assertActive = () => {
+        if (!active)
+            throw commandError("Transaction-scoped database access is no longer active.", "Do not retain ctx.db operations after the trusted handler has completed.");
+    };
+    const operationOwner = typeof operations.exec === "function" ? operations : adapter;
+    const exec = operationOwner.exec;
+    const prepare = operationOwner.prepare;
+    const guardedOperations = {
+        exec(...args) { assertActive(); return Reflect.apply(exec, operationOwner, args); },
+        prepare(...args) {
+            assertActive();
+            const statement = Reflect.apply(prepare, operationOwner, args);
+            const guardedStatement = Object.create(statement);
+            for (const method of ["all", "get", "run", "columns"]) {
+                if (typeof statement[method] !== "function")
+                    continue;
+                guardedStatement[method] = (...params) => {
+                    assertActive();
+                    return Reflect.apply(statement[method], statement, params);
+                };
+            }
+            return guardedStatement;
+        },
+    };
+    const scopedAdapter = Object.assign(Object.create(adapter), guardedOperations, {
         withTransaction: rejectNestedTransactionScope,
         withReadOnlySnapshot: rejectNestedTransactionScope,
     });
+    transactionScopeRevokers.set(scopedAdapter, () => { active = false; });
+    return scopedAdapter;
+}
+function revokeTransactionScopedAdapter(adapter) {
+    transactionScopeRevokers.get(adapter)?.();
+    transactionScopeRevokers.delete(adapter);
 }
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
@@ -919,7 +951,13 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                 const transactionExec = ownerOperations.exec;
                 await transactionExec("BEGIN");
                 try {
-                    const result = await fn(transactionAdapter);
+                    let result;
+                    try {
+                        result = await fn(transactionAdapter);
+                    }
+                    finally {
+                        revokeTransactionScopedAdapter(transactionAdapter);
+                    }
                     await transactionExec("COMMIT");
                     return result;
                 }
@@ -939,7 +977,13 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                 await transactionExec("BEGIN");
                 await transactionExec("PRAGMA query_only = ON");
                 try {
-                    const result = await fn(ownerAdapter);
+                    let result;
+                    try {
+                        result = await fn(ownerAdapter);
+                    }
+                    finally {
+                        revokeTransactionScopedAdapter(ownerAdapter);
+                    }
                     await transactionExec("COMMIT");
                     return result;
                 }
@@ -1050,7 +1094,14 @@ export async function createPostgresDatabaseAdapter(options) {
             return await connectionGate.runTransaction(async () => {
                 await rawQuery("BEGIN");
                 try {
-                    const result = await fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly)));
+                    const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+                    let result;
+                    try {
+                        result = await fn(transactionAdapter);
+                    }
+                    finally {
+                        revokeTransactionScopedAdapter(transactionAdapter);
+                    }
                     await rawQuery("COMMIT");
                     return result;
                 }
@@ -1068,7 +1119,13 @@ export async function createPostgresDatabaseAdapter(options) {
                 const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
                 await rawQuery("BEGIN TRANSACTION READ ONLY");
                 try {
-                    const result = await fn(transactionAdapter);
+                    let result;
+                    try {
+                        result = await fn(transactionAdapter);
+                    }
+                    finally {
+                        revokeTransactionScopedAdapter(transactionAdapter);
+                    }
                     await rawQuery("COMMIT");
                     return result;
                 }
@@ -1568,7 +1625,13 @@ export async function createLibsqlDatabaseAdapter(options) {
             activeTransactions.add(transaction);
             try {
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
-                const result = await fn(transactionAdapter);
+                let result;
+                try {
+                    result = await fn(transactionAdapter);
+                }
+                finally {
+                    revokeTransactionScopedAdapter(transactionAdapter);
+                }
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
                 return result;
             }
@@ -1590,7 +1653,13 @@ export async function createLibsqlDatabaseAdapter(options) {
             try {
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
-                const result = await fn(snapshotAdapter);
+                let result;
+                try {
+                    result = await fn(snapshotAdapter);
+                }
+                finally {
+                    revokeTransactionScopedAdapter(snapshotAdapter);
+                }
                 await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
                 return result;
             }
@@ -1751,7 +1820,8 @@ function migrateAppSchemaInTransaction(sqlite, schema) {
             catch {
                 throw commandError("Invalid Sporades schema metadata.", "Delete the Runtime directory only if you can lose local data, then restart the Capsule.");
             }
-            schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+            const comparableExistingSchema = Array.isArray(existingSchema?.tables) ? normalizeSchema(existingSchema) : existingSchema;
+            schemaChanged = hashSchema(JSON.stringify(comparableExistingSchema)) !== nextSchemaHash;
             if (schemaChanged) {
                 assertAdditiveSchemaMigration(existingSchema, nextSchema);
             }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -116,6 +117,34 @@ test("existing-table unique constraint removal, replacement, and composite-field
       }
     }
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy schema metadata without unique constraints upgrades without rebuilding tables", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-table-unique-legacy-metadata-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  const schema = { tables: [{ name: "legacy_users", fields: [{ name: "email", kind: "String", sqliteType: "TEXT" }] }] };
+  try {
+    await adapter.ensureSystemTable();
+    await adapter.migrateAppSchema(schema);
+    const canonical = JSON.parse((await adapter.readSchemaMetadata()).value);
+    const legacy = { tables: canonical.tables.map(({ uniqueConstraints, ...table }) => table) };
+    const legacyJson = JSON.stringify(legacy);
+    await adapter.writeSchemaMetadata({
+      schemaVersion: "v1:additive-fields",
+      schemaHash: createHash("sha256").update(legacyJson).digest("hex"),
+      schemaJson: legacyJson,
+    });
+    const before = adapter.prepare("PRAGMA schema_version").get().schema_version;
+
+    await adapter.migrateAppSchema(schema);
+
+    const after = adapter.prepare("PRAGMA schema_version").get().schema_version;
+    assert.equal(after, before, "metadata normalization must not rebuild an unchanged legacy table");
+    assert.deepEqual(JSON.parse((await adapter.readSchemaMetadata()).value).tables[0].uniqueConstraints, []);
+  } finally {
+    adapter.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

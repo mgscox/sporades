@@ -135,6 +135,39 @@ async function assertChainedPublicOperationsResumeAfterTransaction(adapter, pref
   assert.deepEqual(observed, [2, 2]);
 }
 
+async function assertTransactionAdapterRevokedAfterCallback(adapter, prefix) {
+  const table = `${prefix}_rows`;
+  await adapter.exec(`CREATE TABLE ${table} (id TEXT PRIMARY KEY)`);
+  let capturedAdapter;
+  let capturedStatement;
+  await adapter.withTransaction(async (transaction) => {
+    capturedAdapter = transaction;
+    capturedStatement = transaction.prepare(`INSERT INTO ${table} (id) VALUES (?)`);
+  });
+
+  let releaseLater;
+  let laterEntered;
+  const entered = new Promise((resolve) => { laterEntered = resolve; });
+  const release = new Promise((resolve) => { releaseLater = resolve; });
+  const later = adapter.withTransaction(async (transaction) => {
+    laterEntered();
+    await release;
+    throw new Error("later rollback");
+  });
+  await entered;
+
+  let preparedError;
+  let freshError;
+  try { await capturedStatement.run("prepared-late"); } catch (error) { preparedError = error; }
+  try { await capturedAdapter.prepare(`INSERT INTO ${table} (id) VALUES (?)`).run("fresh-late"); } catch (error) { freshError = error; }
+  releaseLater();
+  await assert.rejects(later, /later rollback/);
+
+  assert.match(preparedError?.message ?? "", /transaction-scoped database access is no longer active/i);
+  assert.match(freshError?.message ?? "", /transaction-scoped database access is no longer active/i);
+  assert.equal(Number((await adapter.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).count), 0);
+}
+
 test("nested transaction deadlines begin after a cold adapter enters its callback", async () => {
   const nestedError = new Error("Nested database transactions are not supported.");
   const transaction = {
@@ -243,6 +276,17 @@ test("SQLite resumes chained public operations after a transaction completes", a
   }
 });
 
+test("SQLite revokes transaction adapters after their callback settles", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-revocation-sqlite-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  try {
+    await assertTransactionAdapterRevokedAfterCallback(adapter, "ticket04_sqlite_revoked");
+  } finally {
+    adapter.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Postgres keeps public operations outside a transaction while owner operations proceed", {
   skip: POSTGRES_SKIP_REASON,
 }, async () => {
@@ -264,5 +308,15 @@ test("Postgres resumes chained public operations after a transaction completes",
     await assertChainedPublicOperationsResumeAfterTransaction(adapter, "ticket04_postgres_chain");
   }, {
     appTableNames: ["ticket04_postgres_chain_rows"],
+  });
+});
+
+test("Postgres revokes transaction adapters after their callback settles", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await assertTransactionAdapterRevokedAfterCallback(adapter, "ticket04_postgres_revoked");
+  }, {
+    appTableNames: ["ticket04_postgres_revoked_rows"],
   });
 });
