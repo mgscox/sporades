@@ -836,9 +836,13 @@ than a runtime one.
 
 The Job Queue is implemented as a runtime-owned, server-only surface. Capsule
 authors declare handlers with `job()` and enqueue them through `ctx.jobs` from
-trusted server contexts. Enqueue is a durable runtime side effect outside the
-Capsule app mutation Transaction boundary, so callers that may retry a
-cross-boundary workflow should supply an idempotency key.
+trusted server contexts. `ctx.jobs.enqueue` persists the Job atomically inside
+the same mutation, App message, or Custom endpoint transaction as the handler's
+app writes, so a handler rollback removes the Job. Worker dispatch starts only
+after the transaction commits. A post-commit dispatch registration failure does
+not reverse or misreport committed handler work; the durable Job recovers on a
+later worker wake or runtime restart. Callers that may retry a workflow should
+still supply an idempotency key.
 
 Jobs run as either the captured current Sporades user or, when explicitly
 enqueued inside `ctx.privileged.run(...)`, the Privileged server role.

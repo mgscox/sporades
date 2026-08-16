@@ -113,13 +113,14 @@ server-only authoring surface shaped around explicit handlers and enqueue calls:
 - Unsupported payloads, actor modes, retry options, and handler names fail with
   structured errors.
 
-Queue writes are durable runtime-owned side effects, but they are not atomic
-with Capsule app mutation writes in the first release. The API and docs must not
-imply a shared Transaction boundary. An optional idempotency key, unique by
-Capsule, handler, and execution actor for as long as the Job is retained, returns
-the existing Job on a repeated enqueue. This gives Capsule code a way to make
-cross-boundary workflows retry-safe; a transactional outbox remains future
-work.
+`ctx.jobs.enqueue` persists the Job atomically inside the same mutation, App
+message, or Custom endpoint transaction as the handler's app writes. A handler
+rollback removes the Job. Worker dispatch starts only after the transaction
+commits. A post-commit dispatch registration failure does not reverse or
+misreport committed handler work; the durable Job recovers on a later worker
+wake or runtime restart. An optional idempotency key, unique by Capsule, handler,
+and execution actor for as long as the Job is retained, returns the existing Job
+on a repeated enqueue and converges concurrent callers on that winner.
 
 Payload and metadata limits should reuse an existing Sporades structured-payload
 limit where one applies. Otherwise, the first queue uses 64 KiB limits for
@@ -341,10 +342,13 @@ does not gate completion.
 - Privileged Job attempts and privileged list/get operations run through
   `ctx.privileged.run(...)` with mandatory audit events containing safe Job and
   attempt identity.
-- Queue writes are not atomic with Capsule app mutation writes in v1. Optional
-  idempotency keys are scoped by Capsule, handler, and execution actor while the
-  Job is retained, and support retry-safe callers without promising a
-  transactional outbox.
+- `ctx.jobs.enqueue` persists inside the same handler transaction, so the Job
+  and handler app writes commit or roll back together. Worker dispatch begins
+  only after commit, and a dispatch registration failure leaves the committed
+  durable Job available to a later worker wake or runtime restart.
+- Optional idempotency keys are scoped by Capsule, handler, and execution actor
+  while the Job is retained and converge retrying or concurrent callers on one
+  durable Job.
 - Retry behavior is bounded and deterministic. Delayed Jobs are not runnable
   until `availableAt`; a retry remains another attempt for the same Job ID.
 - Normal server context lists Jobs assigned to the current user. Privileged
@@ -362,9 +366,12 @@ does not gate completion.
   `sporades/client`.
 - Use runtime/database tests to prove Jobs are stored in runtime-owned state,
   not Capsule app schema or `ctx.db`.
-- Use transaction-boundary tests to prove enqueue does not claim atomicity with
-  Capsule mutation writes and idempotency keys prevent duplicate enqueue on
-  caller retry.
+- Use transaction-boundary tests to prove handler writes and Job persistence
+  commit or roll back together for mutations, App messages, and Custom
+  endpoints; prove worker dispatch begins only after commit and durable Jobs
+  recover after a dispatch registration failure.
+- Use concurrency tests to prove idempotency keys prevent duplicate enqueue on
+  caller retry and converge competing database transactions on one Job.
 - Use client-runtime tests to prove browser code cannot obtain Job Queue or
   Privileged server role authority.
 - Use existing restart and runtime-session seams to prove queued Jobs survive
@@ -388,8 +395,8 @@ does not gate completion.
 - Do not implement cron, recurrence, missed-run recovery, or duplicate-run
   protection in this feature.
 - Do not treat one-time delayed availability as recurring Job scheduling.
-- Do not promise exactly-once execution or transactional enqueue with Capsule
-  app mutations; a transactional outbox remains future work.
+- Do not promise exactly-once execution. Transaction-bound persistence prevents
+  orphaned enqueue or handler writes, but Job execution remains at least once.
 - Do not let Capsule code nominate an arbitrary captured Sporades user in v1.
 - Do not require Redis, Bull, or a remote queue service for the default local
   developer loop.
