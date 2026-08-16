@@ -14653,8 +14653,11 @@ function translateUniqueConstraintMigrationError(error) {
   );
 }
 function isUniqueConstraintError2(error) {
-  const text2 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|unique violation|constraint failed/i.test(text2);
+  if (error?.code === "23505" || error?.errcode === 2067 || error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    return true;
+  }
+  const message = String(error?.message ?? "");
+  return /\bUNIQUE constraint failed(?::|$)|\bduplicate key value violates unique constraint\b/i.test(message);
 }
 function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
   const dialect = sqlite.dialect;

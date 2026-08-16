@@ -147,6 +147,16 @@ const UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID = {
   uniqueConstraints: [["teamId", "slug"], ["externalId"]],
 };
 
+const UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_migration_infrastructure",
+};
+
+const UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
 const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE] };
@@ -159,6 +169,24 @@ const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_MIGRATION = {
 };
 const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_EXTERNAL_ID = {
   tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE, UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID,
+  ],
 };
 
 // The two tables of the migration that must fail partway. A migration walks the schema's tables in
@@ -1160,6 +1188,50 @@ const APP_TABLE_CONFORMANCE_CASES = [
         slug: "third",
         externalId: "duplicate-value",
       });
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-one");
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-two");
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-after-rollback");
+    },
+  },
+  {
+    name: "migrateAppSchema preserves a non-unique engine constraint error during a unique migration",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, {
+        id: "unique-infrastructure-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      const originalWithTransaction = adapter.withTransaction;
+      // The Database engine is the system boundary below this conformance seam. Injecting its
+      // non-unique constraint outcome verifies that the public migration only redacts duplicate
+      // diagnostics, rather than treating every engine error that says "constraint" as duplicate data.
+      adapter.withTransaction = () => {
+        const error = new Error("FOREIGN KEY constraint failed: injected migration failure");
+        if (adapter.engine === "postgres") {
+          error.code = "23503";
+        }
+        return Promise.reject(error);
+      };
+      try {
+        await assert.rejects(
+          adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID),
+          (error) => {
+            assert.equal(error.message, "FOREIGN KEY constraint failed: injected migration failure");
+            assert.equal(error.code, adapter.engine === "postgres" ? "23503" : undefined);
+            return true;
+          },
+        );
+      } finally {
+        adapter.withTransaction = originalWithTransaction;
+      }
+
+      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, "unique-infrastructure-kept");
+      assert.equal(stored.externalId, "external-a");
     },
   },
   {
@@ -1252,11 +1324,13 @@ export const CONFORMANCE_SURFACE = {
     UNIQUE_MUTABILITY_TABLE.name,
     UNIQUE_MIGRATION_TABLE.name,
     UNIQUE_DUPLICATE_MIGRATION_TABLE.name,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
     `__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`,
     `__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name}`,
   ],
   prepareStorage: prepareAppTableStorage,
   cases: APP_TABLE_CONFORMANCE_CASES,

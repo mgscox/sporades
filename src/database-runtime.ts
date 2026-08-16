@@ -2221,8 +2221,11 @@ function translateUniqueConstraintMigrationError(error: any) {
 }
 
 function isUniqueConstraintError(error: any) {
-  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|unique violation|constraint failed/i.test(text);
+  if (error?.code === "23505" || error?.errcode === 2067 || error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    return true;
+  }
+  const message = String(error?.message ?? "");
+  return /\bUNIQUE constraint failed(?::|$)|\bduplicate key value violates unique constraint\b/i.test(message);
 }
 
 // The one definition of an additive table rebuild, run inside a transaction the caller has already
