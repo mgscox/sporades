@@ -28,7 +28,14 @@ Changes since v0.8.5.
   claim ownership so stale shutdown, recovery, completion, or cancellation
   work cannot mutate a newer attempt. Active handlers are aborted and settled
   before runtime resources close; transactional cancellation aborts only after
-  commit, and shutdown alone cannot misclassify retained work as user-cancelled.
+  commit even across middleware context replacement, the worker reconciles a
+  cancellation committed during claim registration before entering the handler,
+  and shutdown alone cannot misclassify retained work as user-cancelled. Shutdown
+  failures still close database resources, and failed Dev handoffs close their
+  initialized candidate without changing runtime ownership.
+- Allocate additive-migration temporary table names without colliding with valid
+  Capsule tables, preserving those tables on both successful and rolled-back
+  SQLite, libSQL, and PostgreSQL migrations.
 - Reject query argument array subclasses while continuing to accept arrays
   created in another JavaScript realm (2171b61).
 

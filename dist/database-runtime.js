@@ -157,6 +157,7 @@
 // ADR-0037's closed set is the same closed set; no statement text changed, so ADR-0039's audit
 // stands; and no adapter method's answer changed, which is what the conformance specification is
 // there to say rather than what this comment can claim.
+import { randomUUID } from "node:crypto";
 import { assertNotReservedAuthUserId, authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, createAnonymousAuthTables, isReservedAuthUserId } from "./auth-runtime.js";
 import { createFileStorageTables } from "./file-storage-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
@@ -1932,27 +1933,36 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     // that called it.
     const dialect = sqlite.dialect;
     const addsUniqueConstraints = hasAddedUniqueConstraints(existingTable.uniqueConstraints ?? [], nextTable.uniqueConstraints ?? []);
-    const tempTableName = `__sporades_migrating_${nextTable.name}`;
     const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-    return chainMaybePromise([
-        ...addedFieldsForTable(existingTable, nextTable)
-            .filter((field) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
-            .map((field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
-            if (!exists) {
-                throw invalidReferenceError(field);
-            }
-        })),
-        () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
-        () => sqlite.createAppTable(nextTable, tempTableName),
-        () => {
-            const copyRows = () => sqlite.exec(`INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) ` +
-                `SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} ` +
-                `FROM ${dialect.quoteIdentifier(nextTable.name)}`);
-            return addsUniqueConstraints ? translateUniqueConstraintCopyFailure(copyRows) : copyRows();
-        },
-        () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
-        () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`),
-    ]);
+    return thenIfPromise(sqlite.listInspectableTables(), (tableNames) => {
+        const occupiedNames = new Set(tableNames);
+        let tempTableName;
+        // Keep the whole identifier below PostgreSQL's 63-byte limit and include a
+        // per-migration nonce so overlapping runtimes do not select the same name.
+        // The live-schema probe closes the remaining collision case for valid app
+        // tables whose names deliberately use the internal-looking prefix.
+        do {
+            tempTableName = `__sporades_migrating_${randomUUID().replaceAll("-", "")}`;
+        } while (occupiedNames.has(tempTableName));
+        return chainMaybePromise([
+            ...addedFieldsForTable(existingTable, nextTable)
+                .filter((field) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
+                .map((field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+                if (!exists) {
+                    throw invalidReferenceError(field);
+                }
+            })),
+            () => sqlite.createAppTable(nextTable, tempTableName),
+            () => {
+                const copyRows = () => sqlite.exec(`INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) ` +
+                    `SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} ` +
+                    `FROM ${dialect.quoteIdentifier(nextTable.name)}`);
+                return addsUniqueConstraints ? translateUniqueConstraintCopyFailure(copyRows) : copyRows();
+            },
+            () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
+            () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`),
+        ]);
+    });
 }
 function columnSelectExpressionForMigration(dialect, existingTable, nextTable, columnName) {
     if (["id", "createdAt", "updatedAt"].includes(columnName)) {

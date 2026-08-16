@@ -412,6 +412,44 @@ type RuntimeEnv = Record<string, string | undefined>;
 // Everything in this file now reaches a deployed Capsule the ordinary way — `server-bundle-entry.ts`
 // imports what it calls, and esbuild follows the graph.
 
+export async function shutdownAndCloseDatabase(database: LooseRecord) {
+  let shutdownError: unknown;
+  let closeError: unknown;
+  let shutdownRejected = false;
+  let closeRejected = false;
+  try { await database.shutdown(); }
+  catch (error) { shutdownRejected = true; shutdownError = error; }
+  try { await database.close(); }
+  catch (error) { closeRejected = true; closeError = error; }
+  if (shutdownRejected && closeRejected) {
+    throw new AggregateError([shutdownError, closeError], "Runtime shutdown and database closure both failed.");
+  }
+  if (shutdownRejected) throw shutdownError;
+  if (closeRejected) throw closeError;
+}
+
+export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord) {
+  try {
+    await candidateDatabase.init();
+  } catch (initError) {
+    try { await candidateDatabase.close(); }
+    catch (closeError) {
+      throw new AggregateError([initError, closeError], "Runtime initialization and candidate database closure both failed.");
+    }
+    throw initError;
+  }
+  try {
+    await shutdownAndCloseDatabase(currentDatabase);
+  } catch (teardownError) {
+    try { await shutdownAndCloseDatabase(candidateDatabase); }
+    catch (candidateError) {
+      throw new AggregateError([teardownError, candidateError], "Current runtime teardown and candidate runtime cleanup both failed.");
+    }
+    throw teardownError;
+  }
+  return candidateDatabase;
+}
+
 
 export async function openDevDatabase(
   databasePath: string,
@@ -4400,6 +4438,15 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       try {
+        // Cancellation may commit after the durable claim but before its
+        // in-memory controller is registered. Reconcile the exact owned claim
+        // before crossing the handler boundary so that window cannot lose the
+        // abort signal or affect a newer attempt.
+        const claimedState = await database.adapter.prepare(sql(
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+        )).get(row.id, claimToken);
+        if (!claimedState) continue;
+        if (claimedState?.cancelRequestedAt) abortController.abort();
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {

@@ -597,8 +597,11 @@ export async function cancelJob(database: LooseRecord, context: any, id: any) {
       const runtimeDatabase = database.__rootDatabase ?? database;
       if (database.__transactionActive) {
         const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobCancellationAborts ??= new Map();
-        pendingContext.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+        // The context holder belongs to the transaction and survives supported
+        // middleware replacement; the current context projection may not.
+        const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+        pendingOwner.__pendingJobCancellationAborts ??= new Map();
+        pendingOwner.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
       } else {
         abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
       }
@@ -611,14 +614,19 @@ export async function cancelJob(database: LooseRecord, context: any, id: any) {
 
 export function commitPendingJobCancellationAborts(context: LooseRecord | undefined) {
   if (!context) return;
-  const pending = context.__pendingJobCancellationAborts;
+  const pendingContext = context.__jobParentContext ?? context;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  const pending = pendingOwner.__pendingJobCancellationAborts;
   if (!(pending instanceof Map)) return;
-  delete context.__pendingJobCancellationAborts;
+  delete pendingOwner.__pendingJobCancellationAborts;
   for (const [id, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
 }
 
 export function dropPendingJobCancellationAborts(context: LooseRecord | undefined) {
-  if (context) delete context.__pendingJobCancellationAborts;
+  if (!context) return;
+  const pendingContext = context.__jobParentContext ?? context;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  delete pendingOwner.__pendingJobCancellationAborts;
 }
 
 function abortRuntimeJobClaim(runtimeDatabase: LooseRecord, id: any, claimToken: any) {

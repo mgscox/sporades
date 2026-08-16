@@ -45,7 +45,11 @@ uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
 work, or cooperatively requests cancellation of running work through its signal.
 For transactional mutation, App message, and Custom endpoint handlers, the
 running handler is aborted only after the cancellation transaction commits; a
-rollback discards the marker and the pending abort together.
+rollback discards the marker and the pending abort together. The pending abort
+belongs to the transaction rather than a replaceable middleware context object.
+The worker also rechecks the exact running claim after registering its abort
+controller and before entering the handler, closing the claim-registration
+cancellation window without touching a newer attempt.
 
 The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
 and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
@@ -72,6 +76,11 @@ may finish or observe the abort signal during shutdown. A shutdown abort without
 a persisted `cancelRequestedAt` marker is not terminal cancellation and follows
 the Job's ordinary retry or exhausted-attempt transition; an unclean
 interruption still follows the lease-recovery and at-least-once rules above.
+Capsule shutdown hook failure still proceeds to Database adapter closure. If a
+failed Dev restart cannot tear down the active runtime after initializing a
+replacement candidate, Sporades closes that candidate and keeps the current
+runtime as the active owned instance; it does not leak or swap in the failed
+replacement.
 
 `ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
 cursor-based listing by actor. Current-user inspection sees only Jobs for its

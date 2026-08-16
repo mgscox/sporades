@@ -141,6 +141,7 @@ test("canonical database docs scope additive unique migration errors and rollbac
     assert.match(document, /foreign-key[\s\S]*unrelated\s+unique[\s\S]*(?:remain|retain)[\s\S]*(?:original|ordinary) error/i);
     assert.match(document, /original table[\s\S]*rows[\s\S]*schema metadata[\s\S]*hash/i);
     assert.match(document, /no temporary table[\s\S]*debris/i);
+    assert.match(document, /temporary table name[\s\S]*(?:collide|collision)[\s\S]*valid app table[\s\S]*(?:preserv|untouched)/i);
   }
   assert.match(roadmap, /Capsule table uniqueness \| implemented/);
   assert.match(roadmap, /`insertOrIgnore`/);
@@ -930,6 +931,10 @@ test("canonical Job and architecture docs describe settled runtime shutdown", as
     assert.match(document, /worker settlement[\s\S]*before[\s\S]*mail/i);
     assert.match(document, /active[\s\S]*worker[\s\S]*current attempt[\s\S]*without[\s\S]*claiming another/i);
     assert.match(document, /worker settlement[\s\S]*failure[\s\S]*does not skip[\s\S]*resource closure/i);
+    assert.match(document, /Capsule shutdown hook[\s\S]*failure[\s\S]*(?:Database adapter|database connection)[\s\S]*(?:close|closure)/i);
+    assert.match(document, /failed Dev restart/i);
+    assert.match(document, /replacement candidate[\s\S]*(?:close|closure)|(?:close|closure)[\s\S]*replacement candidate/i);
+    assert.match(document, /(?:active|current) runtime/i);
     assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
   }
 });

@@ -107,6 +107,36 @@ const MIGRATED_STANDALONE_TABLE = {
   fields: [...STANDALONE_TABLE.fields, { name: "state", kind: "String", sqliteType: "TEXT", defaultValue: "unset" }],
 };
 
+const MIGRATION_NAME_COLLISION_TABLE = {
+  name: "conformance_migration_name_collision",
+  fields: [{ name: "key", kind: "String", sqliteType: "TEXT" }],
+};
+
+const MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY = {
+  ...MIGRATION_NAME_COLLISION_TABLE,
+  uniqueConstraints: [["key"]],
+};
+
+const HOSTILE_MIGRATION_NAME_TABLE = {
+  name: "__sporades_migrating_76e36d10ece95460807e8eac",
+  fields: [{ name: "marker", kind: "String", sqliteType: "TEXT" }],
+};
+
+const MIGRATION_NAME_COLLISION_ROLLBACK_TABLE = {
+  ...MIGRATION_NAME_COLLISION_TABLE,
+  name: "conformance_migration_name_collision_rollback",
+};
+
+const MIGRATION_NAME_COLLISION_ROLLBACK_TABLE_WITH_UNIQUE_KEY = {
+  ...MIGRATION_NAME_COLLISION_ROLLBACK_TABLE,
+  uniqueConstraints: [["key"]],
+};
+
+const HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE = {
+  ...HOSTILE_MIGRATION_NAME_TABLE,
+  name: "__sporades_migrating_763f0230fa87ee9684993581",
+};
+
 const MIGRATED_ENTRIES_TABLE = {
   ...ENTRIES_TABLE,
   fields: [...ENTRIES_TABLE.fields, { name: "status", kind: "String", sqliteType: "TEXT", defaultValue: "open" }],
@@ -317,7 +347,7 @@ function injectMigrationTemporaryTableError(adapter, tableName, error) {
   adapter.withTransaction = (fn) => originalWithTransaction.call(adapter, (transaction) => {
     const originalCreateAppTable = transaction.createAppTable;
     transaction.createAppTable = (table, temporaryTableName) => {
-      if (temporaryTableName === `__sporades_migrating_${tableName}`) {
+      if (table.name === tableName && String(temporaryTableName).startsWith("__sporades_migrating_")) {
         throw error;
       }
       return originalCreateAppTable.call(transaction, table, temporaryTableName);
@@ -1065,6 +1095,76 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "migrateExistingAppTable preserves a valid app table with a hostile internal-shaped name",
+    async run(adapter) {
+      await adapter.createAppTable(MIGRATION_NAME_COLLISION_TABLE);
+      await adapter.createAppTable(HOSTILE_MIGRATION_NAME_TABLE);
+      await adapter.insertAppRow(MIGRATION_NAME_COLLISION_TABLE, {
+        id: "migration-collision-target",
+        createdAt: NOW,
+        updatedAt: NOW,
+        key: "kept-key",
+      });
+      await adapter.insertAppRow(HOSTILE_MIGRATION_NAME_TABLE, {
+        id: "migration-collision-hostile",
+        createdAt: NOW,
+        updatedAt: NOW,
+        marker: "must survive",
+      });
+
+      await adapter.migrateExistingAppTable(MIGRATION_NAME_COLLISION_TABLE, MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY);
+
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY, "migration-collision-target")).key, "kept-key");
+      assert.equal((await adapter.selectAppRowById(HOSTILE_MIGRATION_NAME_TABLE, "migration-collision-hostile")).marker, "must survive");
+      assert.deepEqual(
+        (await adapter.listInspectableTables()).filter((name) => name.startsWith("__sporades_migrating_")).sort(),
+        [HOSTILE_MIGRATION_NAME_TABLE.name],
+      );
+      await assert.rejects(
+        async () => adapter.insertAppRow(MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY, {
+          id: "migration-collision-duplicate",
+          createdAt: NOW,
+          updatedAt: NOW,
+          key: "kept-key",
+        }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
+    name: "a failed colliding-name migration rolls back without changing either valid app table",
+    async run(adapter) {
+      await adapter.createAppTable(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE);
+      await adapter.createAppTable(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE);
+      for (const id of ["migration-rollback-a", "migration-rollback-b"]) {
+        await adapter.insertAppRow(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, {
+          id,
+          createdAt: NOW,
+          updatedAt: NOW,
+          key: "duplicate-key",
+        });
+      }
+      await adapter.insertAppRow(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE, {
+        id: "migration-rollback-hostile",
+        createdAt: NOW,
+        updatedAt: NOW,
+        marker: "must survive rollback",
+      });
+
+      await assert.rejects(
+        async () => adapter.migrateExistingAppTable(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, MIGRATION_NAME_COLLISION_ROLLBACK_TABLE_WITH_UNIQUE_KEY),
+        (error) => error.message === "Unable to apply unique constraint migration.",
+      );
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, "migration-rollback-a")).key, "duplicate-key");
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, "migration-rollback-b")).key, "duplicate-key");
+      assert.equal((await adapter.selectAppRowById(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE, "migration-rollback-hostile")).marker, "must survive rollback");
+      assert.deepEqual(
+        (await adapter.listInspectableTables()).filter((name) => name.startsWith("__sporades_migrating_")).sort(),
+        [HOSTILE_MIGRATION_NAME_TABLE.name, HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name].sort(),
+      );
+    },
+  },
+  {
     name: "migrateExistingAppTable adds a field with its default to an existing table and keeps stored rows",
     async run(adapter) {
       assert.equal((await adapter.selectAppRowById(STANDALONE_TABLE, "standalone-kept")).state, undefined);
@@ -1405,6 +1505,14 @@ export const CONFORMANCE_SURFACE = {
     UNIQUE_DUPLICATE_MIGRATION_TABLE.name,
     UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name,
     UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name,
+    MIGRATION_NAME_COLLISION_TABLE.name,
+    HOSTILE_MIGRATION_NAME_TABLE.name,
+    `${HOSTILE_MIGRATION_NAME_TABLE.name}_1`,
+    `__sporades_migrating_${MIGRATION_NAME_COLLISION_TABLE.name}`,
+    MIGRATION_NAME_COLLISION_ROLLBACK_TABLE.name,
+    HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name,
+    `${HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name}_1`,
+    `__sporades_migrating_${MIGRATION_NAME_COLLISION_ROLLBACK_TABLE.name}`,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase, resolveAnonymousSession, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 const auth = { userId: "u", displayName: "u", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
@@ -62,6 +62,99 @@ test("running cancellation aborts only after its transaction commits", async () 
   await committedDrain;
   assert.equal((await runMutation(db,auth,"get",[committedJob.data.id])).data.status,"cancelled");
  } finally {release();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("committed running cancellation survives context middleware replacement", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-cancel-middleware-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let started=()=>{};let activeSignal;let db;
+ globalThis.__sporadesCancellationMiddlewareTarget=null;
+ const capsule={jobs:{gate:job(async(ctx)=>{activeSignal=ctx.signal;started();await new Promise((resolve,reject)=>ctx.signal.addEventListener("abort",()=>{const error=new Error("aborted");error.name="AbortError";reject(error);},{once:true}));})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("gate",{})),trigger:mutation(()=>true),get:mutation((ctx,id)=>ctx.jobs.get(id))}};
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},capsule,{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  db.contextMiddleware=[async context=>{
+   if(context.kind!=="mutation"||!globalThis.__sporadesCancellationMiddlewareTarget) return context;
+   await context.jobs.cancel(globalThis.__sporadesCancellationMiddlewareTarget);
+   return {auth:context.auth,kind:context.kind};
+  }];
+  const began=new Promise(resolve=>{started=resolve;});
+  const queued=await runMutation(db,auth,"enqueue",[]);const draining=clock.runDueTimers();await began;
+  globalThis.__sporadesCancellationMiddlewareTarget=queued.data.id;
+  const triggered=await runMutation(db,auth,"trigger",[]);
+  assert.equal(triggered.ok,true);
+  assert.equal(activeSignal.aborted,true,"transaction-owned cancellation must survive replacement middleware contexts");
+  await draining;
+  globalThis.__sporadesCancellationMiddlewareTarget=null;
+  assert.equal((await runMutation(db,auth,"get",[queued.data.id])).data.status,"cancelled");
+ } finally {globalThis.__sporadesCancellationMiddlewareTarget=null;await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("a cancellation committed after claim but before controller registration aborts before the handler", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-cancel-claim-window-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let releaseClaim=()=>{};let claimStarted;const claimBegan=new Promise(resolve=>{claimStarted=resolve;});let handlerSignalAborted=null;let db;
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{gate:job(ctx=>{handlerSignalAborted=ctx.signal.aborted;if(ctx.signal.aborted){const error=new Error("aborted before handler");error.name="AbortError";throw error;}return true;})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("gate",{})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]);
+  const baseAdapter=db.adapter;db.adapter=pauseJobClaimAfterCommit(baseAdapter,()=>claimStarted(),release=>{releaseClaim=release;});
+  const draining=clock.runDueTimers();await claimBegan;
+  await cancelJob(db,{auth},queued.data.id);
+  releaseClaim();releaseClaim=()=>{};await draining;
+  db.adapter=baseAdapter;
+  assert.equal(handlerSignalAborted,true,"the exact claimed token must be rechecked after controller registration");
+  assert.equal((await runMutation(db,auth,"get",[queued.data.id])).data.status,"cancelled");
+ } finally {releaseClaim();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("App-message cancellation aborts on commit and stays inert on rollback", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-cancel-message-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let started=()=>{};let release=()=>{};let activeSignal;let db;
+ globalThis.__sporadesMessageCancellationMiddlewareTarget=null;
+ const capsule={jobs:{gate:job(async(ctx)=>{activeSignal=ctx.signal;started();await new Promise((resolve,reject)=>{release=resolve;ctx.signal.addEventListener("abort",()=>{const error=new Error("aborted");error.name="AbortError";reject(error);},{once:true});});})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("gate",{})),get:mutation((ctx,id)=>ctx.jobs.get(id))}};
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},capsule,{clock});
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  db.contextMiddleware=[async context=>{
+   if(context.kind!=="message"||!globalThis.__sporadesMessageCancellationMiddlewareTarget) return context;
+   await context.jobs.cancel(globalThis.__sporadesMessageCancellationMiddlewareTarget);
+   return {auth:context.auth,kind:context.kind};
+  }];
+  db.messages=[{name:"cancel",handlerSource:`async (_ctx, data) => { if (data.rollback) throw new Error("roll back message cancellation"); return true; }`}];
+
+  let began=new Promise(resolve=>{started=resolve;});const rolledBack=await runMutation(db,auth,"enqueue",[]);const rolledBackDrain=clock.runDueTimers();await began;
+  globalThis.__sporadesMessageCancellationMiddlewareTarget=rolledBack.data.id;
+  const failed=await runAppMessage(db,auth,"cancel",{id:rolledBack.data.id,rollback:true});
+  assert.match(failed.error.message,/roll back message cancellation/);assert.equal(activeSignal.aborted,false);
+  globalThis.__sporadesMessageCancellationMiddlewareTarget=null;release();release=()=>{};await rolledBackDrain;assert.equal((await runMutation(db,auth,"get",[rolledBack.data.id])).data.status,"succeeded");
+
+  began=new Promise(resolve=>{started=resolve;});const committed=await runMutation(db,auth,"enqueue",[]);const committedDrain=clock.runDueTimers();await began;
+  globalThis.__sporadesMessageCancellationMiddlewareTarget=committed.data.id;
+  assert.deepEqual(await runAppMessage(db,auth,"cancel",{id:committed.data.id,rollback:false}),{data:true,error:null});
+  assert.equal(activeSignal.aborted,true);await committedDrain;globalThis.__sporadesMessageCancellationMiddlewareTarget=null;assert.equal((await runMutation(db,auth,"get",[committed.data.id])).data.status,"cancelled");
+ } finally {globalThis.__sporadesMessageCancellationMiddlewareTarget=null;release();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("Custom-endpoint cancellation aborts on commit and stays inert on rollback", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-cancel-endpoint-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let started=()=>{};let release=()=>{};let activeSignal;let db;
+ globalThis.__sporadesEndpointCancellationMiddlewareTarget=null;
+ const capsule={jobs:{gate:job(async(ctx)=>{activeSignal=ctx.signal;started();await new Promise((resolve,reject)=>{release=resolve;ctx.signal.addEventListener("abort",()=>{const error=new Error("aborted");error.name="AbortError";reject(error);},{once:true});});})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("gate",{})),get:mutation((ctx,id)=>ctx.jobs.get(id))}};
+ const endpoint={handlerSource:`async (ctx) => { if (ctx.request.query.rollback === "true") throw new Error("roll back endpoint cancellation"); return true; }`};
+ try {
+  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},capsule,{clock});const session=await resolveAnonymousSession(db,null);
+  db.contextMiddleware=[async context=>{
+   if(context.kind!=="endpoint"||!globalThis.__sporadesEndpointCancellationMiddlewareTarget) return context;
+   await context.jobs.cancel(globalThis.__sporadesEndpointCancellationMiddlewareTarget);
+   return {auth:context.auth,kind:context.kind,request:context.request};
+  }];
+  const request={method:"POST",headers:{"x-sporades-session-token":session.token},async *[Symbol.asyncIterator]() {}};
+
+  let began=new Promise(resolve=>{started=resolve;});const rolledBack=await runMutation(db,session.auth,"enqueue",[]);const rolledBackDrain=clock.runDueTimers();await began;
+  globalThis.__sporadesEndpointCancellationMiddlewareTarget=rolledBack.data.id;
+  await assert.rejects(runEndpoint(db,endpoint,new URL(`http://capsule.test/cancel?id=${rolledBack.data.id}&rollback=true`),request),/roll back endpoint cancellation/);
+  assert.equal(activeSignal.aborted,false);globalThis.__sporadesEndpointCancellationMiddlewareTarget=null;release();release=()=>{};await rolledBackDrain;assert.equal((await runMutation(db,session.auth,"get",[rolledBack.data.id])).data.status,"succeeded");
+
+  began=new Promise(resolve=>{started=resolve;});const committed=await runMutation(db,session.auth,"enqueue",[]);const committedDrain=clock.runDueTimers();await began;
+  globalThis.__sporadesEndpointCancellationMiddlewareTarget=committed.data.id;
+  assert.equal(await runEndpoint(db,endpoint,new URL(`http://capsule.test/cancel?id=${committed.data.id}&rollback=false`),request),true);
+  assert.equal(activeSignal.aborted,true);await committedDrain;globalThis.__sporadesEndpointCancellationMiddlewareTarget=null;assert.equal((await runMutation(db,session.auth,"get",[committed.data.id])).data.status,"cancelled");
+ } finally {globalThis.__sporadesEndpointCancellationMiddlewareTarget=null;release();await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
 test("queued cancellation and delayed ordering are deterministic", async () => {

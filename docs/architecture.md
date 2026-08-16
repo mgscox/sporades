@@ -180,6 +180,10 @@ worker settles its current attempt without claiming another queued Job, and a
 worker settlement failure does not skip resource closure. The same close
 ordering is used by Dev lifecycle transitions and the bundled process signal
 path, so a worker cannot continue against an already closed adapter.
+Capsule shutdown hook failure still proceeds to Database adapter closure.
+During a failed Dev restart, the initialized replacement candidate is closed
+before keeping the current runtime as the active owned instance, so a failed
+handoff cannot leak or silently swap runtime ownership.
 
 ### Local Container Session
 

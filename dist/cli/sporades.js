@@ -13,7 +13,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, readJsonlLogEvents, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, readJsonlLogEvents, replaceRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
@@ -2045,12 +2045,20 @@ async function startDevSession(options) {
         }
         rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => { });
         websocketHub.disconnectAll();
-        await runtime.shutdown();
+        let shutdownError;
+        try {
+            await runtime.shutdown();
+        }
+        catch (error) {
+            shutdownError = error;
+        }
         server.close(async () => {
             await rm(sessionFilePath, { force: true });
             process.off("unhandledRejection", onUnhandledRejection);
             process.off("uncaughtException", onUncaughtException);
-            process.exit(0);
+            if (shutdownError)
+                process.stderr.write(`${errorDetails(shutdownError).message}\n`);
+            process.exit(shutdownError ? 1 : 0);
         });
     };
     process.on("SIGTERM", shutdown);
@@ -2102,14 +2110,10 @@ async function createDevRuntime(options) {
         },
         async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
             const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), { serviceEnv });
-            await nextDatabase.init();
-            await database.shutdown();
-            await database.close();
-            database = nextDatabase;
+            database = await replaceRuntimeDatabase(database, nextDatabase);
         },
         async shutdown() {
-            await database.shutdown();
-            await database.close();
+            await shutdownAndCloseDatabase(database);
         },
     };
 }

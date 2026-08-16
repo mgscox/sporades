@@ -84,7 +84,10 @@ ordinary error path instead of being mislabeled as duplicate migration data.
 
 Every failed attempt preserves the original table, all original rows, and the
 prior schema metadata and hash. It leaves no temporary table or other rebuild
-debris behind.
+debris behind. The runtime chooses a bounded unique temporary table name inside
+the migration transaction and checks it against the live schema. A temporary
+table name collision with a valid app table leaves that table preserved and
+untouched; overlapping migrations use independent internal names.
 
 Removing, replacing, weakening, or changing the field order of an existing
 constraint remains an unsupported Capsule schema change. Keep the existing

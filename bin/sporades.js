@@ -4137,7 +4137,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash4, randomBytes as randomBytes5, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash4, randomBytes as randomBytes5, randomUUID as randomUUID3 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -6295,8 +6295,9 @@ async function cancelJob(database, context, id) {
       const runtimeDatabase = database.__rootDatabase ?? database;
       if (database.__transactionActive) {
         const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobCancellationAborts ??= /* @__PURE__ */ new Map();
-        pendingContext.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+        const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+        pendingOwner.__pendingJobCancellationAborts ??= /* @__PURE__ */ new Map();
+        pendingOwner.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
       } else {
         abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
       }
@@ -6308,13 +6309,18 @@ async function cancelJob(database, context, id) {
 }
 function commitPendingJobCancellationAborts(context) {
   if (!context) return;
-  const pending = context.__pendingJobCancellationAborts;
+  const pendingContext = context.__jobParentContext ?? context;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  const pending = pendingOwner.__pendingJobCancellationAborts;
   if (!(pending instanceof Map)) return;
-  delete context.__pendingJobCancellationAborts;
+  delete pendingOwner.__pendingJobCancellationAborts;
   for (const [id, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
 }
 function dropPendingJobCancellationAborts(context) {
-  if (context) delete context.__pendingJobCancellationAborts;
+  if (!context) return;
+  const pendingContext = context.__jobParentContext ?? context;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  delete pendingOwner.__pendingJobCancellationAborts;
 }
 function abortRuntimeJobClaim(runtimeDatabase, id, claimToken) {
   const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
@@ -12440,6 +12446,9 @@ function ensureSessionProvenanceColumn(sqlite) {
   ]);
 }
 
+// src/database-runtime.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
   const text2 = String(sql ?? "");
@@ -14792,27 +14801,32 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     existingTable.uniqueConstraints ?? [],
     nextTable.uniqueConstraints ?? []
   );
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  return chainMaybePromise([
-    ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
-      (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
-        if (!exists) {
-          throw invalidReferenceError(field);
-        }
-      })
-    ),
-    () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
-    () => sqlite.createAppTable(nextTable, tempTableName),
-    () => {
-      const copyRows = () => sqlite.exec(
-        `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
-      );
-      return addsUniqueConstraints ? translateUniqueConstraintCopyFailure(copyRows) : copyRows();
-    },
-    () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
-    () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
-  ]);
+  return thenIfPromise(sqlite.listInspectableTables(), (tableNames) => {
+    const occupiedNames = new Set(tableNames);
+    let tempTableName;
+    do {
+      tempTableName = `__sporades_migrating_${randomUUID2().replaceAll("-", "")}`;
+    } while (occupiedNames.has(tempTableName));
+    return chainMaybePromise([
+      ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
+        (field) => () => thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+          if (!exists) {
+            throw invalidReferenceError(field);
+          }
+        })
+      ),
+      () => sqlite.createAppTable(nextTable, tempTableName),
+      () => {
+        const copyRows = () => sqlite.exec(
+          `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} FROM ${dialect.quoteIdentifier(nextTable.name)}`
+        );
+        return addsUniqueConstraints ? translateUniqueConstraintCopyFailure(copyRows) : copyRows();
+      },
+      () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
+      () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`)
+    ]);
+  });
 }
 function columnSelectExpressionForMigration(dialect, existingTable, nextTable, columnName) {
   if (["id", "createdAt", "updatedAt"].includes(columnName)) {
@@ -14977,6 +14991,52 @@ function quoteIdentifier(identifier) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
+async function shutdownAndCloseDatabase(database) {
+  let shutdownError;
+  let closeError;
+  let shutdownRejected = false;
+  let closeRejected = false;
+  try {
+    await database.shutdown();
+  } catch (error) {
+    shutdownRejected = true;
+    shutdownError = error;
+  }
+  try {
+    await database.close();
+  } catch (error) {
+    closeRejected = true;
+    closeError = error;
+  }
+  if (shutdownRejected && closeRejected) {
+    throw new AggregateError([shutdownError, closeError], "Runtime shutdown and database closure both failed.");
+  }
+  if (shutdownRejected) throw shutdownError;
+  if (closeRejected) throw closeError;
+}
+async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
+  try {
+    await candidateDatabase.init();
+  } catch (initError) {
+    try {
+      await candidateDatabase.close();
+    } catch (closeError) {
+      throw new AggregateError([initError, closeError], "Runtime initialization and candidate database closure both failed.");
+    }
+    throw initError;
+  }
+  try {
+    await shutdownAndCloseDatabase(currentDatabase);
+  } catch (teardownError) {
+    try {
+      await shutdownAndCloseDatabase(candidateDatabase);
+    } catch (candidateError) {
+      throw new AggregateError([teardownError, candidateError], "Current runtime teardown and candidate runtime cleanup both failed.");
+    }
+    throw teardownError;
+  }
+  return candidateDatabase;
+}
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -15284,7 +15344,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID2();
+  const token = randomUUID3();
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + 3e4).toISOString();
@@ -15581,7 +15641,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID2(),
+      id: input.request.id ?? randomUUID3(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -16583,7 +16643,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID2(),
+        id: randomUUID3(),
         createdAt: now,
         updatedAt: now
       };
@@ -16620,7 +16680,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID2(),
+        id: randomUUID3(),
         createdAt: now,
         updatedAt: now
       };
@@ -17850,7 +17910,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID2(),
+    randomUUID3(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -18616,7 +18676,7 @@ async function runCurrentUserJobWorker(database) {
         return;
       }
       const startedAt = database.clock.now().toISOString();
-      const claimToken = randomUUID2();
+      const claimToken = randomUUID3();
       const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), claimToken, row.id);
       if (!claimed?.changes) continue;
       if (database.__jobStopped) {
@@ -18630,6 +18690,11 @@ async function runCurrentUserJobWorker(database) {
       const abortController = new AbortController();
       database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       try {
+        const claimedState = await database.adapter.prepare(sql(
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+        )).get(row.id, claimToken);
+        if (!claimedState) continue;
+        if (claimedState?.cancelRequestedAt) abortController.abort();
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
@@ -18733,7 +18798,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID2(),
+    id: randomUUID3(),
     createdAt: now,
     updatedAt: now
   };
@@ -26620,12 +26685,19 @@ async function startDevSession(options) {
     rm6(path11.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
-    await runtime.shutdown();
+    let shutdownError;
+    try {
+      await runtime.shutdown();
+    } catch (error) {
+      shutdownError = error;
+    }
     server.close(async () => {
       await rm6(sessionFilePath, { force: true });
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
-      process.exit(0);
+      if (shutdownError) process.stderr.write(`${errorDetails3(shutdownError).message}
+`);
+      process.exit(shutdownError ? 1 : 0);
     });
   };
   process.on("SIGTERM", shutdown);
@@ -26691,14 +26763,10 @@ async function createDevRuntime(options) {
         await importCapsuleDefinition(capsuleModuleSource),
         { serviceEnv }
       );
-      await nextDatabase.init();
-      await database.shutdown();
-      await database.close();
-      database = nextDatabase;
+      database = await replaceRuntimeDatabase(database, nextDatabase);
     },
     async shutdown() {
-      await database.shutdown();
-      await database.close();
+      await shutdownAndCloseDatabase(database);
     }
   };
 }

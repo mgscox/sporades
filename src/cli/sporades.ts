@@ -64,6 +64,8 @@ import {
   runReadOnlyQuery,
   simulateLocalIdentitySession,
   readJsonlLogEvents,
+  replaceRuntimeDatabase,
+  shutdownAndCloseDatabase,
   validateReadOnlyInspectionSql,
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
@@ -2427,12 +2429,15 @@ async function startDevSession(options: LooseRecord) {
     }
     rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
     websocketHub.disconnectAll();
-    await runtime.shutdown();
+    let shutdownError: unknown;
+    try { await runtime.shutdown(); }
+    catch (error) { shutdownError = error; }
     server.close(async () => {
       await rm(sessionFilePath, { force: true });
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
-      process.exit(0);
+      if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}\n`);
+      process.exit(shutdownError ? 1 : 0);
     });
   };
   process.on("SIGTERM", shutdown);
@@ -2523,14 +2528,10 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         await importCapsuleDefinition(capsuleModuleSource),
         { serviceEnv },
       );
-      await nextDatabase.init();
-      await database.shutdown();
-      await database.close();
-      database = nextDatabase;
+      database = await replaceRuntimeDatabase(database, nextDatabase);
     },
     async shutdown() {
-      await database.shutdown();
-      await database.close();
+      await shutdownAndCloseDatabase(database);
     },
   };
 }

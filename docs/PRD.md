@@ -472,7 +472,10 @@ existing data, Sporades returns one opaque unique-migration error and rolls back
 the attempt. The original table, rows, schema metadata, and hash remain intact,
 with no temporary table or rebuild debris. Foreign-key failures and unrelated
 unique failures retain their original error instead of being translated as
-duplicate migration data.
+duplicate migration data. Each temporary table name is bounded for PostgreSQL,
+unique to the migration, and checked against the live transaction schema. A
+temporary table name collision with a valid app table leaves that table
+preserved and untouched, while overlapping migrations use independent names.
 
 Removing tables or fields, changing existing field definitions, or removing,
 replacing, weakening, or reordering an existing unique constraint is an
@@ -871,7 +874,11 @@ the Capsule runtime completes initialization. Every running attempt owns an
 opaque claim so stale lifecycle work cannot mutate a newer attempt. A running
 cancellation request and its handler abort become effective only after their
 enclosing mutation, App message, or Custom endpoint transaction commits; a
-rollback discards both.
+rollback discards both. That pending abort is transaction-owned even when
+context middleware replaces its context object. After registering the running
+attempt's controller, the worker rechecks the exact claim token before entering
+the handler so cancellation committed in the claim-registration window is
+already visible through `ctx.signal`.
 
 Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
 delayed, and retry worker timers, abort active Job handlers, and await scheduled
@@ -881,6 +888,10 @@ its current attempt without claiming another queued Job, and worker settlement
 failure does not skip resource closure. A shutdown abort without a durable
 `cancelRequestedAt` marker is not user cancellation: it follows the ordinary
 retry or exhausted-attempt transition for that Job.
+Capsule shutdown hook failure does not skip Database adapter closure. During a
+failed Dev restart, the initialized replacement candidate is closed before
+Sporades retains ownership of the current runtime rather than swapping to or
+leaking the candidate.
 Durable queued and delayed Job state remains stored and recovers on runtime
 restart. Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.
