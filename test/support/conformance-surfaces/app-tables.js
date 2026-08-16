@@ -77,10 +77,11 @@ const STANDALONE_ALIAS_TABLE_NAME = "conformance_standalone_alias";
 const UNIQUE_TABLE = {
   name: "conformance_unique_table",
   fields: [
+    { name: "identity", kind: "String", sqliteType: "TEXT" },
     { name: "email", kind: "String", sqliteType: "TEXT" },
     { name: "select", kind: "String", sqliteType: "TEXT" },
   ],
-  uniqueConstraints: [["email"], ["select", "email"]],
+  uniqueConstraints: [["identity"], ["select", "email"]],
 };
 
 // A Capsule table whose fields are named exactly the way the deleted Postgres column-name table
@@ -871,14 +872,14 @@ const APP_TABLE_CONFORMANCE_CASES = [
     name: "createAppTable enforces quoted single and composite unique constraints with ordinary SQL null semantics",
     async run(adapter) {
       await adapter.createAppTable(UNIQUE_TABLE);
-      const first = { id: "unique-one", createdAt: NOW, updatedAt: NOW, email: "one@example.test", select: "reserved-word" };
+      const first = { id: "unique-one", createdAt: NOW, updatedAt: NOW, identity: "identity-one", email: "one@example.test", select: "reserved-word" };
       await adapter.insertAppRow(UNIQUE_TABLE, first);
       await assert.rejects(
-        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", select: "other" }),
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", identity: "identity-two" }),
         /unique constraint|duplicate key|constraint failed/i,
       );
-      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", email: null, select: "reserved-word" });
-      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", email: null, select: "reserved-word" });
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", identity: "identity-three", email: null, select: "reserved-word" });
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", identity: "identity-four", email: null, select: "reserved-word" });
     },
   },
   {
