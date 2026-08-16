@@ -1,18 +1,32 @@
 # Changes
 
-## 0.8.4 - 2026-08-15
+## Unreleased
+
+Changes since v0.8.5.
+
+### 🐛 Bug Fixes
+
+- Reject query argument array subclasses while continuing to accept arrays
+  created in another JavaScript realm (2171b61).
+
+## 0.8.5 - 2026-08-15
 
 Changes since v0.8.1.
 
 ### 🚀 Features
 
-- Add exact pagination and join admission (63f68a0).
 - Add JSON-safe positional arguments to reactive Custom queries across the
-  client transport and framework adapters.
+  client transport and framework adapters (5b882f5).
+- Add exact pagination and join admission (63f68a0).
 
 ### 🐛 Bug Fixes
 
 - Resolve npm audit vulnerabilities (a6a4b51).
+
+### 📝 Documentation
+
+- Describe parameterized queries (287ef63).
+- Plan reactive query arguments (4876db8).
 
 ## 0.8.1 - 2026-08-14
 
