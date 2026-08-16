@@ -9530,11 +9530,11 @@ test("sporades db dump returns structured table data from the running dev sessio
               columns: ["key", "value"],
               rows: [
                 { key: "schemaVersion", value: "v1:additive-fields" },
-                { key: "schemaHash", value: "71a20803ea953152096eea819b23296357aa0f92317215685136640caac64904" },
+                { key: "schemaHash", value: "f5a4b88b9bf85d0836797e22fa37197b8b38e8d9baddbec676ea15def328c3a0" },
                 {
                   key: "schema",
                   value:
-                    '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}]}]}',
+                    '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}],"uniqueConstraints":[]}]}',
                 },
               ],
             },

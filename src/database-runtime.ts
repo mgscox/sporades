@@ -189,31 +189,67 @@ type RuntimeEnv = Record<string, string | undefined>;
 // A connection can queue SQL statements, but it cannot safely interleave the BEGIN/work/COMMIT
 // sequences of two callers. Adapters backed by one connection use this gate for every transaction
 // mode, preserving the transaction boundary that the runtime has already chosen (ADR-0026).
-function createConnectionTransactionQueue() {
-  let tail: Promise<void> = Promise.resolve();
-  return async <Value>(run: () => Promise<Value>): Promise<Value> => {
-    const previous = tail;
-    let release: () => void = () => {};
-    tail = new Promise<void>((resolve) => { release = resolve; });
-    await previous.catch(() => {});
-    try {
-      return await run();
-    } finally {
-      release();
+function createConnectionOperationQueue() {
+  const { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
+  const ownership = new AsyncLocalStorage();
+  const owner = Object.freeze({});
+  let busy = false;
+  const pending: Array<{ operation: () => any; resolve: (value: any) => void; reject: (error: any) => void; }> = [];
+
+  const advance = () => {
+    const next = pending.shift();
+    if (!next) {
+      busy = false;
+      return;
     }
+    execute(next.operation, next.resolve, next.reject);
   };
+
+  const execute = (operation: () => any, resolve?: (value: any) => void, reject?: (error: any) => void): any => {
+    let result;
+    try {
+      result = operation();
+    } catch (error) {
+      advance();
+      if (reject) reject(error);
+      else throw error;
+      return;
+    }
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).then(
+        (value) => { resolve?.(value); advance(); return value; },
+        (error) => { reject?.(error); advance(); if (!reject) throw error; },
+      );
+    }
+    resolve?.(result);
+    advance();
+    return result;
+  };
+
+  const run: any = <Value>(operation: () => Value): Value | Promise<Awaited<Value>> => {
+    if (ownership.getStore() === owner) return operation();
+    if (!busy) {
+      busy = true;
+      return execute(operation);
+    }
+    return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
+  };
+  run.asOwner = <Value>(operation: () => Value): Value => ownership.run(owner, operation);
+  run.isOwner = () => ownership.getStore() === owner;
+  return run;
 }
 
-function createTransactionScopedAdapter(adapter: LooseRecord) {
-  const rejectNestedTransaction = async () => {
-    throw commandError(
-      "Nested database transactions are not supported.",
-      "Keep mutation work inside a single Sporades mutation transaction.",
-    );
-  };
-  return Object.assign(Object.create(adapter), {
-    withTransaction: rejectNestedTransaction,
-    withReadOnlySnapshot: rejectNestedTransaction,
+async function rejectNestedTransactionScope() {
+  throw commandError(
+    "Nested database transactions are not supported.",
+    "Keep mutation work inside a single Sporades mutation transaction.",
+  );
+}
+
+function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseRecord = {}) {
+  return Object.assign(Object.create(adapter), operations, {
+    withTransaction: rejectNestedTransactionScope,
+    withReadOnlySnapshot: rejectNestedTransactionScope,
   });
 }
 
@@ -1160,55 +1196,67 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
   if (!options.readOnly) nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
-  const runExclusiveTransaction = createConnectionTransactionQueue();
+  const runConnectionOperation = createConnectionOperationQueue();
+  const runDirectly = (operation: () => any) => operation();
+
+  const createOperations = (run: (operation: () => any) => any) => ({
+    exec(sql: string) {
+      return run(() => connection.exec(sql));
+    },
+    prepare(sql: string) {
+      return {
+        all(...params: any[]) {
+          return run(() => connection.prepare(sql).all(...params));
+        },
+        get(...params: any[]) {
+          return run(() => connection.prepare(sql).get(...params));
+        },
+        run(...params: string[]) {
+          return run(() => connection.prepare(sql).run(...params));
+        },
+        columns() {
+          return run(() => connection.prepare(sql).columns());
+        },
+      };
+    },
+  });
 
   // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
   // below its own name is a connection, statement primitives and transaction session mechanics.
   const adapter: LooseRecord = {
     ...createSharedDatabaseAdapterMethods(dialect),
+    ...createOperations(runConnectionOperation),
     engine: "sqlite",
     dialect,
     normalization: sqliteRowNormalization(),
-    exec(sql: string) {
-      return connection.exec(sql);
-    },
-    prepare(sql: string) {
-      const statement = connection.prepare(sql);
-      return {
-        all(...params: any[]) {
-          return statement.all(...params);
-        },
-        get(...params: any[]) {
-          return statement.get(...params);
-        },
-        run(...params: string[]) {
-          return statement.run(...params);
-        },
-        columns() {
-          return statement.columns();
-        },
-      };
-    },
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      return await runExclusiveTransaction(async () => {
-        adapter.exec("BEGIN");
-        try {
-          const result = await fn(createTransactionScopedAdapter(adapter));
-          adapter.exec("COMMIT");
-          return result;
-        } catch (error) {
-          adapter.exec("ROLLBACK");
-          throw error;
-        }
+      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
+      return await runConnectionOperation(async () => {
+        return await runConnectionOperation.asOwner(async () => {
+          await this.exec("BEGIN");
+          try {
+            const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
+            const result = await fn(createTransactionScopedAdapter(this, ownerOperations));
+            await this.exec("COMMIT");
+            return result;
+          } catch (error) {
+            await this.exec("ROLLBACK");
+            throw error;
+          }
+        });
       });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      return await runExclusiveTransaction(async () => {
-        const transactionAdapter = createTransactionScopedAdapter(adapter);
-        adapter.exec("BEGIN"); adapter.exec("PRAGMA query_only = ON");
-        try { const result = await fn(transactionAdapter); adapter.exec("COMMIT"); return result; }
-        catch (error) { adapter.exec("ROLLBACK"); throw error; }
-        finally { if (!options.readOnly) adapter.exec("PRAGMA query_only = OFF"); }
+      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
+      return await runConnectionOperation(async () => {
+        return await runConnectionOperation.asOwner(async () => {
+          const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
+          const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+          await this.exec("BEGIN"); await this.exec("PRAGMA query_only = ON");
+          try { const result = await fn(transactionAdapter); await this.exec("COMMIT"); return result; }
+          catch (error) { await this.exec("ROLLBACK"); throw error; }
+          finally { if (!options.readOnly) await this.exec("PRAGMA query_only = OFF"); }
+        });
       });
     },
     close() {
@@ -1232,7 +1280,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   }
 
   const client = await createPostgresConnection(url);
-  const runExclusiveTransaction = createConnectionTransactionQueue();
+  const runConnectionOperation = createConnectionOperationQueue();
+  const runDirectly = (operation: () => any) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
   const normalization = postgresRowNormalization();
@@ -1243,35 +1292,46 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     }
   };
 
-  const query = async (sql: string, params: any[] = []) => {
+  const rawQuery = async (sql: string, params: any[] = []) => {
     assertOpen();
     return await client.query(postgresInterpolate(sql, params));
   };
 
-  const adapter: LooseRecord = {
-    ...createSharedDatabaseAdapterMethods(dialect),
-    engine: "postgres",
-    dialect,
-    normalization,
+  const createOperations = (run: (operation: () => any) => any) => ({
     exec(sql: string) {
-      return query(sql).then((): undefined => undefined);
+      return run(() => rawQuery(sql).then((): undefined => undefined));
     },
     prepare(sql: string) {
       assertOpen();
       return {
         all(...params: (number | undefined)[]) {
-          return query(sql, params).then((result: any) => postgresRowsFromResult(normalization, result));
+          return run(() => rawQuery(sql, params).then((result: any) => postgresRowsFromResult(normalization, result)));
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return query(sql, params).then((result) => ({
+          return run(() => rawQuery(sql, params).then((result) => ({
             changes: Number(result.rowCount ?? 0),
             lastInsertRowid: undefined as any,
-          }));
+          })));
         },
-        // Postgres has no way to ask a statement for its result shape without running something,
+        columns() {
+          return run(() => rawQuery(
+            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`,
+          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) }))));
+        },
+      };
+    },
+  });
+
+  const adapter: LooseRecord = {
+    ...createSharedDatabaseAdapterMethods(dialect),
+    ...createOperations(runConnectionOperation),
+    engine: "postgres",
+    dialect,
+    normalization,
+    // Postgres has no way to ask a statement for its result shape without running something,
         // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
         // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
         // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
@@ -1290,13 +1350,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
         // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
         // plans the statement and stops before materializing a row.
-        columns() {
-          return query(
-            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`,
-          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
-        },
-      };
-    },
     // No behavioural method body lives here, deliberately (ADR-0037). Eleven used to: the upsert
     // form, the auth and File metadata storage bootstraps, the catalog queries behind the three
     // inspection methods, the app-table DDL, the OAuth state consume, and two await-shims. Each is
@@ -1309,26 +1362,30 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
-      return await runExclusiveTransaction(async () => {
-        await adapter.exec("BEGIN");
+      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
+      return await runConnectionOperation(async () => {
+        await rawQuery("BEGIN");
         try {
-          const result = await fn(createTransactionScopedAdapter(adapter));
-          await adapter.exec("COMMIT");
+          const result = await runConnectionOperation.asOwner(() =>
+            fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly))),
+          );
+          await rawQuery("COMMIT");
           return result;
         } catch (error) {
           try {
-            await adapter.exec("ROLLBACK");
+            await rawQuery("ROLLBACK");
           } catch { }
           throw error;
         }
       });
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      return await runExclusiveTransaction(async () => {
-        const transactionAdapter = createTransactionScopedAdapter(adapter);
-        await adapter.exec("BEGIN TRANSACTION READ ONLY");
-        try { const result = await fn(transactionAdapter); await adapter.exec("COMMIT"); return result; }
-        catch (error) { try { await adapter.exec("ROLLBACK"); } catch {} throw error; }
+      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
+      return await runConnectionOperation(async () => {
+        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+        await rawQuery("BEGIN TRANSACTION READ ONLY");
+        try { const result = await runConnectionOperation.asOwner(() => fn(transactionAdapter)); await rawQuery("COMMIT"); return result; }
+        catch (error) { try { await rawQuery("ROLLBACK"); } catch {} throw error; }
       });
     },
     async close() {

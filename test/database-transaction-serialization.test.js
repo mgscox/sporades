@@ -27,6 +27,56 @@ async function assertNestedTransactionModesRejectPromptly(adapter) {
   }
 }
 
+async function assertPublicOperationsWaitForTransactionOwner(adapter, prefix) {
+  const rowsTable = `${prefix}_rows`;
+  await adapter.exec(`CREATE TABLE ${rowsTable} (id TEXT PRIMARY KEY)`);
+  for (const outcome of ["commit", "rollback"]) {
+    const outsideTable = `${prefix}_${outcome}_outside`;
+    let releaseOwner;
+    let ownerEntered;
+    let transactionOwner;
+    const entered = new Promise((resolve) => { ownerEntered = resolve; });
+    const release = new Promise((resolve) => { releaseOwner = resolve; });
+    const transaction = adapter.withTransaction(async (owner) => {
+      transactionOwner = owner;
+      await owner.prepare(`INSERT INTO ${rowsTable} (id) VALUES (?)`).run(outcome);
+      assert.equal(Number((await owner.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).count), 1);
+      assert.equal(
+        Number((await adapter.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).count),
+        1,
+        `${outcome}: root-adapter compatibility calls made by the owner do not deadlock`,
+      );
+      ownerEntered();
+      await release;
+      if (outcome === "rollback") throw new Error("rollback owner");
+    });
+    await entered;
+
+    let outsideReadFinished = false;
+    let outsideExecFinished = false;
+    const outsideRead = Promise.resolve(adapter.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).then((row) => {
+      outsideReadFinished = true;
+      return Number(row.count);
+    });
+    const outsideExec = Promise.resolve(adapter.exec(`CREATE TABLE ${outsideTable} (id TEXT PRIMARY KEY)`)).then(() => {
+      outsideExecFinished = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(outsideReadFinished, false, `${outcome}: a public read waits outside the active transaction`);
+    assert.equal(outsideExecFinished, false, `${outcome}: a public exec waits outside the active transaction`);
+    assert.equal(
+      Number((await transactionOwner.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).count),
+      1,
+      `${outcome}: the transaction owner continues while public operations wait`,
+    );
+    releaseOwner();
+    if (outcome === "rollback") await assert.rejects(transaction, /rollback owner/);
+    else await transaction;
+    assert.equal(await outsideRead, outcome === "commit" ? 1 : 0);
+    await outsideExec;
+  }
+}
+
 test("a single connection does not begin a second transaction until the first has completed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-serialization-"));
   try {
@@ -72,5 +122,30 @@ test("Postgres transaction callbacks reject nested transaction modes without dea
 }, async () => {
   await withPostgresAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
+  });
+});
+
+test("SQLite keeps public operations outside a transaction while owner operations proceed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-transaction-owner-sqlite-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  try {
+    await assertPublicOperationsWaitForTransactionOwner(adapter, "ticket04_sqlite_gate");
+  } finally {
+    adapter.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Postgres keeps public operations outside a transaction while owner operations proceed", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await assertPublicOperationsWaitForTransactionOwner(adapter, "ticket04_postgres_gate");
+  }, {
+    appTableNames: [
+      "ticket04_postgres_gate_rows",
+      "ticket04_postgres_gate_commit_outside",
+      "ticket04_postgres_gate_rollback_outside",
+    ],
   });
 });

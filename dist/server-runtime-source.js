@@ -41,6 +41,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
+const mutationResultsWithWrites = new WeakSet();
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
 // and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
@@ -1684,9 +1685,35 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         throw error;
     }
 }
-function createTransactionDatabase(database, transactionAdapter) {
+function createWriteTrackingAdapter(transactionAdapter, writeState) {
+    return new Proxy(transactionAdapter, {
+        get(target, property, receiver) {
+            if (property === "prepare") {
+                return (sql) => {
+                    const statement = Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]);
+                    return Object.assign(Object.create(statement), {
+                        run(...params) {
+                            const result = Reflect.apply(statement.run, statement, params);
+                            return thenIfPromise(result, (writeResult) => {
+                                if (Number(writeResult?.changes ?? 0) > 0)
+                                    writeState.didWrite = true;
+                                return writeResult;
+                            });
+                        },
+                    });
+                };
+            }
+            if (property === "exec") {
+                return (sql) => thenIfPromise(Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]), (result) => { writeState.didWrite = true; return result; });
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+}
+function createTransactionDatabase(database, transactionAdapter, writeState) {
+    const adapter = writeState ? createWriteTrackingAdapter(transactionAdapter, writeState) : transactionAdapter;
     return transactionAdapter
-        ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }
+        ? { ...database, adapter, sqlite: adapter, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }
         : database;
 }
 async function readEndpointRequest(database, requestUrl, request) {
@@ -2982,7 +3009,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const mutationName = message.mutation ?? message.name;
             const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
             sendJson(client, formatMutationResult(message, mutationName, result));
-            if (result.ok) {
+            if (result.ok && mutationResultsWithWrites.has(result)) {
                 setTimeout(() => {
                     for (const subscribedClient of clients) {
                         for (const subscription of subscribedClient.subscriptions.values()) {
@@ -3462,9 +3489,10 @@ function normalizeQueryArgumentValue(value, ancestors) {
 export async function runMutation(database, auth, mutationName, args) {
     let context;
     let result;
+    const writeState = { didWrite: false };
     try {
         const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
-            const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+            const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
             for (const hookSource of database.mutationHooks.beforeMutation) {
                 await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
@@ -3485,7 +3513,12 @@ export async function runMutation(database, auth, mutationName, args) {
             return result;
         });
         flushTeamSecurityEvents(database, context);
-        await flushPendingJobEnqueues(context);
+        if (await flushPendingJobEnqueues(context))
+            writeState.didWrite = true;
+        if (writeState.didWrite) {
+            database.rowCache.clear();
+            mutationResultsWithWrites.add(committed);
+        }
         return committed;
     }
     catch (error) {
@@ -3516,7 +3549,6 @@ async function runCustomMutation(database, context, mutationName, args) {
     }
     finally {
         await drainPendingAclWrites(context);
-        database.rowCache.clear();
     }
     if (result !== undefined) {
         assertJsonCompatible(result);
@@ -3850,13 +3882,17 @@ function createPrivilegedJobApi(database, contextGetter) {
 }
 async function flushPendingJobEnqueues(context) {
     if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed)
-        return;
+        return false;
     context.__pendingJobsFlushed = true;
     const queueDatabase = context.__jobQueueDatabase;
+    let didWrite = false;
     for (const row of context.__pendingJobEnqueues) {
-        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+        const result = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+        if (Number(result?.changes ?? 0) > 0)
+            didWrite = true;
     }
     scheduleCurrentUserJobWorker(queueDatabase);
+    return didWrite;
 }
 function scheduleCurrentUserJobWorker(database) {
     if (database.__jobWorkerScheduled || database.__jobWorkerRunning)
