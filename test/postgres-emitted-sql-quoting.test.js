@@ -90,8 +90,8 @@ function recordEmittedStatements(adapter, statements, passthrough = new Set()) {
           return target.runReadOnlyInspectionQuery.call(receiver, sql, ...rest);
         };
       }
-      if (property === "withTransaction") {
-        return (fn) => target.withTransaction(() => fn(receiver));
+      if (property === "withTransaction" || property === "withReadOnlySnapshot") {
+        return (fn) => target[property]((transaction) => fn(recordEmittedStatements(transaction, statements, passthrough)));
       }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(receiver) : value;

@@ -262,6 +262,7 @@ var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
+var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 
 // src/server-runtime-source.ts
 function logPayloadMaxBytes(config = {}) {

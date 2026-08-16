@@ -281,7 +281,7 @@ export function isPrivilegedAuditEmissionPublicError(error: any) {
 }
 
 export function createPrivilegedScheduleApi(database: LooseRecord, contextGetter: () => LooseRecord) {
-  const sqlite = () => (database.__rootDatabase ?? database).adapter;
+  const sqlite = () => database.adapter;
   return {
     async get(name: any) {
       assertActivePrivilegedJobAccess(contextGetter);

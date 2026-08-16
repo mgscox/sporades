@@ -177,53 +177,42 @@ const nodeFsModule = process.getBuiltinModule("node:fs");
 // A connection can queue SQL statements, but it cannot safely interleave the BEGIN/work/COMMIT
 // sequences of two callers. Adapters backed by one connection use this gate for every transaction
 // mode, preserving the transaction boundary that the runtime has already chosen (ADR-0026).
-function createConnectionOperationQueue() {
-    const { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
-    const ownership = new AsyncLocalStorage();
-    const owner = Object.freeze({});
-    let busy = false;
+function createConnectionTransactionGate() {
+    let transactionTail = Promise.resolve();
+    let transactionActive = false;
     const pending = [];
-    const advance = () => {
-        const next = pending.shift();
-        if (!next) {
-            busy = false;
-            return;
+    const drainPending = async () => {
+        while (pending.length > 0) {
+            const next = pending.shift();
+            try {
+                next.resolve(await next.operation());
+            }
+            catch (error) {
+                next.reject(error);
+            }
         }
-        execute(next.operation, next.resolve, next.reject);
     };
-    const execute = (operation, resolve, reject) => {
-        let result;
-        try {
-            result = operation();
-        }
-        catch (error) {
-            advance();
-            if (reject)
-                reject(error);
-            else
-                throw error;
-            return;
-        }
-        if (isPromiseLike(result)) {
-            return Promise.resolve(result).then((value) => { resolve?.(value); advance(); return value; }, (error) => { reject?.(error); advance(); if (!reject)
-                throw error; });
-        }
-        resolve?.(result);
-        advance();
-        return result;
-    };
-    const run = (operation) => {
-        if (ownership.getStore() === owner)
+    const runOperation = (operation) => {
+        if (!transactionActive)
             return operation();
-        if (!busy) {
-            busy = true;
-            return execute(operation);
-        }
         return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
     };
-    run.asOwner = (operation) => ownership.run(owner, operation);
-    run.isOwner = () => ownership.getStore() === owner;
-    return run;
+    const runTransaction = async (operation) => {
+        const previous = transactionTail;
+        let release = () => { };
+        transactionTail = new Promise((resolve) => { release = resolve; });
+        await previous.catch(() => { });
+        transactionActive = true;
+        try {
+            return await operation();
+        }
+        finally {
+            await drainPending();
+            transactionActive = false;
+            release();
+        }
+    };
+    return { runOperation, runTransaction };
 }
 async function rejectNestedTransactionScope() {
     throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
@@ -234,6 +223,7 @@ function createTransactionScopedAdapter(adapter, operations = {}) {
         withReadOnlySnapshot: rejectNestedTransactionScope,
     });
 }
+const transactionOperations = Symbol.for("sporades.database.transactionOperations");
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
     if (config.services?.database?.engine === "libsql" &&
         serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
@@ -884,7 +874,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         nodeFsModule.mkdirSync(path.dirname(String(databasePath)), { recursive: true });
     const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
     const dialect = sqliteDatabaseDialect();
-    const runConnectionOperation = createConnectionOperationQueue();
+    const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
     const createOperations = (run) => ({
         exec(sql) {
@@ -911,58 +901,60 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     // below its own name is a connection, statement primitives and transaction session mechanics.
     const adapter = {
         ...createSharedDatabaseAdapterMethods(dialect),
-        ...createOperations(runConnectionOperation),
+        ...createOperations(connectionGate.runOperation),
         engine: "sqlite",
         dialect,
         normalization: sqliteRowNormalization(),
         async withTransaction(fn) {
-            if (runConnectionOperation.isOwner())
-                return await rejectNestedTransactionScope();
-            return await runConnectionOperation(async () => {
-                return await runConnectionOperation.asOwner(async () => {
-                    await this.exec("BEGIN");
-                    try {
-                        const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
-                        const result = await fn(createTransactionScopedAdapter(this, ownerOperations));
-                        await this.exec("COMMIT");
-                        return result;
-                    }
-                    catch (error) {
-                        await this.exec("ROLLBACK");
-                        throw error;
-                    }
-                });
+            return await connectionGate.runTransaction(async () => {
+                const ownerOperations = typeof this[transactionOperations] === "function"
+                    ? this[transactionOperations]()
+                    : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
+                const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+                const transactionExec = ownerOperations.exec;
+                await transactionExec("BEGIN");
+                try {
+                    const result = await fn(transactionAdapter);
+                    await transactionExec("COMMIT");
+                    return result;
+                }
+                catch (error) {
+                    await transactionExec("ROLLBACK");
+                    throw error;
+                }
             });
         },
         async withReadOnlySnapshot(fn) {
-            if (runConnectionOperation.isOwner())
-                return await rejectNestedTransactionScope();
-            return await runConnectionOperation(async () => {
-                return await runConnectionOperation.asOwner(async () => {
-                    const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
-                    const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
-                    await this.exec("BEGIN");
-                    await this.exec("PRAGMA query_only = ON");
-                    try {
-                        const result = await fn(transactionAdapter);
-                        await this.exec("COMMIT");
-                        return result;
-                    }
-                    catch (error) {
-                        await this.exec("ROLLBACK");
-                        throw error;
-                    }
-                    finally {
-                        if (!options.readOnly)
-                            await this.exec("PRAGMA query_only = OFF");
-                    }
-                });
+            return await connectionGate.runTransaction(async () => {
+                const ownerOperations = typeof this[transactionOperations] === "function"
+                    ? this[transactionOperations]()
+                    : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
+                const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations);
+                const transactionExec = ownerOperations.exec;
+                await transactionExec("BEGIN");
+                await transactionExec("PRAGMA query_only = ON");
+                try {
+                    const result = await fn(ownerAdapter);
+                    await transactionExec("COMMIT");
+                    return result;
+                }
+                catch (error) {
+                    await transactionExec("ROLLBACK");
+                    throw error;
+                }
+                finally {
+                    if (!options.readOnly)
+                        await transactionExec("PRAGMA query_only = OFF");
+                }
             });
         },
         close() {
             return connection.close();
         },
     };
+    Object.defineProperty(adapter, transactionOperations, {
+        value: () => createOperations(runDirectly),
+    });
     if (!options.readOnly) {
         adapter.exec("PRAGMA journal_mode = WAL");
     }
@@ -974,7 +966,7 @@ export async function createPostgresDatabaseAdapter(options) {
         throw commandError("Missing Postgres database service URL.", "Start a Dev session or local Container session with services.database.engine set to postgres.");
     }
     const client = await createPostgresConnection(url);
-    const runConnectionOperation = createConnectionOperationQueue();
+    const connectionGate = createConnectionTransactionGate();
     const runDirectly = (operation) => operation();
     let closed = false;
     const dialect = postgresDatabaseDialect();
@@ -1015,7 +1007,7 @@ export async function createPostgresDatabaseAdapter(options) {
     });
     const adapter = {
         ...createSharedDatabaseAdapterMethods(dialect),
-        ...createOperations(runConnectionOperation),
+        ...createOperations(connectionGate.runOperation),
         engine: "postgres",
         dialect,
         normalization,
@@ -1050,12 +1042,10 @@ export async function createPostgresDatabaseAdapter(options) {
         // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
         // that silently never ran ADR-0036's ordering migration.
         async withTransaction(fn) {
-            if (runConnectionOperation.isOwner())
-                return await rejectNestedTransactionScope();
-            return await runConnectionOperation(async () => {
+            return await connectionGate.runTransaction(async () => {
                 await rawQuery("BEGIN");
                 try {
-                    const result = await runConnectionOperation.asOwner(() => fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly))));
+                    const result = await fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly)));
                     await rawQuery("COMMIT");
                     return result;
                 }
@@ -1069,13 +1059,11 @@ export async function createPostgresDatabaseAdapter(options) {
             });
         },
         async withReadOnlySnapshot(fn) {
-            if (runConnectionOperation.isOwner())
-                return await rejectNestedTransactionScope();
-            return await runConnectionOperation(async () => {
+            return await connectionGate.runTransaction(async () => {
                 const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
                 await rawQuery("BEGIN TRANSACTION READ ONLY");
                 try {
-                    const result = await runConnectionOperation.asOwner(() => fn(transactionAdapter));
+                    const result = await fn(transactionAdapter);
                     await rawQuery("COMMIT");
                     return result;
                 }

@@ -41,11 +41,6 @@ async function assertPublicOperationsWaitForTransactionOwner(adapter, prefix) {
       transactionOwner = owner;
       await owner.prepare(`INSERT INTO ${rowsTable} (id) VALUES (?)`).run(outcome);
       assert.equal(Number((await owner.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).count), 1);
-      assert.equal(
-        Number((await adapter.prepare(`SELECT COUNT(*) AS count FROM ${rowsTable} WHERE id = ?`).get(outcome)).count),
-        1,
-        `${outcome}: root-adapter compatibility calls made by the owner do not deadlock`,
-      );
       ownerEntered();
       await release;
       if (outcome === "rollback") throw new Error("rollback owner");

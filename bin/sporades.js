@@ -4389,7 +4389,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   let closeResult;
   return {
     enabled: true,
-    async send(input) {
+    async send(input, deliveryLog = options.mailLog) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       const messageIdentity = `mail_${crypto.randomUUID()}`;
       const startedAt = Date.now();
@@ -4402,7 +4402,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
         };
         const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
         try {
-          await options.mailLog?.({
+          await deliveryLog?.({
             category: "mail",
             event: "mail.delivery",
             level: "info",
@@ -4425,7 +4425,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
       } catch (error) {
         const normalizedError = ownedTransportBoundary ? error : trustedTestTransportBoundary ? normalizeMailTransportError(error) : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
         try {
-          await options.mailLog?.({
+          await deliveryLog?.({
             category: "mail",
             event: "mail.delivery",
             level: "error",
@@ -5042,6 +5042,12 @@ function createMailTransport(smtp) {
           throw error;
         }
         socket = await connectSmtpSocket(smtp);
+        if (closed) {
+          const error = new Error("closed");
+          error.code = "ECONNECTION";
+          socket.destroy(error);
+          throw error;
+        }
         sockets.add(socket);
         reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";
@@ -6555,7 +6561,7 @@ function isPrivilegedAuditEmissionPublicError(error) {
   return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
 }
 function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => (database.__rootDatabase ?? database).adapter;
+  const sqlite = () => database.adapter;
   return {
     async get(name) {
       assertActivePrivilegedJobAccess(contextGetter);
@@ -12936,59 +12942,43 @@ function chainSchemaOperation(previous, operation) {
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
-function createConnectionOperationQueue() {
-  const { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
-  const ownership = new AsyncLocalStorage();
-  const owner = Object.freeze({});
-  let busy = false;
+function createConnectionTransactionGate() {
+  let transactionTail = Promise.resolve();
+  let transactionActive = false;
   const pending = [];
-  const advance = () => {
-    const next = pending.shift();
-    if (!next) {
-      busy = false;
-      return;
+  const drainPending = async () => {
+    while (pending.length > 0) {
+      const next = pending.shift();
+      try {
+        next.resolve(await next.operation());
+      } catch (error) {
+        next.reject(error);
+      }
     }
-    execute(next.operation, next.resolve, next.reject);
   };
-  const execute = (operation, resolve, reject) => {
-    let result;
-    try {
-      result = operation();
-    } catch (error) {
-      advance();
-      if (reject) reject(error);
-      else throw error;
-      return;
-    }
-    if (isPromiseLike(result)) {
-      return Promise.resolve(result).then(
-        (value) => {
-          resolve?.(value);
-          advance();
-          return value;
-        },
-        (error) => {
-          reject?.(error);
-          advance();
-          if (!reject) throw error;
-        }
-      );
-    }
-    resolve?.(result);
-    advance();
-    return result;
-  };
-  const run2 = (operation) => {
-    if (ownership.getStore() === owner) return operation();
-    if (!busy) {
-      busy = true;
-      return execute(operation);
-    }
+  const runOperation = (operation) => {
+    if (!transactionActive) return operation();
     return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));
   };
-  run2.asOwner = (operation) => ownership.run(owner, operation);
-  run2.isOwner = () => ownership.getStore() === owner;
-  return run2;
+  const runTransaction = async (operation) => {
+    const previous = transactionTail;
+    let release = () => {
+    };
+    transactionTail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => {
+    });
+    transactionActive = true;
+    try {
+      return await operation();
+    } finally {
+      await drainPending();
+      transactionActive = false;
+      release();
+    }
+  };
+  return { runOperation, runTransaction };
 }
 async function rejectNestedTransactionScope() {
   throw commandError2(
@@ -13002,6 +12992,7 @@ function createTransactionScopedAdapter(adapter, operations = {}) {
     withReadOnlySnapshot: rejectNestedTransactionScope
   });
 }
+var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
   if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
     return await createLibsqlDatabaseAdapter({
@@ -13749,7 +13740,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   if (!options.readOnly) nodeFsModule.mkdirSync(path12.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const dialect = sqliteDatabaseDialect();
-  const runConnectionOperation = createConnectionOperationQueue();
+  const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
   const createOperations = (run2) => ({
     exec(sql) {
@@ -13774,52 +13765,52 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   });
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
-    ...createOperations(runConnectionOperation),
+    ...createOperations(connectionGate.runOperation),
     engine: "sqlite",
     dialect,
     normalization: sqliteRowNormalization(),
     async withTransaction(fn) {
-      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
-      return await runConnectionOperation(async () => {
-        return await runConnectionOperation.asOwner(async () => {
-          await this.exec("BEGIN");
-          try {
-            const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
-            const result = await fn(createTransactionScopedAdapter(this, ownerOperations));
-            await this.exec("COMMIT");
-            return result;
-          } catch (error) {
-            await this.exec("ROLLBACK");
-            throw error;
-          }
-        });
+      return await connectionGate.runTransaction(async () => {
+        const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
+        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const transactionExec = ownerOperations.exec;
+        await transactionExec("BEGIN");
+        try {
+          const result = await fn(transactionAdapter);
+          await transactionExec("COMMIT");
+          return result;
+        } catch (error) {
+          await transactionExec("ROLLBACK");
+          throw error;
+        }
       });
     },
     async withReadOnlySnapshot(fn) {
-      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
-      return await runConnectionOperation(async () => {
-        return await runConnectionOperation.asOwner(async () => {
-          const ownerOperations = this === adapter ? createOperations(runDirectly) : {};
-          const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
-          await this.exec("BEGIN");
-          await this.exec("PRAGMA query_only = ON");
-          try {
-            const result = await fn(transactionAdapter);
-            await this.exec("COMMIT");
-            return result;
-          } catch (error) {
-            await this.exec("ROLLBACK");
-            throw error;
-          } finally {
-            if (!options.readOnly) await this.exec("PRAGMA query_only = OFF");
-          }
-        });
+      return await connectionGate.runTransaction(async () => {
+        const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
+        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const transactionExec = ownerOperations.exec;
+        await transactionExec("BEGIN");
+        await transactionExec("PRAGMA query_only = ON");
+        try {
+          const result = await fn(ownerAdapter);
+          await transactionExec("COMMIT");
+          return result;
+        } catch (error) {
+          await transactionExec("ROLLBACK");
+          throw error;
+        } finally {
+          if (!options.readOnly) await transactionExec("PRAGMA query_only = OFF");
+        }
       });
     },
     close() {
       return connection.close();
     }
   };
+  Object.defineProperty(adapter, transactionOperations, {
+    value: () => createOperations(runDirectly)
+  });
   if (!options.readOnly) {
     adapter.exec("PRAGMA journal_mode = WAL");
   }
@@ -13834,7 +13825,7 @@ async function createPostgresDatabaseAdapter(options) {
     );
   }
   const client = await createPostgresConnection(url);
-  const runConnectionOperation = createConnectionOperationQueue();
+  const connectionGate = createConnectionTransactionGate();
   const runDirectly = (operation) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
@@ -13877,7 +13868,7 @@ async function createPostgresDatabaseAdapter(options) {
   });
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
-    ...createOperations(runConnectionOperation),
+    ...createOperations(connectionGate.runOperation),
     engine: "postgres",
     dialect,
     normalization,
@@ -13912,13 +13903,10 @@ async function createPostgresDatabaseAdapter(options) {
     // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
     // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn) {
-      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
-      return await runConnectionOperation(async () => {
+      return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
-          const result = await runConnectionOperation.asOwner(
-            () => fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly)))
-          );
+          const result = await fn(createTransactionScopedAdapter(adapter, createOperations(runDirectly)));
           await rawQuery("COMMIT");
           return result;
         } catch (error) {
@@ -13931,12 +13919,11 @@ async function createPostgresDatabaseAdapter(options) {
       });
     },
     async withReadOnlySnapshot(fn) {
-      if (runConnectionOperation.isOwner()) return await rejectNestedTransactionScope();
-      return await runConnectionOperation(async () => {
+      return await connectionGate.runTransaction(async () => {
         const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
         await rawQuery("BEGIN TRANSACTION READ ONLY");
         try {
-          const result = await runConnectionOperation.asOwner(() => fn(transactionAdapter));
+          const result = await fn(transactionAdapter);
           await rawQuery("COMMIT");
           return result;
         } catch (error) {
@@ -15202,6 +15189,9 @@ function createRuntimeLogSink(options) {
   mkdirSync(path12.dirname(logPath), { recursive: true });
   return {
     path: logPath,
+    withDatabase(database) {
+      return createRuntimeLogSink({ ...options, database });
+    },
     emit(input) {
       const event = createLogEnvelope({
         ...input,
@@ -16152,7 +16142,27 @@ function createWriteTrackingAdapter(transactionAdapter, writeState) {
 }
 function createTransactionDatabase(database, transactionAdapter, writeState) {
   const adapter = writeState ? createWriteTrackingAdapter(transactionAdapter, writeState) : transactionAdapter;
-  return transactionAdapter ? { ...database, adapter, sqlite: adapter, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database } : database;
+  if (!transactionAdapter) return database;
+  const transactionDatabase = {
+    ...database,
+    adapter,
+    sqlite: adapter,
+    __transactionActive: true,
+    __rootDatabase: database.__rootDatabase ?? database
+  };
+  if (typeof database.log?.withDatabase === "function") {
+    transactionDatabase.log = database.log.withDatabase(adapter);
+    transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);
+  }
+  transactionDatabase.mail = Object.assign(Object.create(database.mail), {
+    send(input, deliveryLog) {
+      return database.mail.send(
+        input,
+        deliveryLog ?? ((event) => transactionDatabase.log?.emit(event))
+      );
+    }
+  });
+  return transactionDatabase;
 }
 async function readEndpointRequest(database, requestUrl, request) {
   const headers = Object.fromEntries(
@@ -16193,7 +16203,12 @@ function createEndpointContext(database, endpointRequest, session) {
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
-  context.mail = database.mail;
+  context.mail = {
+    enabled: database.mail.enabled,
+    send(input) {
+      return database.mail.send(input, (event) => database.log?.emit(event));
+    }
+  };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
@@ -17572,10 +17587,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
 }
 async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0) {
   const queueDatabase = database.__rootDatabase ?? database;
+  const jobAdapter = database.adapter;
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
-  await queueDatabase.adapter.prepare(
-    queueDatabase.adapter.dialect.sql(
+  await jobAdapter.prepare(
+    jobAdapter.dialect.sql(
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
@@ -18041,7 +18057,12 @@ function createMutationContext(database, auth) {
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
-  context.mail = database.mail;
+  context.mail = {
+    enabled: database.mail.enabled,
+    send(input) {
+      return database.mail.send(input, (event) => database.log?.emit(event));
+    }
+  };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
@@ -18084,6 +18105,7 @@ function createCurrentUserJobApi(database, contextGetter) {
     async enqueue(handlerName, payload, options = {}) {
       const context = contextGetter();
       const queueDatabase = database.__rootDatabase ?? database;
+      const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
       const handler = database.jobs?.find((candidate) => candidate.name === handlerName);
       if (!handler) {
@@ -18098,7 +18120,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) {
           assertJobScheduleProvenance(existing, scheduleProvenance);
           return jobState(existing, true);
@@ -18125,10 +18147,10 @@ function createCurrentUserJobApi(database, contextGetter) {
         return jobState(row, true);
       }
       try {
-        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) {
             assertJobScheduleProvenance(existing, scheduleProvenance);
             return jobState(existing, true);
@@ -18137,16 +18159,16 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw error;
       }
       scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
+      return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id) {
       const context = contextGetter();
-      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const jobAdapter = database.adapter;
       const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async cancel(id) {
-      return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id);
+      return await cancelJob(database, contextGetter(), id);
     },
     async list(options = {}) {
       const context = contextGetter();
@@ -18154,8 +18176,8 @@ function createCurrentUserJobApi(database, contextGetter) {
       const limit = options.limit === void 0 ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const queueDatabase = database.__rootDatabase ?? database;
-      const sql = queueDatabase.adapter.dialect.sql;
+      const jobAdapter = database.adapter;
+      const sql = jobAdapter.dialect.sql;
       const clauses = ["[actorUserId] = ?"];
       const params = [context.auth.userId];
       if (options.status) {
@@ -18178,7 +18200,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await queueDatabase.adapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
+      const rows = await jobAdapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     }
@@ -18193,7 +18215,7 @@ function createPrivilegedJobApi(database, contextGetter) {
     },
     async get(id) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const jobAdapter = database.adapter;
       const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id);
       return row ? jobState(row, true) : null;
     },
@@ -18203,7 +18225,7 @@ function createPrivilegedJobApi(database, contextGetter) {
       const limit = options.limit === void 0 ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const sqlite = (database.__rootDatabase ?? database).adapter;
+      const sqlite = database.adapter;
       const sql = sqlite.dialect.sql;
       const clauses = [];
       const params = [];
@@ -18233,7 +18255,7 @@ function createPrivilegedJobApi(database, contextGetter) {
     },
     async cancel(id) {
       assertActivePrivilegedJobAccess(contextGetter);
-      return await cancelJob(database.__rootDatabase ?? database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id);
+      return await cancelJob(database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id);
     }
   };
 }

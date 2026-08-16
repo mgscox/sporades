@@ -714,11 +714,15 @@ test("file upload completion cleans written replacement bytes when metadata comp
       assert.equal(pendingReplacement.ok, true, pendingReplacement.error?.message);
       const replacement = pendingReplacement.data.file;
       const replacementUploadId = pendingReplacement.data.uploadUrl.split("/").pop();
-      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
-      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
-        await realRevokePublicFileUrlsForFile(...args);
-        throw new Error("forced public URL revocation failure");
-      };
+      const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+      database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+        const realRevokePublicFileUrlsForFile = transaction.revokePublicFileUrlsForFile.bind(transaction);
+        transaction.revokePublicFileUrlsForFile = async (...args) => {
+          await realRevokePublicFileUrlsForFile(...args);
+          throw new Error("forced public URL revocation failure");
+        };
+        return await callback(transaction);
+      });
 
       const failed = await completePendingFileUpload(database, replacementUploadId, Readable.from([Buffer.from("replacement")]));
       assert.equal(failed.ok, false);
@@ -743,11 +747,15 @@ test("pending upload creation rolls back File bucket setup when upload insertion
       files: { storagePath: path.join(dir, "files") },
     });
     const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
-    const realInsertFileUpload = database.adapter.insertFileUpload.bind(database.adapter);
-    database.adapter.insertFileUpload = async (...args) => {
-      await realInsertFileUpload(...args);
-      throw new Error("forced pending upload insert failure");
-    };
+    const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+      const realInsertFileUpload = transaction.insertFileUpload.bind(transaction);
+      transaction.insertFileUpload = async (...args) => {
+        await realInsertFileUpload(...args);
+        throw new Error("forced pending upload insert failure");
+      };
+      return await callback(transaction);
+    });
 
     try {
       await assert.rejects(
@@ -786,11 +794,15 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
       );
       const publicUrl = await createPublicFileUrl(database, auth, file.id, { noExpiry: true });
       assert.equal(publicUrl.ok, true, publicUrl.error?.message);
-      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
-      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
-        await realRevokePublicFileUrlsForFile(...args);
-        throw new Error("forced public URL revocation failure");
-      };
+      const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+      database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+        const realRevokePublicFileUrlsForFile = transaction.revokePublicFileUrlsForFile.bind(transaction);
+        transaction.revokePublicFileUrlsForFile = async (...args) => {
+          await realRevokePublicFileUrlsForFile(...args);
+          throw new Error("forced public URL revocation failure");
+        };
+        return await callback(transaction);
+      });
 
       await assert.rejects(deletePrivateFile(database, auth, file.id), /forced public URL revocation failure/);
 

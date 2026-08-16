@@ -115,7 +115,7 @@ export function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, option
   let closeResult: any;
   return {
     enabled: true,
-    async send(input: any) {
+    async send(input: any, deliveryLog: any = options.mailLog) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       const messageIdentity = `mail_${crypto.randomUUID()}`;
       const startedAt = Date.now();
@@ -128,7 +128,7 @@ export function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, option
         };
         const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
         try {
-          await options.mailLog?.({
+          await deliveryLog?.({
             category: "mail",
             event: "mail.delivery",
             level: "info",
@@ -160,7 +160,7 @@ export function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, option
             ? normalizeMailTransportError(error)
             : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
         try {
-          await options.mailLog?.({
+          await deliveryLog?.({
             category: "mail",
             event: "mail.delivery",
             level: "error",
@@ -828,6 +828,12 @@ export function createMailTransport(smtp: any) {
           throw error;
         }
         socket = await connectSmtpSocket(smtp);
+        if (closed) {
+          const error: any = new Error("closed");
+          error.code = "ECONNECTION";
+          socket.destroy(error);
+          throw error;
+        }
         sockets.add(socket);
         reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";

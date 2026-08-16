@@ -29,6 +29,7 @@ export declare function createRuntimeLogSink(options: {
     dataDir: any;
 }): {
     path: any;
+    withDatabase(database: LooseRecord): /*elided*/ any;
     emit(input: any): any;
     recent(limit?: number): any;
     tail(limit?: number): any[];
