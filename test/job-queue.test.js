@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,10 +7,71 @@ import { test } from "node:test";
 
 import { createControllableRuntimeClock, openDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { String, job, mutation, table } from "../dist/server.js";
+import { POSTGRES_SKIP_REASON, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 }
+
+test("concurrent Postgres mutations converge one idempotent Job inside their handler transactions", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-postgres-race-"));
+  const appTableName = "ticket04_postgres_job_race_writes";
+  const definition = {
+    schema: { [appTableName]: table({ mutationId: String() }) },
+    jobs: { record: job((_ctx, payload) => payload) },
+    mutations: {
+      enqueueSame: mutation(async (ctx, mutationId) => {
+        await ctx.db[appTableName].insert({ mutationId });
+        const queued = await ctx.jobs.enqueue("record", { mutationId }, {
+          idempotencyKey: "shared-postgres-race",
+          availableAt: "2999-01-01T00:00:00.000Z",
+        });
+        return { jobId: queued.id };
+      }),
+      inspectRace: mutation(async (ctx) => ({
+        writes: await ctx.db[appTableName].all(),
+        jobs: (await ctx.jobs.list({ handler: "record" })).jobs,
+      })),
+    },
+  };
+  const config = { name: "job-postgres-race", services: { database: { engine: "postgres" } } };
+  const env = {
+    SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+    SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+  };
+  let firstDatabase;
+  let secondDatabase;
+  try {
+    await withPostgresAdapter(async () => {}, { appTableNames: [appTableName] });
+    const initializer = await openDevDatabase(path.join(dir, "initializer.db"), "", env, config, definition, {
+      clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z"),
+    });
+    await initializer.close();
+    firstDatabase = await openDevDatabase(path.join(dir, "first.db"), "", env, config, definition, {
+      clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z"),
+    });
+    secondDatabase = await openDevDatabase(path.join(dir, "second.db"), "", env, config, definition, {
+      clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z"),
+    });
+    const actor = auth(`postgres-job-${randomUUID()}`);
+    const [first, second] = await Promise.all([
+      runMutation(firstDatabase, actor, "enqueueSame", ["first"]),
+      runMutation(secondDatabase, actor, "enqueueSame", ["second"]),
+    ]);
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.equal(first.data.jobId, second.data.jobId);
+    const inspection = await runMutation(firstDatabase, actor, "inspectRace", []);
+    assert.deepEqual(inspection.data.writes.map((row) => row.mutationId).sort(), ["first", "second"]);
+    assert.equal(inspection.data.jobs.length, 1);
+    assert.equal(inspection.data.jobs[0].id, first.data.jobId);
+  } finally {
+    await Promise.all([firstDatabase?.close(), secondDatabase?.close()]);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("a failed mutation drops deferred Job enqueues with its rolled-back data", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-mutation-rollback-"));
@@ -42,6 +104,79 @@ test("a failed mutation drops deferred Job enqueues with its rolled-back data", 
   }
 });
 
+test("multiple Job enqueues cannot partially persist when a later enqueue fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-multiple-rollback-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-multiple-rollback" }, {
+    jobs: { record: job((_ctx, payload) => payload) },
+    mutations: {
+      enqueueTwice: mutation(async (ctx) => {
+        await ctx.jobs.enqueue("record", { sequence: 1 });
+        await ctx.jobs.enqueue("record", { sequence: 2 });
+        return true;
+      }),
+      inspectJobs: mutation(async (ctx) => (await ctx.jobs.list({ handler: "record" })).jobs),
+    },
+  });
+  try {
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      configurable: true,
+      value: () => "00000000-0000-4000-8000-000000000004",
+    });
+    const failed = await runMutation(database, auth("rollback-user"), "enqueueTwice", []);
+    assert.equal(failed.ok, false);
+    delete globalThis.crypto.randomUUID;
+    const jobs = await runMutation(database, auth("rollback-user"), "inspectJobs", []);
+    assert.deepEqual(jobs.data, []);
+  } finally {
+    delete globalThis.crypto.randomUUID;
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a post-commit dispatch failure does not misreport committed handler work and can be retried", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-dispatch-retry-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-dispatch-retry" }, {
+    schema: { effects: table({ source: String() }) },
+    jobs: { record: job((_ctx, payload) => payload) },
+    mutations: {
+      enqueue: mutation(async (ctx, source) => {
+        await ctx.db.effects.insert({ source });
+        return await ctx.jobs.enqueue("record", { source }, { idempotencyKey: source });
+      }),
+      inspect: mutation(async (ctx) => ({
+        effects: await ctx.db.effects.all(),
+        jobs: (await ctx.jobs.list({ handler: "record" })).jobs,
+      })),
+    },
+  });
+  database.adapter.prepare(
+    "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run("dispatch-user", new Date().toISOString(), "Dispatch User", null, null, 0, 1, "anonymous");
+  const setTimer = database.clock.setTimer.bind(database.clock);
+  let failNextDispatch = true;
+  database.clock.setTimer = (callback, delay) => {
+    if (failNextDispatch) {
+      failNextDispatch = false;
+      throw new Error("dispatch timer unavailable");
+    }
+    return setTimer(callback, delay);
+  };
+  try {
+    const first = await runMutation(database, auth("dispatch-user"), "enqueue", ["first"]);
+    assert.equal(first.ok, true);
+    const second = await runMutation(database, auth("dispatch-user"), "enqueue", ["second"]);
+    assert.equal(second.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const inspection = await runMutation(database, auth("dispatch-user"), "inspect", []);
+    assert.deepEqual(inspection.data.effects.map((row) => row.source).sort(), ["first", "second"]);
+    assert.deepEqual(inspection.data.jobs.map((row) => row.status).sort(), ["succeeded", "succeeded"]);
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failed message drops deferred Job enqueues with its rolled-back data", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-message-rollback-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-message-rollback" }, {
@@ -65,6 +200,44 @@ test("a failed message drops deferred Job enqueues with its rolled-back data", a
     }];
     const failed = await runAppMessage(database, auth("rollback-user"), "failAfterEnqueue", null);
     assert.match(failed.error.message, /message failed after enqueue/);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const inspection = await runMutation(database, auth("rollback-user"), "inspectRollback", []);
+    assert.deepEqual(inspection.data, { effects: [], jobs: [] });
+    const audit = await database.adapter.readRecentLogEvents(50);
+    assert.equal(audit.some((event) => event.data?.operation === "jobs.execute"), false);
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed endpoint rolls back its Job enqueue with its handler data", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-endpoint-rollback-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-endpoint-rollback" }, {
+    schema: { effects: table({ source: String() }) },
+    jobs: { shouldNotRun: job((_ctx, payload) => payload) },
+    mutations: {
+      inspectRollback: mutation(async (ctx) => ({
+        effects: await ctx.db.effects.all(),
+        jobs: (await ctx.jobs.list({ handler: "shouldNotRun" })).jobs,
+      })),
+    },
+  });
+  try {
+    await assert.rejects(
+      runEndpoint(database, {
+        handlerSource: `async (ctx) => {
+          await ctx.db.effects.insert({ source: "endpoint" });
+          await ctx.jobs.enqueue("shouldNotRun", { source: "endpoint" });
+          throw new Error("endpoint failed after enqueue");
+        }`,
+      }, new URL("http://capsule.test/failing-job"), {
+        method: "POST",
+        headers: {},
+        async *[Symbol.asyncIterator]() {},
+      }),
+      /endpoint failed after enqueue/,
+    );
     await new Promise((resolve) => setTimeout(resolve, 25));
     const inspection = await runMutation(database, auth("rollback-user"), "inspectRollback", []);
     assert.deepEqual(inspection.data, { effects: [], jobs: [] });

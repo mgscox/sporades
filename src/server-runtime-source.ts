@@ -1885,11 +1885,11 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     });
     flushTeamSecurityEvents(database, context);
-    await flushPendingJobEnqueues(context);
+    await dispatchPendingJobs(context);
     return result;
   } catch (error) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    dropPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     throw error;
   }
 }
@@ -3835,7 +3835,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       return result;
     });
     flushTeamSecurityEvents(database, context);
-    if (await flushPendingJobEnqueues(context)) writeState.didWrite = true;
+    await dispatchPendingJobs(context);
     if (writeState.didWrite) {
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
@@ -3843,7 +3843,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     return committed;
   } catch (error: any) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    dropPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.sporadesAclDenialLogData) {
@@ -3938,11 +3938,11 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       return { data: result ?? null, error: null as any };
     });
     flushTeamSecurityEvents(database, context);
-    await flushPendingJobEnqueues(context);
+    await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    dropPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -4091,10 +4091,6 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (idempotencyKey) {
         const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
-        const pending = (context.__jobParentContext ?? context).__pendingJobEnqueues?.find((candidate: any) =>
-          candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
-        );
-        if (pending) { assertJobScheduleProvenance(pending, scheduleProvenance); return jobState(pending, true); }
       }
       const id = crypto.randomUUID();
       const now = queueDatabase.clock.now().toISOString();
@@ -4102,21 +4098,31 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
       const retry = normalizeJobRetry(options.retry);
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
-      if (database.__transactionActive) {
-        const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobEnqueues ??= [];
-        pendingContext.__jobQueueDatabase = queueDatabase;
-        pendingContext.__pendingJobEnqueues.push(row);
-        return jobState(row, true);
-      }
+      // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
+      // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
+      // misreport handler work that is already durable.
       try {
-        await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
+          (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""),
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
+          const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+          if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
+          throw jobError("JOB_ENQUEUE_CONFLICT", "Could not resolve the existing idempotent Job.", "Retry the Job enqueue.");
+        }
       } catch (error: any) {
         if (idempotencyKey) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         }
         throw error;
+      }
+      if (database.__transactionActive) {
+        const pendingContext = context.__jobParentContext ?? context;
+        pendingContext.__pendingJobDispatch = true;
+        pendingContext.__jobQueueDatabase = queueDatabase;
+        return jobState(row, true);
       }
       scheduleCurrentUserJobWorker(queueDatabase);
       return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
@@ -4168,22 +4174,18 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
     async cancel(id: any) { assertActivePrivilegedJobAccess(contextGetter); return await cancelJob(database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id); },
   };
 }
-async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
-  if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return false;
+async function dispatchPendingJobs(context: LooseRecord | undefined) {
+  if (!context?.__pendingJobDispatch || context.__pendingJobsFlushed) return false;
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
-  let didWrite = false;
-  for (const row of context.__pendingJobEnqueues) {
-    const result = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
-    if (Number(result?.changes ?? 0) > 0) didWrite = true;
-  }
-  scheduleCurrentUserJobWorker(queueDatabase);
-  return didWrite;
+  context.__pendingJobDispatch = false;
+  try { scheduleCurrentUserJobWorker(queueDatabase); } catch {}
+  return false;
 }
 
-function dropPendingJobEnqueues(context: LooseRecord | undefined) {
+function dropPendingJobDispatch(context: LooseRecord | undefined) {
   if (!context) return;
-  context.__pendingJobEnqueues = [];
+  context.__pendingJobDispatch = false;
   context.__pendingJobsFlushed = true;
   delete context.__jobQueueDatabase;
 }
@@ -4191,10 +4193,14 @@ function dropPendingJobEnqueues(context: LooseRecord | undefined) {
 function scheduleCurrentUserJobWorker(database: LooseRecord) {
   if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
   database.__jobWorkerScheduled = true;
-  database.clock.setTimer(async () => {
+  try {
+    database.clock.setTimer(async () => {
+      database.__jobWorkerScheduled = false;
+      await runCurrentUserJobWorker(database);
+    }, 0);
+  } catch {
     database.__jobWorkerScheduled = false;
-    await runCurrentUserJobWorker(database);
-  }, 0);
+  }
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
