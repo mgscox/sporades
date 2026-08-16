@@ -238,8 +238,8 @@ winning call, or `null` when that named constraint already has a winner:
 subscriptions: table({ teamId: String(), plan: String() }).unique("teamId"),
 
 // Inside a mutation:
-const inserted = ctx.db.subscriptions.insertOrIgnore({ teamId, plan: "pro" }, "teamId");
-return inserted ?? ctx.db.subscriptions.where("teamId", teamId).get();
+const inserted = await ctx.db.subscriptions.insertOrIgnore({ teamId, plan: "pro" }, "teamId");
+return inserted ?? await ctx.db.subscriptions.where("teamId", teamId).get();
 ```
 
 The conflict fields must exactly equal one declared constraint; partial,

@@ -109,6 +109,18 @@ test("the feature reference is split by lookup intent behind a compatible index"
   assert.match(operations, /Sporades Doctor/);
 });
 
+test("the idempotent insert example awaits both asynchronous database paths", async () => {
+  const server = await readProjectFile("docs/reference/server-runtime.md");
+  assert.match(
+    server,
+    /const inserted = await ctx\.db\.subscriptions\.insertOrIgnore\(\{ teamId, plan: "pro" \}, "teamId"\);/,
+  );
+  assert.match(
+    server,
+    /return inserted \?\? await ctx\.db\.subscriptions\.where\("teamId", teamId\)\.get\(\);/,
+  );
+});
+
 test("README documentation links resolve from the npm package page", async () => {
   const readme = await readProjectFile("README.md");
   assert.doesNotMatch(readme, /\]\(docs\/[A-Za-z0-9_./-]+\.md(?:#[^)]+)?\)/);
