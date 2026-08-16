@@ -91,7 +91,11 @@ function recordEmittedStatements(adapter, statements, passthrough = new Set()) {
         };
       }
       if (property === "withTransaction" || property === "withReadOnlySnapshot") {
-        return (fn) => target[property]((transaction) => fn(recordEmittedStatements(transaction, statements, passthrough)));
+        // Capture the current primitive before a conformance case temporarily wraps it on the
+        // recording proxy. Looking it up at invocation time can resolve that wrapper again and
+        // recurse instead of entering the real transaction.
+        const transactionPrimitive = target[property];
+        return (fn) => transactionPrimitive.call(target, (transaction) => fn(recordEmittedStatements(transaction, statements, passthrough)));
       }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(receiver) : value;
