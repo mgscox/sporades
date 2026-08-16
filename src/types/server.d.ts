@@ -447,6 +447,21 @@ export type CurrentUserTeamsApi = {
   delete(teamId: string): Promise<{ deleted: true }>;
 };
 
+/**
+ * Read-only exact-Team inspection available only inside an active Privileged
+ * callback. It carries no current-user membership or administration authority.
+ */
+export type PrivilegedTeamsApi = {
+  /** Returns the exact accepted-membership total for an existing Team. */
+  countMembers(teamId: string): Promise<TeamMemberCountResult>;
+  /** Lists the existing safe member projection for an existing Team. */
+  listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
+  /** Lists active safe Join-link metadata without recovering a capability. */
+  listJoinLinks(teamId: string): Promise<{ links: TeamJoinLink[] }>;
+  /** Safely inspects a Join link without authentication or consumption. */
+  inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
+};
+
 /** Copy overrides for the built-in password reset message. */
 export type PasswordResetMailOptions = {
   subject?: string;
@@ -564,6 +579,7 @@ export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition
   files: PrivilegedFileApi;
   jobs: JobApi;
   schedules: ScheduleInspectionApi;
+  teams: PrivilegedTeamsApi;
 };
 
 /**

@@ -69,6 +69,29 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         deleted: boolean;
     }>;
 };
+/**
+ * The Privileged server role is userless: it can inspect exact Team state, but
+ * never acquires current-user membership or administrative authority. Keep
+ * this a separate projection rather than reusing the current-user API, whose
+ * methods mix inspections with user-scoped and mutating operations.
+ */
+export declare function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    countMembers(teamId: any): Promise<any>;
+    listMembers(teamId: any, options?: LooseRecord): Promise<any>;
+    listJoinLinks(teamId: any): Promise<any>;
+    inspectJoinLink(code: any): Promise<{
+        team: null;
+        expiresAt: null;
+        usable: boolean;
+    } | {
+        team: {
+            id: string;
+            name: string;
+        };
+        expiresAt: string;
+        usable: boolean;
+    }>;
+}>;
 export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     path: string;
     origin: string;

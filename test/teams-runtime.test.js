@@ -916,21 +916,110 @@ test("a committed Join redemption retains its same-user retry outcome after runt
   }
 });
 
-test("Privileged callbacks do not inherit current-user Teams", async () => {
+test("Privileged callbacks expose only safe Team inspections during their active audited lifetime", async () => {
   await withDatabase(async (databasePath) => {
-    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged" }, {
+    let team;
+    let joinCode;
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged", auth: { providers: { anonymous: true, email: true } } }, {
       name: "teams-privileged",
       schema: {},
       mutations: {
         probe: mutation((ctx) => ctx.privileged.run(
           { operation: "teams.probe", targetResourceKind: "capsule-db" },
-          (privileged) => Object.hasOwn(privileged, "teams"),
+          async (privileged) => {
+            return {
+              count: await privileged.teams.countMembers(team.id),
+              members: await privileged.teams.listMembers(team.id),
+              links: await privileged.teams.listJoinLinks(team.id),
+              inspection: await privileged.teams.inspectJoinLink(joinCode),
+              invalidInspection: await privileged.teams.inspectJoinLink("not-a-capability"),
+              unavailable: Object.keys(privileged.teams).sort(),
+            };
+          },
         )),
       },
     });
     try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-owner@example.com", password: "password-123", name: "Owner" });
+      const member = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-member@example.com", password: "password-123", name: "Member" });
+      team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      await database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(team.id, member.auth.userId, new Date().toISOString());
+      const issued = await createTeamJoinLink(database, owner.auth, team.id, "invitee@example.com", { ttlSeconds: 300 });
+      joinCode = new URL(issued.link).searchParams.get("code");
       const result = await runMutation(database, linkedAuth("user-one"), "probe", []);
-      assert.deepEqual(result, { ok: true, data: false, error: null });
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.data.count, { totalCount: 2 });
+      assert.deepEqual(result.data.members.members.map((member) => ({ displayName: member.displayName, role: member.role })), [
+        { displayName: "Owner", role: "admin" },
+        { displayName: "Member", role: "member" },
+      ]);
+      assert.equal(result.data.members.totalCount, 2);
+      assert.deepEqual(result.data.links.links.map((link) => ({ email: link.email, id: link.id, createdAt: link.createdAt, expiresAt: link.expiresAt })), [{
+        email: "invitee@example.com", id: result.data.links.links[0].id, createdAt: result.data.links.links[0].createdAt, expiresAt: result.data.links.links[0].expiresAt,
+      }]);
+      assert.deepEqual(result.data.inspection.team, { id: team.id, name: "My Team" });
+      assert.equal(result.data.inspection.usable, true);
+      assert.deepEqual(result.data.invalidInspection, { team: null, expiresAt: null, usable: false });
+      assert.deepEqual(result.data.unavailable, ["countMembers", "inspectJoinLink", "listJoinLinks", "listMembers"]);
+      assert.doesNotMatch(JSON.stringify(result.data), /v1\.|privileged-owner@example\.com|password-123/i);
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("Privileged Team inspection fails closed for absent Teams, aborts, and retained callbacks", async () => {
+  await withDatabase(async (databasePath) => {
+    let team;
+    let retainedTeams;
+    const abortController = new AbortController();
+    const database = await openDevDatabase(databasePath, "", {}, { name: "teams-privileged-lifecycle", auth: { providers: { anonymous: true, email: true } } }, {
+      name: "teams-privileged-lifecycle",
+      schema: {},
+      mutations: {
+        absent: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.absent", targetResourceKind: "team" },
+          async (privileged) => {
+            retainedTeams = privileged.teams;
+            try { await privileged.teams.countMembers("00000000-0000-4000-8000-000000000000"); }
+            catch (error) { return error.code; }
+          },
+        )),
+        deleted: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.deleted", targetResourceKind: "team" },
+          async (privileged) => {
+            try { await privileged.teams.listMembers(team.id); }
+            catch (error) { return error.code; }
+          },
+        )),
+        aborted: mutation((ctx) => ctx.privileged.run(
+          { operation: "teams.aborted", targetResourceKind: "team", signal: abortController.signal },
+          async (privileged) => {
+            abortController.abort();
+            return privileged.teams.inspectJoinLink("not-a-capability");
+          },
+        )),
+      },
+    });
+    try {
+      const owner = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", { email: "privileged-lifecycle@example.com", password: "password-123", name: "Owner" });
+      team = (await listCurrentUserTeams(database, owner.auth)).teams[0];
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "absent", []), { ok: true, data: "TEAM_NOT_FOUND", error: null });
+      await deleteCurrentUserTeam(database, owner.auth, team.id);
+      assert.deepEqual(await runMutation(database, linkedAuth("unrelated-user"), "deleted", []), { ok: true, data: "TEAM_NOT_FOUND", error: null });
+      const aborted = await runMutation(database, linkedAuth("unrelated-user"), "aborted", []);
+      assert.equal(aborted.ok, false);
+      assert.equal(aborted.error.code, "PRIVILEGED_RUN_FAILED");
+      await assert.rejects(
+        () => retainedTeams.countMembers(team.id),
+        (error) => error?.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE",
+      );
+      const audits = (await database.log.tail(20)).filter((event) => event.category === "audit" && event.data?.schema === "sporades.privileged-audit.v1" && `${event.data?.operation ?? ""}`.startsWith("teams."));
+      assert.deepEqual(audits.map((event) => [event.data.operation, event.data.outcome]), [
+        ["teams.absent", "started"], ["teams.absent", "completed"], ["teams.absent", "finished"],
+        ["teams.deleted", "started"], ["teams.deleted", "completed"], ["teams.deleted", "finished"],
+        ["teams.aborted", "started"], ["teams.aborted", "errored"], ["teams.aborted", "finished"],
+      ]);
     } finally {
       await database.close();
     }

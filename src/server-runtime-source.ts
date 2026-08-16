@@ -45,7 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -950,6 +950,7 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
               : undefined,
           );
         } finally {
+          privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
       }
@@ -973,7 +974,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       provider: "privileged-server-role",
     },
   };
-  // Teams are current-user authority, never a Privileged server capability.
+  // User-scoped and mutating Team operations remain unavailable. This is the
+  // separate userless inspection projection, not inherited Team authority.
   delete privilegedContext.teams;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
@@ -985,6 +987,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
+  privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;
 }

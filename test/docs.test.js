@@ -744,12 +744,13 @@ test("docs describe the implemented Privileged audit event contract", async () =
 });
 
 test("docs describe the implemented Privileged server role and Job Queue contracts", async () => {
-  const [roadmap, prd, userGuide, apiServer, apiPrivileged, apiJob, apiJobApi, apiClient] = await Promise.all([
+  const [roadmap, prd, userGuide, apiServer, apiPrivileged, apiPrivilegedTeams, apiJob, apiJobApi, apiClient] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/api/modules/server.html"),
     readProjectFile("docs/api/types/server.PrivilegedApi.html"),
+    readProjectFile("docs/api/types/server.PrivilegedTeamsApi.html"),
     readProjectFile("docs/api/functions/server.job.html"),
     readProjectFile("docs/api/types/server.JobApi.html"),
     readProjectFile("docs/api/modules/client.html"),
@@ -807,6 +808,12 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(apiServer, /PrivilegedContext/);
   assert.match(apiPrivileged, /ctx\.privileged\.run/);
   assert.match(apiPrivileged, /server-only/);
+  for (const inspection of ["countMembers", "listMembers", "listJoinLinks", "inspectJoinLink"]) {
+    assert.match(apiPrivilegedTeams, new RegExp(inspection));
+  }
+  assert.match(prd, /read-only exact-Team inspection surface/);
+  assert.match(prd, /`TEAM_NOT_FOUND`/);
+  assert.match(prd, /Current-user\s+Team listing and email-bound Join-link validation remain unavailable/);
 
   for (const command of ["sporades jobs", "sporades deploy jobs", "sporades host jobs"]) {
     assert.match(userGuide, new RegExp(command));

@@ -248,8 +248,20 @@ const app = capsule({
         metadata: { reason: "type-test" },
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
-        // @ts-expect-error Privileged server role must not inherit a caller's Team capability.
+        const privilegedMemberCount = await privilegedCtx.teams.countMembers("00000000-0000-4000-8000-000000000000");
+        privilegedMemberCount.totalCount.valueOf();
+        const privilegedMembers = await privilegedCtx.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 25 });
+        privilegedMembers.members[0]?.displayName.toUpperCase();
+        const privilegedLinks = await privilegedCtx.teams.listJoinLinks("00000000-0000-4000-8000-000000000000");
+        privilegedLinks.links[0]?.email.toUpperCase();
+        const privilegedLink = await privilegedCtx.teams.inspectJoinLink("opaque-join-code");
+        privilegedLink.usable.valueOf();
+        // @ts-expect-error Privileged work cannot infer a current user's Team list.
         privilegedCtx.teams.list();
+        // @ts-expect-error Privileged work cannot validate an email-bound Join link.
+        privilegedCtx.teams.validateJoinLink("opaque-join-code");
+        // @ts-expect-error Privileged work cannot mutate Team state.
+        privilegedCtx.teams.create("Forbidden Team");
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
         await privilegedCtx.mail.send({

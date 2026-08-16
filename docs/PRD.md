@@ -802,6 +802,17 @@ track checked through normal ACL rules. Browser/client credentials cannot carry
 Privileged server role authority, and table ACL rule contexts cannot call
 `ctx.privileged.run(...)`.
 
+Inside an active Privileged callback, `privilegedCtx.teams` is a narrow
+read-only exact-Team inspection surface. It can count accepted members, list
+the existing safe member projection, list safe active Join-link metadata, and
+safely inspect a Join link. It performs no current-user membership or admin
+check and does not create or capture a Sporades user identity. Current-user
+Team listing and email-bound Join-link validation remain unavailable, as do all
+Team mutations. An unknown or deleted exact Team fails with `TEAM_NOT_FOUND`;
+Join-link inspection keeps its invalid-capability result. These results never
+include raw rows, Join capabilities, credentials, sessions, or provider
+subjects.
+
 Every privileged run emits Privileged audit events with actor kind
 `privileged-server-role` and the lifecycle outcomes `started`, then
 `completed` or `errored`, then `finished`. If a privileged run receives an
