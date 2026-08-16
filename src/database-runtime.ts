@@ -995,7 +995,16 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
     // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
     migrateAppSchema(schema: LooseRecord) {
-      return this.withTransaction((transaction: LooseRecord) => migrateAppSchemaInTransaction(transaction, schema));
+      try {
+        const result = this.withTransaction((transaction: LooseRecord) => migrateAppSchemaInTransaction(transaction, schema));
+        return isPromiseLike(result)
+          ? result.catch((error: any) => {
+            throw translateUniqueConstraintMigrationError(error);
+          })
+          : result;
+      } catch (error) {
+        throw translateUniqueConstraintMigrationError(error);
+      }
     },
     createAppTable(table: { name: any; }, tableName = table.name) {
       return createAppTable(this, table, tableName);
@@ -2186,13 +2195,34 @@ function assertAdditiveSchemaMigration(existingSchema: LooseRecord, nextSchema: 
       }
     }
 
-    if (JSON.stringify(existingTable.uniqueConstraints ?? []) !== JSON.stringify(nextTable.uniqueConstraints ?? [])) {
+    if (!uniqueConstraintsAreAdditive(existingTable.uniqueConstraints ?? [], nextTable.uniqueConstraints ?? [])) {
       throw commandError(
         "Unsupported Capsule schema change.",
-        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        "Only adding new tables, fields, or unique constraints is supported right now. Revert changed constraints, or move data aside and recreate the Runtime directory.",
       );
     }
   }
+}
+
+function uniqueConstraintsAreAdditive(existingConstraints: string[][], nextConstraints: string[][]) {
+  return existingConstraints.every((existing) =>
+    nextConstraints.some((next) => JSON.stringify(next) === JSON.stringify(existing)),
+  );
+}
+
+function translateUniqueConstraintMigrationError(error: any) {
+  if (!isUniqueConstraintError(error)) {
+    return error;
+  }
+  return commandError(
+    "Unable to apply unique constraint migration.",
+    "Remove or resolve duplicate data, then restart the Capsule.",
+  );
+}
+
+function isUniqueConstraintError(error: any) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|unique violation|constraint failed/i.test(text);
 }
 
 // The one definition of an additive table rebuild, run inside a transaction the caller has already

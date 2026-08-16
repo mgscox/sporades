@@ -122,9 +122,44 @@ const UNIQUE_MUTABILITY_TABLE = {
   uniqueConstraints: [["first", "second"]],
 };
 
+const UNIQUE_MIGRATION_TABLE = {
+  name: "conformance_unique_migration",
+  fields: [
+    { name: "teamId", kind: "String", sqliteType: "TEXT" },
+    { name: "slug", kind: "String", sqliteType: "TEXT" },
+    { name: "externalId", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["teamId", "slug"]],
+};
+
+const UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
+const UNIQUE_DUPLICATE_MIGRATION_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_duplicate_migration",
+};
+
+const UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_DUPLICATE_MIGRATION_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
-const MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MUTABILITY_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_EXTERNAL_ID = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_AND_MIGRATION = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_MIGRATION = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE, UNIQUE_DUPLICATE_MIGRATION_TABLE],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_EXTERNAL_ID = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE, UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID],
+};
 
 // The two tables of the migration that must fail partway. A migration walks the schema's tables in
 // order, so putting a table that migrates cleanly ahead of one that cannot is what makes the
@@ -987,12 +1022,48 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
-    // Unique declarations work for a new table. Changing the constraint set after that table has
-    // stored data needs a dedicated compatibility and duplicate-data contract, so every such
-    // change must fail before the additive migration reaches its rebuild/copy path.
-    name: "migrateAppSchema rejects every existing-table unique change without rebuilding, copying, or rewriting metadata",
+    name: "migrateAppSchema adds a unique constraint atomically and records the migrated schema",
     async run(adapter) {
-      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_TABLE);
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_TABLE, {
+        id: "unique-migration-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_EXTERNAL_ID);
+
+      assert.deepEqual(
+        pick(await adapter.selectAppRowById(UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, "unique-migration-kept"), ["teamId", "slug", "externalId"]),
+        { teamId: "team-a", slug: "home", externalId: "external-a" },
+      );
+      const stored = JSON.parse((await adapter.readSchemaMetadata()).value);
+      assert.deepEqual(
+        stored.tables.find((table) => table.name === UNIQUE_MIGRATION_TABLE.name).uniqueConstraints,
+        [["teamId", "slug"], ["externalId"]],
+      );
+      assert.equal(typeof (await adapter.readSystemMetadata("schemaHash")).value, "string");
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`), false);
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, {
+          id: "unique-migration-conflict",
+          createdAt: NOW,
+          updatedAt: NOW,
+          teamId: "team-b",
+          slug: "other",
+          externalId: "external-a",
+        }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
+    name: "migrateAppSchema rejects non-additive unique changes without rebuilding, copying, or rewriting metadata",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_AND_MIGRATION);
       await adapter.insertAppRow(UNIQUE_MUTABILITY_TABLE, {
         id: "unique-mutability-kept",
         createdAt: NOW,
@@ -1006,7 +1077,6 @@ const APP_TABLE_CONFORMANCE_CASES = [
       const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
       const tableBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
       const changes = [
-        { name: "add", uniqueConstraints: [["first", "second"], ["third"]] },
         { name: "remove", uniqueConstraints: [] },
         { name: "replace", uniqueConstraints: [["first"]] },
         { name: "composite-order", uniqueConstraints: [["second", "first"]] },
@@ -1014,10 +1084,10 @@ const APP_TABLE_CONFORMANCE_CASES = [
 
       for (const change of changes) {
         const changedTable = { ...UNIQUE_MUTABILITY_TABLE, uniqueConstraints: change.uniqueConstraints };
-        const changedSchema = { tables: [...MIGRATED_SCHEMA.tables, changedTable] };
+        const changedSchema = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, changedTable] };
         await assert.rejects(adapter.migrateAppSchema(changedSchema), {
           message: "Unsupported Capsule schema change.",
-          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+          hint: "Only adding new tables, fields, or unique constraints is supported right now. Revert changed constraints, or move data aside and recreate the Runtime directory.",
         }, change.name);
 
         const tableAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
@@ -1039,6 +1109,57 @@ const APP_TABLE_CONFORMANCE_CASES = [
           `${change.name} must preserve the original composite unique constraint`,
         );
       }
+    },
+  },
+  {
+    name: "migrateAppSchema rejects duplicate data atomically with one opaque unique-migration error",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_MIGRATION);
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-one",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "first",
+        externalId: "duplicate-value",
+      });
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-two",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "second",
+        externalId: "duplicate-value",
+      });
+
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const tableBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_DUPLICATE_MIGRATION_TABLE.name);
+      await assert.rejects(
+        adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_EXTERNAL_ID),
+        (error) => {
+          assert.equal(error.message, "Unable to apply unique constraint migration.");
+          assert.match(error.hint, /Remove or resolve duplicate data/i);
+          assert.doesNotMatch(error.message, /duplicate-value|postgres|key \(/i);
+          assert.doesNotMatch(error.hint, /duplicate-value|postgres|key \(/i);
+          return true;
+        },
+      );
+
+      const tableAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_DUPLICATE_MIGRATION_TABLE.name);
+      assert.deepEqual(tableAfter.columns, tableBefore.columns);
+      assert.deepEqual(tableAfter.rows, tableBefore.rows);
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`), false);
+      assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore);
+      assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore);
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-after-rollback",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "third",
+        externalId: "duplicate-value",
+      });
     },
   },
   {
@@ -1129,9 +1250,13 @@ export const CONFORMANCE_SURFACE = {
     COLLIDING_NAMES_TABLE.name,
     UNIQUE_TABLE.name,
     UNIQUE_MUTABILITY_TABLE.name,
+    UNIQUE_MIGRATION_TABLE.name,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE.name,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`,
   ],
   prepareStorage: prepareAppTableStorage,
   cases: APP_TABLE_CONFORMANCE_CASES,

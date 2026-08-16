@@ -727,7 +727,17 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
         // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
         migrateAppSchema(schema) {
-            return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
+            try {
+                const result = this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
+                return isPromiseLike(result)
+                    ? result.catch((error) => {
+                        throw translateUniqueConstraintMigrationError(error);
+                    })
+                    : result;
+            }
+            catch (error) {
+                throw translateUniqueConstraintMigrationError(error);
+            }
         },
         createAppTable(table, tableName = table.name) {
             return createAppTable(this, table, tableName);
@@ -1815,10 +1825,23 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
                 throw commandError("Unsupported Capsule schema change.", "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.");
             }
         }
-        if (JSON.stringify(existingTable.uniqueConstraints ?? []) !== JSON.stringify(nextTable.uniqueConstraints ?? [])) {
-            throw commandError("Unsupported Capsule schema change.", "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.");
+        if (!uniqueConstraintsAreAdditive(existingTable.uniqueConstraints ?? [], nextTable.uniqueConstraints ?? [])) {
+            throw commandError("Unsupported Capsule schema change.", "Only adding new tables, fields, or unique constraints is supported right now. Revert changed constraints, or move data aside and recreate the Runtime directory.");
         }
     }
+}
+function uniqueConstraintsAreAdditive(existingConstraints, nextConstraints) {
+    return existingConstraints.every((existing) => nextConstraints.some((next) => JSON.stringify(next) === JSON.stringify(existing)));
+}
+function translateUniqueConstraintMigrationError(error) {
+    if (!isUniqueConstraintError(error)) {
+        return error;
+    }
+    return commandError("Unable to apply unique constraint migration.", "Remove or resolve duplicate data, then restart the Capsule.");
+}
+function isUniqueConstraintError(error) {
+    const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+    return /unique constraint|duplicate key|unique violation|constraint failed/i.test(text);
 }
 // The one definition of an additive table rebuild, run inside a transaction the caller has already
 // opened. SQLite cannot add a column to a table that carries a default without rewriting it, so the
