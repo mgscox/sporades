@@ -439,7 +439,7 @@ test("a matching static Schedule enqueues and runs one ordinary Privileged Job",
 
 test("a native timer callback can transact after Schedule publication commits", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-native-timer-owner-"));
-  const realStartedAt = Date.now();
+  let realStartedAt = Date.now();
   const clockStartedAt = Date.parse("2030-01-01T00:00:59.980Z");
   const clock = {
     now: () => new Date(clockStartedAt + (Date.now() - realStartedAt)),
@@ -452,6 +452,7 @@ test("a native timer callback can transact after Schedule publication commits", 
     schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: "native" }) },
   }, { clock });
   try {
+    realStartedAt = Date.now();
     await database.init();
     for (let attempt = 0; attempt < 40 && executions.length === 0; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5));
