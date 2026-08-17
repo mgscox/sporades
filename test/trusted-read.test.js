@@ -350,6 +350,19 @@ for (const engine of [
           error: null,
         });
 
+        let snapshotCallbackCalled = false;
+        await database.adapter.withReadOnlySnapshot(async (snapshot) => {
+          await assert.rejects(withTrustedRead(database, {
+            transaction: snapshot,
+            purpose: "teams.join-admission",
+            subject: { userId: "invitee-1" },
+            signal: new AbortController().signal,
+          }, () => {
+            snapshotCallbackCalled = true;
+          }), (error) => error.code === "TRUSTED_READ_TRANSACTION_REQUIRED");
+        });
+        assert.equal(snapshotCallbackCalled, false, "read-only snapshots cannot acquire transition authority");
+
         let observedSeatLimits;
         let leakedTable;
         await assert.rejects(database.adapter.withTransaction(async (transaction) => {

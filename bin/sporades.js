@@ -13302,10 +13302,10 @@ var transactionScopes = /* @__PURE__ */ new WeakMap();
 function isActiveTransactionScopedAdapter(value, owner) {
   const scope = value && typeof value === "object" ? transactionScopes.get(value) : void 0;
   return Boolean(
-    scope && (owner === void 0 || scope.owner === owner)
+    scope && scope.kind === "transaction" && (owner === void 0 || scope.owner === owner)
   );
 }
-function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
+function createTransactionScopedAdapter(adapter, operations, owner, kind) {
   let active = true;
   const assertActive = () => {
     if (!active) throw commandError2(
@@ -13343,7 +13343,8 @@ function createTransactionScopedAdapter(adapter, operations = {}, owner = adapte
     revoke: () => {
       active = false;
     },
-    owner
+    owner,
+    kind
   });
   return scopedAdapter;
 }
@@ -14135,7 +14136,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     async withTransaction(fn) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN");
         try {
@@ -14157,7 +14158,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "snapshot");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN");
         await transactionExec("PRAGMA query_only = ON");
@@ -14280,7 +14281,7 @@ async function createPostgresDatabaseAdapter(options) {
       return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
-          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
           let result;
           try {
             result = await fn(transactionAdapter);
@@ -14301,7 +14302,7 @@ async function createPostgresDatabaseAdapter(options) {
     },
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
-        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "snapshot");
         await rawQuery("BEGIN TRANSACTION READ ONLY");
         try {
           let result;
@@ -14789,7 +14790,7 @@ async function createLibsqlDatabaseAdapter(options) {
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
           ...createOperations(transaction, runDirectly)
-        }, {}, adapter);
+        }, {}, adapter, "transaction");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -14818,7 +14819,7 @@ async function createLibsqlDatabaseAdapter(options) {
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
         const transaction = { baton: null, baseUrl: endpoint };
-        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter);
+        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter, "snapshot");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
