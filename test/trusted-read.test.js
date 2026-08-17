@@ -123,7 +123,7 @@ test("trusted read handles are app-table-only, read-only, and revoked after sett
     }
 
     let failureLeakedTable;
-    const policyFailure = new Error("trusted policy failed");
+    const policyFailure = new Error("protected subscription row policy-secret-123 failed");
     await assert.rejects(database.adapter.withTransaction((transaction) => withTrustedRead(database, {
       transaction,
       purpose: "teams.join-admission",
@@ -132,7 +132,11 @@ test("trusted read handles are app-table-only, read-only, and revoked after sett
     }, (db) => {
       failureLeakedTable = db.policies;
       throw policyFailure;
-    })), (error) => error === policyFailure);
+    })), (error) => {
+      assert.equal(error.code, "TRUSTED_READ_FAILED");
+      assert.equal(error.message.includes("policy-secret-123"), false);
+      return true;
+    });
     assert.throws(() => failureLeakedTable.get(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
   } finally {
     await database.close();
@@ -236,6 +240,20 @@ test("trusted reads fail closed on cancellation and revoke retained handles", as
     });
     assert.equal(preAbortedCallbackCalled, false);
 
+    const lateController = new AbortController();
+    await database.adapter.withTransaction(async (transaction) => {
+      await assert.rejects(withTrustedRead(database, {
+        transaction,
+        purpose: "teams.join-admission",
+        subject: { userId: "invitee-1" },
+        signal: lateController.signal,
+      }, async () => {
+        await Promise.resolve();
+        lateController.abort();
+        return "must not escape";
+      }), (error) => error.code === "TRUSTED_READ_ABORTED");
+    });
+
     const controller = new AbortController();
     let leakedDb;
     await database.adapter.withTransaction(async (transaction) => {
@@ -253,62 +271,6 @@ test("trusted reads fail closed on cancellation and revoke retained handles", as
     assert.throws(() => leakedDb.policies.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
   } finally {
     await database.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("detached asynchronous trusted reads cannot return rows after callback settlement", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-trusted-read-detached-"));
-  try {
-    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
-      const serverEnv = {
-        SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
-        SPORADES_SERVICE_DATABASE_URL: url,
-      };
-      const capsule = {
-        name: "trusted-read-detached-test",
-        schema: {
-          policies: table({ teamId: StringField(), maximumMembers: NumberField() }).acl({
-            read: () => false,
-          }),
-        },
-      };
-      const database = await openDevDatabase(path.join(dir, "data.db"), "", serverEnv, {
-        name: capsule.name,
-        services: { database: { kind: "database", engine: "libsql" } },
-      }, capsule, { serviceEnv: serverEnv });
-
-      try {
-        const policyTable = database.schema.tables.find((candidate) => candidate.name === "policies");
-        await database.adapter.insertAppRow(policyTable, {
-          id: "policy-1",
-          teamId: "team-1",
-          maximumMembers: 3,
-          createdAt: "2026-08-17T00:00:00.000Z",
-          updatedAt: "2026-08-17T00:00:00.000Z",
-        });
-
-        let detachedReadAssertion;
-        await database.adapter.withTransaction(async (transaction) => {
-          await withTrustedRead(database, {
-            transaction,
-            purpose: "teams.join-admission",
-            subject: { userId: "invitee-1" },
-            signal: new AbortController().signal,
-          }, (db) => {
-            detachedReadAssertion = assert.rejects(
-              db.policies.all(),
-              (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE",
-            );
-            return null;
-          });
-          await detachedReadAssertion;
-        });
-      } finally {
-        await database.close();
-      }
-    });
-  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -356,7 +318,7 @@ for (const engine of [
     },
   },
 ]) {
-  test(`${engine.name} trusted reads share transaction visibility and rollback`, { skip: engine.skip }, async () => {
+  test(`${engine.name} trusted-read conformance`, { skip: engine.skip }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-trusted-read-${engine.name.toLowerCase()}-`));
     const capsule = {
       name: `trusted-read-${engine.name.toLowerCase()}-conformance`,
@@ -389,6 +351,7 @@ for (const engine of [
         });
 
         let observedSeatLimits;
+        let leakedTable;
         await assert.rejects(database.adapter.withTransaction(async (transaction) => {
           await transaction.prepare(transaction.dialect.sql(
             "INSERT INTO [policies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
@@ -398,12 +361,44 @@ for (const engine of [
             purpose: "teams.join-admission",
             subject: { userId: "invitee-1" },
             signal: new AbortController().signal,
-          }, async (db) => (await db.policies.orderBy("maximumMembers", "asc").all())
-            .map((policy) => policy.maximumMembers));
+          }, async (db) => {
+            leakedTable = db.policies;
+            assert.deepEqual(Object.keys(db), ["policies"]);
+            assert.deepEqual(Object.keys(db.policies).sort(), ["all", "get", "limit", "orderBy", "where"]);
+            assert.equal(db.policies.insert, undefined);
+            assert.equal(db.adapter, undefined);
+            return (await db.policies.orderBy("maximumMembers", "asc").all())
+              .map((policy) => policy.maximumMembers);
+          });
           throw new Error("roll back trusted-read conformance transaction");
         }), /roll back trusted-read conformance transaction/);
 
         assert.deepEqual(observedSeatLimits, [2, 3], "trusted reads see committed and same-transaction app rows");
+        assert.throws(() => leakedTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+
+        await database.adapter.withTransaction(async (transaction) => {
+          await assert.rejects(withTrustedRead(database, {
+            transaction,
+            purpose: "teams.join-admission",
+            subject: { userId: "invitee-1" },
+            signal: new AbortController().signal,
+          }, () => {
+            throw new Error("protected policy-secret-123");
+          }), (error) => error.code === "TRUSTED_READ_FAILED" && !error.message.includes("policy-secret-123"));
+
+          const controller = new AbortController();
+          await assert.rejects(withTrustedRead(database, {
+            transaction,
+            purpose: "teams.join-admission",
+            subject: { userId: "invitee-1" },
+            signal: controller.signal,
+          }, async () => {
+            await Promise.resolve();
+            controller.abort();
+            return null;
+          }), (error) => error.code === "TRUSTED_READ_ABORTED");
+        });
+
         assert.deepEqual(
           (await database.adapter.selectAppRows(policyTable, {
             columns: ["id", "maximumMembers"],

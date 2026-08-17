@@ -13282,8 +13282,7 @@ async function rejectNestedTransactionScope() {
     "Keep mutation work inside a single Sporades mutation transaction."
   );
 }
-var transactionScopeRevokers = /* @__PURE__ */ new WeakMap();
-var transactionScopeOwners = /* @__PURE__ */ new WeakMap();
+var transactionScopes = /* @__PURE__ */ new WeakMap();
 function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
   let active = true;
   const assertActive = () => {
@@ -13318,16 +13317,17 @@ function createTransactionScopedAdapter(adapter, operations = {}, owner = adapte
     withTransaction: rejectNestedTransactionScope,
     withReadOnlySnapshot: rejectNestedTransactionScope
   });
-  transactionScopeRevokers.set(scopedAdapter, () => {
-    active = false;
+  transactionScopes.set(scopedAdapter, {
+    revoke: () => {
+      active = false;
+    },
+    owner
   });
-  transactionScopeOwners.set(scopedAdapter, owner);
   return scopedAdapter;
 }
 function revokeTransactionScopedAdapter(adapter) {
-  transactionScopeRevokers.get(adapter)?.();
-  transactionScopeRevokers.delete(adapter);
-  transactionScopeOwners.delete(adapter);
+  transactionScopes.get(adapter)?.revoke();
+  transactionScopes.delete(adapter);
 }
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {

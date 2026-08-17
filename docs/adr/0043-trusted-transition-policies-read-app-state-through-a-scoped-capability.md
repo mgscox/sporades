@@ -15,7 +15,7 @@ A future consumer qualifies only when every condition holds:
 1. Sporades owns the state transition.
 2. Trusted Capsule policy must decide whether that transition may occur.
 3. The decision depends on app-owned state hidden by the transition subject's ordinary ACL.
-4. The decision and transition must share one transaction or serialized lifecycle.
+4. The decision and transition must be atomic inside one runtime-owned transaction.
 5. Browser callers cannot choose, omit, or widen the policy.
 6. Read-only app-table access is sufficient.
 7. A purpose-specific seam can define opaque failure and audit or security-event behavior.

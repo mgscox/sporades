@@ -230,12 +230,11 @@ function createConnectionTransactionGate() {
 async function rejectNestedTransactionScope() {
     throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
 }
-const transactionScopeRevokers = new WeakMap();
-const transactionScopeOwners = new WeakMap();
+const transactionScopes = new WeakMap();
 export function isActiveTransactionScopedAdapter(value, owner) {
-    return Boolean(value && typeof value === "object"
-        && transactionScopeRevokers.has(value)
-        && (owner === undefined || transactionScopeOwners.get(value) === owner));
+    const scope = value && typeof value === "object" ? transactionScopes.get(value) : undefined;
+    return Boolean(scope
+        && (owner === undefined || scope.owner === owner));
 }
 function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
     let active = true;
@@ -267,14 +266,15 @@ function createTransactionScopedAdapter(adapter, operations = {}, owner = adapte
         withTransaction: rejectNestedTransactionScope,
         withReadOnlySnapshot: rejectNestedTransactionScope,
     });
-    transactionScopeRevokers.set(scopedAdapter, () => { active = false; });
-    transactionScopeOwners.set(scopedAdapter, owner);
+    transactionScopes.set(scopedAdapter, {
+        revoke: () => { active = false; },
+        owner,
+    });
     return scopedAdapter;
 }
 function revokeTransactionScopedAdapter(adapter) {
-    transactionScopeRevokers.get(adapter)?.();
-    transactionScopeRevokers.delete(adapter);
-    transactionScopeOwners.delete(adapter);
+    transactionScopes.get(adapter)?.revoke();
+    transactionScopes.delete(adapter);
 }
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {

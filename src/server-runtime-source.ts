@@ -3160,7 +3160,18 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
   const holder = createContextHolder(context);
   const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
   try {
-    return await callback(db);
+    try {
+      const result = await callback(db);
+      assertActive();
+      return result;
+    } catch {
+      if (signal?.aborted) throw abortError();
+      throw commandError(
+        "Trusted app-database read failed.",
+        "The runtime-owned trusted policy could not be evaluated.",
+        "TRUSTED_READ_FAILED",
+      );
+    }
   } finally {
     active = false;
     revokePrivilegedDbAccess(context);

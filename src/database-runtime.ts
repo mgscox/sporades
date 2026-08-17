@@ -246,14 +246,13 @@ async function rejectNestedTransactionScope(): Promise<never> {
   );
 }
 
-const transactionScopeRevokers = new WeakMap<object, () => void>();
-const transactionScopeOwners = new WeakMap<object, object>();
+const transactionScopes = new WeakMap<object, { revoke: () => void; owner: object }>();
 
 export function isActiveTransactionScopedAdapter(value: any, owner?: any) {
+  const scope = value && typeof value === "object" ? transactionScopes.get(value) : undefined;
   return Boolean(
-    value && typeof value === "object"
-    && transactionScopeRevokers.has(value)
-    && (owner === undefined || transactionScopeOwners.get(value) === owner),
+    scope
+    && (owner === undefined || scope.owner === owner),
   );
 }
 
@@ -288,15 +287,16 @@ function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseR
     withTransaction: rejectNestedTransactionScope,
     withReadOnlySnapshot: rejectNestedTransactionScope,
   });
-  transactionScopeRevokers.set(scopedAdapter, () => { active = false; });
-  transactionScopeOwners.set(scopedAdapter, owner);
+  transactionScopes.set(scopedAdapter, {
+    revoke: () => { active = false; },
+    owner,
+  });
   return scopedAdapter;
 }
 
 function revokeTransactionScopedAdapter(adapter: LooseRecord) {
-  transactionScopeRevokers.get(adapter)?.();
-  transactionScopeRevokers.delete(adapter);
-  transactionScopeOwners.delete(adapter);
+  transactionScopes.get(adapter)?.revoke();
+  transactionScopes.delete(adapter);
 }
 
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
