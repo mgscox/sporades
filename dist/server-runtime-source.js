@@ -4804,7 +4804,7 @@ function createMutationContext(database, auth) {
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb) {
     const context = {
-        auth,
+        auth: Object.freeze({ ...auth }),
         env: database.serverEnv,
         log: createEndpointLogger(database),
         db: trustedDb,

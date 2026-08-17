@@ -5149,7 +5149,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
 
 function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
   const context: LooseRecord = {
-    auth,
+    auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,

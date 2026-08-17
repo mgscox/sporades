@@ -9195,8 +9195,11 @@ async function validateTeamJoinLink(database, auth, code) {
 async function joinCurrentUserTeam(database, auth, code, eventContext) {
   let joined;
   let deniedTeamId = null;
+  let auditUserId = null;
   try {
     requireAuth({ auth }, { linked: true });
+    const joiningUserId = String(auth.userId);
+    auditUserId = joiningUserId;
     const parsed = parseTeamJoinCode(code);
     if (!parsed) throw invalidTeamJoinLink();
     joined = await withTeamTransaction(database, async (tx) => {
@@ -9226,7 +9229,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       if (!team) throw invalidTeamJoinLink();
       const attachedEmails = await tx.prepare(sql(
         "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
-      )).all(auth.userId, auth.userId);
+      )).all(joiningUserId, joiningUserId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
       if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
         deniedTeamId = String(team.id);
@@ -9236,12 +9239,12 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
       )).get(row.id);
       if (row.consumedAt) {
-        if (redemption?.userId !== auth.userId) throw invalidTeamJoinLink();
+        if (redemption?.userId !== joiningUserId) throw invalidTeamJoinLink();
         const membership2 = await tx.prepare(sql(
           "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-        )).get(row.teamId, auth.userId);
+        )).get(row.teamId, joiningUserId);
         if (!membership2) throw invalidTeamJoinLink();
-        await ensureInitialTeamOnAdapter(tx, auth.userId);
+        await ensureInitialTeamOnAdapter(tx, joiningUserId);
         const count2 = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
         return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
       }
@@ -9252,37 +9255,43 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
       await tx.prepare(sql(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(row.id, row.teamId, auth.userId, now);
-      await ensureInitialTeamOnAdapter(tx, auth.userId);
+      )).run(row.id, row.teamId, joiningUserId, now);
+      await ensureInitialTeamOnAdapter(tx, joiningUserId);
       let membership = await tx.prepare(sql(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-      )).get(row.teamId, auth.userId);
+      )).get(row.teamId, joiningUserId);
       if (!membership) {
-        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId), eventContext?.signal);
-        await ensureMembershipCounterOnAdapter(tx, auth.userId);
+        await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
+        throwIfTeamJoinCancelled(eventContext?.signal);
+        await ensureMembershipCounterOnAdapter(tx, joiningUserId);
+        throwIfTeamJoinCancelled(eventContext?.signal);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
-        )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
+        )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
         if (Number(claim?.changes ?? 0) !== 1) {
           throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
+        throwIfTeamJoinCancelled(eventContext?.signal);
         await tx.prepare(sql(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
-        )).run(row.teamId, auth.userId, now);
+        )).run(row.teamId, joiningUserId, now);
+        throwIfTeamJoinCancelled(eventContext?.signal);
         membership = { role: "member" };
       }
       await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
+      throwIfTeamJoinCancelled(eventContext?.signal);
       const count = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+      throwIfTeamJoinCancelled(eventContext?.signal);
       return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
     });
   } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
-  emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
+  emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
 }
-async function enforceTeamJoinAdmission(database, tx, auth, teamId, signal) {
+async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamId, signal) {
   if (typeof database.runTeamJoinAdmission !== "function") return;
   const count = await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
@@ -9290,13 +9299,16 @@ async function enforceTeamJoinAdmission(database, tx, auth, teamId, signal) {
   try {
     const decision = await database.runTeamJoinAdmission(tx, auth, {
       teamId,
-      userId: auth.userId,
+      userId: joiningUserId,
       currentMemberCount: Number(count?.count ?? 0)
     }, signal);
     if (decision?.allow !== true) throw teamJoinDenied();
   } catch {
     throw teamJoinDenied();
   }
+}
+function throwIfTeamJoinCancelled(signal) {
+  if (signal?.aborted) throw teamJoinDenied();
 }
 function normalizeTeamJoinEmail(email) {
   const normalized = String(email ?? "").trim().toLowerCase();
@@ -19471,7 +19483,7 @@ function createMutationContext(database, auth) {
 }
 function createTeamJoinAdmissionContext(database, auth, trustedDb) {
   const context = {
-    auth,
+    auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb
