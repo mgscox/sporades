@@ -117,9 +117,12 @@ reports a failure after closing its resources, Sporades promotes the viable
 candidate and records a bounded warning instead of retaining a closed runtime or
 closing its only usable replacement. After prior-runtime teardown settles,
 successful or not, the promoted candidate refreshes tracked running-lease
-recovery before another Job worker pass. A claim acquired after the candidate's
-startup scan, retained by failed teardown, relinquished, or delayed during
-handoff therefore cannot wait indefinitely for an unrelated enqueue or restart.
+recovery before another Job worker pass. Lease recovery is single-flight: a
+refresh requested during an active scan runs afterward at the earliest requested
+instant, and shutdown awaits that complete chain. A claim acquired after the
+candidate's startup scan, retained by failed teardown, relinquished, or delayed
+during handoff therefore cannot wait indefinitely for an unrelated enqueue or
+restart.
 Runtime close independently attempts mail,
 Database adapter, and file-storage closure; if more than one fails, it reports
 the failures together after every closer has been attempted. If worker

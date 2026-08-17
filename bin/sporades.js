@@ -15428,6 +15428,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     // initialization, but no worker or recovery wake may run until every init
     // gate has accepted this candidate.
     __jobStopped: true,
+    __jobLeaseRecoveryTimer: null,
+    __jobLeaseRecoveryDueAt: null,
+    __jobLeaseRecoveryPromise: null,
+    __jobLeaseRecoveryRequestedAt: null,
     __scheduleStopped: true,
     contextMiddleware,
     mutationHooks,
@@ -16195,13 +16199,58 @@ async function recoverExpiredJobLeases(database) {
   }
   return earliestFutureLeaseAt;
 }
-async function armJobLeaseRecovery(database) {
-  if (database.__jobStopped) return;
-  const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
-  if (database.__jobStopped) return;
-  scheduleJobLeaseRecoveryAt(database, earliestFutureLeaseAt);
-}
 function scheduleJobLeaseRecoveryAt(database, dueAt) {
+  if (database.__jobStopped) return;
+  if (database.__jobLeaseRecoveryPromise) {
+    if (dueAt !== null) {
+      database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null ? dueAt : Math.min(database.__jobLeaseRecoveryRequestedAt, dueAt);
+    }
+    return;
+  }
+  if (dueAt !== null && database.__jobLeaseRecoveryTimer && database.__jobLeaseRecoveryDueAt !== null && database.__jobLeaseRecoveryDueAt <= dueAt) return;
+  scheduleJobLeaseRecoveryTimer(database, dueAt);
+}
+function startJobLeaseRecovery(database) {
+  if (database.__jobStopped) return void 0;
+  if (database.__jobLeaseRecoveryPromise) {
+    const now = database.clock.now().getTime();
+    database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null ? now : Math.min(database.__jobLeaseRecoveryRequestedAt, now);
+    return database.__jobLeaseRecoveryPromise;
+  }
+  const recovery = runJobLeaseRecoveryChain(database);
+  database.__jobLeaseRecoveryPromise = recovery;
+  recovery.finally(() => {
+    if (database.__jobLeaseRecoveryPromise === recovery) database.__jobLeaseRecoveryPromise = null;
+  }).catch(() => {
+  });
+  return recovery;
+}
+async function runJobLeaseRecoveryChain(database) {
+  let wakeWorker = false;
+  while (!database.__jobStopped) {
+    database.__jobLeaseRecoveryRequestedAt = null;
+    let nextRecoveryAt;
+    try {
+      nextRecoveryAt = await recoverExpiredJobLeases(database);
+      wakeWorker = true;
+    } catch (error) {
+      try {
+        database.log.emit({ category: "platform", event: "job.lease_recovery.failed", level: "error", message: "Running Job lease recovery failed", data: { code: String(error?.code ?? "JOB_LEASE_RECOVERY_FAILED").slice(0, 80) } });
+      } catch {
+      }
+      nextRecoveryAt = database.clock.now().getTime() + 1e3;
+    }
+    if (database.__jobStopped) return;
+    const requestedAt = database.__jobLeaseRecoveryRequestedAt;
+    database.__jobLeaseRecoveryRequestedAt = null;
+    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
+    const dueAt = requestedAt === null ? nextRecoveryAt : nextRecoveryAt === null ? requestedAt : Math.min(nextRecoveryAt, requestedAt);
+    scheduleJobLeaseRecoveryTimer(database, dueAt);
+    if (wakeWorker && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
+    return;
+  }
+}
+function scheduleJobLeaseRecoveryTimer(database, dueAt) {
   if (database.__jobLeaseRecoveryTimer) {
     database.clock.clearTimer(database.__jobLeaseRecoveryTimer);
     database.__jobLeaseRecoveryTimer = null;
@@ -16211,25 +16260,7 @@ function scheduleJobLeaseRecoveryAt(database, dueAt) {
   database.__jobLeaseRecoveryTimer = database.clock.setTimer(async () => {
     database.__jobLeaseRecoveryTimer = null;
     database.__jobLeaseRecoveryDueAt = null;
-    if (database.__jobStopped) return;
-    const recovery = (async () => {
-      try {
-        await armJobLeaseRecovery(database);
-        if (!database.__jobStopped) scheduleCurrentUserJobWorker(database);
-      } catch (error) {
-        try {
-          database.log.emit({ category: "platform", event: "job.lease_recovery.failed", level: "error", message: "Running Job lease recovery failed", data: { code: String(error?.code ?? "JOB_LEASE_RECOVERY_FAILED").slice(0, 80) } });
-        } catch {
-        }
-        if (!database.__jobStopped) scheduleJobLeaseRecoveryAt(database, database.clock.now().getTime() + 1e3);
-      }
-    })();
-    database.__jobLeaseRecoveryPromise = recovery;
-    try {
-      await recovery;
-    } finally {
-      if (database.__jobLeaseRecoveryPromise === recovery) database.__jobLeaseRecoveryPromise = null;
-    }
+    if (!database.__jobStopped) await startJobLeaseRecovery(database);
   }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, dueAt - database.clock.now().getTime())));
 }
 var RUNTIME_CLAIM_LEASE_MS = 3e4;
@@ -19489,6 +19520,7 @@ function stopCurrentUserJobWorker(database) {
     database.__jobLeaseRecoveryTimer = null;
   }
   database.__jobLeaseRecoveryDueAt = null;
+  database.__jobLeaseRecoveryRequestedAt = null;
   for (const activeClaim of database.__jobAbortControllers?.values?.() ?? []) (activeClaim?.controller ?? activeClaim)?.abort?.();
   const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise].filter(Boolean).map((pending) => Promise.resolve(pending));
   if (settlements.length === 0) return void 0;

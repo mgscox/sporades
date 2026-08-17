@@ -448,6 +448,56 @@ test("Dev replacement re-arms a running lease created after candidate initializa
  } finally {releaseSecond();await Promise.resolve(outgoingDrain).catch(()=>{});await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.shutdown()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
+test("Dev replacement retains its lease refresh behind an active stale recovery scan", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-replacement-active-lease-scan-"));const file=path.join(dir,"data.db");const outgoingClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const candidateClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let attempts=0;let firstStarted;let secondStarted;let releaseSecond=()=>{};let releaseStaleScan=()=>{};const firstBegan=new Promise(resolve=>{firstStarted=resolve;});const secondBegan=new Promise(resolve=>{secondStarted=resolve;});let staleScanStarted;const staleScanBegan=new Promise(resolve=>{staleScanStarted=resolve;});const settlementError=new Error("expected outgoing retry settlement failure");
+ const capsule={jobs:{work:job(async ctx=>{attempts+=1;if(attempts===1){firstStarted();await new Promise((resolve,reject)=>ctx.signal.addEventListener("abort",()=>{const error=new Error("outgoing runtime stopped");error.name="AbortError";reject(error);},{once:true}));}secondStarted();await new Promise(resolve=>{releaseSecond=resolve;});return {attempts};})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("work",null,{retry:{maxAttempts:2,delayMs:0}}))}};let outgoing;let candidate;let outgoingDrain;let staleDrain;
+ try {
+  outgoing=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:outgoingClock});await outgoing.init();
+  const now=outgoingClock.now().toISOString();outgoing.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",now,"u",null,null,0,1,"anonymous");
+  outgoing.adapter.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory,leaseExpiresAt,claimToken) VALUES (?,?,?,?,?,'running',?,1,?,?,?,?,?)").run("handoff-seed","work","u","u","null",now,now,'{"maxAttempts":1,"delayMs":0}',"[]","2030-01-01T00:00:00.010Z","handoff-seed-claim");
+  candidate=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:candidateClock});await candidate.init();
+  await outgoing.adapter.prepare("DELETE FROM sporades_jobs WHERE id=?").run("handoff-seed");
+  candidate.adapter=pauseRunningLeaseReads(candidate.adapter,async read=>{if(read!==1)return;staleScanStarted();await new Promise(resolve=>{releaseStaleScan=resolve;});});
+  candidateClock.advanceBy(10);staleDrain=candidateClock.runDueTimers();await staleScanBegan;
+
+  const queued=await runMutation(outgoing,auth,"enqueue",[]);outgoingDrain=outgoingClock.runDueTimers();outgoingDrain.catch(()=>{});await firstBegan;
+  outgoing.adapter=failJobRetrySettlement(outgoing.adapter,settlementError);
+  candidate=await replaceRuntimeDatabase(outgoing,candidate);outgoing=null;
+
+  releaseStaleScan();releaseStaleScan=()=>{};await staleDrain;staleDrain=null;
+  await assert.rejects(outgoingDrain,error=>error===settlementError);outgoingDrain=null;
+  candidateClock.advanceBy(30_001);const recoveryDrain=candidateClock.runDueTimers();const recoveredStarted=await Promise.race([secondBegan.then(()=>true),recoveryDrain.then(()=>false)]);
+  assert.equal(recoveredStarted,true,"a stale active scan must not erase the handoff lease refresh");
+  const recovered=await candidate.adapter.prepare(candidate.adapter.dialect.sql("SELECT [status], [attempts] FROM [sporades_jobs] WHERE [id]=?")).get(queued.data.id);
+  assert.equal(recovered.status,"running");assert.equal(Number(recovered.attempts),2);
+  releaseSecond();releaseSecond=()=>{};await recoveryDrain;
+ } finally {releaseStaleScan();releaseSecond();await Promise.resolve(staleDrain).catch(()=>{});await Promise.resolve(outgoingDrain).catch(()=>{});await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.shutdown()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("runtime close waits one active lease recovery and suppresses its retained handoff rerun", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-close-active-lease-rerun-"));const file=path.join(dir,"data.db");const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let firstScanStarted;let secondScanStarted;let secondScanCount=0;let releaseFirstScan=()=>{};let releaseSecondScan=()=>{};const firstScanBegan=new Promise(resolve=>{firstScanStarted=resolve;});const secondScanBegan=new Promise(resolve=>{secondScanStarted=resolve;});let outgoing;let candidate;let firstDrain;let overlapDrain;let closing;
+ try {
+  outgoing=await openStoppedDevDatabase(file,"",{},{name:"jobs"},{jobs:{work:job(()=>null)}},{clock});await outgoing.init();
+  const now=clock.now().toISOString();outgoing.adapter.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory,leaseExpiresAt,claimToken) VALUES (?,?,?,?,?,'running',?,1,?,?,?,?,?)").run("close-seed","work","u","u","null",now,now,'{"maxAttempts":1,"delayMs":0}',"[]","2030-01-01T00:00:00.010Z","close-seed-claim");
+  candidate=await openStoppedDevDatabase(file,"",{},{name:"jobs"},{jobs:{work:job(()=>null)}},{clock});await candidate.init();
+  await outgoing.adapter.prepare("DELETE FROM sporades_jobs WHERE id=?").run("close-seed");
+  candidate.adapter=pauseRunningLeaseReads(candidate.adapter,async read=>{if(read===1){firstScanStarted();await new Promise(resolve=>{releaseFirstScan=resolve;});}else if(read===2){secondScanCount+=1;secondScanStarted();await new Promise(resolve=>{releaseSecondScan=resolve;});}});
+  clock.advanceBy(10);firstDrain=clock.runDueTimers();await firstScanBegan;
+  candidate=await replaceRuntimeDatabase(outgoing,candidate);outgoing=null;
+
+  overlapDrain=clock.runDueTimers();const overlappingScanStarted=await Promise.race([secondScanBegan.then(()=>true),new Promise(resolve=>setImmediate(()=>resolve(false)))]);
+  let closeSettled=false;closing=Promise.resolve(candidate.close()).then(()=>{closeSettled=true;});
+  releaseSecondScan();releaseSecondScan=()=>{};await overlapDrain;overlapDrain=null;await new Promise(resolve=>setImmediate(resolve));
+  const settledBeforeActiveScan=closeSettled;
+  releaseFirstScan();releaseFirstScan=()=>{};await firstDrain;firstDrain=null;await closing;closing=null;candidate=null;
+
+  assert.equal(overlappingScanStarted,false,"a handoff request must be retained instead of starting a second lease scan");
+  assert.equal(secondScanCount,0);
+  assert.equal(settledBeforeActiveScan,false,"close must await the complete active recovery chain");
+  clock.advanceBy(60_000);await clock.runDueTimers();
+ } finally {releaseSecondScan();releaseFirstScan();await Promise.resolve(overlapDrain).catch(()=>{});await Promise.resolve(firstDrain).catch(()=>{});await Promise.resolve(closing).catch(()=>{});await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("far-future Jobs re-arm bounded timer chunks without tight rescans", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-future-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);const seen=[];let db;
  try {
@@ -611,6 +661,27 @@ function failJobRetrySettlement(adapter,error) {
       const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);
       if(preparedProperty!=="run"||typeof method!=="function") return method;
       return ()=>{throw error;};
+     },
+    });
+   };
+  },
+ });
+}
+
+function pauseRunningLeaseReads(adapter,onRead) {
+ let reads=0;
+ return new Proxy(adapter,{
+  get(target,property,receiver) {
+   const value=Reflect.get(target,property,receiver);
+   if(property!=="prepare"||typeof value!=="function") return value;
+   return statement=>{
+    const prepared=value.call(target,statement);
+    if(!/SELECT \* FROM .*sporades_jobs.*status.*running/i.test(String(statement))) return prepared;
+    return new Proxy(prepared,{
+     get(preparedTarget,preparedProperty,preparedReceiver) {
+      const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);
+      if(preparedProperty!=="all"||typeof method!=="function") return method;
+      return async(...args)=>{const result=await method.apply(preparedTarget,args);reads+=1;await onRead(reads);return result;};
      },
     });
    };
