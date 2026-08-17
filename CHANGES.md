@@ -23,8 +23,13 @@ Changes since v0.8.5.
 - Serialize multi-statement Team inspections with Team lifecycle writers,
   including a post-lock Join-link capability re-read, so PostgreSQL
   `READ COMMITTED` callers never combine stale authorization and projections.
-- Make orderly shutdown and Dev restart clear every Job worker wake, defer
-  recovered execution until runtime initialization, and use attempt-scoped
+- Make orderly shutdown and Dev restart clear every Job worker wake, defer all
+  Job dispatch and recovered execution until the Capsule `init()` hook,
+  retained Schedule validation, declaration reconciliation, and timer
+  capability gates have all succeeded. Jobs durably enqueued by `init()` remain
+  stopped until that boundary publishes; a rejected initialization unwinds and
+  awaits every Job and Schedule timer, worker, factory, and recovery controller
+  so a later clean open owns recovery. Use attempt-scoped
   claim ownership so stale shutdown, recovery, completion, or cancellation
   work cannot mutate a newer attempt. Active handlers are aborted and settled
   before runtime resources close; transactional cancellation aborts only after
@@ -66,8 +71,15 @@ Changes since v0.8.5.
   quarantining retained state is likewise planned inside the transaction and
   armed only after commit. Retained and freshly calculated next-occurrence
   cursors must be canonical four-digit UTC timestamps; malformed retained state
-  or a calculation beyond that domain now fails startup with
+  or a startup calculation beyond that domain now fails startup with
   `SCHEDULE_STATE_INVALID` before persistence or any live timer can hot-loop.
+  When an already-due occurrence is the final representable minute, its Job or
+  bounded failure outcome and Schedule summary commit atomically, future
+  scheduling becomes durably exhausted with `nextOccurrence: null`, and no
+  zero-delay timer is re-armed. A late final occurrence and its single-attempt
+  Job clamp their claim leases to the remaining canonical time domain; a retry
+  policy requiring later attempts becomes the bounded enqueue-failure outcome.
+  Restart preserves the exhausted state.
   Privileged and operator inspection applies the same domain to both the next
   cursor and latest-occurrence timestamp.
 - Bind every pending Schedule occurrence to its complete deterministic identity,

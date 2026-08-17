@@ -20,6 +20,7 @@ test("captured Jobs fail for missing actors and re-evaluate ACL at execution tim
     },
   });
   try {
+    await database.init();
     for (const userId of ["gone", "denied"]) database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(userId, new Date().toISOString(), userId, null, null, 0, 1, "anonymous");
     const missing = await runMutation(database, auth("gone"), "enqueue", ["missing", { retry: { maxAttempts: 3, delayMs: 0 } }]);
     database.adapter.prepare("DELETE FROM sporades_auth_users WHERE id = ?").run("gone");

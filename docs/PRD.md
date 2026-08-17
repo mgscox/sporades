@@ -873,8 +873,12 @@ and `cancelled`; only `queued` means ready to run. V1 uses a single worker,
 bounded retry, cooperative cancellation, leases, and restart recovery. Delivery
 is at least once rather than exactly once, so handlers must be idempotent and
 safe to repeat after lease recovery. Expired durable state may be reconciled
-while storage opens, but recovered handlers and retry wakes begin only after
-the Capsule runtime completes initialization. Every running attempt owns an
+while storage opens, but Job dispatch and recovered handlers or retry wakes
+remain stopped until the Capsule `init()` hook, retained Schedule validation,
+declaration reconciliation, and timer capability gates all succeed. A Job
+durably enqueued by `init()` cannot dispatch before that publication boundary;
+failed initialization unwinds and awaits all Job and Schedule runtime work, and
+a later successful open recovers the retained Job. Every running attempt owns an
 opaque claim so stale lifecycle work cannot mutate a newer attempt. A running
 cancellation request and its handler abort become effective only after their
 enclosing mutation, App message, or Custom endpoint transaction commits; a
@@ -1016,9 +1020,17 @@ and orderly close waits for active Schedule recovery before closing the adapter.
 A recovery wake discovered by a losing retained-state compare-and-set is armed
 only after its transaction commits, so it can open a fresh recovery transaction.
 Every retained or freshly calculated Schedule `nextOccurrence` cursor must be
-a canonical four-digit UTC timestamp; malformed retained state or a
+a canonical four-digit UTC timestamp. Malformed retained state or a startup
 calculation beyond that domain fails startup with `SCHEDULE_STATE_INVALID`
-before persistence or live timers arm. Schedule inspection applies that same
+before persistence or live timers arm. When a due occurrence is the last
+representable instant for its recurrence, successful enqueue, payload failure,
+or enqueue failure commits its occurrence and latest summary atomically and
+durably exhausts future scheduling. Inspection then reports the declaration as
+`enabled: true` with `nextOccurrence: null`; restart preserves exhaustion and no
+timer is re-armed. A late final occurrence and its single-attempt Job use claim
+leases clamped to the remaining canonical domain; a retry policy requiring a
+later attempt instead commits the bounded enqueue-failure outcome. Schedule
+inspection applies that same
 domain to the next cursor and latest-occurrence timestamp. Retained occurrence and
 claim-expiry timestamps are canonical four-digit UTC
 instants. Recovery validates the retained id, Schedule name, and scheduled UTC

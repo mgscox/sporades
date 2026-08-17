@@ -6038,7 +6038,7 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
   const sql = sqlite.dialect.sql;
   await sqlite.exec(
     sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
     )
   );
   await sqlite.exec(
@@ -6052,6 +6052,7 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     )
   );
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
   await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
   await sqlite.prepare(sql(
@@ -6155,10 +6156,21 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
   }
   const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
   if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(next, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
+  const successor = nextScheduleCursor(definition, occurrence);
+  const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
   if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
-  return { finished: true, nextOccurrence: next };
+  return { finished: true, ...successor };
+}
+function nextScheduleCursor(definition, occurrence) {
+  try {
+    return {
+      nextOccurrence: nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString(),
+      exhausted: false
+    };
+  } catch (error) {
+    if (error?.code !== "SCHEDULE_STATE_INVALID") throw error;
+    return { nextOccurrence: null, exhausted: true };
+  }
 }
 function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
   return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
@@ -6355,6 +6367,8 @@ async function scheduleSummary(sqlite, row) {
   if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
   if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
   if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
+  const exhausted = row.exhausted ?? 0;
+  if (![0, 1, false, true].includes(exhausted) || Boolean(exhausted) && (!Boolean(row.enabled) || row.nextOccurrence != null)) throw invalid("exhausted");
   if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
@@ -15394,6 +15408,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     schedulePayloadFactoryWaiters: [],
     schedulePayloadFactoryLanes: /* @__PURE__ */ new Map(),
     schedulePayloadFactoryControllers: /* @__PURE__ */ new Map(),
+    // Construction is not runtime publication. Hooks may persist Jobs during
+    // initialization, but no worker or recovery wake may run until every init
+    // gate has accepted this candidate.
+    __jobStopped: true,
+    __scheduleStopped: true,
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
@@ -15481,26 +15500,45 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   };
   database.init = async () => {
     if (database.__runtimeInitialized) return;
-    if (database.lifecycleHooks.init !== void 0) {
-      if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-      await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+    try {
+      if (database.lifecycleHooks.init !== void 0) {
+        if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
+        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+      }
+      database.__scheduleTimers = /* @__PURE__ */ new Set();
+      database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
+      database.__scheduleRecoveryTimer = null;
+      database.__scheduleRecoveryDueAt = null;
+      database.__scheduleRecoveryPromise = null;
+      database.__scheduleLegacyDiscoveryTimer = null;
+      const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
+      await recoverPendingScheduleOccurrences(database, { validateOnly: true });
+      preflightStaticScheduleTimers(database);
+      const reconciled = await reconcileSchedules(database);
+      database.__scheduleStopped = false;
+      database.__jobStopped = false;
+      startStaticSchedules(database, reconciled.timerPlans);
+      scheduleJobLeaseRecoveryAt(database, earliestFutureLeaseAt);
+      scheduleCurrentUserJobWorker(database);
+      database.__runtimeInitialized = true;
+      await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
+    } catch (error) {
+      database.__scheduleStopped = true;
+      abortSchedulePayloadFactories(database);
+      for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+      database.__scheduleTimers?.clear?.();
+      database.__scheduleRecoveryTimer = null;
+      database.__scheduleRecoveryDueAt = null;
+      database.__scheduleLegacyDiscoveryTimer = null;
+      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)].filter(Boolean).map((pending) => Promise.resolve(pending));
+      const cleanup = await Promise.allSettled(settlements);
+      database.__runtimeInitialized = false;
+      const cleanupFailures = cleanup.filter((result) => result.status === "rejected").map((result) => result.reason);
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError([error, ...cleanupFailures], "Runtime initialization and cleanup both failed.");
+      }
+      throw error;
     }
-    database.__scheduleStopped = false;
-    database.__jobStopped = false;
-    database.__scheduleTimers = /* @__PURE__ */ new Set();
-    database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
-    database.__scheduleRecoveryTimer = null;
-    database.__scheduleRecoveryDueAt = null;
-    database.__scheduleRecoveryPromise = null;
-    database.__scheduleLegacyDiscoveryTimer = null;
-    await armJobLeaseRecovery(database);
-    await recoverPendingScheduleOccurrences(database, { validateOnly: true });
-    preflightStaticScheduleTimers(database);
-    const reconciled = await reconcileSchedules(database);
-    startStaticSchedules(database, reconciled.timerPlans);
-    scheduleCurrentUserJobWorker(database);
-    database.__runtimeInitialized = true;
-    await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
   };
   database.shutdown = () => {
     if (database.__shutdownPromise) return database.__shutdownPromise;
@@ -15584,7 +15622,7 @@ async function reconcileSchedules(database) {
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
         for (const row of persisted) {
-          if (row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
+          if (![0, 1, false, true].includes(row.exhausted) || row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
             throw commandError2(
               "Stored Schedule state is invalid.",
               "Repair or remove the malformed Schedule before restarting the Capsule.",
@@ -15601,9 +15639,13 @@ async function reconcileSchedules(database) {
           const row = persisted.find((candidate) => candidate.name === definition.name);
           const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
           let nextOccurrence = null;
+          let exhausted = false;
           let recoveredOccurrence = null;
           if (definition.enabled) {
-            if (changed || row?.nextOccurrence === null || row?.nextOccurrence === void 0) {
+            const retainedExhaustion = !changed && Number(row?.exhausted) === 1 && row?.nextOccurrence == null;
+            if (retainedExhaustion) {
+              exhausted = true;
+            } else if (changed || row?.nextOccurrence === null || row?.nextOccurrence === void 0) {
               nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
             } else {
               nextOccurrence = String(row.nextOccurrence);
@@ -15619,7 +15661,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, recoveredOccurrence, generationToken: randomUUID3() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID3() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -15633,20 +15675,20 @@ async function reconcileSchedules(database) {
           }
         }
         const updateScheduleSql = sql(
-          "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, [missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?"
+          "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, [missedRunPolicy]=?, [enabled]=?, [exhausted]=?, [nextOccurrence]=? WHERE [name]=?"
         );
-        for (const { definition, row, nextOccurrence, generationToken } of plans) {
+        for (const { definition, row, nextOccurrence, exhausted, generationToken } of plans) {
           const sameEnabledDefinition = Boolean(row) && Boolean(row.enabled) && definition.enabled && row.definitionFingerprint === definition.fingerprint;
           const legacyLineage = legacyLineageByName.get(definition.name);
           const legacyAdoptionOpen = sameEnabledDefinition && Number(legacyLineage?.adoptionOpen) === 1 && legacyLineage?.definitionFingerprint === definition.fingerprint;
           definition.__adoptLegacyPendingOccurrences = legacyAdoptionOpen;
           if (row) {
             await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
-            await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+            await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence, definition.name);
           } else {
             await transactionAdapter.prepare(sql(
-              "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+              "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [exhausted], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence);
           }
           if (!legacyAdoptionOpen) {
             await transactionAdapter.prepare(sql(
@@ -15667,12 +15709,13 @@ async function reconcileSchedules(database) {
             )).run(definition.fingerprint, generationToken, definition.name);
           }
           definition.nextOccurrence = nextOccurrence;
+          definition.exhausted = exhausted;
           definition.generationToken = generationToken;
         }
         candidateArmed = true;
         return {
           recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })),
-          timerPlans: plans.filter(({ definition }) => definition.enabled).map(({ definition }) => ({ definition }))
+          timerPlans: plans.filter(({ definition, nextOccurrence, exhausted }) => definition.enabled && !exhausted && nextOccurrence !== null).map(({ definition }) => ({ definition }))
         };
       });
     } catch (error) {
@@ -15718,7 +15761,7 @@ function startStaticSchedules(database, timerPlans) {
   database.__activeScheduleOccurrences ??= /* @__PURE__ */ new Set();
   for (const { definition } of timerPlans) {
     const arm = () => {
-      if (database.__scheduleStopped || !definition.enabled) return;
+      if (database.__scheduleStopped || !definition.enabled || definition.exhausted || definition.nextOccurrence == null) return;
       const occurrence = new Date(definition.nextOccurrence);
       const timer = database.clock.setTimer(() => {
         database.__scheduleTimers.delete(timer);
@@ -15745,7 +15788,9 @@ function startStaticSchedules(database, timerPlans) {
 async function recordScheduledOccurrence(database, definition, occurrence) {
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
   if (!claim) {
-    definition.nextOccurrence = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+    const successor = nextScheduleCursor(definition, occurrence);
+    definition.nextOccurrence = successor.nextOccurrence;
+    definition.exhausted = successor.exhausted;
     return null;
   }
   let transactionContext;
@@ -15787,12 +15832,12 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
           "UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
         )).run(outcome, state?.id ?? null, errorCode3, completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
         if (Number(terminal.changes) !== 1) throw new Error("Schedule occurrence ownership changed during its owned transaction.");
-        const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+        const successor = nextScheduleCursor(definition, occurrence);
         const summary = await transactionAdapter.prepare(sql(
-          "UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
-        )).run(next, scheduledFor, outcome, state?.id ?? null, errorCode3, definition.name, definition.fingerprint, definition.generationToken);
+          "UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
+        )).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, outcome, state?.id ?? null, errorCode3, definition.name, definition.fingerprint, definition.generationToken);
         if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence finalization.");
-        return { owned: true, state, next };
+        return { owned: true, state, ...successor };
       } catch (error) {
         handlerFailed = true;
         throw error;
@@ -15805,7 +15850,10 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
       return null;
     }
     if (committed.superseded) definition.enabled = false;
-    else definition.nextOccurrence = committed.next;
+    else {
+      definition.nextOccurrence = committed.nextOccurrence;
+      definition.exhausted = committed.exhausted;
+    }
     await dispatchPendingJobs(transactionContext);
     return committed.state;
   } catch (error) {
@@ -15819,7 +15867,10 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
         claim.token
       ));
       if (failed.superseded) definition.enabled = false;
-      else if (failed.finished) definition.nextOccurrence = failed.nextOccurrence;
+      else if (failed.finished) {
+        definition.nextOccurrence = failed.nextOccurrence;
+        definition.exhausted = failed.exhausted;
+      }
     }
     throw error;
   }
@@ -15830,7 +15881,8 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   const token = randomUUID3();
   const now = database.clock.now();
   const nowIso = now.toISOString();
-  const expiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
+  const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
+  const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
   if (expiresAt === null) {
     throw commandError2("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
   }
@@ -16167,13 +16219,15 @@ function invalidStoredJobFailure(row, referenceInstant) {
   if (remainingAttempts === 0) return null;
   const firstAttempt = row.status === "running" ? jobTimestampAfter(referenceInstant, retry.delayMs) : new Date(Math.max(referenceInstant.getTime(), Date.parse(row.availableAt))).toISOString();
   if (firstAttempt === null) return invalidJobRetryPolicyFailure();
-  if (!jobRetryHorizonFits(new Date(firstAttempt), retry, remainingAttempts)) return invalidJobRetryPolicyFailure();
+  if (!jobRetryHorizonFits(new Date(firstAttempt), retry, remainingAttempts, Boolean(row.scheduleName && row.scheduledFor && retry.maxAttempts === 1))) return invalidJobRetryPolicyFailure();
   return null;
 }
-function jobRetryHorizonFits(firstAttempt, retry, attemptCount) {
+function jobRetryHorizonFits(firstAttempt, retry, attemptCount, allowShortFinalScheduleLease = false) {
   let attemptAt = firstAttempt;
   for (let attempt = 0; attempt < attemptCount; attempt += 1) {
-    if (jobTimestampAfter(attemptAt, RUNTIME_CLAIM_LEASE_MS) === null) return false;
+    if (jobTimestampAfter(attemptAt, RUNTIME_CLAIM_LEASE_MS) === null) {
+      return allowShortFinalScheduleLease && attempt === attemptCount - 1 && isCanonicalJobTimestamp(attemptAt.toISOString());
+    }
     if (attempt === attemptCount - 1) return true;
     const nextAttempt = jobTimestampAfter(attemptAt, retry.delayMs);
     if (nextAttempt === null) return false;
@@ -19243,10 +19297,10 @@ function createCurrentUserJobApi(database, contextGetter) {
       const availableAt = options.availableAt === void 0 ? now : normalizeJobAvailableAt(options.availableAt);
       const retry = normalizeJobRetry(options.retry);
       const firstAttemptInstant = availableAt > now ? new Date(availableAt) : nowInstant;
-      if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null) {
+      if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null && !scheduleProvenance) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value with room for a canonical runtime claim lease.");
       }
-      if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts)) {
+      if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts, Boolean(scheduleProvenance && retry.maxAttempts === 1))) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
@@ -19491,7 +19545,9 @@ async function runCurrentUserJobWorker(database) {
         continue;
       }
       const startedAt = workerNowIso;
-      const leaseExpiresAt = jobTimestampAfter(workerNow, RUNTIME_CLAIM_LEASE_MS);
+      const fullLeaseExpiresAt = jobTimestampAfter(workerNow, RUNTIME_CLAIM_LEASE_MS);
+      const storedRetry = parsePersistedJobRetry(row.retryJson);
+      const leaseExpiresAt = fullLeaseExpiresAt ?? (row.scheduleName && row.scheduledFor && storedRetry?.maxAttempts === 1 && isCanonicalJobTimestamp(workerNowIso) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
       if (leaseExpiresAt === null) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;

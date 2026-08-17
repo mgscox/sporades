@@ -270,8 +270,15 @@ effective timezone.
   ownership and failed candidate initialization leaves the previous scheduler
   functional. Every retained or freshly calculated next-occurrence cursor must
   be a canonical four-digit UTC timestamp; malformed retained state or a
-  calculation outside that domain fails startup with bounded
-  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms.
+  startup calculation outside that domain fails startup with bounded
+  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms. If an
+  already-due occurrence is the final representable instant, its success,
+  payload failure, or enqueue failure and latest summary commit atomically;
+  future scheduling is durably exhausted, inspection returns `enabled: true`
+  with `nextOccurrence: null`, and restart arms no replacement timer. A late
+  final occurrence and its single-attempt Job clamp their claims to the
+  remaining canonical domain; a retry policy that requires a later attempt
+  commits the bounded enqueue-failure outcome.
   Inspection applies the same domain to the next cursor and latest-occurrence
   timestamp. Reconciliation,
   claim, and finalization lock the Schedule row before occurrence rows.
@@ -291,10 +298,14 @@ effective timezone.
   timezone, Job handler reference, payload declaration, missed-run policy, and
   retry options. Disabling suppresses scheduling only, so changing `enabled` to
   `true` requires no additional definition fields or deferred validation.
-- Schedule evaluation begins only after the Capsule `init()` hook completes
-  successfully and stops accepting new occurrences before `shutdown()` begins.
-  A failed initialization creates no Scheduled occurrences. Jobs already
-  enqueued remain governed by ordinary Job Queue shutdown and recovery behavior.
+- Job dispatch, Job recovery wakes, and Schedule evaluation remain stopped from
+  runtime construction until the Capsule `init()` hook, retained Schedule
+  validation, declaration reconciliation, and timer capability gates all
+  complete successfully. A Job durably enqueued by `init()` cannot dispatch
+  before that boundary. A failed initialization creates no Scheduled
+  occurrences, unwinds and awaits all Job and Schedule runtime work, and leaves
+  retained Jobs for recovery by a later successful open. Scheduling stops
+  accepting new occurrences before `shutdown()` begins.
 - Re-enabling a declared Schedule resumes from the deployment that enabled it
   and does not backfill its disabled interval. Removing the declaration deletes
   its runtime Schedule state while existing Jobs retain their historical

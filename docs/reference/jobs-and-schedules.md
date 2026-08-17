@@ -70,8 +70,12 @@ and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
 their `availableAt` time. The initial runtime uses a single worker. A running
 attempt holds a lease, and lease recovery after interruption may execute that
 attempt again. Storage recovery records an expired attempt before Capsule
-initialization, but no recovered handler or retry wake starts until the runtime
-has completed its `init()` boundary. Long `availableAt` and retry waits are
+initialization, but Job dispatch and recovery wakes remain stopped until the
+Capsule `init()` hook, retained Schedule validation, declaration reconciliation,
+and timer capability gates all succeed. A Job durably enqueued by `init()` does
+not dispatch before that boundary. Failed initialization unwinds and awaits all
+Job and Schedule runtime work; a later successful open recovers retained Jobs.
+Long `availableAt` and retry waits are
 re-armed in bounded native-timer chunks, so dates beyond the platform timer
 limit do not cause early execution or repeated queue scans. If restart happens
 before a retained running attempt's lease expires, initialization tracks the
@@ -248,10 +252,16 @@ retained-state compare-and-set is returned as a transaction result and armed
 only after commit, so its callback can open a fresh transaction. Every
 retained or freshly calculated Schedule `nextOccurrence` cursor must be a
 canonical four-digit UTC timestamp. A malformed or coercible retained cursor,
-or a calculation beyond that domain, fails startup with
+or a startup calculation beyond that domain, fails startup with
 `SCHEDULE_STATE_INVALID` before persistence or any live timer arms. Privileged
-and operator inspection applies the same domain to both the next cursor and
-latest-occurrence timestamp. Retained occurrence
+and operator inspection applies the same domain to the next cursor and latest
+occurrence timestamp. If an already-due occurrence
+is the final representable instant, its Job or bounded failure outcome and
+latest summary commit atomically and future scheduling becomes durably
+exhausted. Inspection reports `enabled: true` with `nextOccurrence: null`;
+restart does not re-arm a timer. A late final occurrence and its single-attempt
+Job clamp their claim leases to the remaining canonical domain; a retry policy
+requiring later attempts commits the bounded enqueue-failure outcome. Retained occurrence
 instants and claim expiries must be canonical four-digit UTC timestamps;
 malformed retained state
 is terminally quarantined with the stable opaque

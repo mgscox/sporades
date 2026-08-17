@@ -203,6 +203,7 @@ test("a persisted invalid retry policy terminally fails a live attempt without s
     database.adapter.prepare(
       "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(auth.userId, clock.now().toISOString(), auth.displayName, null, null, 0, 1, auth.provider);
+    await database.init();
     const queued = await runMutation(database, auth, "enqueue", []);
     database.adapter.prepare("UPDATE sporades_jobs SET retryJson = ? WHERE id = ?")
       .run(JSON.stringify({ maxAttempts: 2, delayMs: Number.MAX_SAFE_INTEGER }), queued.data.id);
@@ -445,6 +446,8 @@ test("concurrent workers reject retained invalid availability at the claim bound
   try {
     first = await openDevDatabase(file, "", {}, { name: "jobs" }, capsule, { clock });
     second = await openDevDatabase(file, "", {}, { name: "jobs" }, capsule, { clock });
+    await first.init();
+    await second.init();
     first.adapter.prepare(
       "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(auth.userId, clock.now().toISOString(), auth.displayName, null, null, 0, 1, auth.provider);

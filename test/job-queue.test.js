@@ -5,12 +5,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, openDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase as openStoppedDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { String, job, mutation, table } from "../dist/server.js";
 import { POSTGRES_SKIP_REASON, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
+}
+
+async function openDevDatabase(...args) {
+  const database = await openStoppedDevDatabase(...args);
+  await database.init();
+  return database;
 }
 
 test("concurrent Postgres mutations converge one idempotent Job inside their handler transactions", {

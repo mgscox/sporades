@@ -3,10 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase, resolveAnonymousSession, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase as openStoppedDevDatabase, resolveAnonymousSession, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 const auth = { userId: "u", displayName: "u", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
+async function openDevDatabase(...args) { const database = await openStoppedDevDatabase(...args); await database.init(); return database; }
 test("Jobs support delayed availability, bounded retries, and cancellation", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-retry-")); let attempts=0;
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{ flaky:job(()=>{attempts++; if(attempts<2) throw new Error("TOKEN=x"); return {ok:true};})},mutations:{enqueue:mutation((ctx,options)=>ctx.jobs.enqueue("flaky",{},options)),get:mutation((ctx,id)=>ctx.jobs.get(id)),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id))}});
@@ -177,13 +178,13 @@ test("closing the runtime clears a delayed Job wake timer", async () => {
 test("expired-lease recovery waits for runtime initialization and close clears its wake", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-recovery-close-"));const file=path.join(dir,"data.db");const instant="2030-01-01T00:00:00.000Z";const seedClock=createControllableRuntimeClock(instant);const seen=[];let db;
  try {
-  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:0}}))}},{clock:seedClock});
+  db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>null)},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:0}}))}},{clock:seedClock});
   db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",seedClock.now().toISOString(),"u",null,null,0,1,"anonymous");
   const queued=await runMutation(db,auth,"enqueue",[]);
   db.adapter.prepare("UPDATE sporades_jobs SET status='running', attempts=1, leaseExpiresAt=? WHERE id=?").run("2029-12-31T23:59:59.000Z",queued.data.id);
   await db.close();db=null;
   const tracked=trackedRuntimeClock(instant);
-  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))}},{clock:tracked.clock});
+  db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))}},{clock:tracked.clock});
   assert.equal(tracked.activeCount(),0,"opening storage must not schedule recovered Job execution before init");
   await tracked.runDueTimers();
   assert.deepEqual(seen,[]);
@@ -206,7 +207,7 @@ test("closing the runtime cancels scheduled Job work before its adapter closes",
 test("a Job committed during an active empty scan triggers a lossless rerun", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-rerun-"));const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const seen=[];let releaseEmptyRead=()=>{};let emptyReadStarted;const emptyReadBegan=new Promise(resolve=>{emptyReadStarted=resolve;});let db;
  try {
-  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job((_ctx,payload)=>seen.push(payload.name))},mutations:{enqueue:mutation((ctx,name)=>ctx.jobs.enqueue("record",{name})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db=await openStoppedDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job((_ctx,payload)=>seen.push(payload.name))},mutations:{enqueue:mutation((ctx,name)=>ctx.jobs.enqueue("record",{name})),get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
   db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
   const baseAdapter=db.adapter;
   db.adapter=pauseEmptyQueuedJobRead(baseAdapter,()=>emptyReadStarted(),release=>{releaseEmptyRead=release;});
@@ -242,7 +243,7 @@ test("orderly close retains an aborted active Job for its remaining retry", asyn
   await Promise.all([draining,closing]);
   db=null;
 
-  db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("recovered"))},mutations:{get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
+  db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("recovered"))},mutations:{get:mutation((ctx,id)=>ctx.jobs.get(id))}},{clock});
   const retained=(await runMutation(db,auth,"get",[queued.data.id])).data;
   assert.equal(retained.status,"delayed");
   assert.equal(retained.attempts,1);
@@ -328,7 +329,7 @@ test("a stale shutdown owner cannot relinquish a newer PostgreSQL Job attempt", 
   const firstBase=first.adapter;first.adapter=pauseJobClaimAfterCommit(firstBase,()=>firstClaimStarted(),release=>{releaseFirstClaim=release;});
   const firstDrain=firstClock.runDueTimers();await firstClaimBegan;const firstClose=first.close();
 
-  second=await openDevDatabase(path.join(dir,"second.db"),"",serverEnv,config,capsule,{serviceEnv:serverEnv,clock:secondClock});
+  second=await openStoppedDevDatabase(path.join(dir,"second.db"),"",serverEnv,config,capsule,{serviceEnv:serverEnv,clock:secondClock});
   await second.init();const secondDrain=secondClock.runDueTimers();await secondHandlerBegan;
   releaseFirstClaim();releaseFirstClaim=()=>{};await Promise.all([firstDrain,firstClose]);first=null;
   const inFlight=(await runMutation(second,auth,"get",[queued.data.id])).data;
@@ -353,7 +354,7 @@ test("a stale PostgreSQL handler completion cannot overwrite a recovered attempt
   await first.adapter.prepare(first.adapter.dialect.sql("INSERT INTO [sporades_auth_users] ([id],[createdAt],[displayName],[email],[picture],[isAuthenticated],[isGuest],[provider]) VALUES (?,?,?,?,?,?,?,?)")).run("u",firstClock.now().toISOString(),"u",null,null,0,1,"anonymous");
   const queued=await runMutation(first,auth,"enqueue",[{retry:{maxAttempts:3,delayMs:0}}]);const firstDrain=firstClock.runDueTimers();await firstBegan;
 
-  second=await openDevDatabase(path.join(dir,"second.db"),"",serverEnv,config,{jobs:{record:job(async()=>{secondStarted();await new Promise(resolve=>releaseSecond=resolve);return {owner:"current"};})},mutations},{serviceEnv:serverEnv,clock:secondClock});
+  second=await openStoppedDevDatabase(path.join(dir,"second.db"),"",serverEnv,config,{jobs:{record:job(async()=>{secondStarted();await new Promise(resolve=>releaseSecond=resolve);return {owner:"current"};})},mutations},{serviceEnv:serverEnv,clock:secondClock});
   await second.init();const secondDrain=secondClock.runDueTimers();await secondBegan;
   releaseFirst();releaseFirst=()=>{};await firstDrain;
   const inFlight=await second.adapter.prepare(second.adapter.dialect.sql("SELECT [status], [attempts], [result] FROM [sporades_jobs] WHERE [id]=?")).get(queued.data.id);
@@ -394,14 +395,14 @@ test("PostgreSQL cancellation racing a shutdown claim consumes no unexecuted att
 
 test("runtime initialization wakes queued and delayed Jobs retained by an orderly restart", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-restart-wake-"));const file=path.join(dir,"data.db");const seen=[];const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const capsule={jobs:{record:job((ctx,p)=>seen.push(p.id))},mutations:{enqueue:mutation((ctx,id,options)=>ctx.jobs.enqueue("record",{id},options))}};let db;
- try {db=await openDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["queued",{}]);await runMutation(db,auth,"enqueue",["delayed",{availableAt:new Date(clock.now().getTime()+100).toISOString()}]);await db.close();db=await openDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});await db.init();assert.equal(db.__jobWorkerScheduled,true);await clock.runDueTimers();assert.deepEqual(seen,["queued"]);clock.advanceBy(101);await clock.runDueTimers();assert.deepEqual(seen,["queued","delayed"]);}
+ try {db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["queued",{}]);await runMutation(db,auth,"enqueue",["delayed",{availableAt:new Date(clock.now().getTime()+100).toISOString()}]);await db.close();db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});await db.init();assert.equal(db.__jobWorkerScheduled,true);await clock.runDueTimers();assert.deepEqual(seen,["queued"]);clock.advanceBy(101);await clock.runDueTimers();assert.deepEqual(seen,["queued","delayed"]);}
  finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
 test("far-future Jobs re-arm bounded timer chunks without tight rescans", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-future-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);const seen=[];let db;
  try {
-  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))},mutations:{enqueue:mutation((ctx,availableAt)=>ctx.jobs.enqueue("record",{},{availableAt}))}},{clock:tracked.clock});
+  db=await openStoppedDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>seen.push("ran"))},mutations:{enqueue:mutation((ctx,availableAt)=>ctx.jobs.enqueue("record",{},{availableAt}))}},{clock:tracked.clock});
   db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",tracked.clock.now().toISOString(),"u",null,null,0,1,"anonymous");
   const availableAt=new Date(tracked.clock.now().getTime()+maximumDelay+1_000).toISOString();
   await runMutation(db,auth,"enqueue",[availableAt]);await db.init();await tracked.runDueTimers();
@@ -417,7 +418,7 @@ test("far-future Jobs re-arm bounded timer chunks without tight rescans", async 
 test("far-future Job retries use the same bounded timer chunks", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-retry-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);let attempts=0;let db;
  try {
-  db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>{attempts+=1;if(attempts===1) throw new Error("retry");})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:maximumDelay+1_000}}))}},{clock:tracked.clock});
+  db=await openStoppedDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job(()=>{attempts+=1;if(attempts===1) throw new Error("retry");})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("record",{},{retry:{maxAttempts:2,delayMs:maximumDelay+1_000}}))}},{clock:tracked.clock});
   db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",tracked.clock.now().toISOString(),"u",null,null,0,1,"anonymous");
   await runMutation(db,auth,"enqueue",[]);await db.init();await tracked.runDueTimers();assert.equal(attempts,1);
   assert.ok(tracked.requestedDelays().every(delay=>delay<=maximumDelay),"retry wakes must fit Node's supported delay range");

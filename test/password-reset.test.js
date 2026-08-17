@@ -31,6 +31,7 @@ async function withDatabase(config, run, options = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-password-reset-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, config, {}, options);
   try {
+    await database.init();
     return await run(database);
   } finally {
     await database.close();
@@ -388,6 +389,7 @@ test("the delivered reset mail carries a working link on the configured origin a
     },
   );
   try {
+    await database.init();
     await registerEmailAccount(database, "owner@example.com", "original-password");
 
     const result = await runMutation(database, capsuleUser, "requestReset", ["owner@example.com"]);
@@ -466,6 +468,8 @@ test("a service-backed password reset Job starts only after its mutation commits
         }),
       });
       try {
+        await database.init();
+        await clock.runDueTimers();
         assert.equal(database.__handlerContextMappingCount, 0, "root runtime contexts are never registered for post-commit dispatch");
         assert.equal((await runQuery(database, capsuleUser, "mappingProbe")).data, "ok");
         assert.equal(database.__handlerContextMappingCount, 0, "completed root query contexts are not retained for dispatch");
@@ -549,6 +553,7 @@ async function withMailDatabase(run, transport) {
     { mailTransportFactory: () => transport, clock },
   );
   try {
+    await database.init();
     return await run(database, clock);
   } finally {
     await database.shutdown();

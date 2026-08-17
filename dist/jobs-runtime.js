@@ -9,8 +9,8 @@
 // it names and bounding its payload with `boundedJobJson`, and `resolveSchedulePayload` turns an
 // occurrence into a Job payload. Splitting them would put that shared surface on a module boundary.
 //
-// **What moved and what did not.** The domain is 51 declarations by inspection — 50 functions and
-// `RESERVED_JOB_NAME_PREFIX`. Thirty-four are here; seventeen stayed behind, and the reference
+// **What moved and what did not.** The domain is 52 declarations by inspection — 51 functions and
+// `RESERVED_JOB_NAME_PREFIX`. Thirty-five are here; seventeen stayed behind, and the reference
 // graph says exactly why. Closing the domain leaves three things outside it:
 //
 //   - `createMutationContext`, which is the composition point where every domain's API is wired
@@ -34,7 +34,7 @@
 // **`enqueueRuntimeJob` is among them, so this batch does not unblock batch 3's
 // `sendEmailPasswordResetLink`** — auth's blocker moved one link down the chain rather than away.
 //
-// **What is exported and what is not.** Twenty-nine of the thirty-four are exported and five are
+// **What is exported and what is not.** Thirty of the thirty-five are exported and five are
 // private. The exports are not a designed interface — they are the names something outside this
 // file still resolves: what the seventeen stranded functions call, what `openDevDatabase` wires at
 // startup, what `server-bundle-entry.ts` reaches for the two `--sporades-action` inspections, and
@@ -234,7 +234,7 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     const sql = sqlite.dialect.sql;
     await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, " +
         "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
-        "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
+        "[enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
         "[latestJobId] TEXT, [latestErrorCode] TEXT)"));
     await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, " +
         "[definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"));
@@ -242,6 +242,7 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
         "[definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
         "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"));
     await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
+    await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
     await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
     await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
     await sqlite.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING")).run();
@@ -327,11 +328,24 @@ export async function finishFailedScheduledOccurrence(database, definition, occu
     const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
     if (Number(terminal.changes) !== 1)
         return { finished: false, nextOccurrence: null };
-    const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-    const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(next, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
+    const successor = nextScheduleCursor(definition, occurrence);
+    const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
     if (Number(summary.changes) !== 1)
         throw new Error("Schedule definition changed during occurrence failure finalization.");
-    return { finished: true, nextOccurrence: next };
+    return { finished: true, ...successor };
+}
+export function nextScheduleCursor(definition, occurrence) {
+    try {
+        return {
+            nextOccurrence: nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString(),
+            exhausted: false,
+        };
+    }
+    catch (error) {
+        if (error?.code !== "SCHEDULE_STATE_INVALID")
+            throw error;
+        return { nextOccurrence: null, exhausted: true };
+    }
 }
 export function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
     return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
@@ -592,6 +606,10 @@ export async function scheduleSummary(sqlite, row) {
         throw invalid("missedRun");
     if (![0, 1, false, true].includes(row.enabled))
         throw invalid("enabled");
+    const exhausted = row.exhausted ?? 0;
+    if (![0, 1, false, true].includes(exhausted)
+        || (Boolean(exhausted) && (!Boolean(row.enabled) || row.nextOccurrence != null)))
+        throw invalid("exhausted");
     if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence))
         throw invalid("nextOccurrence");
     const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);

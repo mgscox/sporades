@@ -153,7 +153,7 @@ A deliberate non-terminal Job-handler outcome that keeps the same Job identity a
 _Avoid_: retry, replacement Job, recursive enqueue
 
 **Schedule**:
-A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management. A dynamic payload factory may opt into a declaration-owned `payloadVersion`; omission preserves the weaker v0.8.5 source-text identity, which cannot identify captured configuration. Every retained or freshly calculated next-occurrence cursor is either absent or one canonical four-digit UTC instant; malformed retained cursors and calculations beyond that domain fail startup before persistence or timers arm.
+A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management. A dynamic payload factory may opt into a declaration-owned `payloadVersion`; omission preserves the weaker v0.8.5 source-text identity, which cannot identify captured configuration. Every retained or freshly calculated next-occurrence cursor is either absent or one canonical four-digit UTC instant; malformed retained cursors and startup calculations beyond that domain fail before persistence or timers arm. After the final representable occurrence commits, an enabled Schedule is durably exhausted and exposes an absent next occurrence without re-arming a timer.
 _Avoid_: cron job, recurring Job, timer
 
 **Scheduled occurrence**:

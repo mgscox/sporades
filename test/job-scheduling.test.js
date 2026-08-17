@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { createControllableRuntimeClock, createPostgresDatabaseAdapter, enqueueScheduledOccurrence, openDevDatabase, replaceRuntimeDatabase } from "../dist/server-runtime-source.js";
+import { inspectRuntimeSchedules } from "../dist/jobs-runtime.js";
 import { job, mutation, schedule } from "../dist/server.js";
 import { runMutation } from "../dist/server-runtime-source.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -19,6 +20,35 @@ async function seedRetainedScheduleGeneration(database, nextOccurrence) {
     "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
   )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, nextOccurrence);
   return generationToken;
+}
+
+function createTrackedRuntimeClock(initialInstant) {
+  let nowMs = Date.parse(initialInstant);
+  let nextTimerId = 1;
+  const timers = new Map();
+  return {
+    timers,
+    clock: {
+      now: () => new Date(nowMs),
+      setTimer(callback, delayMs) {
+        const id = nextTimerId++;
+        timers.set(id, { id, callback, dueAt: nowMs + Math.max(0, delayMs) });
+        return id;
+      },
+      clearTimer(id) { timers.delete(id); },
+      setInstant(instant) { nowMs = Date.parse(instant); },
+      async runDueTimers(limit = 10) {
+        for (let count = 0; ; count += 1) {
+          const due = [...timers.values()].filter((timer) => timer.dueAt <= nowMs)
+            .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0];
+          if (!due) return;
+          assert.ok(count < limit, "due runtime timers must settle without a hot loop");
+          timers.delete(due.id);
+          await due.callback();
+        }
+      },
+    },
+  };
 }
 
 test("far-future annual and monthly Schedules do not run before their nominal occurrence", async (t) => {
@@ -521,6 +551,11 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
       const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
       assert.equal(invalid.ok, false);
     }
+    database.adapter.prepare("UPDATE sporades_schedules SET exhausted=2, nextOccurrence=?, latestScheduledFor=NULL, latestOutcome=NULL, latestJobId=NULL, latestErrorCode=NULL WHERE name='zeta'")
+      .run("2030-01-01T00:05:00.000Z");
+    const invalidExhaustion = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+    assert.equal(invalidExhaustion.ok, false);
+    database.adapter.prepare("UPDATE sporades_schedules SET exhausted=0 WHERE name='zeta'").run();
     database.adapter.prepare("DELETE FROM sporades_jobs WHERE id='unrelated'").run();
 
     clock.advanceBy(270_000); await clock.runDueTimers();
@@ -736,13 +771,14 @@ test("rejected and invalid resolved factory payloads create no Job", async () =>
     },
   }, { clock });
   try {
+    await database.init();
     await Promise.all(database.schedules.map((definition) => enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z"))));
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
     assert.equal(database.schedulePayloadFactoryLanes.size, 0);
     const failures = (await database.adapter.readRecentLogEvents(20)).filter((entry) => entry.event === "schedule.occurrence.payload_failed");
     assert.deepEqual(failures.map((entry) => entry.data.code).sort(), ["SCHEDULE_PAYLOAD_FACTORY_FAILED", "SCHEDULE_PAYLOAD_INVALID_JOB_PAYLOAD"]);
     assert.equal(JSON.stringify(failures).includes("private rejection"), false);
-  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("payload factory timeout aborts cooperatively and discards a late result", async () => {
@@ -755,6 +791,7 @@ test("payload factory timeout aborts cooperatively and discards a late result", 
     schedules: { slow: schedule({ expression: "* * * * *", job: "record", payloadVersion: "slow-v1", payload: (_occurrence, ctx) => { signal = ctx.signal; return new Promise((resolve) => { resolveFactory = resolve; }); } }) },
   }, { clock });
   try {
+    await database.init();
     const pending = enqueueScheduledOccurrence(database, database.schedules[0], new Date("2030-01-01T00:01:00.000Z"));
     while (!signal) await Promise.resolve();
     assert.equal(signal.aborted, false);
@@ -765,7 +802,7 @@ test("payload factory timeout aborts cooperatively and discards a late result", 
     resolveFactory({ late: true });
     await Promise.resolve();
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
-  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("payload factories use four FIFO Capsule-wide slots", async () => {
@@ -782,6 +819,7 @@ test("payload factories use four FIFO Capsule-wide slots", async () => {
   }
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, { jobs, schedules }, { clock });
   try {
+    await database.init();
     const pending = database.schedules.map((definition) => enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z")));
     while (started.length < 4) await Promise.resolve();
     assert.deepEqual(started, ["schedule0", "schedule1", "schedule2", "schedule3"]);
@@ -792,7 +830,7 @@ test("payload factories use four FIFO Capsule-wide slots", async () => {
     while (started.length < 6) await Promise.resolve();
     for (const release of releases.splice(0)) release();
     await Promise.all(pending);
-  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("shutdown removes a queued fifth payload factory without starting it", async () => {
@@ -878,6 +916,7 @@ test("concurrent occurrences of one Schedule serialize payload factory evaluatio
     }) }) },
   }, { clock });
   try {
+    await database.init();
     const definition = database.schedules[0];
     const pending = [
       enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z")),
@@ -892,7 +931,7 @@ test("concurrent occurrences of one Schedule serialize payload factory evaluatio
     await Promise.all(pending);
     assert.equal(maxActive, 1);
     assert.equal(database.schedulePayloadFactoryLanes.size, 0);
-  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("payload factory timeout configuration defaults to 30 seconds and validates 1 through 300", async () => {
@@ -1086,6 +1125,212 @@ test("Schedule startup rejects a freshly computed cursor outside the four-digit 
     assert.equal(timers.size, 0);
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_schedules").get().count, 0);
   } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the final canonical Schedule occurrence commits once and exhausts future scheduling", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-canonical-occurrence-"));
+  const file = path.join(dir, "data.db");
+  const { clock, timers } = createTrackedRuntimeClock("9999-12-31T23:58:30.000Z");
+  const capsule = {
+    jobs: { work: job(() => null) },
+    schedules: { finalMinute: schedule({ expression: "* * * * *", timezone: "UTC", job: "work" }) },
+  };
+  let database = await openDevDatabase(file, "", {}, { name: "final-canonical-occurrence" }, capsule, { clock });
+  try {
+    await database.init();
+    clock.setInstant("9999-12-31T23:59:00.000Z");
+    await clock.runDueTimers();
+
+    const jobRow = database.adapter.prepare("SELECT id,status FROM sporades_jobs WHERE scheduleName='finalMinute'").get();
+    assert.equal(jobRow.status, "succeeded");
+    assert.deepEqual(await inspectRuntimeSchedules(database.adapter), [{
+      name: "finalMinute",
+      expression: "* * * * *",
+      timezone: "UTC",
+      missedRun: "skip",
+      enabled: true,
+      nextOccurrence: null,
+      latestOccurrence: {
+        scheduledFor: "9999-12-31T23:59:00.000Z",
+        outcome: "enqueued",
+        jobId: jobRow.id,
+      },
+    }]);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,errorCode FROM sporades_schedule_occurrences WHERE scheduleName='finalMinute'").get() }, {
+      status: "enqueued",
+      errorCode: null,
+    });
+    assert.equal(timers.size, 0);
+    const logs = await database.adapter.readRecentLogEvents(20);
+    assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed"), false);
+
+    await database.shutdown();
+    await database.close();
+    database = await openDevDatabase(file, "", {}, { name: "final-canonical-occurrence" }, capsule, { clock });
+    await database.init();
+    await clock.runDueTimers();
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    assert.equal(timers.size, 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a late final canonical Schedule occurrence uses the remaining claim domain and does not hot-loop", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-late-final-occurrence-"));
+  const { clock, timers } = createTrackedRuntimeClock("9999-12-31T23:58:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "late-final-occurrence" }, {
+    jobs: { work: job(() => null) },
+    schedules: { finalMinute: schedule({ expression: "* * * * *", timezone: "UTC", job: "work" }) },
+  }, { clock });
+  try {
+    await database.init();
+    clock.setInstant("9999-12-31T23:59:40.000Z");
+    await clock.runDueTimers();
+
+    assert.equal(database.adapter.prepare("SELECT status FROM sporades_jobs WHERE scheduleName='finalMinute'").get().status, "succeeded");
+    assert.deepEqual({ ...database.adapter.prepare("SELECT exhausted,nextOccurrence FROM sporades_schedules WHERE name='finalMinute'").get() }, {
+      exhausted: 1,
+      nextOccurrence: null,
+    });
+    assert.equal(timers.size, 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a retrying Job at the final canonical Schedule occurrence records bounded enqueue failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-retry-horizon-"));
+  const { clock, timers } = createTrackedRuntimeClock("9999-12-31T23:58:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "final-retry-horizon" }, {
+    jobs: { work: job(() => null) },
+    schedules: {
+      finalMinute: schedule({
+        expression: "* * * * *",
+        timezone: "UTC",
+        job: "work",
+        retry: { maxAttempts: 2, delayMs: 30_000 },
+      }),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    clock.setInstant("9999-12-31T23:59:00.000Z");
+    await clock.runDueTimers();
+
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT exhausted,nextOccurrence FROM sporades_schedules WHERE name='finalMinute'").get() }, {
+      exhausted: 1,
+      nextOccurrence: null,
+    });
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,errorCode FROM sporades_schedule_occurrences WHERE scheduleName='finalMinute'").get() }, {
+      status: "enqueue-failed",
+      errorCode: "SCHEDULE_ENQUEUE_FAILED",
+    });
+    assert.equal(timers.size, 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a payload failure at the final canonical Schedule occurrence commits exhaustion without a hot timer", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-payload-failure-"));
+  const { clock, timers } = createTrackedRuntimeClock("9999-12-31T23:58:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "final-payload-failure" }, {
+    jobs: { work: job(() => null) },
+    schedules: {
+      finalMinute: schedule({
+        expression: "* * * * *",
+        timezone: "UTC",
+        job: "work",
+        payload: () => { throw new Error("expected payload failure"); },
+      }),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    clock.setInstant("9999-12-31T23:59:00.000Z");
+    await clock.runDueTimers();
+
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.deepEqual(await inspectRuntimeSchedules(database.adapter), [{
+      name: "finalMinute",
+      expression: "* * * * *",
+      timezone: "UTC",
+      missedRun: "skip",
+      enabled: true,
+      nextOccurrence: null,
+      latestOccurrence: {
+        scheduledFor: "9999-12-31T23:59:00.000Z",
+        outcome: "payload-failed",
+        errorCode: "SCHEDULE_PAYLOAD_FAILED",
+      },
+    }]);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,errorCode FROM sporades_schedule_occurrences WHERE scheduleName='finalMinute'").get() }, {
+      status: "payload-failed",
+      errorCode: "SCHEDULE_PAYLOAD_FAILED",
+    });
+    assert.equal(timers.size, 0);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an enqueue rollback at the final canonical Schedule occurrence commits exhaustion without retrying hot", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-enqueue-failure-"));
+  const { clock, timers } = createTrackedRuntimeClock("9999-12-31T23:58:30.000Z");
+  let failAfterEnqueue = true;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "final-enqueue-failure" }, {
+    jobs: { work: job(() => null) },
+    schedules: { finalMinute: schedule({ expression: "* * * * *", timezone: "UTC", job: "work" }) },
+  }, {
+    clock,
+    scheduleOccurrenceFault(boundary) {
+      if (boundary === "after-enqueue" && failAfterEnqueue) {
+        failAfterEnqueue = false;
+        throw new Error("expected enqueue rollback");
+      }
+    },
+  });
+  try {
+    await database.init();
+    clock.setInstant("9999-12-31T23:59:00.000Z");
+    await clock.runDueTimers();
+
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.deepEqual(await inspectRuntimeSchedules(database.adapter), [{
+      name: "finalMinute",
+      expression: "* * * * *",
+      timezone: "UTC",
+      missedRun: "skip",
+      enabled: true,
+      nextOccurrence: null,
+      latestOccurrence: {
+        scheduledFor: "9999-12-31T23:59:00.000Z",
+        outcome: "payload-failed",
+        errorCode: "SCHEDULE_ENQUEUE_FAILED",
+      },
+    }]);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,errorCode FROM sporades_schedule_occurrences WHERE scheduleName='finalMinute'").get() }, {
+      status: "enqueue-failed",
+      errorCode: "SCHEDULE_ENQUEUE_FAILED",
+    });
+    assert.equal(timers.size, 0);
+    const logs = await database.adapter.readRecentLogEvents(20);
+    assert.equal(logs.filter((entry) => entry.event === "schedule.occurrence.enqueue_failed").length, 1);
+  } finally {
+    await database.shutdown();
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -2877,6 +3122,88 @@ test("shutdown stops future occurrences and awaits an active occurrence", async 
       latestErrorCode: null,
     });
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Jobs enqueued during Capsule init remain durable but do not dispatch before init succeeds", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-init-job-gate-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let executions = 0;
+  let releaseInit;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "init-job-gate" }, {
+    jobs: { work: job(() => { executions += 1; return null; }) },
+    hooks: {
+      init: async (ctx) => {
+        await ctx.privileged.run(
+          { operation: "test.init.enqueue", targetResourceKind: "job-queue" },
+          (privilegedCtx) => privilegedCtx.jobs.enqueue("work", null),
+        );
+        await new Promise((resolve) => { releaseInit = resolve; });
+      },
+    },
+  }, { clock });
+  try {
+    const initializing = database.init();
+    while (!releaseInit) await Promise.resolve();
+    await clock.runDueTimers();
+    assert.equal(executions, 0);
+
+    releaseInit();
+    await initializing;
+    await clock.runDueTimers();
+    assert.equal(executions, 1);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed Schedule initialization unwinds Job lease recovery until a later successful open", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-init-failure-job-recovery-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let executions = 0;
+  const capsule = {
+    jobs: { work: job(() => { executions += 1; return null; }) },
+    schedules: { tick: schedule({ expression: "* * * * *", timezone: "UTC", job: "work" }) },
+  };
+  let database;
+  try {
+    database = await openDevDatabase(file, "", {}, { name: "init-failure-job-recovery" }, capsule, { clock });
+    await database.init();
+    const now = clock.now().toISOString();
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)")
+      .run("future-user", now, "Future user", null, null, 0, 1, "anonymous");
+    database.adapter.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory,leaseExpiresAt,claimToken) VALUES (?,?,?,?,?,'running',?,1,?,?,?,?,?)")
+      .run("future-lease", "work", "future-user", "future-user", "null", now, now, '{"maxAttempts":2,"delayMs":0}', "[]", "2030-01-01T00:00:10.000Z", "claim-before-failed-init");
+    database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=? WHERE name='tick'")
+      .run("+010000-01-01T00:00:00.000Z");
+    await database.close();
+
+    database = await openDevDatabase(file, "", {}, { name: "init-failure-job-recovery" }, capsule, { clock });
+    await assert.rejects(database.init(), { code: "SCHEDULE_STATE_INVALID" });
+    clock.advanceBy(10_001);
+    await clock.runDueTimers();
+    assert.equal(executions, 0);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,attempts FROM sporades_jobs WHERE id='future-lease'").get() }, {
+      status: "running",
+      attempts: 1,
+    });
+
+    database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=? WHERE name='tick'")
+      .run("2030-01-01T00:01:00.000Z");
+    await database.close();
+    database = await openDevDatabase(file, "", {}, { name: "init-failure-job-recovery" }, capsule, { clock });
+    await database.init();
+    await clock.runDueTimers();
+    assert.equal(executions, 1);
+    assert.deepEqual({ ...database.adapter.prepare("SELECT status,attempts FROM sporades_jobs WHERE id='future-lease'").get() }, {
+      status: "succeeded",
+      attempts: 2,
+    });
+  } finally {
+    await Promise.resolve(database?.close()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Schedule evaluation starts after successful Capsule init and stops before Capsule shutdown", async () => {

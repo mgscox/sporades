@@ -15,10 +15,23 @@ export declare function finishFailedScheduledOccurrence(database: LooseRecord, d
     nextOccurrence: null;
     superseded?: undefined;
 } | {
-    finished: boolean;
     nextOccurrence: string;
+    exhausted: boolean;
+    finished: boolean;
+    superseded?: undefined;
+} | {
+    nextOccurrence: null;
+    exhausted: boolean;
+    finished: boolean;
     superseded?: undefined;
 }>;
+export declare function nextScheduleCursor(definition: any, occurrence: Date): {
+    nextOccurrence: string;
+    exhausted: boolean;
+} | {
+    nextOccurrence: null;
+    exhausted: boolean;
+};
 export declare function scheduledOccurrenceIdentity(database: LooseRecord, scheduleName: string, scheduledFor: string): string;
 export declare function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord): Promise<{
     ok: boolean;
