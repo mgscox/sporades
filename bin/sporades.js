@@ -13283,7 +13283,8 @@ async function rejectNestedTransactionScope() {
   );
 }
 var transactionScopeRevokers = /* @__PURE__ */ new WeakMap();
-function createTransactionScopedAdapter(adapter, operations = {}) {
+var transactionScopeOwners = /* @__PURE__ */ new WeakMap();
+function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
   let active = true;
   const assertActive = () => {
     if (!active) throw commandError2(
@@ -13320,11 +13321,13 @@ function createTransactionScopedAdapter(adapter, operations = {}) {
   transactionScopeRevokers.set(scopedAdapter, () => {
     active = false;
   });
+  transactionScopeOwners.set(scopedAdapter, owner);
   return scopedAdapter;
 }
 function revokeTransactionScopedAdapter(adapter) {
   transactionScopeRevokers.get(adapter)?.();
   transactionScopeRevokers.delete(adapter);
+  transactionScopeOwners.delete(adapter);
 }
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
@@ -14758,7 +14761,7 @@ async function createLibsqlDatabaseAdapter(options) {
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
           ...createOperations(transaction, runDirectly)
-        });
+        }, {}, adapter);
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -14786,7 +14789,7 @@ async function createLibsqlDatabaseAdapter(options) {
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
         const transaction = { baton: null, baseUrl: endpoint };
-        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
+        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter);
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -17569,32 +17572,45 @@ function createEndpointDatabaseApi(database, contextGetter = null) {
     database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)])
   );
 }
-function createEndpointReadOnlyDatabaseApi(database, contextGetter = null) {
+function createEndpointReadOnlyDatabaseApi(database, contextGetter = null, assertActive = () => {
+}) {
   return Object.fromEntries(
     database.schema.tables.map((table) => [
       table.name,
-      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter))
+      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter), assertActive)
     ])
   );
 }
-function readOnlyEndpointTableApi(tableApi) {
+function readOnlyEndpointTableApi(tableApi, assertActive) {
   return {
     where(fieldName, value) {
-      return readOnlyEndpointTableApi(tableApi.where(fieldName, value));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.where(fieldName, value), assertActive);
     },
     orderBy(fieldName, direction = "asc") {
-      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction), assertActive);
     },
     limit(count) {
-      return readOnlyEndpointTableApi(tableApi.limit(count));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.limit(count), assertActive);
     },
     get() {
-      return tableApi.get();
+      assertActive();
+      return trustedReadResult(tableApi.get(), assertActive);
     },
     all() {
-      return tableApi.all();
+      assertActive();
+      return trustedReadResult(tableApi.all(), assertActive);
     }
   };
+}
+function trustedReadResult(value, assertActive) {
+  if (!isPromiseLike(value)) return value;
+  return Promise.resolve(value).then((result) => {
+    assertActive();
+    return result;
+  });
 }
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {

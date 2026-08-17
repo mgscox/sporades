@@ -231,7 +231,13 @@ async function rejectNestedTransactionScope() {
     throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
 }
 const transactionScopeRevokers = new WeakMap();
-function createTransactionScopedAdapter(adapter, operations = {}) {
+const transactionScopeOwners = new WeakMap();
+export function isActiveTransactionScopedAdapter(value, owner) {
+    return Boolean(value && typeof value === "object"
+        && transactionScopeRevokers.has(value)
+        && (owner === undefined || transactionScopeOwners.get(value) === owner));
+}
+function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
     let active = true;
     const assertActive = () => {
         if (!active)
@@ -262,11 +268,13 @@ function createTransactionScopedAdapter(adapter, operations = {}) {
         withReadOnlySnapshot: rejectNestedTransactionScope,
     });
     transactionScopeRevokers.set(scopedAdapter, () => { active = false; });
+    transactionScopeOwners.set(scopedAdapter, owner);
     return scopedAdapter;
 }
 function revokeTransactionScopedAdapter(adapter) {
     transactionScopeRevokers.get(adapter)?.();
     transactionScopeRevokers.delete(adapter);
+    transactionScopeOwners.delete(adapter);
 }
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
@@ -1646,7 +1654,7 @@ export async function createLibsqlDatabaseAdapter(options) {
                 const transactionAdapter = createTransactionScopedAdapter({
                     ...adapter,
                     ...createOperations(transaction, runDirectly),
-                });
+                }, {}, adapter);
                 activeTransactions.add(transaction);
                 try {
                     await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -1677,7 +1685,7 @@ export async function createLibsqlDatabaseAdapter(options) {
             return await connectionGate.runTransaction(async () => {
                 assertLibsqlOpen(closed);
                 const transaction = { baton: null, baseUrl: endpoint };
-                const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
+                const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter);
                 activeTransactions.add(transaction);
                 try {
                     await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
