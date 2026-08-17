@@ -354,8 +354,10 @@ does not gate completion.
   while the Job is retained and support retry-safe callers.
 - Retry behavior is bounded and deterministic. Delayed Jobs are not runnable
   until `availableAt`; a retry remains another attempt for the same Job ID.
-- After Dev replacement waits for the outgoing runtime to settle, the promoted
-  candidate refreshes tracked running-lease recovery before another worker pass,
+- Dev replacement completes candidate viability initialization while keeping
+  candidate Job recovery and dispatch stopped. After the outgoing runtime
+  settles, the promoted candidate refreshes tracked running-lease recovery
+  before another worker pass,
   even when outgoing teardown reports a failure. Recovery remains single-flight:
   a refresh requested during an active scan runs afterward at the earliest
   requested instant, and shutdown awaits that complete chain. A claim acquired

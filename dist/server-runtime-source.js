@@ -399,6 +399,7 @@ export async function shutdownHttpServerAndRuntime(server, shutdownRuntime) {
 }
 export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
     try {
+        await candidateDatabase.__deferJobExecution?.();
         await candidateDatabase.init();
     }
     catch (initError) {
@@ -422,8 +423,13 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
     // tracked recovery and runnable work after outgoing settlement: a failed
     // teardown may leave the claim leased, while orderly settlement may return
     // it to delayed/queued state.
-    scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
-    scheduleCurrentUserJobWorker(candidateDatabase);
+    if (typeof candidateDatabase.__activateJobExecution === "function") {
+        candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+    }
+    else {
+        scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
+        scheduleCurrentUserJobWorker(candidateDatabase);
+    }
     if (teardownError !== undefined) {
         // Candidate initialization is the ownership decision. The old runtime may
         // already be stopped and its adapter has been closed by the teardown helper,
@@ -536,6 +542,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __jobLeaseRecoveryDueAt: null,
         __jobLeaseRecoveryPromise: null,
         __jobLeaseRecoveryRequestedAt: null,
+        __jobActivationDeferred: false,
         __scheduleStopped: true,
         contextMiddleware,
         mutationHooks,
@@ -631,6 +638,22 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     throw closeError;
             })();
         },
+        __deferJobExecution: () => {
+            database.__jobActivationDeferred = true;
+            const activeWorker = database.__jobWorkerPromise;
+            const completeSettlement = stopCurrentUserJobWorker(database);
+            // A previously initialized test or internal candidate may already own a
+            // read-only lease scan. Keep that scan in the single-flight chain so the
+            // post-teardown activation can retain an immediate rerun behind it, but
+            // do await any handler-bearing worker before treating the candidate as
+            // safely gated.
+            Promise.resolve(completeSettlement).catch(() => { });
+            return activeWorker ? Promise.resolve(activeWorker) : undefined;
+        },
+        __activateJobExecution: (recoveryAt) => {
+            database.__jobActivationDeferred = false;
+            activateCurrentUserJobExecution(database, recoveryAt);
+        },
     };
     database.init = async () => {
         if (database.__runtimeInitialized)
@@ -655,13 +678,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             preflightStaticScheduleTimers(database);
             const reconciled = await reconcileSchedules(database);
             database.__scheduleStopped = false;
-            database.__jobStopped = false;
             startStaticSchedules(database, reconciled.timerPlans);
-            scheduleJobLeaseRecoveryAt(database, earliestFutureLeaseAt);
-            // Orderly shutdown deliberately retains queued and delayed Jobs. A fresh
-            // runtime has no inherited worker/wake timer, so one normal worker pass
-            // must rediscover ready work and recreate the earliest delayed wake.
-            scheduleCurrentUserJobWorker(database);
+            if (!database.__jobActivationDeferred) {
+                // Orderly shutdown deliberately retains queued and delayed Jobs. A
+                // fresh runtime has no inherited worker/wake timer, so activation
+                // releases recovery plus one normal pass to rediscover durable work.
+                activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+            }
             database.__runtimeInitialized = true;
             await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
         }
@@ -1417,6 +1440,11 @@ async function recoverExpiredJobLeases(database) {
         }
     }
     return earliestFutureLeaseAt;
+}
+function activateCurrentUserJobExecution(database, recoveryAt) {
+    database.__jobStopped = false;
+    scheduleJobLeaseRecoveryAt(database, recoveryAt);
+    scheduleCurrentUserJobWorker(database);
 }
 function scheduleJobLeaseRecoveryAt(database, dueAt) {
     if (database.__jobStopped)

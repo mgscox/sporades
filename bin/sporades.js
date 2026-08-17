@@ -15311,6 +15311,7 @@ async function shutdownHttpServerAndRuntime(server, shutdownRuntime) {
 }
 async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   try {
+    await candidateDatabase.__deferJobExecution?.();
     await candidateDatabase.init();
   } catch (initError) {
     try {
@@ -15326,8 +15327,12 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   } catch (error) {
     teardownError = error;
   }
-  scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
-  scheduleCurrentUserJobWorker(candidateDatabase);
+  if (typeof candidateDatabase.__activateJobExecution === "function") {
+    candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+  } else {
+    scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
+    scheduleCurrentUserJobWorker(candidateDatabase);
+  }
   if (teardownError !== void 0) {
     try {
       const warning = candidateDatabase.log?.emit?.({
@@ -15432,6 +15437,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __jobLeaseRecoveryDueAt: null,
     __jobLeaseRecoveryPromise: null,
     __jobLeaseRecoveryRequestedAt: null,
+    __jobActivationDeferred: false,
     __scheduleStopped: true,
     contextMiddleware,
     mutationHooks,
@@ -15516,6 +15522,18 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         if (workerRejected) throw workerError;
         if (closeRejected) throw closeError;
       })();
+    },
+    __deferJobExecution: () => {
+      database.__jobActivationDeferred = true;
+      const activeWorker = database.__jobWorkerPromise;
+      const completeSettlement = stopCurrentUserJobWorker(database);
+      Promise.resolve(completeSettlement).catch(() => {
+      });
+      return activeWorker ? Promise.resolve(activeWorker) : void 0;
+    },
+    __activateJobExecution: (recoveryAt) => {
+      database.__jobActivationDeferred = false;
+      activateCurrentUserJobExecution(database, recoveryAt);
     }
   };
   database.init = async () => {
@@ -15536,10 +15554,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       preflightStaticScheduleTimers(database);
       const reconciled = await reconcileSchedules(database);
       database.__scheduleStopped = false;
-      database.__jobStopped = false;
       startStaticSchedules(database, reconciled.timerPlans);
-      scheduleJobLeaseRecoveryAt(database, earliestFutureLeaseAt);
-      scheduleCurrentUserJobWorker(database);
+      if (!database.__jobActivationDeferred) {
+        activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+      }
       database.__runtimeInitialized = true;
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
     } catch (error) {
@@ -16198,6 +16216,11 @@ async function recoverExpiredJobLeases(database) {
     }
   }
   return earliestFutureLeaseAt;
+}
+function activateCurrentUserJobExecution(database, recoveryAt) {
+  database.__jobStopped = false;
+  scheduleJobLeaseRecoveryAt(database, recoveryAt);
+  scheduleCurrentUserJobWorker(database);
 }
 function scheduleJobLeaseRecoveryAt(database, dueAt) {
   if (database.__jobStopped) return;

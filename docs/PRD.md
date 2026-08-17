@@ -929,8 +929,10 @@ initialization is the Dev replacement ownership boundary. If teardown of the
 prior runtime subsequently reports a failure after closing its resources,
 Sporades promotes the viable candidate and records a bounded warning; it does
 not retain a closed prior runtime or close its only viable replacement.
+Candidate viability initialization keeps its Job recovery and dispatch stopped.
 After prior-runtime teardown settles, including its failure path, the candidate
-refreshes tracked running-lease recovery before a fresh Job worker pass. Lease
+activates and refreshes tracked running-lease recovery before a fresh Job worker
+pass. Lease
 recovery is single-flight: a refresh requested while a scan is active runs
 afterward at the earliest requested instant, and shutdown awaits that complete
 chain. A claim acquired after the candidate's startup scan, retained by failed

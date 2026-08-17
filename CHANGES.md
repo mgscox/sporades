@@ -57,9 +57,10 @@ Changes since v0.8.5.
   failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
-  Every promoted candidate refreshes tracked running-lease recovery before a
-  fresh Job worker pass after prior-runtime teardown settles, including the
-  warning path. Lease recovery is single-flight: a refresh requested during an
+  Candidate viability initialization keeps Job recovery and dispatch stopped.
+  Every promoted candidate activates and refreshes tracked running-lease recovery
+  before a fresh Job worker pass after prior-runtime teardown settles, including
+  the warning path. Lease recovery is single-flight: a refresh requested during an
   active scan is retained for the earliest requested instant, and shutdown
   awaits the complete recovery chain. A claim acquired after the candidate's
   startup scan, retained by failed teardown, relinquished, or delayed by the

@@ -399,6 +399,25 @@ test("runtime initialization wakes queued and delayed Jobs retained by an orderl
  finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
 });
 
+test("Dev replacement starts candidate Jobs only after the outgoing handler settles", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-replacement-single-worker-"));const file=path.join(dir,"data.db");let activeHandlers=0;let maximumActiveHandlers=0;let outgoingStarted;let outgoingAbortObserved;let candidateStarted;let releaseOutgoing=()=>{};const outgoingBegan=new Promise(resolve=>{outgoingStarted=resolve;});const outgoingAbortBegan=new Promise(resolve=>{outgoingAbortObserved=resolve;});const candidateBegan=new Promise(resolve=>{candidateStarted=resolve;});const events=[];let outgoing;let candidate;let replacement;
+ const capsule={jobs:{work:job(async(ctx,payload)=>{activeHandlers+=1;maximumActiveHandlers=Math.max(maximumActiveHandlers,activeHandlers);try{if(payload.kind==="outgoing"){events.push("outgoing-start");outgoingStarted();await new Promise(resolve=>ctx.signal.addEventListener("abort",()=>{outgoingAbortObserved();releaseOutgoing=resolve;},{once:true}));events.push("outgoing-end");return;}events.push("candidate-start");candidateStarted();}finally{activeHandlers-=1;}})},mutations:{enqueue:mutation((ctx,kind)=>ctx.jobs.enqueue("work",{kind}))}};
+ try {
+  outgoing=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule);await outgoing.init();
+  outgoing.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");
+  await runMutation(outgoing,auth,"enqueue",["outgoing"]);await outgoingBegan;await runMutation(outgoing,auth,"enqueue",["candidate"]);
+  candidate=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule);
+  replacement=replaceRuntimeDatabase(outgoing,candidate);replacement.catch(()=>{});await outgoingAbortBegan;
+  const startedBeforeOutgoingSettled=await Promise.race([candidateBegan.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),50))]);
+  assert.equal(startedBeforeOutgoingSettled,false,"the candidate worker must stay gated while outgoing shutdown settles");
+  assert.equal(maximumActiveHandlers,1);
+  releaseOutgoing();releaseOutgoing=()=>{};candidate=await replacement;replacement=null;outgoing=null;
+  const startedAfterPromotion=await Promise.race([candidateBegan.then(()=>true),new Promise(resolve=>setTimeout(()=>resolve(false),1_000))]);
+  assert.equal(startedAfterPromotion,true,"promotion must release a normal worker scan for retained queued work");
+  assert.equal(maximumActiveHandlers,1);assert.deepEqual(events,["outgoing-start","outgoing-end","candidate-start"]);
+ } finally {releaseOutgoing();if(replacement){try{candidate=await replacement;outgoing=null;}catch{}}await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("Dev replacement rediscovers a retry settled by the outgoing runtime", async (t) => {
  for (const teardownFailure of [false,true]) await t.test(teardownFailure?"after outgoing shutdown hook failure":"after orderly outgoing teardown",async()=>{
   const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-replacement-handoff-"));const file=path.join(dir,"data.db");const outgoingClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const candidateClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let attempts=0;let firstStarted;const firstBegan=new Promise(resolve=>{firstStarted=resolve;});
