@@ -3123,7 +3123,6 @@ function readOnlyEndpointTableApi(tableApi: LooseRecord, assertActive: () => voi
 }
 
 function trustedReadResult(value: any, assertActive: () => void) {
-  if (!isPromiseLike(value)) return value;
   return Promise.resolve(value).then((result) => {
     assertActive();
     return result;

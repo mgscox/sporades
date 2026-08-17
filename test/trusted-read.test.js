@@ -122,6 +122,21 @@ test("trusted read handles are app-table-only, read-only, and revoked after sett
       assert.throws(read, (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     }
 
+    let siblingRead;
+    await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+      transaction,
+      purpose: "teams.join-admission",
+      subject: { userId: "invitee-1" },
+      signal: new AbortController().signal,
+    }, (db) => {
+      const settled = Promise.resolve({ allow: true });
+      settled.then(() => {
+        siblingRead = Promise.resolve(db.policies.all());
+      });
+      return settled;
+    }));
+    await assert.rejects(siblingRead, (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+
     let failureLeakedTable;
     const policyFailure = new Error("protected subscription row policy-secret-123 failed");
     await assert.rejects(database.adapter.withTransaction((transaction) => withTrustedRead(database, {

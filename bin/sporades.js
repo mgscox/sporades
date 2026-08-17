@@ -17648,7 +17648,6 @@ function readOnlyEndpointTableApi(tableApi, assertActive) {
   };
 }
 function trustedReadResult(value, assertActive) {
-  if (!isPromiseLike(value)) return value;
   return Promise.resolve(value).then((result) => {
     assertActive();
     return result;

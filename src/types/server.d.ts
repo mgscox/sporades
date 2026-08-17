@@ -268,8 +268,8 @@ export type ReadOnlyTableApi<Row extends Record<string, unknown> = Record<string
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): ReadOnlyTableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): ReadOnlyTableApi<Row>;
   limit(count: number): ReadOnlyTableApi<Row>;
-  get(): Row | null;
-  all(): Row[];
+  get(): Promise<Row | null>;
+  all(): Promise<Row[]>;
 };
 
 export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
