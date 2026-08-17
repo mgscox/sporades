@@ -958,6 +958,92 @@ test("Schedule restart recovery persists state and applies skip or latest withou
   await rm(dir, { recursive: true, force: true });
 });
 
+async function proveMalformedRetainedScheduleCursorFailsClosed(openRuntime, scheduleName) {
+  const capsule = {
+    jobs: { record: job(() => null) },
+    schedules: { [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "record" }) },
+  };
+  let database = await openRuntime(capsule, createControllableRuntimeClock("2030-01-01T00:00:30.000Z"));
+  try {
+    await database.init();
+    await database.shutdown();
+    for (const invalidCursor of [
+      "",
+      "not-an-instant",
+      "+010000-01-01T00:00:00.000Z",
+      "2030-01-01T00:01:00Z",
+    ]) {
+      const sql = database.adapter.dialect.sql;
+      await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=? WHERE [name]=?"))
+        .run(invalidCursor, scheduleName);
+      await database.close();
+
+      const timers = new Map();
+      let nextTimerId = 1;
+      const clock = {
+        now: () => new Date("2030-01-01T00:00:30.000Z"),
+        setTimer(callback, delayMs) { const id = nextTimerId++; timers.set(id, { callback, delayMs }); return id; },
+        clearTimer(id) { timers.delete(id); },
+      };
+      database = await openRuntime(capsule, clock);
+      await assert.rejects(database.init(), { code: "SCHEDULE_STATE_INVALID" });
+      assert.equal(timers.size, 0, `${invalidCursor} must not leave a live timer`);
+      assert.equal((await database.adapter.prepare(sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?")).get(scheduleName)).nextOccurrence, invalidCursor);
+      const logs = await database.adapter.readRecentLogEvents(20);
+      assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed" || entry.event === "schedule.occurrence.recovery_failed"), false);
+    }
+  } finally {
+    try {
+      const sql = database.adapter.dialect.sql;
+      await database.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?")).run(scheduleName);
+    } catch {}
+    try { await database.close(); } catch {}
+  }
+}
+
+test("SQLite rejects malformed retained Schedule cursors before arming live timers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-retained-cursor-"));
+  const file = path.join(dir, "data.db");
+  try {
+    await proveMalformedRetainedScheduleCursorFailsClosed(
+      (capsule, clock) => openDevDatabase(file, "", {}, { name: "scheduled-invalid-retained-cursor" }, capsule, { clock }),
+      "invalidSqliteCursor",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("libSQL rejects malformed retained Schedule cursors before arming live timers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-retained-cursor-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-invalid-retained-cursor-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveMalformedRetainedScheduleCursorFailsClosed(
+        (capsule, clock) => openDevDatabase(path.join(dir, "unused.db"), "", {}, config, capsule, { clock, serviceEnv }),
+        "invalidLibsqlCursor",
+      );
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("PostgreSQL rejects malformed retained Schedule cursors before arming live timers", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL retained-cursor test.",
+}, async () => {
+  const config = { name: "scheduled-invalid-retained-cursor-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await proveMalformedRetainedScheduleCursorFailsClosed(
+    (capsule, clock) => openDevDatabase("unused.db", "", {}, config, capsule, { clock, serviceEnv }),
+    "invalidPostgresCursor",
+  );
+});
+
 test("an armed Schedule timer keeps its intended occurrence identity when it fires late", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-late-timer-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
@@ -1598,6 +1684,68 @@ test("a lost superseded-occurrence quarantine race schedules recovery for the wi
     clock.advanceBy(1_000);
     await clock.runDueTimers();
     assert.equal(database.adapter.prepare("SELECT errorCode FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId).errorCode, "SCHEDULE_OCCURRENCE_SUPERSEDED");
+  } finally {
+    try { await database.shutdown(); } catch {}
+    try { await database.close(); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a post-commit native recovery wake can transact after a lost quarantine race", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-post-commit-recovery-"));
+  const file = path.join(dir, "data.db");
+  const startedAt = Date.now();
+  const baseNow = Date.parse("2030-01-01T00:00:30.000Z");
+  const clock = {
+    now: () => new Date(baseNow + (Date.now() - startedAt)),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer),
+  };
+  const config = { name: "scheduled-post-commit-recovery" };
+  const original = { jobs: { record: job(() => null) }, schedules: { recurring: schedule({ expression: "* * * * *", job: "record" }) } };
+  const scheduledFor = "2030-01-01T00:01:00.000Z";
+  const occurrenceId = createHash("sha256").update(JSON.stringify([config.name, "recurring", scheduledFor])).digest("hex");
+  let database = await openDevDatabase(file, "", {}, config, original, { clock });
+  try {
+    await database.init();
+    await database.shutdown();
+    const createdAt = clock.now().toISOString();
+    database.adapter.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, definitionFingerprint, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
+      .run(occurrenceId, "recurring", database.schedules[0].fingerprint, scheduledFor, "old-claim", null, createdAt, createdAt);
+    await database.close();
+
+    database = await openDevDatabase(file, "", {}, config, {
+      jobs: { record: job(() => null) },
+      schedules: { recurring: schedule({ expression: "*/5 * * * *", job: "record" }) },
+    }, { clock });
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    let stealQuarantine = true;
+    database.adapter.withTransaction = (callback) => originalWithTransaction((transactionAdapter) => {
+      const originalPrepare = transactionAdapter.prepare.bind(transactionAdapter);
+      transactionAdapter.prepare = (sql) => {
+        const statement = originalPrepare(sql);
+        if (stealQuarantine && String(sql).includes("sporades_schedule_occurrences") && String(sql).includes("enqueue-failed")) {
+          return { ...statement, run(...args) {
+            stealQuarantine = false;
+            originalPrepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=? WHERE id=?")
+              .run("winning-claim", new Date(clock.now().getTime() + 100).toISOString(), occurrenceId);
+            return statement.run(...args);
+          } };
+        }
+        return statement;
+      };
+      return callback(transactionAdapter);
+    });
+
+    await database.init();
+    assert.equal(stealQuarantine, false, "the superseded-occurrence quarantine was attempted");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    assert.equal(
+      database.adapter.prepare("SELECT errorCode FROM sporades_schedule_occurrences WHERE id=?").get(occurrenceId).errorCode,
+      "SCHEDULE_OCCURRENCE_SUPERSEDED",
+    );
+    const logs = await database.adapter.readRecentLogEvents(20);
+    assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.recovery_failed"), false);
   } finally {
     try { await database.shutdown(); } catch {}
     try { await database.close(); } catch {}

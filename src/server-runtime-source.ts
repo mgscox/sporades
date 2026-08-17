@@ -780,10 +780,17 @@ async function reconcileSchedules(database: LooseRecord) {
           let nextOccurrence: string | null = null;
           let recoveredOccurrence: Date | null = null;
           if (definition.enabled) {
-            if (changed || !row?.nextOccurrence) {
+            if (changed || row?.nextOccurrence === null || row?.nextOccurrence === undefined) {
               nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
             } else {
               nextOccurrence = String(row.nextOccurrence);
+              if (!isCanonicalJobTimestamp(nextOccurrence)) {
+                throw commandError(
+                  "Stored Schedule state is invalid.",
+                  "Repair or remove the malformed Schedule before restarting the Capsule.",
+                  "SCHEDULE_STATE_INVALID",
+                );
+              }
               if (Date.parse(nextOccurrence) <= now.getTime()) {
                 let latest = new Date(nextOccurrence);
                 let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
@@ -1068,7 +1075,8 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
       || String(existing.scheduleName) !== definition.name
       || String(existing.scheduledFor) !== scheduledFor
       || (existing.claimExpiresAt !== null && !isCanonicalJobTimestamp(existing.claimExpiresAt))) {
-      await finishInvalidRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      const invalid = await finishInvalidRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      recoveryAt = earliestScheduleRecoveryAt(recoveryAt, invalid.recoveryAt);
       return { claim: null, superseded: false };
     }
     // A still-live v0.8.5 runtime can insert after the finite upgrade scan
@@ -1094,7 +1102,10 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
       // belongs to the replaced definition and must not be reinterpreted under
       // the new payload or cadence. The durable generation lock above ensures a
       // stale caller can never apply this transition to replacement-owned work.
-      if (existing.status === "pending") await finishSupersededRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      if (existing.status === "pending") {
+        const superseded = await finishSupersededRetainedScheduleOccurrence(database, existing, transactionAdapter);
+        recoveryAt = earliestScheduleRecoveryAt(recoveryAt, superseded.recoveryAt);
+      }
       return { claim: null, superseded: false };
     }
     if (existing.status !== "pending") return { claim: null, superseded: false };
@@ -1106,7 +1117,7 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
     return { claim: Number(result.changes) === 1 ? { id, token } : null, superseded: false };
   });
   if (claimed.superseded) definition.enabled = false;
-  if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
+  armRetainedScheduleRecoveryAfterCommit(database, recoveryAt);
   return claimed.claim;
 }
 
@@ -1206,17 +1217,31 @@ function validRetainedScheduleOccurrenceIdentity(database: LooseRecord, row: Loo
 
 async function finishInvalidRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
   if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
-  return database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+  const result = await database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
     finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", transactionAdapter));
+  armRetainedScheduleRecoveryAfterCommit(database, result.recoveryAt);
+  return result;
 }
 
 async function finishSupersededRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
   if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
-  return database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+  const result = await database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
     finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", transactionAdapter));
+  armRetainedScheduleRecoveryAfterCommit(database, result.recoveryAt);
+  return result;
 }
 
-async function finishRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, errorCode: string, adapter = database.adapter) {
+function earliestScheduleRecoveryAt(current: string | null, candidate: string | null) {
+  if (candidate === null) return current;
+  if (current === null) return candidate;
+  return Date.parse(candidate) < Date.parse(current) ? candidate : current;
+}
+
+function armRetainedScheduleRecoveryAfterCommit(database: LooseRecord, recoveryAt: string | null) {
+  if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
+}
+
+async function finishRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, errorCode: string, adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
   if (typeof row.scheduleName === "string") {
     await adapter.prepare(sql(
@@ -1240,7 +1265,7 @@ async function finishRetainedScheduleOccurrence(database: LooseRecord, row: Loos
     "AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) " +
     "AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))" + liveGenerationGuard,
   )).run(errorCode, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, generationToken, generationToken, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt, ...liveGenerationParams);
-  if (Number(result.changes) === 1) return true;
+  if (Number(result.changes) === 1) return { finished: true, recoveryAt: null };
   const current = await adapter.prepare(sql(
     "SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?",
   )).get(row.id);
@@ -1250,9 +1275,9 @@ async function finishRetainedScheduleOccurrence(database: LooseRecord, row: Loos
     const retryAt = Number.isFinite(retainedExpiry) && retainedExpiry > nowMs
       ? current.claimExpiresAt
       : new Date(nowMs + SCHEDULE_RECOVERY_RETRY_MS).toISOString();
-    schedulePendingOccurrenceRecovery(database, retryAt);
+    return { finished: false, recoveryAt: retryAt };
   }
-  return false;
+  return { finished: false, recoveryAt: null };
 }
 
 function schedulePendingOccurrenceRecovery(database: LooseRecord, claimExpiresAt: string) {

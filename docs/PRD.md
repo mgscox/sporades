@@ -1013,7 +1013,12 @@ delay. A retained pending occurrence claim's future recovery wake is likewise
 tracked, chunked to the native timer limit, and rechecks the durable expiry
 before reconciliation. Transient recovery failures install a bounded retry wake,
 and orderly close waits for active Schedule recovery before closing the adapter.
-Retained occurrence and claim-expiry timestamps are canonical four-digit UTC
+A recovery wake discovered by a losing retained-state compare-and-set is armed
+only after its transaction commits, so it can open a fresh recovery transaction.
+The retained Schedule `nextOccurrence` cursor must be a canonical four-digit UTC
+timestamp; malformed or extended-year state fails startup with
+`SCHEDULE_STATE_INVALID` before live timers arm. Retained occurrence and
+claim-expiry timestamps are canonical four-digit UTC
 instants. Recovery validates the retained id, Schedule name, and scheduled UTC
 instant as one deterministic identity. Malformed or mismatched retained state is
 terminally quarantined with the opaque stable `SCHEDULE_OCCURRENCE_INVALID`

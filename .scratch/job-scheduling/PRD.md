@@ -265,9 +265,14 @@ effective timezone.
 - Runtime startup reconciles declared schedules with persisted definitions.
   The complete declaration set and fresh incarnation tokens publish atomically
   only after candidate recovery and timer capability can be validated; actual
-  timers arm after commit, so failed candidate initialization leaves the
-  previous scheduler functional. Reconciliation, claim, and finalization lock
-  the Schedule row before occurrence rows. Same-definition restart transfers
+  timers arm after commit, including a recovery wake planned when a retained-state
+  compare-and-set loses, so callbacks cannot inherit completed transaction
+  ownership and failed candidate initialization leaves the previous scheduler
+  functional. A retained next-occurrence cursor must be a canonical four-digit
+  UTC timestamp; malformed or extended-year cursors fail startup with bounded
+  `SCHEDULE_STATE_INVALID` state before a live timer arms. Reconciliation,
+  claim, and finalization lock the Schedule row before occurrence rows.
+  Same-definition restart transfers
   compatible pending occurrences after locking the durable Schedule generation.
   A one-time migration records durable legacy-adoption lineage for genuine
   v0.8.5 rows. Only uninterrupted same-definition enabled lineage remains open;

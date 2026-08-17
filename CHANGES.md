@@ -62,7 +62,11 @@ Changes since v0.8.5.
   Timer capability is preflighted before Schedule publication, but live
   occurrence, recovery, and legacy-discovery timers are armed only after the
   reconciliation transaction commits, so delayed callbacks do not inherit a
-  completed transaction owner.
+  completed transaction owner. A recovery wake discovered while conditionally
+  quarantining retained state is likewise planned inside the transaction and
+  armed only after commit. Retained next-occurrence cursors must be canonical
+  four-digit UTC timestamps; malformed or extended-year cursors now fail startup
+  with `SCHEDULE_STATE_INVALID` before any live timer can hot-loop.
 - Bind every pending Schedule occurrence to its complete deterministic identity,
   definition fingerprint, and per-publication incarnation token. Malformed retained rows are quarantined without
   blocking their unique occurrence slot, while changed, disabled, or removed

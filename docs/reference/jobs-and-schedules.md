@@ -243,8 +243,14 @@ retained pending occurrence claim use the same bounded, tracked chunks and
 recheck the durable expiry before attempting reconciliation. A transient
 recovery failure installs a bounded retry wake rather than abandoning the
 pending occurrence, and runtime close waits for active occurrence recovery
-before closing its Database adapter. Retained occurrence instants and claim
-expiries must be canonical four-digit UTC timestamps; malformed retained state
+before closing its Database adapter. A recovery wake discovered by a losing
+retained-state compare-and-set is returned as a transaction result and armed
+only after commit, so its callback can open a fresh transaction. The retained
+Schedule `nextOccurrence` cursor must be a canonical four-digit UTC timestamp;
+a malformed, coercible, or extended-year cursor fails startup with
+`SCHEDULE_STATE_INVALID` before any live timer arms. Retained occurrence
+instants and claim expiries must be canonical four-digit UTC timestamps;
+malformed retained state
 is terminally quarantined with the stable opaque
 `SCHEDULE_OCCURRENCE_INVALID` code and is never left permanently pending.
 

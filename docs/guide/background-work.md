@@ -33,7 +33,8 @@ supersedes its own pending occurrences; later reuse starts with the next future
 occurrence instead of resurrecting old work. During upgrade, legacy pending
 occurrences inherit their matching pre-reconciliation durable identity before a
 compatible runtime publication transfers them. Actual occurrence and recovery
-timers are armed only after that publication transaction commits. Sporades keeps
+timers are armed only after their owning transaction commits, including recovery
+wakes discovered by a losing retained-state compare-and-set. Sporades keeps
 a durable legacy-adoption lineage: only an uninterrupted same-definition v0.8.5
 upgrade remains open, while change, disablement, removal, or later restoration
 closes adoption permanently. While a lineage is open, a tracked once-per-second
@@ -50,8 +51,10 @@ Schedule occurrence and claim-expiry state; malformed values become the opaque
 terminal `SCHEDULE_OCCURRENCE_INVALID` outcome rather than a stranded pending
 occurrence. The runtime validates the retained id, Schedule name, and scheduled
 instant together and skips a malformed unique-key occupant without failing
-startup or spinning its timer. Availability and retry instants leave room for
-the runtime claim lease, and retry objects contain only `maxAttempts` and
+startup or spinning its timer. A retained Schedule `nextOccurrence` cursor is
+also canonical; malformed or extended-year cursor state fails startup with
+`SCHEDULE_STATE_INVALID` before a live timer is armed. Availability and retry
+instants leave room for the runtime claim lease, and retry objects contain only `maxAttempts` and
 optional `delayMs`. A missing captured user is also terminal rather than
 retryable.
 
