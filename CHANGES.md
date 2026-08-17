@@ -1,140 +1,103 @@
 # Changes
 
-## Unreleased
+## Unreleased - 2026-08-17
 
 Changes since v0.8.5.
 
 ### 🚀 Features
 
-- Let current Team members read exact accepted membership totals through the
-  count-only `teams.countMembers(teamId)` API without directory access.
-- Give audited Privileged server callbacks safe read-only Team inspections for
-  exact member counts, bounded member pages, active Join-link metadata, and
-  Join-link capability previews without current-user or mutation authority.
-- Let Capsule tables declare single-field and composite unique constraints,
-  use atomic `insertOrIgnore(...)` writes against an exact declared constraint,
-  and add unique constraints through atomic additive schema migration.
-- Persist `ctx.jobs.enqueue(...)` inside the mutation, App message, or Custom
-  endpoint transaction so handler writes and Job creation commit or roll back
-  together while worker dispatch begins only after commit.
+- Migrate additive unique constraints atomically (2cf8381).
+- Add conflict-targeted idempotent table inserts (bd2aeaa).
+- Expose privileged Team inspections (16d784a).
+- Declare unique Capsule table constraints (f638b36).
+- Expose exact Team membership counts (6893db7).
 
 ### 🐛 Bug Fixes
 
-- Serialize multi-statement Team inspections with Team lifecycle writers,
-  including a post-lock Join-link capability re-read, so PostgreSQL
-  `READ COMMITTED` callers never combine stale authorization and projections.
-- Make orderly shutdown and Dev restart clear every Job worker wake, defer all
-  Job dispatch and recovered execution until the Capsule `init()` hook,
-  retained Schedule validation, declaration reconciliation, and timer
-  capability gates have all succeeded. Jobs durably enqueued by `init()` remain
-  stopped until that boundary publishes; a rejected initialization unwinds and
-  awaits every Job and Schedule timer, worker, factory, and recovery controller
-  so a later clean open owns recovery. Use attempt-scoped
-  claim ownership so stale shutdown, recovery, completion, or cancellation
-  work cannot mutate a newer attempt. Active handlers are aborted and settled
-  before runtime resources close; transactional cancellation aborts only after
-  commit even across middleware context replacement, the worker reconciles a
-  cancellation committed during claim registration before entering the handler,
-  shutdown that wins during pre-handler reconciliation relinquishes the exact
-  claim without consuming an attempt, far-future and retry wakes use bounded
-  native-timer chunks instead of overflow-clamped rescans,
-  retained future running leases schedule bounded recovery wakes after restart,
-  malformed retained running leases fail terminally instead of becoming stuck,
-  a commit during an active empty queue scan guarantees another worker pass,
-  and shutdown alone cannot misclassify retained work as user-cancelled. Signal
-  shutdown stops accepting and drains HTTP requests before runtime resources
-  close. Every runtime resource closer is attempted even when another closer
-  throws synchronously, with multiple failures reported together. Worker or
-  shutdown-hook failures are preserved alongside mail-closure failures. Jobs
-  reject coercible non-date values, invalid or extended-year availability, and
-  retry delays outside the supported four-digit UTC time domain; retained
-  invalid state fails safely at recovery and worker-claim boundaries
-  instead of executing early or blocking restart. Claim leases remain in the
-  same domain, the full configured retry horizon is reserved, and retry
-  policies reject unsupported members. Malformed retained claim ownership
-  fails terminally instead of stranding a running Job. A missing
-  captured Job actor is terminal even when retry attempts remain. Shutdown
-  failures still close database resources, and when prior-runtime
-  teardown fails after candidate initialization, Dev promotes that viable
-  candidate instead of retaining a closed runtime or leaking both instances.
-  Candidate viability initialization keeps Job recovery and dispatch stopped.
-  Job activation timer capability is preflighted without dispatch before
-  prior-runtime teardown. If activation scheduling still degrades after teardown,
-  Dev records a bounded warning and promotes the request-capable candidate instead
-  of returning control to the closed prior runtime.
-  Every promoted candidate activates and refreshes tracked running-lease recovery
-  before a fresh Job worker pass after prior-runtime teardown settles, including
-  the warning path. Lease recovery is single-flight: a refresh requested during an
-  active scan is retained for the earliest requested instant, and shutdown
-  awaits the complete recovery chain. A claim acquired after the candidate's
-  startup scan, retained by failed teardown, relinquished, or delayed by the
-  outgoing worker during handoff therefore cannot remain stranded.
-- Allocate additive-migration temporary table names without colliding with valid
-  Capsule tables, preserving those tables on both successful and rolled-back
-  SQLite, libSQL, and PostgreSQL migrations.
-- Re-arm distant Schedule occurrences in bounded native-timer chunks and verify
-  the nominal instant is due before persisting or enqueueing, preventing monthly
-  and annual recurrences from firing immediately when Node clamps a long delay.
-  Apply the same bounded, tracked recheck to future retained occurrence claims.
-  Timer capability is preflighted before Schedule publication, but live
-  occurrence, recovery, and legacy-discovery timers are armed only after the
-  reconciliation transaction commits, so delayed callbacks do not inherit a
-  completed transaction owner. A recovery wake discovered while conditionally
-  quarantining retained state is likewise planned inside the transaction and
-  armed only after commit. Retained and freshly calculated next-occurrence
-  cursors must be canonical four-digit UTC timestamps; malformed retained state
-  or a startup calculation beyond that domain now fails startup with
-  `SCHEDULE_STATE_INVALID` before persistence or any live timer can hot-loop.
-  Retained enabled, exhausted, and cursor fields must also form one canonical
-  state: an enabled active Schedule has a cursor, an enabled exhausted Schedule
-  does not, and a disabled Schedule is neither exhausted nor armed. Startup and
-  inspection reject every inconsistent combination before mutation.
-  When an already-due occurrence is the final representable minute, its Job or
-  bounded failure outcome and Schedule summary commit atomically, future
-  scheduling becomes durably exhausted with `nextOccurrence: null`, and no
-  zero-delay timer is re-armed. A late final occurrence and its single-attempt
-  Job clamp their claim leases to the remaining canonical time domain; a retry
-  policy requiring later attempts becomes the bounded enqueue-failure outcome.
-  Restart preserves the exhausted state. If that final cursor is already due at
-  restart, `latest` still recovers it before atomically exhausting the Schedule;
-  `skip` exhausts without enqueueing it.
-  Privileged and operator inspection applies the same domain to both the next
-  cursor and latest-occurrence timestamp.
-- Bind every pending Schedule occurrence to its complete deterministic identity,
-  definition fingerprint, and per-publication incarnation token. Malformed retained rows are quarantined without
-  blocking their unique occurrence slot, while changed, disabled, or removed
-  definitions terminally supersede old pending work. Transaction-time generation
-  checks use the enabled durable Schedule incarnation as authority, so an outgoing
-  runtime cannot quarantine replacement-owned work, enqueue a Job, or overwrite
-  the replacement Schedule's cursor and summary. Reconciliation publishes the
-  complete declaration set atomically only after candidate recovery reads and timers are viable,
-  locking each durable Schedule generation before it scans and transfers that
-  generation's pending work in the same Schedule-row-then-occurrence-row lock
-  order used by occurrence claims and finalization. A one-time migration records
-  durable legacy-adoption lineage for genuine v0.8.5 Schedule rows. Only an
-  uninterrupted same-definition lineage remains eligible; change, disablement,
-  removal, and later restoration close it irreversibly. Eligible runtimes scan
-  an indexed lookup for wholly legacy rows written late by an overlapping v0.8.5
-  process in tracked batches of at most 100 once per second, and shutdown
-  cancels that scan.
-- Let dynamic Schedule payload factories opt into a stable `payloadVersion`,
-  because JavaScript source text cannot identify captured configuration. Changing
-  the version creates a future-only Schedule generation; unversioned v0.8.5
-  factories retain their legacy source-text identity, and static-payload
-  fingerprints remain backward compatible. Shutdown now removes
-  queued payload factories before they acquire one of the four evaluation slots,
-  so stopped runtimes cannot begin new factory work or wait for its timeout.
-- Apply the transaction ownership gate consistently to libSQL root transactions,
-  read-only snapshots, and public operations so captured-root re-entry rejects
-  promptly while external callers remain serialized. Closing libSQL now seals
-  and drains queued ownership so no transaction or snapshot begins after close.
-  Read-only snapshots restore `query_only` on success and failure before their
-  session closes, so a rejected inspection cannot poison later startup writes.
-- Seal generated JavaScript, declarations, source maps, CLI bundles, and their
-  generator inputs in the generated-source manifest so corruption or deletion
-  cannot pass the freshness check.
-- Reject query argument array subclasses while continuing to accept arrays
-  created in another JavaScript realm (2171b61).
+- Shut down rejected runtime candidates (5ec8198).
+- Preserve candidate on activation degradation (302268c).
+- Activate replacement jobs after teardown (ee4db9f).
+- Serialize job lease recovery (09dca55).
+- Refresh job leases after dev handoff (5961f77).
+- Recover jobs across runtime handoff (6d2b344).
+- Gate jobs on successful runtime initialization (3082aad).
+- Validate all schedule cursors (bf3dea0).
+- Arm schedule recovery after commit (da43e54).
+- Persist schedule upgrade lineage (54d664e).
+- Close schedule handoff and root reentry races (281029a).
+- Serialize legacy schedule upgrades (9e87fb1).
+- Publish schedule incarnations atomically (78da563).
+- Make schedule generations authoritative (9005b1e).
+- Bind schedules to declaration generations (b478ae7).
+- Make schedule claims transactional (960f2c6).
+- Seal retained job and libsql lifecycle (c5dc235).
+- Recover future leases and schedules safely (fa08688).
+- Bound job lifecycle time domains (89149c7).
+- Close pre-handler job shutdown races (ffdca81).
+- Make runtime shutdown failure atomic (1958f3b).
+- Harden transactional lifecycle cleanup (e408f2d).
+- Defer transactional job cancellation (2d3cf3e).
+- Linearize team reads and job claims (1aa5391).
+- Wake retained jobs on startup (0a66d61).
+- Settle transactional log writes (43e1b2b).
+- Revoke settled transaction adapters (bef9821).
+- Abort jobs through the root runtime (5a43040).
+- Settle jobs before lifecycle shutdown (51d1d9d).
+- Settle job shutdown safely (9d38300).
+- Await runtime closure during shutdown (ff688f1).
+- Settle scheduled Jobs before runtime shutdown (7e7204e).
+- Scope unique migration error translation (9af3b24).
+- Preserve non-unique migration errors (2cfb207).
+- Fix chained transaction release and async insert type (386ea84).
+- Fix async insertOrIgnore documentation (a41f2ac).
+- Guard privileged join-link reads (dea4ebc).
+- Close privileged Team inspection races (d53136c).
+- Redact privileged Team join metadata (ad77482).
+- Defer existing table unique changes (e49477d).
+
+### 🔧 Improvements
+
+- Ignore Macos fluff files (d4ae934).
+
+### 📝 Documentation
+
+- Pin final platform contract evidence (65250af).
+- Align platform contracts after swarm amendments (8f64c4f).
+- Record swarm cleanup (7233572).
+- Close combined platform contract swarm (a1862c8).
+- Record final combined contract package proof (4c44bf8).
+- Record combined contract proof evidence (ac1c48c).
+- Record accepted unique migration contract (6c5e484).
+- Record accepted idempotent insert contract (19e7b63).
+- Align shipped Job lifecycle reference (9b7820f).
+- Document atomic Job enqueue lifecycle (9dbeb8a).
+- Reject nested database transaction scopes (3cc98b6).
+- Record accepted platform contract tickets (6ef6d1c).
+- Close unique constraint contract gaps (20baabb).
+- Prove unique constraint boundaries across adapters (f6d3517).
+- Cover immutable unique schema boundary (4fb81d9).
+- Initialize platform contracts swarm ledger (61816a1).
+- Add Team subscription platform tickets (494a086).
+
+### 🧪 Tests
+
+- Reset native schedule clock before init (1153643).
+- Prove atomic Team Job enqueue failures (09265ab).
+- Preserve PostgreSQL quoting recorder transactions (85d2266).
+- Cover unrelated rebuild constraint failures (4605ec5).
+- Isolate Node 24 SQLite server tests (8542eb9).
+- Harden failed mutation cleanup (d43a5ab).
+- Bound transaction handler context lifetime (67dccb4).
+- Defer runtime Job dispatch until commit (0a04afb).
+- Persist Jobs inside handler transactions (b59004f).
+- Reject captured transaction reentry and drop rolled-back jobs (952309e).
+- Replace async-local transaction ownership (95cbb85).
+- Gate transaction connections and track mutation writes (20cda07).
+- Serialize shared database connection transactions (425e4f0).
+- Isolate composite unique conformance (75ace57).
+- Cover Team count membership lifecycle (80d6cd7).
+- Accept cross-realm query arrays (55b87a6).
+- Reject query argument array subclasses (2171b61).
 
 ## 0.8.5 - 2026-08-15
 
@@ -171,3 +134,4 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
