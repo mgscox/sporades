@@ -245,10 +245,13 @@ recovery failure installs a bounded retry wake rather than abandoning the
 pending occurrence, and runtime close waits for active occurrence recovery
 before closing its Database adapter. A recovery wake discovered by a losing
 retained-state compare-and-set is returned as a transaction result and armed
-only after commit, so its callback can open a fresh transaction. The retained
-Schedule `nextOccurrence` cursor must be a canonical four-digit UTC timestamp;
-a malformed, coercible, or extended-year cursor fails startup with
-`SCHEDULE_STATE_INVALID` before any live timer arms. Retained occurrence
+only after commit, so its callback can open a fresh transaction. Every
+retained or freshly calculated Schedule `nextOccurrence` cursor must be a
+canonical four-digit UTC timestamp. A malformed or coercible retained cursor,
+or a calculation beyond that domain, fails startup with
+`SCHEDULE_STATE_INVALID` before persistence or any live timer arms. Privileged
+and operator inspection applies the same domain to both the next cursor and
+latest-occurrence timestamp. Retained occurrence
 instants and claim expiries must be canonical four-digit UTC timestamps;
 malformed retained state
 is terminally quarantined with the stable opaque

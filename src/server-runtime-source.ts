@@ -769,6 +769,15 @@ async function reconcileSchedules(database: LooseRecord) {
           "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'",
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        for (const row of persisted) {
+          if (row.nextOccurrence !== null && row.nextOccurrence !== undefined && !isCanonicalJobTimestamp(row.nextOccurrence)) {
+            throw commandError(
+              "Stored Schedule state is invalid.",
+              "Repair or remove the malformed Schedule before restarting the Capsule.",
+              "SCHEDULE_STATE_INVALID",
+            );
+          }
+        }
         const legacyLineages = await transactionAdapter.prepare(sql(
           "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]",
         )).all();
@@ -784,13 +793,6 @@ async function reconcileSchedules(database: LooseRecord) {
               nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
             } else {
               nextOccurrence = String(row.nextOccurrence);
-              if (!isCanonicalJobTimestamp(nextOccurrence)) {
-                throw commandError(
-                  "Stored Schedule state is invalid.",
-                  "Repair or remove the malformed Schedule before restarting the Capsule.",
-                  "SCHEDULE_STATE_INVALID",
-                );
-              }
               if (Date.parse(nextOccurrence) <= now.getTime()) {
                 let latest = new Date(nextOccurrence);
                 let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);

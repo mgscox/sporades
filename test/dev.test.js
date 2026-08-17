@@ -6116,6 +6116,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
         "sporades_file_uploads",
         "sporades_files",
         "sporades_jobs",
+        "sporades_schedule_legacy_adoption",
         ...TEAM_RUNTIME_TABLES,
         "sporades_user_preferences",
         "todos",
@@ -9484,6 +9485,7 @@ test("sporades db list returns tables from the running dev session database", as
             "sporades_file_uploads",
             "sporades_files",
             "sporades_jobs",
+            "sporades_schedule_legacy_adoption",
             ...TEAM_RUNTIME_TABLES,
             "sporades_user_preferences",
             "todos",
@@ -9530,6 +9532,7 @@ test("sporades db dump returns structured table data from the running dev sessio
               columns: ["key", "value"],
               rows: [
                 { key: "schedule-reconciliation-lock", value: "v1" },
+                { key: "schedule-legacy-adoption-lineage-v1", value: "complete" },
                 { key: "schemaVersion", value: "v1:additive-fields" },
                 { key: "schemaHash", value: "f5a4b88b9bf85d0836797e22fa37197b8b38e8d9baddbec676ea15def328c3a0" },
                 {
@@ -9642,6 +9645,11 @@ test("sporades db dump returns structured table data from the running dev sessio
               rows: [],
             },
             {
+              name: "sporades_schedule_legacy_adoption",
+              columns: ["scheduleName", "definitionFingerprint", "adoptionOpen"],
+              rows: [],
+            },
+            {
               name: "sporades_user_preferences",
               columns: ["userId", "value", "updatedAt"],
               rows: [],
@@ -9700,6 +9708,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades_file_uploads" },
             { name: "sporades_files" },
             { name: "sporades_jobs" },
+            { name: "sporades_schedule_legacy_adoption" },
             { name: "sporades_schedule_occurrences" },
             { name: "sporades_schedules" },
             ...TEAM_RUNTIME_TABLES.map((name) => ({ name })),

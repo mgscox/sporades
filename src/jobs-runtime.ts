@@ -210,7 +210,17 @@ export function nextScheduleOccurrence(fields: Set<number>[], after: Date, timez
     const dom = fields[2].has(local.day); const dow = fields[4].has(local.weekday);
     const domRestricted = (fields as any).restricted?.[2] ?? fields[2].size !== 31; const dowRestricted = (fields as any).restricted?.[4] ?? fields[4].size !== 7;
     const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
+      const occurrence = new Date(candidate);
+      if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
+        throw commandError(
+          "Stored Schedule state is invalid.",
+          "Repair or remove the malformed Schedule before restarting the Capsule.",
+          "SCHEDULE_STATE_INVALID",
+        );
+      }
+      return occurrence;
+    }
   }
   throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
@@ -608,12 +618,11 @@ export async function scheduleSummary(sqlite: LooseRecord, row: any) {
   if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
   if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
   if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
+  if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
   if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome !== null && !isCanonicalJobTimestamp(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
   if (latestOutcome === "enqueued") {
     if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
     if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");

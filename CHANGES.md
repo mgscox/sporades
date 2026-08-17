@@ -64,9 +64,12 @@ Changes since v0.8.5.
   reconciliation transaction commits, so delayed callbacks do not inherit a
   completed transaction owner. A recovery wake discovered while conditionally
   quarantining retained state is likewise planned inside the transaction and
-  armed only after commit. Retained next-occurrence cursors must be canonical
-  four-digit UTC timestamps; malformed or extended-year cursors now fail startup
-  with `SCHEDULE_STATE_INVALID` before any live timer can hot-loop.
+  armed only after commit. Retained and freshly calculated next-occurrence
+  cursors must be canonical four-digit UTC timestamps; malformed retained state
+  or a calculation beyond that domain now fails startup with
+  `SCHEDULE_STATE_INVALID` before persistence or any live timer can hot-loop.
+  Privileged and operator inspection applies the same domain to both the next
+  cursor and latest-occurrence timestamp.
 - Bind every pending Schedule occurrence to its complete deterministic identity,
   definition fingerprint, and per-publication incarnation token. Malformed retained rows are quarantined without
   blocking their unique occurrence slot, while changed, disabled, or removed

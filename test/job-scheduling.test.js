@@ -515,7 +515,8 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", null, "SECRET_database_password"]);
     await assertInvalidInspection(["0", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
     await assertInvalidInspection(["2030-01-01", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
-    for (const noncanonical of ["0", "2030-01-01"]) {
+    await assertInvalidInspection(["+010000-01-01T00:00:00.000Z", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
+    for (const noncanonical of ["0", "2030-01-01", "+010000-01-01T00:00:00.000Z"]) {
       database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=NULL, latestOutcome=NULL, latestJobId=NULL, latestErrorCode=NULL WHERE name='zeta'").run(noncanonical);
       const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
       assert.equal(invalid.ok, false);
@@ -992,6 +993,29 @@ async function proveMalformedRetainedScheduleCursorFailsClosed(openRuntime, sche
       const logs = await database.adapter.readRecentLogEvents(20);
       assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed" || entry.event === "schedule.occurrence.recovery_failed"), false);
     }
+    for (const [scenario, declaration] of [
+      ["changed", schedule({ expression: "*/5 * * * *", timezone: "UTC", job: "record" })],
+      ["disabled", schedule({ expression: "* * * * *", timezone: "UTC", job: "record", enabled: false })],
+      ["removed", null],
+    ]) {
+      const sql = database.adapter.dialect.sql;
+      const invalidCursor = "+010000-01-01T00:00:00.000Z";
+      await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=? WHERE [name]=?"))
+        .run(invalidCursor, scheduleName);
+      await database.close();
+
+      const timers = new Map();
+      let nextTimerId = 1;
+      const clock = {
+        now: () => new Date("2030-01-01T00:00:30.000Z"),
+        setTimer(callback, delayMs) { const id = nextTimerId++; timers.set(id, { callback, delayMs }); return id; },
+        clearTimer(id) { timers.delete(id); },
+      };
+      database = await openRuntime({ jobs: capsule.jobs, schedules: declaration ? { [scheduleName]: declaration } : {} }, clock);
+      await assert.rejects(database.init(), { code: "SCHEDULE_STATE_INVALID" }, `${scenario} declarations must not overwrite malformed retained cursors`);
+      assert.equal(timers.size, 0, `${scenario} declarations must not arm a live timer`);
+      assert.equal((await database.adapter.prepare(sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?")).get(scheduleName)).nextOccurrence, invalidCursor);
+    }
   } finally {
     try {
       const sql = database.adapter.dialect.sql;
@@ -1042,6 +1066,29 @@ test("PostgreSQL rejects malformed retained Schedule cursors before arming live 
     (capsule, clock) => openDevDatabase("unused.db", "", {}, config, capsule, { clock, serviceEnv }),
     "invalidPostgresCursor",
   );
+});
+
+test("Schedule startup rejects a freshly computed cursor outside the four-digit UTC domain", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-computed-cursor-overflow-"));
+  const timers = new Map();
+  let nextTimerId = 1;
+  const clock = {
+    now: () => new Date("9999-12-31T23:59:30.000Z"),
+    setTimer(callback, delayMs) { const id = nextTimerId++; timers.set(id, { callback, delayMs }); return id; },
+    clearTimer(id) { timers.delete(id); },
+  };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-computed-cursor-overflow" }, {
+    jobs: { record: job(() => null) },
+    schedules: { overflow: schedule({ expression: "* * * * *", timezone: "UTC", job: "record" }) },
+  }, { clock });
+  try {
+    await assert.rejects(database.init(), { code: "SCHEDULE_STATE_INVALID" });
+    assert.equal(timers.size, 0);
+    assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM sporades_schedules").get().count, 0);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("an armed Schedule timer keeps its intended occurrence identity when it fires late", async () => {

@@ -1015,9 +1015,11 @@ before reconciliation. Transient recovery failures install a bounded retry wake,
 and orderly close waits for active Schedule recovery before closing the adapter.
 A recovery wake discovered by a losing retained-state compare-and-set is armed
 only after its transaction commits, so it can open a fresh recovery transaction.
-The retained Schedule `nextOccurrence` cursor must be a canonical four-digit UTC
-timestamp; malformed or extended-year state fails startup with
-`SCHEDULE_STATE_INVALID` before live timers arm. Retained occurrence and
+Every retained or freshly calculated Schedule `nextOccurrence` cursor must be
+a canonical four-digit UTC timestamp; malformed retained state or a
+calculation beyond that domain fails startup with `SCHEDULE_STATE_INVALID`
+before persistence or live timers arm. Schedule inspection applies that same
+domain to the next cursor and latest-occurrence timestamp. Retained occurrence and
 claim-expiry timestamps are canonical four-digit UTC
 instants. Recovery validates the retained id, Schedule name, and scheduled UTC
 instant as one deterministic identity. Malformed or mismatched retained state is

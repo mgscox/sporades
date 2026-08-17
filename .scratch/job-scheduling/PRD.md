@@ -268,9 +268,12 @@ effective timezone.
   timers arm after commit, including a recovery wake planned when a retained-state
   compare-and-set loses, so callbacks cannot inherit completed transaction
   ownership and failed candidate initialization leaves the previous scheduler
-  functional. A retained next-occurrence cursor must be a canonical four-digit
-  UTC timestamp; malformed or extended-year cursors fail startup with bounded
-  `SCHEDULE_STATE_INVALID` state before a live timer arms. Reconciliation,
+  functional. Every retained or freshly calculated next-occurrence cursor must
+  be a canonical four-digit UTC timestamp; malformed retained state or a
+  calculation outside that domain fails startup with bounded
+  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms.
+  Inspection applies the same domain to the next cursor and latest-occurrence
+  timestamp. Reconciliation,
   claim, and finalization lock the Schedule row before occurrence rows.
   Same-definition restart transfers
   compatible pending occurrences after locking the durable Schedule generation.

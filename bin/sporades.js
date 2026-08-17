@@ -6020,7 +6020,17 @@ function nextScheduleOccurrence(fields, after, timezone) {
     const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
     const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
     const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
+      const occurrence = new Date(candidate);
+      if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
+        throw commandError2(
+          "Stored Schedule state is invalid.",
+          "Repair or remove the malformed Schedule before restarting the Capsule.",
+          "SCHEDULE_STATE_INVALID"
+        );
+      }
+      return occurrence;
+    }
   }
   throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
@@ -6345,12 +6355,11 @@ async function scheduleSummary(sqlite, row) {
   if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
   if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
   if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
+  if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
   if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome !== null && !isCanonicalJobTimestamp(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
   if (latestOutcome === "enqueued") {
     if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
     if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
@@ -15574,6 +15583,15 @@ async function reconcileSchedules(database) {
           "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        for (const row of persisted) {
+          if (row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
+            throw commandError2(
+              "Stored Schedule state is invalid.",
+              "Repair or remove the malformed Schedule before restarting the Capsule.",
+              "SCHEDULE_STATE_INVALID"
+            );
+          }
+        }
         const legacyLineages = await transactionAdapter.prepare(sql(
           "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]"
         )).all();
@@ -15589,13 +15607,6 @@ async function reconcileSchedules(database) {
               nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
             } else {
               nextOccurrence = String(row.nextOccurrence);
-              if (!isCanonicalJobTimestamp(nextOccurrence)) {
-                throw commandError2(
-                  "Stored Schedule state is invalid.",
-                  "Repair or remove the malformed Schedule before restarting the Capsule.",
-                  "SCHEDULE_STATE_INVALID"
-                );
-              }
               if (Date.parse(nextOccurrence) <= now.getTime()) {
                 let latest = new Date(nextOccurrence);
                 let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
