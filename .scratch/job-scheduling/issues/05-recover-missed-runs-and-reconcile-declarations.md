@@ -26,4 +26,6 @@ Status: done
 - [ ] Removing a declaration deletes its runtime Schedule state while existing Jobs retain historical schedule/occurrence metadata.
 - [ ] Re-adding a removed map key or renaming a Schedule creates a fresh identity without remapping prior state or history.
 - [ ] Disabling or removing a Schedule leaves already-enqueued Jobs untouched but aborts/discards active factories and abandons pending occurrences that have not produced a Job.
+- [ ] The complete declaration set and fresh ownership incarnations publish atomically only after candidate recovery validation and timer setup succeed; a failed candidate leaves the prior scheduler functional.
+- [ ] Compatible legacy pending occurrences inherit the pre-reconciliation durable Schedule identity before restart publication, without reviving changed, disabled, or removed work.
 - [ ] SQLite, libSQL, and Postgres adapter tests cover persistence and reconciliation using existing conditional service seams.

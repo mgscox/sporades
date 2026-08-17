@@ -27,6 +27,7 @@ test("the published Teams contract defines the public boundaries and is reachabl
     /always available[\s\S]*never automatically partition/i,
     /no current Team/i,
     /only admins[\s\S]*memberships/i,
+    /Any current member[\s\S]*countMembers/i,
     /omit member emails/i,
     /returned[\s\S]*never sent/i,
     /non-consuming validation[\s\S]*authoritative join/i,
@@ -40,7 +41,9 @@ test("the published Teams contract defines the public boundaries and is reachabl
   assert.match(clientTypes, /export type TeamsApi/);
   assert.match(clientTypes, /export const teams: TeamsApi/);
   assert.match(clientTypes, /TeamMembersListResult = \{ members: TeamMemberSummary\[\]; nextCursor\?: string; totalCount: number \}/);
+  assert.match(clientTypes, /countMembers\(teamId: string\): Promise<SporadesResult<TeamMemberCountResult>>/);
   assert.match(serverTypes, /export type CurrentUserTeamsApi/);
+  assert.match(serverTypes, /countMembers\(teamId: string\): Promise<TeamMemberCountResult>/);
   assert.match(serverTypes, /admitJoin\?\(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput\)/);
   assert.match(serverTypes, /TeamJoinAdmissionContext[\s\S]*ReadOnlyDatabaseFromSchema<Schema>/);
   assert.match(serverTypes, /export type AclTeamHelpers/);

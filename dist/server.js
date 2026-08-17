@@ -64,8 +64,10 @@ export function job(handler) {
  * Declare a named, server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
- * attempt semantics.
+ * up at most one occurrence. Dynamic payload factories may supply a stable
+ * `payloadVersion` that changes with their code or captured configuration;
+ * omission preserves the weaker v0.8.5 source-text identity.
+ * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export function schedule(definition) {
     return { kind: "schedule", ...definition };
@@ -73,14 +75,18 @@ export function schedule(definition) {
 export function table(fields) {
     return tableDefinition(fields);
 }
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
     return {
         kind: "table",
         fields,
         acl(rules) {
-            return tableDefinition(fields, rules);
+            return tableDefinition(fields, rules, uniqueConstraints);
+        },
+        unique(...fieldNames) {
+            return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
         },
         ...(aclRules === undefined ? {} : { aclRules }),
+        ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
     };
 }
 export function String() {
@@ -205,14 +211,18 @@ export function table(fields) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
   return {
     kind: "table",
     fields,
     acl(rules) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 

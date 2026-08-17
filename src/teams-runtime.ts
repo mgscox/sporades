@@ -8,6 +8,15 @@ import { commandError } from "./runtime-errors.js";
 import { normalizeOrigin } from "./http-runtime.js";
 
 type LooseRecord = Record<string, any>;
+type TeamJoinLinkInspection = {
+  team: null;
+  expiresAt: null;
+  usable: boolean;
+} | {
+  team: { id: string; name: string };
+  expiresAt: string;
+  usable: boolean;
+};
 
 const INITIAL_TEAM_NAME = "My Team";
 const TEAM_NAME_MAX_BYTES = 80;
@@ -112,6 +121,10 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
       requireAuth({ auth }, { linked: true });
       return listTeamMembers(database, auth, teamId, options);
     },
+    async countMembers(teamId: any) {
+      requireAuth({ auth }, { linked: true });
+      return countTeamMembers(database, auth, teamId);
+    },
     async updateApplicationRoles(teamId: any, userId: any, changes: any) {
       requireAuth({ auth }, { linked: true });
       return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
@@ -158,6 +171,29 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
       return deleteCurrentUserTeam(database, auth, teamId, contextGetter?.());
     },
   };
+}
+
+/**
+ * The Privileged server role is userless: it can inspect exact Team state, but
+ * never acquires current-user membership or administrative authority. Keep
+ * this a separate projection rather than reusing the current-user API, whose
+ * methods mix inspections with user-scoped and mutating operations.
+ */
+export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+  return Object.freeze({
+    async countMembers(teamId: any) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
+    },
+    async listMembers(teamId: any, options: LooseRecord = {}) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamMembers(database, teamId, options, assertActive));
+    },
+    async listJoinLinks(teamId: any) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
+    },
+    async inspectJoinLink(code: any) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => inspectTeamJoinLinkWithActivity(database, code, assertActive));
+    },
+  });
 }
 
 export function resolveTeamJoinLinkConfig(config: LooseRecord) {
@@ -239,6 +275,7 @@ export async function listTeamJoinLinks(database: LooseRecord, auth: LooseRecord
   requireAuth({ auth }, { linked: true });
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
     if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
     const now = (database.clock?.now?.() ?? new Date()).toISOString();
     await pruneExpiredTeamJoinLinks(tx, now);
@@ -274,27 +311,120 @@ export async function revokeTeamJoinLink(database: LooseRecord, auth: LooseRecor
   return { revoked: true };
 }
 
-export async function inspectTeamJoinLink(database: LooseRecord, code: any) {
+export async function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<TeamJoinLinkInspection> {
+  return inspectTeamJoinLinkWithActivity(database, code);
+}
+
+async function inspectTeamJoinLinkWithActivity(database: LooseRecord, code: any, assertActive: (() => void) | undefined = undefined): Promise<TeamJoinLinkInspection> {
   const parsed = parseTeamJoinCode(code);
   if (!parsed) return { team: null, expiresAt: null, usable: false };
-  const row = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
-  )).get(parsed.selector);
-  const secretRow = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?",
-  )).get(TEAM_JOIN_LINK_SECRET_ID);
-  const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-  const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-  const expectedSignature = Buffer.from(row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
-  const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
-  const now = (database.clock?.now?.() ?? new Date()).getTime();
-  const usable = Boolean(row && verifierMatches && signatureMatches && !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > now);
-  if (!usable) return { team: null, expiresAt: null, usable: false };
-  const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
-  if (!team) return { team: null, expiresAt: null, usable: false };
-  return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(row.expiresAt), usable: true };
+  return withTeamTransaction(database, async (tx) => {
+    const readCapability = () => tx.prepare(tx.dialect.sql(
+      "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    )).get(parsed.selector);
+    const row = await readCapability();
+    assertActive?.();
+    const secretRow = await tx.prepare(tx.dialect.sql(
+      "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?",
+    )).get(TEAM_JOIN_LINK_SECRET_ID);
+    assertActive?.();
+    const usable = (candidate: LooseRecord | undefined) => {
+      const expectedVerifier = Buffer.from(candidate?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+      const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
+      const actualSignature = Buffer.from(parsed.signature, "base64url");
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual(actualSignature, expectedSignature);
+      return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? new Date()).getTime());
+    };
+    if (!usable(row)) return { team: null, expiresAt: null, usable: false };
+    if (!await tryLockTeamLifecycle(tx, String(row.teamId))) {
+      return { team: null, expiresAt: null, usable: false };
+    }
+    assertActive?.();
+    // Lifecycle writers take the same Team lock. Re-read after acquiring it so
+    // revoke, redemption, deletion, and rename cannot produce a mixed view.
+    const lockedRow = await readCapability();
+    assertActive?.();
+    if (!usable(lockedRow) || String(lockedRow.teamId) !== String(row.teamId)) return { team: null, expiresAt: null, usable: false };
+    const team = await tx.prepare(tx.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(lockedRow.teamId);
+    assertActive?.();
+    if (!team) return { team: null, expiresAt: null, usable: false };
+    return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(lockedRow.expiresAt), usable: true };
+  });
+}
+
+async function countPrivilegedTeamMembers(database: LooseRecord, teamId: any, assertActive: () => void) {
+  return withTeamTransaction(database, async (tx) => {
+    assertActive();
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    const total = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId);
+    assertActive();
+    return { totalCount: Number(total?.count ?? 0) };
+  });
+}
+
+async function listPrivilegedTeamMembers(database: LooseRecord, teamId: any, options: LooseRecord = {}, assertActive: () => void) {
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    assertActive();
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    // Exact-Team existence is the stable outer boundary for this userless
+    // inspection. Only validate paging after it, so malformed paging cannot
+    // turn an absent Team into a different observable result.
+    const page = normalizeTeamMemberPage(options);
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId);
+    assertActive();
+    const cursorClause = page.cursor
+      ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) "
+      : "";
+    const params = page.cursor
+      ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1]
+      : [teamId, page.limit + 1];
+    const rows = await tx.prepare(sql(
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role], [m].[createdAt] " +
+      "FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] " +
+      "WHERE [m].[teamId] = ? " + cursorClause +
+      "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?",
+    )).all(...params);
+    assertActive();
+    const hasMore = rows.length > page.limit;
+    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+    const last = pageRows.at(-1);
+    return {
+      members: await Promise.all(pageRows.map(async (row: LooseRecord) => ({
+        userId: String(row.userId),
+        displayName: String(row.displayName),
+        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
+        role: row.role === "admin" ? "admin" : "member",
+        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId),
+      }))),
+      ...(hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {}),
+      totalCount: Number(total?.count ?? 0),
+    };
+  });
+}
+
+async function listPrivilegedTeamJoinLinks(database: LooseRecord, teamId: any, assertActive: () => void) {
+  return withTeamTransaction(database, async (tx) => {
+    assertActive();
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    const now = (database.clock?.now?.() ?? new Date()).toISOString();
+    // This is deliberately a read-only view: unlike admin link management it
+    // does not prune expired rows as a side effect.
+    const rows = await tx.prepare(tx.dialect.sql(
+      "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?",
+    )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    assertActive();
+    return { links: rows.map((row: LooseRecord) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
+  });
 }
 
 // Post-auth validation is deliberately read-only. It proves only that this
@@ -517,15 +647,19 @@ async function countTeamAdmins(tx: LooseRecord, teamId: string) {
   return Number(row?.count ?? 0);
 }
 
-async function lockTeamLifecycle(tx: LooseRecord, teamId: string) {
+async function lockTeamLifecycle(tx: LooseRecord, teamId: string, missingTeamError: () => Error = teamDenied) {
   // A no-op row update is a portable per-Team write lock: under Postgres the
   // next lifecycle transaction waits and then observes the prior commit;
   // SQLite/libSQL retain their adapter transaction serialization. This keeps
   // the admin predicate and its write one linearizable operation.
+  if (!isOpaqueTeamId(teamId) || !await tryLockTeamLifecycle(tx, teamId)) throw missingTeamError();
+}
+
+async function tryLockTeamLifecycle(tx: LooseRecord, teamId: string) {
   const claimed = await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?",
   )).run(teamId);
-  if (Number(claimed?.changes ?? 0) !== 1) throw teamDenied();
+  return Number(claimed?.changes ?? 0) === 1;
 }
 
 async function releaseTeamMembershipSlot(tx: LooseRecord, userId: string) {
@@ -605,6 +739,7 @@ function teamJoinLinkThrottleError() { return commandError("Join link creation i
 function teamJoinLinkLimitError() { return commandError("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED"); }
 function invalidTeamJoinLink() { return commandError("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK"); }
 function teamJoinDenied() { return commandError("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED"); }
+function teamMemberCountDenied() { return commandError("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED"); }
 
 export async function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord) {
   requireAuth({ auth }, { linked: true });
@@ -849,6 +984,7 @@ export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, 
   if (!isOpaqueTeamId(teamId)) throw teamDenied();
   return withTeamTransaction(database, async (tx) => {
     const sql = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId);
     // Check the caller's current, persisted membership before querying member
     // profiles. Missing Teams, non-members, and ordinary members are one
     // opaque public denial, so this API cannot become a Team-existence probe.
@@ -887,6 +1023,27 @@ export async function listTeamMembers(database: LooseRecord, auth: LooseRecord, 
       ...(hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {}),
       totalCount: Number(total?.count ?? 0),
     };
+  });
+}
+
+/** Returns only the exact accepted-membership total for the caller's current Team. */
+export async function countTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
+    // Authorize against the same transaction snapshot used for the count. This
+    // keeps unknown Teams and non-members indistinguishable and never joins
+    // membership data to profile or role presentation fields.
+    const callerMembership = await tx.prepare(sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    )).get(teamId, auth.userId);
+    if (!callerMembership) throw teamMemberCountDenied();
+    const total = await tx.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
+    )).get(teamId);
+    return { totalCount: Number(total?.count ?? 0) };
   });
 }
 
@@ -1095,6 +1252,52 @@ async function activeTeamApplicationRoles(adapter: LooseRecord, declared: any, t
 
 function isOpaqueTeamId(value: any) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function runPrivilegedTeamInspection<Result>(contextGetter: () => LooseRecord, inspect: (assertActive: () => void) => Promise<Result>) {
+  const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
+  assertActive();
+  let result: Result;
+  try {
+    result = await inspect(assertActive);
+  } catch (error) {
+    // Preserve ordinary inspection failures while the capability is live, but
+    // never leak a lower-level revoked-adapter error after the privileged scope
+    // has ended or its signal has been aborted.
+    assertActive();
+    throw error;
+  }
+  // A detached inspection can settle after the callback has returned, or an
+  // AbortSignal can change while its adapter work is pending. Never hand that
+  // result back across either boundary.
+  assertActive();
+  return result;
+}
+
+function assertActivePrivilegedTeamAccess(contextGetter: () => LooseRecord) {
+  const context = contextGetter?.();
+  if (context?.__privilegedRunActive && !context.signal?.aborted) return;
+  throw commandError(
+    "Privileged Team access is no longer active.",
+    "Start a new ctx.privileged.run callback before inspecting Team state.",
+    "PRIVILEGED_TEAM_ACCESS_INACTIVE",
+  );
+}
+
+async function requireExistingPrivilegedTeam(adapter: LooseRecord, teamId: any) {
+  if (!isOpaqueTeamId(teamId)) throw privilegedTeamNotFound();
+  const team = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [id] FROM [sporades_teams] WHERE [id] = ?",
+  )).get(teamId);
+  if (!team) throw privilegedTeamNotFound();
+}
+
+function privilegedTeamNotFound() {
+  return commandError(
+    "Team was not found.",
+    "Use an existing Team identifier and retry.",
+    "TEAM_NOT_FOUND",
+  );
 }
 
 function teamDenied() {

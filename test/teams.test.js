@@ -30,6 +30,13 @@ const capsule = {
         return ctx.teams.listMembers(teams[0].id);
       },
     },
+    ownTeamMemberCount: {
+      kind: "query",
+      handler: async (ctx) => {
+        const { teams } = await ctx.teams.list();
+        return ctx.teams.countMembers(teams[0].id);
+      },
+    },
     validateOwnJoinLink: {
       kind: "query",
       handler: (ctx) => ctx.teams.validateJoinLink(trustedValidationCode),
@@ -209,6 +216,14 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
         await tx.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(teamA, userId, now);
       }
     });
+    const pendingJoinLink = await send(owner, {
+      id: "members-pending-join-link",
+      type: "teams.createJoinLink",
+      teamId: teamA,
+      email: "pending-member@example.com",
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(pendingJoinLink.error, null, JSON.stringify(pendingJoinLink.error));
 
     const browser = await send(owner, { id: "members-owner-list", type: "teams.listMembers", teamId: teamA, sessionToken: ownerSignUp.data.sessionToken });
     assert.equal(browser.error, null, JSON.stringify(browser.error));
@@ -254,6 +269,15 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
     const trusted = await runQuery(runtime.database, ownerSignUp.data.auth, "ownTeamMembers");
     assert.deepEqual(trusted, { data: browser.data, error: null }, "trusted handler calls share the browser result and authorization contract");
 
+    const browserCount = await send(member, { id: "members-ordinary-count", type: "teams.countMembers", teamId: teamA, sessionToken: memberSignUp.data.sessionToken });
+    const adminCount = await send(owner, { id: "members-admin-count", type: "teams.countMembers", teamId: teamA, sessionToken: ownerSignUp.data.sessionToken });
+    for (const count of [browserCount, adminCount]) {
+      assert.deepEqual(count, { id: count.id, type: "teams.countMembers.result", data: { totalCount: 112 }, error: null });
+    }
+
+    const trustedCount = await runQuery(runtime.database, memberSignUp.data.auth, "ownTeamMemberCount");
+    assert.deepEqual(trustedCount, { data: { totalCount: 112 }, error: null }, "an ordinary current member can read the exact accepted count without receiving a directory");
+
     const ordinaryMember = await send(member, { id: "members-ordinary-denied", type: "teams.listMembers", teamId: teamA, sessionToken: memberSignUp.data.sessionToken });
     const otherTeamAdmin = await send(otherAdmin, { id: "members-cross-team-denied", type: "teams.listMembers", teamId: teamA, sessionToken: otherAdminSignUp.data.sessionToken });
     const nonMember = await send(stranger, { id: "members-nonmember-denied", type: "teams.listMembers", teamId: teamA, sessionToken: strangerSignUp.data.sessionToken });
@@ -264,11 +288,29 @@ test("Team membership lists are safe, bounded, and scoped to the current admin t
       assertNoTeamLeak(denied, [teamA, "members-owner@example.com", "Owner"]);
     }
 
+    const countNonMember = await send(stranger, { id: "members-count-nonmember-denied", type: "teams.countMembers", teamId: teamA, sessionToken: strangerSignUp.data.sessionToken });
+    const countUnknown = await send(stranger, { id: "members-count-unknown-denied", type: "teams.countMembers", teamId: "00000000-0000-4000-8000-000000000000", sessionToken: strangerSignUp.data.sessionToken });
+    for (const denied of [countNonMember, countUnknown]) {
+      assert.deepEqual(denied, {
+        id: denied.id,
+        type: "error",
+        data: null,
+        error: {
+          code: "DENIED",
+          message: "Could not read this Team's member count.",
+          hint: "Sign in as a current Team member and retry.",
+        },
+      });
+      assertNoTeamLeak(denied, [teamA, "members-owner@example.com", "Owner"]);
+    }
+
     await runtime.database.adapter.withTransaction(async (tx) => {
       for (const userId of seen.slice(100)) {
         await tx.prepare("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").run(teamA, userId);
       }
     });
+    const committedCount = await send(member, { id: "members-count-after-committed-removal", type: "teams.countMembers", teamId: teamA, sessionToken: memberSignUp.data.sessionToken });
+    assert.deepEqual(committedCount, { id: "members-count-after-committed-removal", type: "teams.countMembers.result", data: { totalCount: 100 }, error: null });
     const emptyFinal = await send(owner, { id: "members-empty-final", type: "teams.listMembers", teamId: teamA, cursor: browser.data.nextCursor, limit: 1, sessionToken: ownerSignUp.data.sessionToken });
     assert.deepEqual(emptyFinal.data, { members: [], totalCount: 100 }, "a page emptied by committed removal terminates without another cursor");
   } finally {
@@ -792,6 +834,8 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
       const joined = await send(recipient, { id: `${id}-join`, type: "teams.join", code: new URL(issued.data.link).searchParams.get("code"), sessionToken: token });
       assert.equal(joined.error, null, JSON.stringify(joined.error));
     }
+    const afterJoinCount = await send(firstMember, { id: "lifecycle-after-join-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterJoinCount, { id: "lifecycle-after-join-count", type: "teams.countMembers.result", data: { totalCount: 3 }, error: null });
 
     const promoted = await sendWithTimeout(owner, { id: "lifecycle-promote", type: "teams.promote", teamId: team.id, userId: firstSignUp.data.auth.userId });
     assert.deepEqual(promoted, { id: "lifecycle-promote", type: "teams.promote.result", data: { updated: true }, error: null });
@@ -803,16 +847,27 @@ test("Team admins manage promotion, demotion, removal, leaving, and sole-member 
     assert.deepEqual(removedByAdmin, { id: "lifecycle-remove", type: "teams.removeMember.result", data: { removed: true }, error: null });
     const afterRemoval = await send(firstMember, { id: "lifecycle-after-remove", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(afterRemoval.data.totalCount, 2, "admin removal frees committed capacity immediately");
+    const afterRemovalCount = await send(firstMember, { id: "lifecycle-after-remove-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterRemovalCount, { id: "lifecycle-after-remove-count", type: "teams.countMembers.result", data: { totalCount: 2 }, error: null });
 
     const left = await send(owner, { id: "lifecycle-leave", type: "teams.leave", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
     assert.deepEqual(left, { id: "lifecycle-leave", type: "teams.leave.result", data: { left: true }, error: null });
     const afterLeave = await send(firstMember, { id: "lifecycle-after-leave", type: "teams.listMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(afterLeave.data.totalCount, 1, "leave frees committed capacity immediately");
+    const afterLeaveCount = await send(firstMember, { id: "lifecycle-after-leave-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(afterLeaveCount, { id: "lifecycle-after-leave-count", type: "teams.countMembers.result", data: { totalCount: 1 }, error: null });
     const lastAdminDemotion = await send(firstMember, { id: "lifecycle-last-demotion", type: "teams.demote", teamId: team.id, userId: firstSignUp.data.auth.userId, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminDemotion.error.code, "DENIED");
     const lastAdminLeave = await send(firstMember, { id: "lifecycle-last-leave", type: "teams.leave", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
     assert.equal(lastAdminLeave.error.code, "DENIED");
     assert.deepEqual(await runMutation(runtime.database, firstSignUp.data.auth, "deleteOwnedTeam", [team.id]), { ok: true, data: { deleted: true }, error: null });
+    const deletedCount = await send(firstMember, { id: "lifecycle-after-delete-count", type: "teams.countMembers", teamId: team.id, sessionToken: firstSignUp.data.sessionToken });
+    assert.deepEqual(deletedCount, {
+      id: "lifecycle-after-delete-count",
+      type: "error",
+      data: null,
+      error: { code: "DENIED", message: "Could not read this Team's member count.", hint: "Sign in as a current Team member and retry." },
+    });
     const afterDelete = (await send(firstMember, { id: "lifecycle-after-delete", type: "teams.list", sessionToken: firstSignUp.data.sessionToken })).data;
     assert.deepEqual(afterDelete, { teams: firstMemberSingleton }, "deleting an unrelated sole-member Team preserves the caller's existing singleton without recreating the deleted Team");
     assert.ok(!afterDelete.teams.some((entry) => entry.id === team.id), "bootstrap history prevents deleted singleton Team recreation");
@@ -1182,7 +1237,7 @@ test("declared application roles are membership-scoped, atomic, safe, and availa
   }
 });
 
-test("a committed Team audit flushes before a later pending Job enqueue failure", async () => {
+test("a failed Job enqueue rolls back its Team mutation and success audit", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-audit-flush-"));
   const runtime = await startRuntime(path.join(dir, "data.db"));
   const auth = { userId: "team-audit-user", displayName: "Audit", email: "audit@example.com", picture: "https://example.com/audit.png", isAuthenticated: true, isGuest: false, provider: "email" };
@@ -1190,11 +1245,11 @@ test("a committed Team audit flushes before a later pending Job enqueue failure"
   try {
     await baseAdapter.withTransaction((tx) => tx.linkAuthUser({ id: auth.userId, displayName: auth.displayName, email: auth.email, picture: auth.picture, isAuthenticated: 1, isGuest: 0, provider: auth.provider }));
     runtime.database.adapter = failPendingJobInsert(baseAdapter);
-    const result = await runMutation(runtime.database, auth, "createAndQueue", ["Committed before queue failure"]);
+    const result = await runMutation(runtime.database, auth, "createAndQueue", ["Rolled back with queue failure"]);
     assert.equal(result.ok, false);
-    assert.equal(countTeams(baseAdapter), 2, "the initial and additional Teams committed before the Job failure");
-    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 1);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(countTeams(baseAdapter), 0, "the Team creation shares the failed Job enqueue transaction");
+    assert.equal(Number(baseAdapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_jobs]").get().count), 0, "the failed enqueue leaves no Job row");
+    assert.equal((await runtime.database.log.tail(20)).filter((event) => event.event === "teams.created").length, 0, "a rolled-back Team mutation emits no success audit");
   } finally {
     runtime.database.adapter = baseAdapter;
     await runtime.close();
@@ -1451,6 +1506,9 @@ function failPendingJobInsert(adapter) {
   return new Proxy(adapter, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
+      if (property === "withTransaction" && typeof value === "function") {
+        return (fn) => value.call(target, (transaction) => fn(failPendingJobInsert(transaction)));
+      }
       if (property !== "prepare" || typeof value !== "function") return value;
       return (statement) => {
         const prepared = value.call(target, statement);

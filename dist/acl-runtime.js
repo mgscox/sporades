@@ -239,7 +239,7 @@ export function isPrivilegedAuditEmissionPublicError(error) {
     return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
 }
 export function createPrivilegedScheduleApi(database, contextGetter) {
-    const sqlite = () => (database.__rootDatabase ?? database).adapter;
+    const sqlite = () => database.adapter;
     return {
         async get(name) {
             assertActivePrivilegedJobAccess(contextGetter);

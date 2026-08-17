@@ -2,7 +2,7 @@ type LooseRecord = Record<string, any>;
 type RuntimeEnv = Record<string, string | undefined>;
 export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options?: LooseRecord): {
     enabled: boolean;
-    send(input: any): Promise<{
+    send(input: any, deliveryLog?: any): Promise<{
         messageId: string;
         accepted: any;
         rejected: any;

@@ -17,6 +17,7 @@ Status: done
 - [ ] A crash after recording a pending occurrence but before enqueue eventually creates its Job.
 - [ ] A crash after enqueue but before occurrence bookkeeping completes reuses the existing Job through an internal deterministic idempotency key.
 - [ ] Overlapping runtime starts produce no more than one Job identity for the same occurrence.
+- [ ] Claim and recovery use a fresh durable Schedule incarnation token, distinct from the deterministic definition fingerprint, as authority. Every runtime publication rotates it, so an outgoing runtime cannot quarantine or overwrite replacement-owned work or regain authority after A-B-A, remove/re-add, or disable/re-enable transitions.
 - [ ] Occurrence deduplication does not change the Job Queue's at-least-once attempt contract.
 - [ ] Scheduled enqueue records unspoofable `enqueuedBy` Schedule name and UTC `scheduledFor` provenance rather than inventing a user, Session, or privileged sentinel; execution remains separately the Privileged server role.
 - [ ] Cancelling or retrying one occurrence's Job neither disables nor advances its recurring schedule.

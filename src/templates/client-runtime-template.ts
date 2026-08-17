@@ -107,6 +107,9 @@ export const teams = {
   listMembers(teamId, options = {}) {
     return connect().teamsListMembers(teamId, options);
   },
+  countMembers(teamId) {
+    return connect().teamsCountMembers(teamId);
+  },
   updateApplicationRoles(teamId, userId, changes) {
     return connect().teamsUpdateApplicationRoles(teamId, userId, changes);
   },
@@ -1166,6 +1169,7 @@ function createConnection() {
     teamsCreate(name) { return request("teams.create", { name }); },
     teamsRename(teamId, name) { return request("teams.rename", { teamId, name }); },
     teamsListMembers(teamId, options = {}) { return request("teams.listMembers", { teamId, cursor: options.cursor, limit: options.limit }); },
+    teamsCountMembers(teamId) { return request("teams.countMembers", { teamId }); },
     teamsUpdateApplicationRoles(teamId, userId, changes) { return request("teams.updateApplicationRoles", { teamId, userId, add: changes?.add, remove: changes?.remove }); },
     teamsCreateJoinLink(teamId, email, options = {}) { return request("teams.createJoinLink", { teamId, email, ttlSeconds: options.ttlSeconds }); },
     teamsListJoinLinks(teamId) { return request("teams.listJoinLinks", { teamId }); },

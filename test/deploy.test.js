@@ -2314,6 +2314,7 @@ test("sporades logs and db can inspect a local Container session by published po
         "sporades_file_uploads",
         "sporades_files",
         "sporades_jobs",
+        "sporades_schedule_legacy_adoption",
         "sporades_team_bootstrap",
         "sporades_team_join_link_counters",
         "sporades_team_join_link_redemptions",

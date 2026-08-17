@@ -103,8 +103,8 @@ test("spike proof: a service-backed SQLite-compatible adapter can run representa
       );
 
       await assert.rejects(
-        adapter.withTransaction(async () => {
-          adapter.insertAppRow(notesTable, {
+        adapter.withTransaction(async (transaction) => {
+          transaction.insertAppRow(notesTable, {
             id: "note-rolled-back",
             createdAt: now,
             updatedAt: now,

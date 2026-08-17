@@ -153,11 +153,11 @@ A deliberate non-terminal Job-handler outcome that keeps the same Job identity a
 _Avoid_: retry, replacement Job, recursive enqueue
 
 **Schedule**:
-A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management.
+A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management. A dynamic payload factory may opt into a declaration-owned `payloadVersion`; omission preserves the weaker v0.8.5 source-text identity, which cannot identify captured configuration. Every retained or freshly calculated next-occurrence cursor is either absent or one canonical four-digit UTC instant; malformed retained cursors and startup calculations beyond that domain fail before persistence or timers arm. Enabled active state has a cursor, enabled exhausted state has none, and disabled state is non-exhausted with no cursor. After the final representable occurrence commits, an enabled Schedule is durably exhausted and exposes an absent next occurrence without re-arming a timer; a due final cursor recovered at restart follows `latest` or `skip` before that atomic exhaustion.
 _Avoid_: cron job, recurring Job, timer
 
 **Scheduled occurrence**:
-One UTC instant produced by a Schedule and associated with one durable Job identity when enqueue succeeds.
+One UTC instant produced by one fingerprinted definition and per-publication incarnation of a Schedule. Its complete retained identity binds the Capsule, Schedule name, and UTC instant; its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds. The enabled durable Schedule incarnation is authority, so a stale runtime leaves replacement-owned pending work untouched and stops its local generation. A same-definition upgrade may adopt a wholly legacy pending occurrence written late by an overlapping v0.8.5 runtime; changed, disabled, removed, and later-restored generations never do. Payload calculation itself may be repeated during recovery, but a changed, disabled, or removed generation supersedes its own pending occurrences.
 _Avoid_: run, tick, retry
 
 **Job inspection action**:
@@ -403,6 +403,7 @@ _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
+Inside an active audited callback it may inspect one explicit existing Team's accepted-member count, safe member projection, and active Join-link metadata (never the target email), or safely inspect a Join link. It cannot list a current user's Teams, validate an email-bound Join link, or mutate Team state; no Team inspection grants or invents user identity or membership authority. In-flight inspection fails closed if the callback ends or its AbortSignal aborts before a result returns. Unknown or deleted explicit Teams fail as `TEAM_NOT_FOUND`; safe Join-link inspection preserves its invalid-capability result.
 _Avoid_: root server role, admin user, superuser account, service account, Capsule role
 
 **Privileged audit event**:
@@ -418,6 +419,10 @@ _Avoid_: config file (too generic — it's the specific project config)
 **Scheduling policy**:
 The `sporades.json` configuration for Capsule-wide Job Scheduling runtime limits, such as payload-factory timeout. It controls scheduler operation rather than defining individual Schedules.
 _Avoid_: Schedule definition, cron config, Job retry policy
+
+**Schedule legacy-adoption lineage**:
+Runtime-owned durable upgrade state that records whether a genuine v0.8.5 Schedule may still adopt wholly identity-less pending occurrences from an overlapping old process. Only an uninterrupted same-definition enabled upgrade remains open. Definition change, disablement, removal, or later restoration closes the lineage irreversibly, independently of whether an old writer recreates the Schedule row.
+_Avoid_: Schedule generation, occurrence claim, reusable compatibility flag
 
 **Security policy**:
 The `sporades.json` configuration that defines Capsule HTTP security posture, including CORS and Content Security Policy defaults and overrides. It is runtime policy, not app business logic.

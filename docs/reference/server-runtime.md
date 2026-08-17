@@ -43,6 +43,57 @@ you add one to a table that already has rows, existing rows read the new field
 as `null`; fresh tables use the same nullable column definition. Validate
 required business fields in your mutations before calling `ctx.db`.
 
+### Declare unique fields
+
+Use `.unique(...)` to enforce a single-field or composite unique constraint.
+It is chainable with `.acl(...)` in either order.
+
+```ts
+schema: {
+  projectSlugs: table({
+    teamId: String(),
+    slug: String(),
+    externalId: String(),
+  })
+    .unique("externalId")
+    .unique("teamId", "slug"),
+}
+```
+
+Every named field must be declared on that table. Repeating a field, or
+declaring the same set of fields again in another order, is rejected while the
+Capsule schema is being loaded. Constraint field order is retained for a
+composite declaration; constraints themselves have deterministic schema
+metadata ordering.
+
+Unique constraints use ordinary SQL `NULL` semantics on SQLite, libSQL, and
+PostgreSQL: a `NULL` in any constrained field does not conflict with another
+row. A unique declaration does not make a field required; validate required
+business fields separately.
+
+Adding a new unique constraint declaration to an existing table is supported.
+Sporades rebuilds it inside one Database adapter transaction, preserving every
+non-conflicting row and then recording the new schema metadata. If existing
+data conflicts, the migration is rolled back completely and reports only
+`Unable to apply unique constraint migration.`; conflicting values and
+database-engine diagnostics are not exposed. That opaque translation applies
+only when the newly added constraint's row copy detects conflicting existing
+data. Foreign-key failures,
+unrelated unique failures, and adapter or infrastructure failures retain their
+ordinary error path instead of being mislabeled as duplicate migration data.
+
+Every failed attempt preserves the original table, all original rows, and the
+prior schema metadata and hash. It leaves no temporary table or other rebuild
+debris behind. The runtime chooses a bounded unique temporary table name inside
+the migration transaction and checks it against the live schema. A temporary
+table name collision with a valid app table leaves that table preserved and
+untouched; overlapping migrations use independent internal names.
+
+Removing, replacing, weakening, or changing the field order of an existing
+constraint remains an unsupported Capsule schema change. Keep the existing
+declaration, or create a separately named table and move data through ordinary
+application-controlled reads and writes when that is safe.
+
 Tables can also declare ACL rules next to their fields. ACL rules are an
 invisible accept/reject authorization policy around normal `ctx.db` table
 operations; app code still reads and writes through the table API instead of
@@ -190,6 +241,27 @@ mutations: {
 
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
+
+### Idempotent Inserts Against Declared Uniqueness
+
+When a mutation may be retried or raced by another request, declare the exact
+unique constraint on the table and use `insertOrIgnore` with that same field
+tuple in the declared order. It atomically returns the inserted row for the
+winning call, or `null` when that named constraint already has a winner:
+
+```ts
+subscriptions: table({ teamId: String(), plan: String() }).unique("teamId"),
+
+// Inside a mutation:
+const inserted = await ctx.db.subscriptions.insertOrIgnore({ teamId, plan: "pro" }, "teamId");
+return inserted ?? await ctx.db.subscriptions.where("teamId", teamId).get();
+```
+
+The conflict fields must exactly equal one declared constraint; partial,
+reordered, unknown, or empty targets fail before any write. `insertOrIgnore`
+does not hide a conflict on another constraint, ACL denial, reference or value
+validation failure, or database failure. Ordinary `insert` retains its usual
+error-on-conflict behavior.
 
 ### Gate Handlers With requireAuth
 

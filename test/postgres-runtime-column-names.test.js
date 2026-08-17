@@ -292,8 +292,8 @@ for (const engine of ENGINES) {
             sql(
               "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], " +
               "[status], [availableAt], [attempts], [idempotencyKey], [createdAt], [startedAt], [retryJson], " +
-              "[attemptHistory], [leaseExpiresAt], [scheduleName], [scheduledFor]) " +
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "[attemptHistory], [leaseExpiresAt], [claimToken], [scheduleName], [scheduledFor]) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
           )
           .run(
@@ -312,6 +312,7 @@ for (const engine of ENGINES) {
             '{"maxAttempts":3,"delayMs":250}',
             "[]",
             NEXT_OCCURRENCE,
+            "job-claim-token",
             "nightly",
             NOW,
           );
@@ -333,6 +334,7 @@ for (const engine of ENGINES) {
             retryJson: row?.retryJson,
             attemptHistory: row?.attemptHistory,
             leaseExpiresAt: row?.leaseExpiresAt,
+            claimToken: row?.claimToken,
             scheduleName: row?.scheduleName,
             scheduledFor: row?.scheduledFor,
             completedAt: row?.completedAt,
@@ -354,6 +356,7 @@ for (const engine of ENGINES) {
             retryJson: '{"maxAttempts":3,"delayMs":250}',
             attemptHistory: "[]",
             leaseExpiresAt: NEXT_OCCURRENCE,
+            claimToken: "job-claim-token",
             scheduleName: "nightly",
             scheduledFor: NOW,
             completedAt: null,
@@ -372,6 +375,7 @@ for (const engine of ENGINES) {
           "attempts",
           "availableAt",
           "cancelRequestedAt",
+          "claimToken",
           "completedAt",
           "createdAt",
           "enqueuedByUserId",
@@ -401,18 +405,19 @@ for (const engine of ENGINES) {
         await adapter
           .prepare(
             sql(
-              "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [expression], [effectiveTimezone], " +
+              "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], " +
               "[missedRunPolicy], [enabled], [nextOccurrence], [latestScheduledFor], [latestOutcome], [latestJobId], " +
-              "[latestErrorCode]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "[latestErrorCode]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
           )
-          .run("nightly", "fingerprint-1", "0 3 * * *", "UTC", "skip", 1, NEXT_OCCURRENCE, NOW, "enqueued", "job-read-back", null);
+          .run("nightly", "fingerprint-1", "generation-1", "0 3 * * *", "UTC", "skip", 1, NEXT_OCCURRENCE, NOW, "enqueued", "job-read-back", null);
 
         const schedule = await adapter.prepare(sql("SELECT * FROM [sporades_schedules] WHERE [name] = ?")).get("nightly");
         assert.deepEqual(
           {
             name: schedule?.name,
             definitionFingerprint: schedule?.definitionFingerprint,
+            generationToken: schedule?.generationToken,
             expression: schedule?.expression,
             effectiveTimezone: schedule?.effectiveTimezone,
             missedRunPolicy: schedule?.missedRunPolicy,
@@ -426,6 +431,7 @@ for (const engine of ENGINES) {
           {
             name: "nightly",
             definitionFingerprint: "fingerprint-1",
+            generationToken: "generation-1",
             expression: "0 3 * * *",
             effectiveTimezone: "UTC",
             missedRunPolicy: "skip",
@@ -441,11 +447,11 @@ for (const engine of ENGINES) {
         await adapter
           .prepare(
             sql(
-              "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], " +
-              "[claimExpiresAt], [jobId], [errorCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], " +
+              "[claimExpiresAt], [jobId], [errorCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
           )
-          .run("nightly@" + NOW, "nightly", NOW, "pending", "claim-token", NEXT_OCCURRENCE, "job-read-back", null, NOW, LATER);
+          .run("nightly@" + NOW, "nightly", "fingerprint-1", "generation-1", NOW, "pending", "claim-token", NEXT_OCCURRENCE, "job-read-back", null, NOW, LATER);
 
         const occurrence = await adapter
           .prepare(sql("SELECT * FROM [sporades_schedule_occurrences] WHERE [id] = ?"))
@@ -454,6 +460,8 @@ for (const engine of ENGINES) {
           {
             id: occurrence?.id,
             scheduleName: occurrence?.scheduleName,
+            definitionFingerprint: occurrence?.definitionFingerprint,
+            generationToken: occurrence?.generationToken,
             scheduledFor: occurrence?.scheduledFor,
             status: occurrence?.status,
             claimToken: occurrence?.claimToken,
@@ -466,6 +474,8 @@ for (const engine of ENGINES) {
           {
             id: "nightly@" + NOW,
             scheduleName: "nightly",
+            definitionFingerprint: "fingerprint-1",
+            generationToken: "generation-1",
             scheduledFor: NOW,
             status: "pending",
             claimToken: "claim-token",

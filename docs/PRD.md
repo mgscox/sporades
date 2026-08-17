@@ -106,7 +106,8 @@ The repository currently includes:
   context middleware, pre/post mutation hooks, and App messages.
 - Field builders for `String()`, `Boolean()`, `Number()`, `Date()`, `Json()`,
   and `Reference()`.
-- Additive migrations for new tables and fields. Unsupported destructive or
+- Additive migrations for new tables, fields, and unique constraints, plus
+  exact-constraint `insertOrIgnore` writes. Unsupported destructive or
   shape-changing schema changes fail with a structured error instead of
   silently dropping app data.
 - Runtime-owned auth with anonymous sessions, email sign-up/sign-in, Google
@@ -462,11 +463,24 @@ Additive migrations support:
 - creating new app tables,
 - adding new fields to existing tables,
 - default values for newly added fields,
+- adding a unique constraint to an existing table,
 - reference-target validation for `Reference()` fields.
 
-Removing tables, removing fields, or changing existing field definitions is an
+Adding a unique constraint rebuilds the table inside one Database adapter
+transaction. If the newly added constraint's row copy finds duplicate
+existing data, Sporades returns one opaque unique-migration error and rolls back
+the attempt. The original table, rows, schema metadata, and hash remain intact,
+with no temporary table or rebuild debris. Foreign-key failures and unrelated
+unique failures retain their original error instead of being translated as
+duplicate migration data. Each temporary table name is bounded for PostgreSQL,
+unique to the migration, and checked against the live transaction schema. A
+temporary table name collision with a valid app table leaves that table
+preserved and untouched, while overlapping migrations use independent names.
+
+Removing tables or fields, changing existing field definitions, or removing,
+replacing, weakening, or reordering an existing unique constraint is an
 unsupported schema change today. The runtime reports a structured error with a
-hint to revert the change or move data aside and recreate the Runtime directory.
+hint to revert the change or move data safely through a separately named table.
 
 ## Auth
 
@@ -802,6 +816,20 @@ track checked through normal ACL rules. Browser/client credentials cannot carry
 Privileged server role authority, and table ACL rule contexts cannot call
 `ctx.privileged.run(...)`.
 
+Inside an active Privileged callback, `privilegedCtx.teams` is a narrow
+read-only exact-Team inspection surface. It can count accepted members, list
+the existing safe member projection, list safe active Join-link metadata without
+the target email, and
+safely inspect a Join link. It performs no current-user membership or admin
+check and does not create or capture a Sporades user identity. Current-user
+Team listing and email-bound Join-link validation remain unavailable, as do all
+Team mutations. An unknown or deleted exact Team fails with `TEAM_NOT_FOUND`;
+Join-link inspection keeps its invalid-capability result. These results never
+include raw rows, Join capabilities, target emails, credentials, sessions, or provider
+subjects. Every inspection rechecks the active callback and AbortSignal after
+runtime reads, so detached or aborted in-flight work fails closed rather than
+returning a result after its Privileged callback ends.
+
 Every privileged run emits Privileged audit events with actor kind
 `privileged-server-role` and the lifecycle outcomes `started`, then
 `completed` or `errored`, then `finished`. If a privileged run receives an
@@ -814,7 +842,11 @@ Capsule server code catches and shapes a safe response.
 generated runtime artifacts expose the same Privileged server role behavior as
 the source runtime code. `npm run build` regenerates the bundled `bin/` and
 `dist/` outputs, so Dev sessions, Container sessions, and Hosted Capsules do not
-drift from source behavior. A deployed Capsule's server Bundle is built from the
+drift from source behavior. The retained generated-source manifest seals all
+shipped JavaScript, declarations, source maps, CLI bundles, and the build inputs
+that produce them, excluding only the manifest itself. The freshness check fails
+when a sealed output is changed or deleted or a generator input changes without
+a complete rebuild. A deployed Capsule's server Bundle is built from the
 runtime module graph, so a name that fails to reach it is a build error rather
 than a runtime one.
 
@@ -822,9 +854,13 @@ than a runtime one.
 
 The Job Queue is implemented as a runtime-owned, server-only surface. Capsule
 authors declare handlers with `job()` and enqueue them through `ctx.jobs` from
-trusted server contexts. Enqueue is a durable runtime side effect outside the
-Capsule app mutation Transaction boundary, so callers that may retry a
-cross-boundary workflow should supply an idempotency key.
+trusted server contexts. `ctx.jobs.enqueue` persists the Job atomically inside
+the same mutation, App message, or Custom endpoint transaction as the handler's
+app writes, so a handler rollback removes the Job. Worker dispatch starts only
+after the transaction commits. A post-commit dispatch registration failure does
+not reverse or misreport committed handler work; the durable Job recovers on a
+later worker wake or runtime restart. Callers that may retry a workflow should
+still supply an idempotency key.
 
 Jobs run as either the captured current Sporades user or, when explicitly
 enqueued inside `ctx.privileged.run(...)`, the Privileged server role.
@@ -836,7 +872,80 @@ The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
 and `cancelled`; only `queued` means ready to run. V1 uses a single worker,
 bounded retry, cooperative cancellation, leases, and restart recovery. Delivery
 is at least once rather than exactly once, so handlers must be idempotent and
-safe to repeat after lease recovery.
+safe to repeat after lease recovery. Expired durable state may be reconciled
+while storage opens, but Job dispatch and recovered handlers or retry wakes
+remain stopped until the Capsule `init()` hook, retained Schedule validation,
+declaration reconciliation, and timer capability gates all succeed. A Job
+durably enqueued by `init()` cannot dispatch before that publication boundary;
+failed initialization unwinds and awaits all Job and Schedule runtime work, and
+a later successful open recovers the retained Job. Every running attempt owns an
+opaque claim so stale lifecycle work cannot mutate a newer attempt. A running
+cancellation request and its handler abort become effective only after their
+enclosing mutation, App message, or Custom endpoint transaction commits; a
+rollback discards both. That pending abort is transaction-owned even when
+context middleware replaces its context object. After registering the running
+attempt's controller, the worker rechecks the exact claim token before entering
+the handler so cancellation committed in the claim-registration window is
+already visible through `ctx.signal`. If orderly shutdown wins during any
+pre-handler reconciliation, the worker relinquishes that exact claim without
+consuming an attempt; a concurrent durable cancellation remains terminal.
+
+Orderly shutdown and Dev restart stop scheduling new Job work, clear immediate,
+delayed, and retry worker timers, abort active Job handlers, and await scheduled
+worker settlement before the Capsule shutdown hook and before mail, the
+Database adapter, and other runtime resources close. An active worker settles
+its current attempt without claiming another queued Job, and worker settlement
+failure does not skip resource closure. A commit that races the active worker's
+empty queue read guarantees another scan before worker ownership clears, without
+waiting for a later enqueue or restart. Signal shutdown stops accepting and
+drains HTTP requests before runtime resources close. A shutdown abort without a
+durable `cancelRequestedAt` marker is not user cancellation: it follows the
+ordinary retry or exhausted-attempt transition for that Job.
+Long `availableAt` and retry waits re-arm in bounded native-timer chunks rather
+than overflowing into immediate queue rescans. Job availability is restricted
+to canonical four-digit UTC timestamps, and every configured retry attempt,
+intervening delay, and attempt claim lease must remain in that same representable
+time domain. Invalid public values return
+`INVALID_JOB_OPTIONS`; availability accepts only timestamp strings or `Date`
+objects, never coercible scalar epoch values. Invalid retained availability or
+retry state fails terminally during recovery and is revalidated before worker
+claim rather than executing early or blocking startup. Availability and retry
+instants reserve enough time-domain headroom for their runtime claim lease;
+retry policy objects reject members other than `maxAttempts` and optional
+`delayMs`. A restart that observes a canonical future running lease tracks its
+earliest expiry and re-arms recovery in bounded native-timer chunks; it does not
+strand the attempt merely because the lease was not expired during storage
+open. Recovery rechecks the durable lease and exact claim before transition.
+Missing or noncanonical retained running leases fail terminally with the safe
+`JOB_LEASE_INVALID` code; malformed non-null claim ownership fails with
+`JOB_CLAIM_INVALID`. Orderly close clears the tracked recovery wake. A
+missing captured actor is terminal regardless of unused retry attempts. Capsule
+shutdown hook failure does not skip Database adapter closure. Runtime close
+attempts mail, Database adapter, and file-storage closure independently and
+aggregates multiple failures only after every closer has been attempted. A
+worker-settlement or shutdown-hook failure is preserved and aggregated when
+mail closure also fails. Candidate
+initialization is the Dev replacement ownership boundary. If teardown of the
+prior runtime subsequently reports a failure after closing its resources,
+Sporades promotes the viable candidate and records a bounded warning; it does
+not retain a closed prior runtime or close its only viable replacement.
+Candidate viability initialization keeps its Job recovery and dispatch stopped.
+The Job activation timer is preflighted before prior-runtime teardown without
+dispatching a handler. If activation scheduling degrades after teardown,
+Sporades still promotes the request-capable candidate and records a bounded
+`dev.runtime.job_activation_degraded` warning instead of retaining the closed
+prior runtime.
+After prior-runtime teardown settles, including its failure path, the candidate
+activates and refreshes tracked running-lease recovery before a fresh Job worker
+pass. Lease
+recovery is single-flight: a refresh requested while a scan is active runs
+afterward at the earliest requested instant, and shutdown awaits that complete
+chain. A claim acquired after the candidate's startup scan, retained by failed
+teardown, relinquished, or delayed by the outgoing worker during handoff remains
+discoverable.
+Durable queued and delayed Job state remains stored and recovers on runtime
+restart. Unclean interruption retains the ordinary lease-recovery and
+at-least-once behavior.
 
 Administrators inspect all bounded Job state using the JSON-only `sporades
 jobs`, `sporades deploy jobs`, and `sporades host jobs` commands. This operator
@@ -864,7 +973,11 @@ Job Queue. Capsule authors declare named Schedules with `schedule()` alongside
 named `job()` handlers. A declaration contains a numeric five-field cron
 expression (minute, hour, day-of-month, month, day-of-week), an optional IANA
 timezone, JSON-safe payload or bounded async payload factory, ordinary enqueue
-retry options, an enabled state, and a `skip` or `latest` missed-run policy.
+retry options, an enabled state, and a `skip` or `latest` missed-run policy. A
+payload factory may declare a stable non-empty `payloadVersion` of at most 128
+characters and should change it whenever its code or captured configuration
+changes. Omission preserves the v0.8.5 source-text fingerprint for backward
+compatibility, but that weaker identity cannot detect captured values.
 Seconds, years, cron nicknames, browser declarations, Sessions, captured users,
 and dynamically created Schedules are unsupported.
 
@@ -880,14 +993,77 @@ next future one. `latest` creates at most the most recent missed occurrence and
 then resumes. Runtime state survives restarts through the configured Database
 adapter. Declaration changes affect only future occurrences; removal forgets
 Schedule state without deleting historical Jobs, and later reuse of the name is
-a fresh identity. Deterministic occurrence identity and durable reconciliation
-prevent duplicate Job creation across overlapping starts and crashes.
+a fresh future-only generation. Reconciliation terminally quarantines pending
+occurrences from changed, disabled, or removed definitions,
+so later reuse or re-enabling cannot resurrect them. Deterministic occurrence
+identity and durable reconciliation prevent duplicate Job creation across
+overlapping starts and crashes.
+Payload evaluation may repeat after occurrence-claim expiry, but persistence is
+claim-owned: deterministic Job enqueue, occurrence terminalization, and the
+Schedule latest-occurrence summary are one Database transaction. Each pending
+occurrence carries its Schedule definition fingerprint and a distinct durable
+incarnation token, which are revalidated against the enabled durable Schedule
+inside that transaction. Each successful runtime publication rotates the token,
+including same-definition restart, A-B-A, removal/re-addition, and
+disable/re-enable transitions. Claim and recovery decisions use that incarnation
+as authority. A stale owner
+cannot quarantine replacement-owned pending work, enqueue, finalize, or
+overwrite a replacement generation's cursor or summary after another runtime
+reclaims or replaces the occurrence. It leaves that work for the matching
+runtime and stops its superseded local Schedule generation instead of re-arming
+it. Reconciliation, claim, and finalization lock the Schedule row before its
+occurrence rows. The full declaration reconciliation and ownership publication
+are atomic and occur only after candidate recovery and timer capability can be
+validated. Actual timers arm after commit. A candidate failure rolls back
+its state so the old scheduler remains functional. Same-definition restart
+locks the durable Schedule generation before transferring matching pending
+occurrences to the new incarnation. A one-time upgrade migration records durable
+legacy-adoption lineage for genuine v0.8.5 rows. Only an uninterrupted
+same-definition enabled lineage remains open; change, disablement, removal, or
+later restoration closes it permanently. While open, a tracked discovery timer
+uses an indexed lookup for at most 100 wholly legacy pending rows once per
+second, including rows an overlapping v0.8.5 runtime writes after startup. Shutdown cancels that timer and
+awaits any active batch. Closed lineage work is not resurrected.
+The next-occurrence timer uses bounded native-timer chunks and rechecks that the
+nominal instant is due before it persists or enqueues anything, so distant
+monthly and annual occurrences cannot run early when a host timer clamps a long
+delay. A retained pending occurrence claim's future recovery wake is likewise
+tracked, chunked to the native timer limit, and rechecks the durable expiry
+before reconciliation. Transient recovery failures install a bounded retry wake,
+and orderly close waits for active Schedule recovery before closing the adapter.
+A recovery wake discovered by a losing retained-state compare-and-set is armed
+only after its transaction commits, so it can open a fresh recovery transaction.
+Every retained or freshly calculated Schedule `nextOccurrence` cursor must be
+a canonical four-digit UTC timestamp. Malformed retained state or a startup
+calculation beyond that domain fails startup with `SCHEDULE_STATE_INVALID`
+before persistence or live timers arm. Retained state is canonical only when an
+enabled active Schedule has a cursor, an enabled exhausted Schedule has none,
+or a disabled Schedule is non-exhausted with no cursor; startup and inspection
+reject all inverse combinations before writes or timers. When a due occurrence is the last
+representable instant for its recurrence, successful enqueue, payload failure,
+or enqueue failure commits its occurrence and latest summary atomically and
+durably exhausts future scheduling. Inspection then reports the declaration as
+`enabled: true` with `nextOccurrence: null`; restart preserves exhaustion and no
+timer is re-armed. A final cursor already due at restart is recovered under
+`latest` before atomic exhaustion; `skip` exhausts without enqueueing. A late final occurrence and its single-attempt Job use claim
+leases clamped to the remaining canonical domain; a retry policy requiring a
+later attempt instead commits the bounded enqueue-failure outcome. Schedule
+inspection applies that same
+domain to the next cursor and latest-occurrence timestamp. Retained occurrence and
+claim-expiry timestamps are canonical four-digit UTC
+instants. Recovery validates the retained id, Schedule name, and scheduled UTC
+instant as one deterministic identity. Malformed or mismatched retained state is
+terminally quarantined with the opaque stable `SCHEDULE_OCCURRENCE_INVALID`
+error without blocking startup or spinning the Schedule timer; superseded
+definition state uses the opaque stable `SCHEDULE_OCCURRENCE_SUPERSEDED` error.
 
 A successful occurrence enqueues one ordinary Job under Schedule provenance and
 the Privileged server role execution actor. The scheduler passes only the
 declared payload and retry policy. Payload factories may run more than once
-during recovery and must tolerate repeated side effects. After enqueue, the Job
-Queue exclusively owns execution, retries, cancellation, leases, and results.
+during recovery and must tolerate repeated side effects. Shutdown aborts active
+factories and removes queued factories before they acquire a concurrency slot;
+queued work never starts after scheduling stops. After enqueue, the Job Queue
+exclusively owns execution, retries, cancellation, leases, and results.
 Delivery remains **at least once**, so duplicate-safe occurrence creation is not
 an exactly-once execution promise. One-time `availableAt` remains Job Queue
 behavior and is not recurring scheduling.

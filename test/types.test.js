@@ -67,8 +67,51 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
+
+const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
+uniqueUsers.fields.email.kind.toUpperCase();
+// @ts-expect-error Unique declarations may name only declared table fields.
+table({ email: String() }).unique("missing");
+// @ts-expect-error A unique declaration needs at least one field.
+table({ email: String() }).unique();
+const annotatedUniqueUsers: TableDefinition<{ email: ReturnType<typeof String> }> = table({ email: String() });
+annotatedUniqueUsers.unique("email");
+// @ts-expect-error An exported TableDefinition keeps the non-empty unique declaration contract.
+annotatedUniqueUsers.unique();
+// @ts-expect-error An exported TableDefinition keeps keys scoped to its declared fields.
+annotatedUniqueUsers.unique("missing");
+
+declare const typedUsers: TableApi<{ id: string; createdAt: string; updatedAt: string; email: string; teamId: string }>;
+typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
+const serviceInsertOrIgnoreResult: ReturnType<typeof typedUsers.insertOrIgnore> = Promise.resolve({
+  id: "user-1",
+  createdAt: "2026-08-16T00:00:00.000Z",
+  updatedAt: "2026-08-16T00:00:00.000Z",
+  email: "person@example.test",
+  teamId: "team-a",
+});
+async function awaitInsertOrIgnore() {
+  const inserted = await typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
+  return inserted?.email ?? null;
+}
+void serviceInsertOrIgnoreResult;
+void awaitInsertOrIgnore;
+// v0.8.5 dynamic Schedule payloads retain their legacy source-text identity.
+schedule({ expression: "* * * * *", job: "summarise", payload: () => ({ text: "dynamic" }) });
+// @ts-expect-error Static Schedule payloads are fingerprinted directly and cannot declare payloadVersion.
+schedule({ expression: "* * * * *", job: "summarise", payload: { text: "static" }, payloadVersion: "unused" });
+// @ts-expect-error An idempotent insert names at least one conflict field.
+typedUsers.insertOrIgnore({ email: "person@example.test" });
+// @ts-expect-error Conflict fields are limited to the table row shape.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "missing");
+// @ts-expect-error Managed IDs cannot be declared unique or named as insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "id");
+// @ts-expect-error Managed creation timestamps are not insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "createdAt");
+// @ts-expect-error Managed update timestamps are not insert conflict fields.
+typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
 const app = capsule({
   name: "typed island",
@@ -120,6 +163,7 @@ const app = capsule({
       expression: "* * * * *",
       job: "summarise",
       missedRun: "latest",
+      payloadVersion: "dynamic-summary-v1",
       payload: async (occurrence, ctx) => {
         occurrence.scheduleName.toUpperCase();
         occurrence.scheduledFor.toUpperCase();
@@ -216,6 +260,8 @@ const app = capsule({
       const members = await ctx.teams.listMembers(renamed.team.id);
       const memberPage = await ctx.teams.listMembers(renamed.team.id, { cursor: members.nextCursor, limit: 25 });
       memberPage.totalCount.valueOf();
+      const memberCount = await ctx.teams.countMembers(renamed.team.id);
+      memberCount.totalCount.valueOf();
       const roleUpdate = await ctx.teams.updateApplicationRoles(renamed.team.id, members.members[0]?.userId ?? "", { add: ["author"], remove: [] });
       const joinLink = await ctx.teams.validateJoinLink("opaque-join-code");
       const joined = await ctx.teams.join("opaque-join-code");
@@ -233,8 +279,22 @@ const app = capsule({
         metadata: { reason: "type-test" },
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
-        // @ts-expect-error Privileged server role must not inherit a caller's Team capability.
+        const privilegedMemberCount = await privilegedCtx.teams.countMembers("00000000-0000-4000-8000-000000000000");
+        privilegedMemberCount.totalCount.valueOf();
+        const privilegedMembers = await privilegedCtx.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 25 });
+        privilegedMembers.members[0]?.displayName.toUpperCase();
+        const privilegedLinks = await privilegedCtx.teams.listJoinLinks("00000000-0000-4000-8000-000000000000");
+        privilegedLinks.links[0]?.expiresAt.toUpperCase();
+        // @ts-expect-error Privileged Join-link inspection never exposes the target email.
+        privilegedLinks.links[0]?.email.toUpperCase();
+        const privilegedLink = await privilegedCtx.teams.inspectJoinLink("opaque-join-code");
+        privilegedLink.usable.valueOf();
+        // @ts-expect-error Privileged work cannot infer a current user's Team list.
         privilegedCtx.teams.list();
+        // @ts-expect-error Privileged work cannot validate an email-bound Join link.
+        privilegedCtx.teams.validateJoinLink("opaque-join-code");
+        // @ts-expect-error Privileged work cannot mutate Team state.
+        privilegedCtx.teams.create("Forbidden Team");
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
         await privilegedCtx.mail.send({
@@ -417,6 +477,7 @@ teams.create("Browser Team").then((result) => result.data?.team.id);
 teams.rename("00000000-0000-4000-8000-000000000000", "Renamed Browser Team").then((result) => result.data?.team.name);
 teams.listMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.members.map((member) => member.displayName));
 teams.listMembers("00000000-0000-4000-8000-000000000000", { cursor: "opaque", limit: 25 }).then((result) => result.data?.totalCount.valueOf());
+teams.countMembers("00000000-0000-4000-8000-000000000000").then((result) => result.data?.totalCount.valueOf());
 teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000", { add: ["author"], remove: ["reviewer"] }).then((result) => result.data?.updated.valueOf());
 teams.validateJoinLink("opaque-join-code").then((result) => result.data?.valid.valueOf());
 teams.join("opaque-join-code").then((result) => result.data?.team.applicationRoles);
@@ -441,6 +502,8 @@ teams.updateApplicationRoles("00000000-0000-4000-8000-000000000000", "00000000-0
 teams.updateApplicationRoles({ teamId: "not-a-string" }, "00000000-0000-4000-8000-000000000000", { add: [], remove: [] });
 // @ts-expect-error Team IDs must be strings.
 teams.listMembers({ teamId: "not-a-string" });
+// @ts-expect-error member counts require an explicit string Team ID.
+teams.countMembers({ teamId: "not-a-string" });
 // @ts-expect-error member page limits must be numbers.
 teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: "25" });
 // @ts-expect-error Join codes must be strings.

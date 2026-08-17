@@ -42,6 +42,7 @@ import {
   simulateLocalIdentitySession,
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
+import { mutation } from "../dist/server.js";
 import {
   POSTGRES_SKIP_REASON,
   postgresTestUrl,
@@ -714,11 +715,15 @@ test("file upload completion cleans written replacement bytes when metadata comp
       assert.equal(pendingReplacement.ok, true, pendingReplacement.error?.message);
       const replacement = pendingReplacement.data.file;
       const replacementUploadId = pendingReplacement.data.uploadUrl.split("/").pop();
-      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
-      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
-        await realRevokePublicFileUrlsForFile(...args);
-        throw new Error("forced public URL revocation failure");
-      };
+      const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+      database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+        const realRevokePublicFileUrlsForFile = transaction.revokePublicFileUrlsForFile.bind(transaction);
+        transaction.revokePublicFileUrlsForFile = async (...args) => {
+          await realRevokePublicFileUrlsForFile(...args);
+          throw new Error("forced public URL revocation failure");
+        };
+        return await callback(transaction);
+      });
 
       const failed = await completePendingFileUpload(database, replacementUploadId, Readable.from([Buffer.from("replacement")]));
       assert.equal(failed.ok, false);
@@ -743,11 +748,15 @@ test("pending upload creation rolls back File bucket setup when upload insertion
       files: { storagePath: path.join(dir, "files") },
     });
     const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
-    const realInsertFileUpload = database.adapter.insertFileUpload.bind(database.adapter);
-    database.adapter.insertFileUpload = async (...args) => {
-      await realInsertFileUpload(...args);
-      throw new Error("forced pending upload insert failure");
-    };
+    const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+      const realInsertFileUpload = transaction.insertFileUpload.bind(transaction);
+      transaction.insertFileUpload = async (...args) => {
+        await realInsertFileUpload(...args);
+        throw new Error("forced pending upload insert failure");
+      };
+      return await callback(transaction);
+    });
 
     try {
       await assert.rejects(
@@ -786,11 +795,15 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
       );
       const publicUrl = await createPublicFileUrl(database, auth, file.id, { noExpiry: true });
       assert.equal(publicUrl.ok, true, publicUrl.error?.message);
-      const realRevokePublicFileUrlsForFile = database.adapter.revokePublicFileUrlsForFile.bind(database.adapter);
-      database.adapter.revokePublicFileUrlsForFile = async (...args) => {
-        await realRevokePublicFileUrlsForFile(...args);
-        throw new Error("forced public URL revocation failure");
-      };
+      const realWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+      database.adapter.withTransaction = async (callback) => await realWithTransaction(async (transaction) => {
+        const realRevokePublicFileUrlsForFile = transaction.revokePublicFileUrlsForFile.bind(transaction);
+        transaction.revokePublicFileUrlsForFile = async (...args) => {
+          await realRevokePublicFileUrlsForFile(...args);
+          throw new Error("forced public URL revocation failure");
+        };
+        return await callback(transaction);
+      });
 
       await assert.rejects(deletePrivateFile(database, auth, file.id), /forced public URL revocation failure/);
 
@@ -839,21 +852,23 @@ test("libSQL database adapter owns remote connection, result normalization, and 
   );
 });
 
-test("libSQL database adapter does not share transaction baton with non-transaction operations", async () => {
+test("libSQL database adapter rejects captured-root public operations instead of sharing its transaction baton", async () => {
   await withLibsqlAdapter(
     async (adapter, { requests }) => {
       await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
-      await adapter.withTransaction(async (transaction) => {
-        await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
-        await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
-      });
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
+          await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
+        }),
+        /nested database transactions are not supported/i,
+      );
 
       const outsideSelect = requests.find((request) =>
         request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
       );
-      assert(outsideSelect, JSON.stringify(requests));
-      assert.equal(outsideSelect.baton, undefined);
+      assert.equal(outsideSelect, undefined, JSON.stringify(requests));
     },
     { fileName: "libsql-transaction-scope.db" },
   );
@@ -925,6 +940,46 @@ test("runtime selects libSQL only when declared services provide server-only con
     } finally {
       await embedded.close();
     }
+  });
+});
+
+test("transactional ctx.log pruning settles before a libSQL mutation scope closes", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "transaction-log-index.db"), async ({ url }) => {
+      const config = {
+        name: "transaction-log-index",
+        logs: { indexLimit: 1 },
+        services: { database: { kind: "database", engine: "libsql" } },
+      };
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        "",
+        {},
+        config,
+        {
+          mutations: {
+            log: mutation((ctx, message) => {
+              ctx.log.info(message);
+              return message;
+            }),
+          },
+        },
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+            SPORADES_SERVICE_DATABASE_URL: url,
+          },
+        },
+      );
+      const auth = { userId: "logger", displayName: "Logger", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
+      try {
+        assert.equal((await runMutation(database, auth, "log", ["first"])).ok, true);
+        assert.equal((await runMutation(database, auth, "log", ["second"])).ok, true);
+        assert.deepEqual((await database.log.recent(10)).map((event) => event.message), ["second"]);
+      } finally {
+        await database.close();
+      }
+    });
   });
 });
 

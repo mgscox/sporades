@@ -20,6 +20,9 @@ export * from "./http-runtime.js";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
+export declare function shutdownAndCloseDatabase(database: LooseRecord): Promise<void>;
+export declare function shutdownHttpServerAndRuntime(server: LooseRecord, shutdownRuntime: () => any): Promise<void>;
+export declare function replaceRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord): Promise<LooseRecord>;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
 export declare function createRuntimeLogSink(options: {
@@ -29,6 +32,7 @@ export declare function createRuntimeLogSink(options: {
     dataDir: any;
 }): {
     path: any;
+    withDatabase(database: LooseRecord): /*elided*/ any;
     emit(input: any): any;
     recent(limit?: number): any;
     tail(limit?: number): any[];
@@ -64,6 +68,7 @@ export declare function schemaFromCapsuleDefinition(definition: any): {
             targetTable: string | undefined;
             defaultValue: any;
         }[];
+        uniqueConstraints: any[][];
     }[];
 };
 export declare function extractEndpoints(serverSource: string): {

@@ -1,10 +1,19 @@
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import { createSqliteDatabaseAdapter } from "../../dist/server-runtime-source.js";
+
+const isolatedServiceScript = fileURLToPath(new URL("./libsql-http-service-process.js", import.meta.url));
 
 export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) {
   const options = typeof optionsOrFn === "function" ? {} : optionsOrFn ?? {};
   const fn = typeof optionsOrFn === "function" ? optionsOrFn : maybeFn;
+  if (options.isolateProcess) {
+    return await withIsolatedFakeLibsqlService(databasePath, fn);
+  }
   const adapter = await createSqliteDatabaseAdapter(databasePath);
   const requests = [];
   const sessions = new Map();
@@ -47,6 +56,32 @@ export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) 
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     adapter.close();
+  }
+}
+
+async function withIsolatedFakeLibsqlService(databasePath, fn) {
+  const service = spawn(process.execPath, [isolatedServiceScript, databasePath], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stderr = [];
+  service.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+  const lines = createInterface({ input: service.stdout });
+  const [firstLine] = await Promise.race([
+    once(lines, "line"),
+    once(service, "exit").then(([code]) => {
+      throw new Error(`Isolated libSQL service exited before startup with code ${code}: ${stderr.join("")}`);
+    }),
+  ]);
+  const { url } = JSON.parse(firstLine);
+  try {
+    return await fn({ url, requests: [] });
+  } finally {
+    lines.close();
+    if (service.exitCode === null) {
+      const exited = once(service, "exit");
+      service.kill("SIGTERM");
+      await exited;
+    }
   }
 }
 

@@ -1,0 +1,29 @@
+# Team subscription platform contracts swarm ledger
+
+Coordinator base: `494a086`
+
+| Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 01 | done | None | `494a086` | `codex/team-contracts-01` / `/private/tmp/sporades-team-contracts-01` | `/root/ticket_01_exact_counts_takeover` | `5b3b409` | `/root/rereview_ticket_01_exact_counts` | ACCEPT | `6893db7`, `80d6cd7` | integration: 20 pass, 0 fail, 1 PostgreSQL skip on Node 22; typecheck/generated-bin passed | worktree removed; branch retained |
+| 02 | done | 01 | `80d6cd7` | `codex/team-contracts-02` / `/private/tmp/sporades-team-contracts-02` | `/root/ticket_02_privileged_inspections` | `319bd4a` | `/root/acceptance_review_ticket_02` | ACCEPT | `16d784a`..`dea4ebc` | integration: focused 67/67; typecheck/build/docs/generated-bin passed | worktree removed; branch retained |
+| 03 | done | None | `494a086` | `codex/team-contracts-03` / `/private/tmp/sporades-team-contracts-03` | `/root/ticket_03_unique_declarations` | `28e0d12` | `/root/definitive_review_ticket_03` | ACCEPT | `f638b36`..`20baabb` | integration: 59 pass, 0 fail, 1 PostgreSQL skip; typecheck/build/docs/generated-bin passed | worktree removed; branch retained |
+| 04 | done | 03 | `20baabb` | `codex/team-contracts-04` / `/private/tmp/sporades-team-contracts-04` | `/root/ticket_04_postgres_takeover` | `74b118d` | `/root/review_ticket_04_74b` | ACCEPT | `bd2aeaa`..`8542eb9` | integration: Node24 libSQL/reactive pass; Node22 SQLite/libSQL/PostgreSQL 125/125; typecheck/build/docs/generated-bin passed | worktree removed; branch retained |
+| 05 | done | 03 | `19e7b63` | `codex/team-contracts-05` / `/private/tmp/sporades-team-contracts-05` | `/root/ticket_05_atomic_unique_migration` | `417a8182` | `/root/acceptance_review_ticket_05` | ACCEPT | `2cf8381`..`4605ec5` | integration: SQLite/libSQL/PostgreSQL 99/99; typecheck/build/docs/generated-bin passed | worktree removed; branch retained |
+| 06 | done | 02, 04, 05 | `6c5e484` | `codex/team-subscription-platform-contracts` / `/Volumes/M2_2TB/develop/sporades` | coordinated Sol/high implementation and review | `5ec8198` | `/root/confirm_5ec8` | ACCEPT | `85d2266`..`5ec8198` | exact candidate: Node 22 lifecycle 13/13; Job lifecycle 31 pass, 3 environment skips; final cross-engine lifecycle 25/25; generated parity/diff passed; raw pack SHA-256 `6197c330f9f7b1606eaf29ece6c9920266f6a666a0e11d40a2b9a7d2dd2aa232` | current branch retained |
+
+## Baseline
+
+- `main` at `494a086`, with published `v0.8.5` ancestry reachable through merged PR #14.
+- Ticket graph validated with the issue-swarm validator; initial frontier is Tickets 01 and 03.
+- Public TDD seams confirmed by the approved tickets: current-user and Privileged Teams interfaces; Capsule table declaration and writable table interfaces; Capsule startup/schema migration through shared adapter conformance; packed public server contract.
+- Worker and reviewer model: `gpt-5.6-terra`, reasoning effort `medium`, explicitly selected by the user.
+- `npm run typecheck` passed on the coordinator base.
+- Focused baseline ran 67 tests: 66 passed; `test/database-adapter-engine-seam.test.js` hit the pre-existing Node 24 native `InternalCallbackScope::Close` assertion after its first two cases. Team, ACL, public-contract, and strict TypeScript cases passed. Treat the same native assertion separately from source regressions and require affected focused cases to run where the environment permits.
+
+## Ticket 06 evidence
+
+- Candidate: `5ec8198a2d61ea7335bddcfba136e08cfb675ef1` atop the reconciled `6c5e484` history. The final exact-SHA Sol/high release gate found no P1/P2 blockers. It includes the Team contracts, declarative uniqueness and additive migration, transactional `insertOrIgnore`, transaction-safe Job/Schedule persistence and recovery, adapter ownership gates, deterministic Schedule incarnations, and failure-atomic runtime handoff/shutdown lifecycle.
+- PostgreSQL guard: before any reset-capable test, a direct connection to `postgres://sporades:sporades@127.0.0.1:55432/sporades_w17` returned `current_database = sporades_w17` and `current_user = sporades`. The guarded harness reset only that database's runtime/app tables.
+- Final Node 22.23.2 evidence includes the exact-SHA lifecycle gate at 13/13, Job lifecycle at 31 pass with 3 environment-only PostgreSQL skips, the final candidate-cleanup cross-engine lifecycle matrix at 25/25, and earlier exact PostgreSQL/libSQL/SQLite acceptance matrices recorded by the implementation commits. Build, both typechecks, TypeDoc, VitePress, generated-source/bin parity, and `git diff --check` passed. The only observed full-suite residual was the independently reproduced unchanged OAuth socket-cleanup assertion; all PR-caused full-suite failures were corrected and rerun focused green.
+- Raw `npm pack --json --pack-destination /private/tmp/sporades-team-contracts-final-5ec8198` from exact `5ec8198` produced `sporades-0.8.5.tgz` (242 files, 1024789 bytes, 5206597 unpacked; npm shasum `c3c28ba3a740764c2d2c28ff2607bfd29f84b95f`; SHA-256 `6197c330f9f7b1606eaf29ece6c9920266f6a666a0e11d40a2b9a7d2dd2aa232`). Direct archive inspection confirmed package version `0.8.5`, generated CLI/runtime bytes, public declarations for `PrivilegedTeamsApi`, `countMembers`, `.unique`, `insertOrIgnore`, and optional Schedule `payloadVersion`, plus README/CHANGES. Canonical site documentation remains outside the package `files` allowlist and was separately built. This subsequent ledger-only evidence commit is package-excluded, so the tarball bytes correspond exactly to `5ec8198`.
+- No `npm publish`, push, merge, rebase, database reset outside the guarded target, or downstream change was performed.

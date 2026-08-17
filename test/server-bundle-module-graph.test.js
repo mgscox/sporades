@@ -1397,6 +1397,8 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "PASSWORD_RESET_MIN_TTL_MS",
   "PASSWORD_RESET_MAX_TTL_MS",
   "PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL",
+  "MIN_JOB_TIMESTAMP_MS",
+  "MAX_JOB_TIMESTAMP_MS",
   "RESERVED_JOB_NAME_PREFIX",
   "PASSWORD_RESET_MAIL_JOB",
   "PASSWORD_RESET_REQUEST_JOB",
@@ -1492,6 +1494,8 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     // The report has to have observed real structure, or a probe that wrote `{}` for everything
     // would agree with a `dist/` read that did the same.
     assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
+    assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
+    assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.PRIVILEGED_AUDIT_ACTOR_KINDS.type, "Set");
     assert.equal(bundled.SIDE_EFFECT_SQL_KEYWORDS.type, "Set");
     assert.ok(bundled.SIDE_EFFECT_SQL_KEYWORDS.values.length > 5);

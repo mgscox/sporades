@@ -102,7 +102,7 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
     let closeResult;
     return {
         enabled: true,
-        async send(input) {
+        async send(input, deliveryLog = options.mailLog) {
             const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
             const messageIdentity = `mail_${crypto.randomUUID()}`;
             const startedAt = Date.now();
@@ -115,7 +115,7 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
                 };
                 const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
                 try {
-                    await options.mailLog?.({
+                    await deliveryLog?.({
                         category: "mail",
                         event: "mail.delivery",
                         level: "info",
@@ -142,7 +142,7 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
                         ? normalizeMailTransportError(error)
                         : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
                 try {
-                    await options.mailLog?.({
+                    await deliveryLog?.({
                         category: "mail",
                         event: "mail.delivery",
                         level: "error",
@@ -795,6 +795,12 @@ export function createMailTransport(smtp) {
                     throw error;
                 }
                 socket = await connectSmtpSocket(smtp);
+                if (closed) {
+                    const error = new Error("closed");
+                    error.code = "ECONNECTION";
+                    socket.destroy(error);
+                    throw error;
+                }
                 sockets.add(socket);
                 reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
                 let encrypted = smtp.tls.mode === "implicit";

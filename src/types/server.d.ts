@@ -205,10 +205,17 @@ export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = 
   kind: "table";
   fields: Fields;
   aclRules?: TableAclRules;
+  uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: TableAclRules<RowFromFields<Fields>>): TableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): TableDefinition<Fields>;
 };
 
-export type SchemaDefinition = Record<string, TableDefinition>;
+export type CapsuleTableDefinition<Fields extends Record<string, AnyFieldDefinition>> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
+  acl(rules: TableAclRules<RowFromFields<Fields>>): CapsuleTableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
+};
+
+export type SchemaDefinition = Record<string, TableDefinition<any>>;
 
 /** Sporades-managed fields present on every table row. App code cannot set or update these directly. */
 export type AutoFields = {
@@ -242,6 +249,8 @@ export type OrderDirection = "asc" | "desc" | "ASC" | "DESC";
  */
 export type TableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
   insert(values: InsertValues<Row>): Row;
+  /** Atomically insert, returning null only for the exactly named declared unique constraint. */
+  insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof InsertValues<Row> & string, ...(keyof InsertValues<Row> & string)[]]): MaybePromise<Row | null>;
   update(id: string, values: UpdateValues<Row>): Row | null;
   delete(id: string): boolean;
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): TableApi<Row>;
@@ -390,7 +399,11 @@ export type TeamMemberSummary = {
 };
 export type TeamMembersListOptions = { cursor?: string; limit?: number };
 export type TeamMembersListResult = { members: TeamMemberSummary[]; nextCursor?: string; totalCount: number };
+/** Exact accepted-membership total for one Team the current linked user belongs to. */
+export type TeamMemberCountResult = { totalCount: number };
 export type TeamJoinLink = { id: string; email: string; createdAt: string; expiresAt: string };
+/** Safe active Join-link metadata for userless Privileged inspection. Target email is admin-only. */
+export type PrivilegedTeamJoinLink = { id: string; createdAt: string; expiresAt: string };
 export type TeamJoinLinkInspection = { team: { id: string; name: string } | null; expiresAt: string | null; usable: boolean };
 /** Safe post-auth Join-link check. It never consumes, reserves, or explains a capability. */
 export type TeamJoinLinkValidation = { valid: boolean };
@@ -410,6 +423,8 @@ export type CurrentUserTeamsApi = {
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
   /** Lists a bounded safe membership directory for one Team the caller currently administers. */
   listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
+  /** Returns only the exact accepted-membership total for one Team the current linked user belongs to. */
+  countMembers(teamId: string): Promise<TeamMemberCountResult>;
   /** Atomically adds and removes declared application roles for a member of one administered Team. */
   updateApplicationRoles(teamId: string, userId: string, changes: TeamApplicationRoleChanges): Promise<{ updated: true }>;
   /** Creates an email-bound Join link and returns it without sending any message. The default lifetime is 86400 seconds; accepted integer lifetimes are 300 through 604800 seconds. */
@@ -434,6 +449,23 @@ export type CurrentUserTeamsApi = {
   leave(teamId: string): Promise<{ left: true }>;
   /** Deletes a Team only when the caller is its sole remaining admin member. */
   delete(teamId: string): Promise<{ deleted: true }>;
+};
+
+/**
+ * Read-only exact-Team inspection available only inside an active Privileged
+ * callback. It carries no current-user membership or administration authority.
+ * In-flight inspection rejects if the callback ends or its AbortSignal aborts
+ * before the runtime can return a result.
+ */
+export type PrivilegedTeamsApi = {
+  /** Returns the exact accepted-membership total for an existing Team. */
+  countMembers(teamId: string): Promise<TeamMemberCountResult>;
+  /** Lists the existing safe member projection for an existing Team. */
+  listMembers(teamId: string, options?: TeamMembersListOptions): Promise<TeamMembersListResult>;
+  /** Lists active safe Join-link metadata without target email or a recoverable capability. */
+  listJoinLinks(teamId: string): Promise<{ links: PrivilegedTeamJoinLink[] }>;
+  /** Safely inspects a Join link without authentication or consumption. */
+  inspectJoinLink(code: string): Promise<TeamJoinLinkInspection>;
 };
 
 /** Copy overrides for the built-in password reset message. */
@@ -553,6 +585,7 @@ export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition
   files: PrivilegedFileApi;
   jobs: JobApi;
   schedules: ScheduleInspectionApi;
+  teams: PrivilegedTeamsApi;
 };
 
 /**
@@ -758,6 +791,7 @@ export type JobState = JobSummary & {
  * access may inspect all Jobs when used explicitly through `ctx.privileged`.
  */
 export type JobApi = {
+  /** Availability and retry instants, including runtime claim leases, must remain within canonical four-digit UTC timestamps. Retry accepts only `maxAttempts` and optional `delayMs`. */
   enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string; availableAt?: string | Date; retry?: { maxAttempts: number; delayMs?: number } }): Promise<JobState>;
   cancel(id: string): Promise<JobState | null>;
   get(id: string): Promise<JobState | null>;
@@ -800,11 +834,17 @@ export type ScheduleDefinition = {
   expression: string;
   timezone?: string;
   job: string;
-  payload?: JsonValue | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   enabled?: boolean;
   missedRun?: "skip" | "latest";
-};
+} & (
+  | { payload?: JsonValue; payloadVersion?: never }
+  | {
+    payload: SchedulePayloadFactory;
+    /** Stable identity for the factory source and every captured/configured input. Change it when any of those inputs change. */
+    payloadVersion?: string;
+  }
+);
 
 /**
  * Top-level Capsule definition passed to `capsule()`.
@@ -882,12 +922,14 @@ export function job<Payload extends JsonValue, Result extends JsonValue>(
  * Declare a named server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
- * attempt semantics.
+ * up at most one occurrence. Dynamic payload factories may supply a stable
+ * `payloadVersion` that changes with their code or captured configuration;
+ * omission preserves the weaker v0.8.5 source-text identity.
+ * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" };
 /** Define a Capsule table from field builders. */
-export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
+export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): CapsuleTableDefinition<Fields>;
 
 /** Text field stored as SQLite `TEXT` and exposed as a JavaScript string. */
 export function String(): FieldBuilder<string>;

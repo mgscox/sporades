@@ -1248,6 +1248,7 @@ const RUN_LEXER_CENSUS = {
   isSensitiveLogString: "not a lexer: the `-----BEGIN … PRIVATE KEY-----` PEM header pattern",
   validateMailConfig: "not a lexer: a hostname label may not start or end with `-`",
   parseScheduleExpression: "not a lexer: cron step syntax, `split(\"/\")` and `base === \"*\"`",
+  migrateExistingAppTableInTransaction: "not a lexer: strips UUID hyphens to keep migration table identifiers bounded",
   // Batch 3, and this entry is a blind spot closing rather than a new function. It is the same class
   // as `beginOAuthSignIn` two lines up — a CLI flag in a hint string, `--email` — and it has been in
   // the runtime the whole time. The census could not see it because `walkerGuardSubjects()` reads

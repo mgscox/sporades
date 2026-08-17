@@ -45,7 +45,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { createAdditionalTeam, createCurrentUserTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -93,12 +93,16 @@ import {
 } from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
-  createRuntimeClock, decodeJobCursor, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
-  finishFailedScheduledOccurrence, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition,
-  jobState, jobSummary, nextScheduleOccurrence, normalizeJobRetry, resolveSchedulePayload,
+  commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
+  dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
+  finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
+  jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
+  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
   resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
-  scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
+  scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
+
+const mutationResultsWithWrites = new WeakSet<object>();
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -409,6 +413,130 @@ type RuntimeEnv = Record<string, string | undefined>;
 // Everything in this file now reaches a deployed Capsule the ordinary way — `server-bundle-entry.ts`
 // imports what it calls, and esbuild follows the graph.
 
+export async function shutdownAndCloseDatabase(database: LooseRecord) {
+  let shutdownError: unknown;
+  let closeError: unknown;
+  let shutdownRejected = false;
+  let closeRejected = false;
+  try { await database.shutdown(); }
+  catch (error) { shutdownRejected = true; shutdownError = error; }
+  try { await database.close(); }
+  catch (error) { closeRejected = true; closeError = error; }
+  if (shutdownRejected && closeRejected) {
+    throw new AggregateError([shutdownError, closeError], "Runtime shutdown and database closure both failed.");
+  }
+  if (shutdownRejected) throw shutdownError;
+  if (closeRejected) throw closeError;
+}
+
+export async function shutdownHttpServerAndRuntime(server: LooseRecord, shutdownRuntime: () => any) {
+  let serverError: unknown;
+  let runtimeError: unknown;
+  let serverRejected = false;
+  let runtimeRejected = false;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      try {
+        server.close((error?: Error) => error ? reject(error) : resolve());
+      } catch (error) {
+        reject(error);
+      }
+    });
+  } catch (error) {
+    serverRejected = true;
+    serverError = error;
+  }
+  try { await shutdownRuntime(); }
+  catch (error) { runtimeRejected = true; runtimeError = error; }
+  if (serverRejected && runtimeRejected) {
+    throw new AggregateError([serverError, runtimeError], "HTTP server closure and runtime shutdown both failed.");
+  }
+  if (serverRejected) throw serverError;
+  if (runtimeRejected) throw runtimeError;
+}
+
+export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord) {
+  try {
+    await candidateDatabase.__deferJobExecution?.();
+    await candidateDatabase.init();
+  } catch (initError) {
+    try { await candidateDatabase.close(); }
+    catch (closeError) {
+      throw new AggregateError([initError, closeError], "Runtime initialization and candidate database closure both failed.");
+    }
+    throw initError;
+  }
+  try {
+    candidateDatabase.__preflightJobExecutionActivation?.();
+  } catch (preflightError) {
+    try { await shutdownAndCloseDatabase(candidateDatabase); }
+    catch (cleanupError) {
+      throw new AggregateError([preflightError, cleanupError], "Runtime activation preflight and candidate database cleanup both failed.");
+    }
+    throw preflightError;
+  }
+  let teardownError: unknown;
+  try {
+    await shutdownAndCloseDatabase(currentDatabase);
+  } catch (error) {
+    teardownError = error;
+  }
+  // Candidate startup can finish its lease and queue scans while the outgoing
+  // worker still owns, or is about to acquire, a running claim. Refresh both
+  // tracked recovery and runnable work after outgoing settlement: a failed
+  // teardown may leave the claim leased, while orderly settlement may return
+  // it to delayed/queued state.
+  let activationError: unknown;
+  try {
+    if (typeof candidateDatabase.__activateJobExecution === "function") {
+      candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+    } else {
+      scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
+      scheduleCurrentUserJobWorker(candidateDatabase);
+    }
+  } catch (error) {
+    activationError = error;
+  }
+  if (activationError !== undefined) {
+    emitRuntimeReplacementWarning(
+      candidateDatabase,
+      "dev.runtime.job_activation_degraded",
+      "Replacement runtime Job activation degraded",
+      activationError,
+      "RUNTIME_JOB_ACTIVATION_FAILED",
+    );
+  }
+  if (teardownError !== undefined) {
+    // Candidate initialization is the ownership decision. The old runtime may
+    // already be stopped and its adapter has been closed by the teardown helper,
+    // so rejecting here would leave the Dev server pointing at a dead runtime
+    // while also destroying its only viable replacement.
+    emitRuntimeReplacementWarning(
+      candidateDatabase,
+      "dev.runtime.previous_teardown_failed",
+      "Previous Dev runtime teardown failed after replacement",
+      teardownError,
+      "RUNTIME_TEARDOWN_FAILED",
+    );
+  }
+  return candidateDatabase;
+}
+
+function emitRuntimeReplacementWarning(database: LooseRecord, event: string, message: string, error: unknown, fallbackCode: string) {
+  try {
+    const warning = database.log?.emit?.({
+      category: "platform",
+      event,
+      level: "warn",
+      message,
+      data: { code: String((error as any)?.code ?? fallbackCode).slice(0, 80) },
+    });
+    // Ownership must return to the caller without waiting for logging I/O;
+    // otherwise requests can still observe the already-closed prior runtime.
+    Promise.resolve(warning).catch(() => {});
+  } catch { }
+}
+
 
 export async function openDevDatabase(
   databasePath: string,
@@ -497,11 +625,23 @@ export async function openDevDatabase(
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
+    scheduleReconciliationFault: options?.scheduleReconciliationFault,
+    jobRecoveryFault: options?.jobRecoveryFault,
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
     schedulePayloadFactoryWaiters: [],
     schedulePayloadFactoryLanes: new Map(),
     schedulePayloadFactoryControllers: new Map(),
+    // Construction is not runtime publication. Hooks may persist Jobs during
+    // initialization, but no worker or recovery wake may run until every init
+    // gate has accepted this candidate.
+    __jobStopped: true,
+    __jobLeaseRecoveryTimer: null,
+    __jobLeaseRecoveryDueAt: null,
+    __jobLeaseRecoveryPromise: null,
+    __jobLeaseRecoveryRequestedAt: null,
+    __jobActivationDeferred: false,
+    __scheduleStopped: true,
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
@@ -510,6 +650,7 @@ export async function openDevDatabase(
     runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
     jobScheduleProvenanceByContext: new WeakMap(),
     __runtimeJobAttempts: new WeakMap(),
+    __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
     mail,
@@ -531,48 +672,157 @@ export async function openDevDatabase(
       abortSchedulePayloadFactories(database);
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
-      if (database.__jobWakeTimer) { database.clock.clearTimer(database.__jobWakeTimer); database.__jobWakeTimer = null; }
-      const mailResult = database.mail.close();
-      const sqliteResult = database.adapter.close();
-      const storageResult = database.fileStorage.close();
-      const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
-      return pending.length > 0 ? Promise.all(pending) : undefined;
+      const workerSettlement = stopCurrentUserJobWorker(database);
+      const scheduleSettlement = settleActiveScheduleWork(database);
+      const closeResources = () => {
+        const failures: Array<{ index: number; error: unknown }> = [];
+        const pending: Promise<void>[] = [];
+        const resources = [
+          () => database.mail.close(),
+          () => database.adapter.close(),
+          () => database.fileStorage.close(),
+        ];
+        for (const [index, closeResource] of resources.entries()) {
+          const captureFailure = (error: unknown) => {
+            failures.push({ index, error });
+          };
+          try {
+            const result = closeResource();
+            if (result && typeof result.then === "function") {
+              pending.push(Promise.resolve(result).then(undefined, captureFailure));
+            }
+          } catch (error) {
+            captureFailure(error);
+          }
+        }
+        const finish = () => {
+          const errors = failures.sort((left, right) => left.index - right.index).map(({ error }) => error);
+          if (errors.length > 1) throw new AggregateError(errors, "Multiple runtime resources failed to close.");
+          if (errors.length === 1) throw errors[0];
+        };
+        return pending.length > 0 ? Promise.all(pending).then(finish) : finish();
+      };
+      const runtimeSettlements = [workerSettlement, scheduleSettlement].filter(Boolean).map((settlement) => Promise.resolve(settlement));
+      if (runtimeSettlements.length === 0) return closeResources();
+      return (async () => {
+        let workerError: unknown;
+        let closeError: unknown;
+        let workerRejected = false;
+        let closeRejected = false;
+        try { await Promise.all(runtimeSettlements); }
+        catch (error) { workerRejected = true; workerError = error; }
+        try { await closeResources(); }
+        catch (error) { closeRejected = true; closeError = error; }
+        if (workerRejected && closeRejected) throw new AggregateError([workerError, closeError], "Runtime settlement and resource closure both failed.");
+        if (workerRejected) throw workerError;
+        if (closeRejected) throw closeError;
+      })();
+    },
+    __deferJobExecution: () => {
+      database.__jobActivationDeferred = true;
+      const activeWorker = database.__jobWorkerPromise;
+      const completeSettlement = stopCurrentUserJobWorker(database);
+      // A previously initialized test or internal candidate may already own a
+      // read-only lease scan. Keep that scan in the single-flight chain so the
+      // post-teardown activation can retain an immediate rerun behind it, but
+      // do await any handler-bearing worker before treating the candidate as
+      // safely gated.
+      Promise.resolve(completeSettlement).catch(() => {});
+      return activeWorker ? Promise.resolve(activeWorker) : undefined;
+    },
+    __activateJobExecution: (recoveryAt: number | null) => {
+      database.__jobActivationDeferred = false;
+      activateCurrentUserJobExecution(database, recoveryAt);
+    },
+    __preflightJobExecutionActivation: () => {
+      preflightCurrentUserJobExecution(database);
     },
   };
   database.init = async () => {
     if (database.__runtimeInitialized) return;
-    if (database.lifecycleHooks.init !== undefined) {
-      if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-      await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+    try {
+      if (database.lifecycleHooks.init !== undefined) {
+        if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
+        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+      }
+      database.__scheduleTimers = new Set();
+      database.__activeScheduleOccurrences = new Set();
+      database.__scheduleRecoveryTimer = null;
+      database.__scheduleRecoveryDueAt = null;
+      database.__scheduleRecoveryPromise = null;
+      database.__scheduleLegacyDiscoveryTimer = null;
+      // Recovery may classify durable state while the candidate is stopped,
+      // but it returns the retained wake instead of arming it. Publication is
+      // the single boundary that releases both Job and Schedule work.
+      const earliestFutureLeaseAt = await recoverExpiredJobLeases(database);
+      await recoverPendingScheduleOccurrences(database, { validateOnly: true });
+      preflightStaticScheduleTimers(database);
+      const reconciled = await reconcileSchedules(database);
+      database.__scheduleStopped = false;
+      startStaticSchedules(database, reconciled.timerPlans);
+      if (!database.__jobActivationDeferred) {
+        // Orderly shutdown deliberately retains queued and delayed Jobs. A
+        // fresh runtime has no inherited worker/wake timer, so activation
+        // releases recovery plus one normal pass to rediscover durable work.
+        activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
+      }
+      database.__runtimeInitialized = true;
+      await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
+    } catch (error) {
+      database.__scheduleStopped = true;
+      abortSchedulePayloadFactories(database);
+      for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+      database.__scheduleTimers?.clear?.();
+      database.__scheduleRecoveryTimer = null;
+      database.__scheduleRecoveryDueAt = null;
+      database.__scheduleLegacyDiscoveryTimer = null;
+      const settlements = [stopCurrentUserJobWorker(database), settleActiveScheduleWork(database)]
+        .filter(Boolean)
+        .map((pending) => Promise.resolve(pending));
+      const cleanup = await Promise.allSettled(settlements);
+      database.__runtimeInitialized = false;
+      const cleanupFailures = cleanup.filter((result) => result.status === "rejected").map((result: any) => result.reason);
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError([error, ...cleanupFailures], "Runtime initialization and cleanup both failed.");
+      }
+      throw error;
     }
-    database.__scheduleStopped = false;
-    database.__scheduleTimers = new Set();
-    database.__activeScheduleOccurrences = new Set();
-    database.__scheduleRecoveryTimer = null;
-    database.__scheduleRecoveryDueAt = null;
-    await reconcileSchedules(database);
-    await startStaticSchedules(database);
-    database.__runtimeInitialized = true;
   };
   database.shutdown = () => {
     if (database.__shutdownPromise) return database.__shutdownPromise;
     database.__shutdownPromise = (async () => {
+      let shutdownError: unknown;
+      let mailCloseError: unknown;
+      let shutdownRejected = false;
+      let mailCloseRejected = false;
       try {
         database.__scheduleStopped = true;
+        const workerSettlement = stopCurrentUserJobWorker(database);
         abortSchedulePayloadFactories(database);
         for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
         database.__scheduleTimers?.clear?.();
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
-        await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
+        database.__scheduleLegacyDiscoveryTimer = null;
+        if (workerSettlement) await workerSettlement;
+        await settleActiveScheduleWork(database);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
           await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
         }
+      } catch (error) {
+        shutdownRejected = true;
+        shutdownError = error;
       } finally {
         database.__runtimeInitialized = false;
-        await database.mail.close();
       }
+      try { await database.mail.close(); }
+      catch (error) { mailCloseRejected = true; mailCloseError = error; }
+      if (shutdownRejected && mailCloseRejected) {
+        throw new AggregateError([shutdownError, mailCloseError], "Runtime shutdown and mail closure both failed.");
+      }
+      if (shutdownRejected) throw shutdownError;
+      if (mailCloseRejected) throw mailCloseError;
     })();
     return database.__shutdownPromise;
   };
@@ -589,9 +839,10 @@ export async function openDevDatabase(
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
   await ensureJobStorage(sqlite);
-  await ensureScheduleStorage(sqlite);
+  await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  await recoverInvalidRetainedJobState(database);
   await recoverExpiredJobLeases(database);
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
@@ -607,72 +858,207 @@ function resolveJourneySessionInactivityMinutes(config: RuntimeConfig = {}) {
 
 async function reconcileSchedules(database: LooseRecord) {
   const now = database.clock.now();
-  const sql = database.adapter.dialect.sql;
   const declaredNames = new Set(database.schedules.map((definition: any) => definition.name));
-  const persisted = await database.adapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
-  const plans = [];
-  for (const definition of database.schedules) {
-    const row = persisted.find((candidate: any) => candidate.name === definition.name);
-    const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
-    let nextOccurrence: string | null = null;
-    let recoveredOccurrence: Date | null = null;
-    if (definition.enabled) {
-      if (changed || !row?.nextOccurrence) {
-        nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
-      } else {
-        nextOccurrence = String(row.nextOccurrence);
-        if (Date.parse(nextOccurrence) <= now.getTime()) {
-          let latest = new Date(nextOccurrence);
-          let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
-          while (future.getTime() <= now.getTime()) { latest = future; future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone); }
-          nextOccurrence = future.toISOString();
-          if (definition.missedRun === "latest") recoveredOccurrence = latest;
+  for (let attempt = 0; ; attempt += 1) {
+    let candidateArmed = false;
+    try {
+      return await database.adapter.withTransaction(async (transactionAdapter: LooseRecord) => {
+        const sql = transactionAdapter.dialect.sql;
+        // Serialize the complete declaration set, including an empty set. Per-row
+        // locks cannot make removal and first declaration one publication boundary.
+        await transactionAdapter.prepare(sql(
+          "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'",
+        )).run();
+        const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        for (const row of persisted) {
+          if (!scheduleCursorStateIsConsistent(row.enabled, row.exhausted, row.nextOccurrence)
+            || (row.nextOccurrence !== null && row.nextOccurrence !== undefined && !isCanonicalJobTimestamp(row.nextOccurrence))) {
+            throw commandError(
+              "Stored Schedule state is invalid.",
+              "Repair or remove the malformed Schedule before restarting the Capsule.",
+              "SCHEDULE_STATE_INVALID",
+            );
+          }
         }
-      }
+        const legacyLineages = await transactionAdapter.prepare(sql(
+          "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]",
+        )).all();
+        const legacyLineageByName = new Map<string, LooseRecord>(legacyLineages.map((lineage: any) => [String(lineage.scheduleName), lineage]));
+        const plans = [];
+        for (const definition of database.schedules) {
+          const row = persisted.find((candidate: any) => candidate.name === definition.name);
+          const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
+          let nextOccurrence: string | null = null;
+          let exhausted = false;
+          let recoveredOccurrence: Date | null = null;
+          if (definition.enabled) {
+            const retainedExhaustion = !changed && Number(row?.exhausted) === 1 && row?.nextOccurrence == null;
+            if (retainedExhaustion) {
+              exhausted = true;
+            } else if (changed || row?.nextOccurrence === null || row?.nextOccurrence === undefined) {
+              nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
+            } else {
+              nextOccurrence = String(row.nextOccurrence);
+              if (Date.parse(nextOccurrence) <= now.getTime()) {
+                let latest = new Date(nextOccurrence);
+                let successor = nextScheduleCursor(definition, latest);
+                while (!successor.exhausted && Date.parse(successor.nextOccurrence!) <= now.getTime()) {
+                  latest = new Date(successor.nextOccurrence!);
+                  successor = nextScheduleCursor(definition, latest);
+                }
+                if (definition.missedRun === "latest") {
+                  recoveredOccurrence = latest;
+                  // Keep the final due cursor durable until occurrence
+                  // finalization commits its Job/outcome and terminal cursor
+                  // together. A process loss after reconciliation can then
+                  // recover the same occurrence instead of preserving a
+                  // prematurely exhausted Schedule that never created it.
+                  if (successor.exhausted) {
+                    nextOccurrence = latest.toISOString();
+                    exhausted = false;
+                  } else {
+                    nextOccurrence = successor.nextOccurrence;
+                  }
+                } else {
+                  nextOccurrence = successor.nextOccurrence;
+                  exhausted = successor.exhausted;
+                }
+              }
+            }
+          }
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID() });
+        }
+
+        // Every declaration, including calendars with no possible future instant,
+        // has now been evaluated without mutating durable state.
+        for (const row of persisted) {
+          if (!declaredNames.has(String(row.name))) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?",
+            )).run(row.definitionFingerprint, row.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING",
+            )).run(row.name, row.definitionFingerprint);
+            await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+          }
+        }
+        const updateScheduleSql = sql(
+          "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, " +
+          "[missedRunPolicy]=?, [enabled]=?, [exhausted]=?, [nextOccurrence]=? WHERE [name]=?",
+        );
+        for (const { definition, row, nextOccurrence, exhausted, generationToken } of plans) {
+          // Every successful runtime publication receives a fresh incarnation. A
+          // same-definition restart transfers only its still-pending work; changed,
+          // disabled, removed, and later-restored generations never inherit it.
+          const sameEnabledDefinition = Boolean(row) && Boolean(row.enabled) && definition.enabled
+            && row.definitionFingerprint === definition.fingerprint;
+          const legacyLineage = legacyLineageByName.get(definition.name);
+          const legacyAdoptionOpen = sameEnabledDefinition
+            && Number(legacyLineage?.adoptionOpen) === 1
+            && legacyLineage?.definitionFingerprint === definition.fingerprint;
+          definition.__adoptLegacyPendingOccurrences = legacyAdoptionOpen;
+          if (row) {
+            await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
+            // Lock and rotate the durable Schedule before scanning its pending
+            // work. An outgoing claim holds this row until its occurrence insert
+            // commits, so the transfer below cannot miss that insert on Postgres.
+            await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence, definition.name);
+          } else {
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [exhausted], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, exhausted ? 1 : 0, nextOccurrence);
+          }
+          if (!legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?",
+            )).run(definition.fingerprint, definition.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING",
+            )).run(definition.name, definition.fingerprint);
+          }
+          if (sameEnabledDefinition) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))",
+            )).run(definition.fingerprint, generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
+          }
+          if (legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL",
+            )).run(definition.fingerprint, generationToken, definition.name);
+          }
+          definition.nextOccurrence = nextOccurrence;
+          definition.exhausted = exhausted;
+          definition.generationToken = generationToken;
+        }
+        candidateArmed = true;
+        return {
+          recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })),
+          timerPlans: plans.filter(({ definition, nextOccurrence, exhausted }) => definition.enabled && !exhausted && nextOccurrence !== null).map(({ definition }) => ({ definition })),
+        };
+      });
+    } catch (error: any) {
+      // node:sqlite operations are synchronous. A busy timeout would block the
+      // event loop and prevent the owning candidate from reaching COMMIT, so
+      // overlapping candidates yield and retry the not-yet-published attempt.
+      if (candidateArmed || database.adapter.engine !== "sqlite" || attempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
     }
-    plans.push({ definition, row, nextOccurrence, recoveredOccurrence });
   }
-  // Every declaration, including calendars with no possible future instant,
-  // has now been evaluated without mutating durable state.
-  for (const row of persisted) {
-    if (!declaredNames.has(String(row.name))) await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
-  }
-  const updateScheduleSql = sql(
-    "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [expression]=?, [effectiveTimezone]=?, " +
-    "[missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?",
-  );
-  for (const { definition, row, nextOccurrence } of plans) {
-    if (row) await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
-    else {
-      try {
-        await database.adapter.prepare(sql("INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?)")).run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
-      } catch (error) {
-        const concurrent = await database.adapter.prepare(sql("SELECT [name] FROM [sporades_schedules] WHERE [name]=?")).get(definition.name);
-        if (!concurrent) throw error;
-        await database.adapter.prepare(updateScheduleSql).run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
-      }
-    }
-    definition.nextOccurrence = nextOccurrence;
-  }
-  for (const { definition, recoveredOccurrence } of plans) {
-    if (recoveredOccurrence) await recordScheduledOccurrence(database, definition, recoveredOccurrence);
-  }
-  await recoverPendingScheduleOccurrences(database);
 }
 
-async function startStaticSchedules(database: LooseRecord) {
-  database.__scheduleTimers ??= new Set();
-  database.__activeScheduleOccurrences ??= new Set();
+async function recoverReconciledSchedules(database: LooseRecord, recoveredOccurrences: LooseRecord[]) {
+  try {
+    for (const { definition, recoveredOccurrence } of recoveredOccurrences) {
+      await recordScheduledOccurrence(database, definition, recoveredOccurrence);
+    }
+    await recoverPendingScheduleOccurrences(database);
+  } catch (error: any) {
+    try {
+      await database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
+    } catch {}
+    if (!database.__scheduleStopped) schedulePendingOccurrenceRecovery(database, new Date(database.clock.now().getTime() + SCHEDULE_RECOVERY_RETRY_MS).toISOString());
+  }
+}
+
+const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
+const SCHEDULE_RECOVERY_RETRY_MS = 1_000;
+const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
+const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
+
+function settleActiveScheduleWork(database: LooseRecord) {
+  const active = new Set<any>(database.__activeScheduleOccurrences ?? []);
+  if (database.__scheduleRecoveryPromise) active.add(database.__scheduleRecoveryPromise);
+  if (active.size === 0) return undefined;
+  return Promise.allSettled([...active]).then(() => undefined);
+}
+
+function preflightStaticScheduleTimers(database: LooseRecord) {
   for (const definition of database.schedules) {
     if (!definition.enabled) continue;
+    const timer = database.clock.setTimer(() => {}, MAX_NATIVE_TIMER_DELAY_MS);
+    database.clock.clearTimer(timer);
+  }
+}
+
+function startStaticSchedules(database: LooseRecord, timerPlans: LooseRecord[]) {
+  database.__scheduleTimers ??= new Set();
+  database.__activeScheduleOccurrences ??= new Set();
+  for (const { definition } of timerPlans) {
     const arm = () => {
-      if (database.__scheduleStopped) return;
+      if (database.__scheduleStopped || !definition.enabled || definition.exhausted || definition.nextOccurrence == null) return;
       const occurrence = new Date(definition.nextOccurrence);
       const timer = database.clock.setTimer(() => {
         database.__scheduleTimers.delete(timer);
+        // Native timers clamp delays above 2^31-1 milliseconds to one
+        // millisecond. Long recurrences therefore wake in bounded chunks and
+        // must prove the nominal occurrence is due before creating durable
+        // Schedule or Job state.
+        if (occurrence.getTime() > database.clock.now().getTime()) {
+          arm();
+          return;
+        }
         const active = recordScheduledOccurrence(database, definition, occurrence).catch(async (error: any) => {
           database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
-          if (!database.__scheduleStopped) await finishFailedScheduledOccurrence(database, definition, occurrence, error);
         }).finally(() => {
           database.__activeScheduleOccurrences.delete(active);
           if (database.__scheduleStopped) return;
@@ -680,32 +1066,107 @@ async function startStaticSchedules(database: LooseRecord) {
         });
         database.__activeScheduleOccurrences.add(active);
         return active;
-      }, Math.max(0, occurrence.getTime()-database.clock.now().getTime()));
+      }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, occurrence.getTime()-database.clock.now().getTime())));
       database.__scheduleTimers.add(timer);
     };
     arm();
   }
+  scheduleLateLegacyOccurrenceDiscovery(database);
 }
 
 async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
-  const sql = database.adapter.dialect.sql;
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
   if (!claim) {
     // Another runtime owns this exact occurrence. Advance only this runtime's
     // timer cursor; the winner owns durable Schedule bookkeeping.
-    definition.nextOccurrence = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+    const successor = nextScheduleCursor(definition, occurrence);
+    definition.nextOccurrence = successor.nextOccurrence;
+    definition.exhausted = successor.exhausted;
     return null;
   }
-  await database.scheduleOccurrenceFault?.("after-pending", { scheduleName: definition.name, scheduledFor: occurrence.toISOString() });
-  const state = await enqueueScheduledOccurrence(database, definition, occurrence);
-  if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
-  const completedAt = database.clock.now().toISOString();
-  await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [claimToken]=?")).run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
-  if (database.__scheduleStopped) return state;
-  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-  definition.nextOccurrence = next;
-  await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
-  return state;
+  let transactionContext: LooseRecord | undefined;
+  try {
+    const scheduledFor = occurrence.toISOString();
+    await database.scheduleOccurrenceFault?.("after-pending", { scheduleName: definition.name, scheduledFor });
+    // Payload code is deliberately outside the ownership transaction: it can
+    // take up to the configured five-minute bound and may be evaluated again
+    // after lease recovery. Only its durable effects require live ownership.
+    const payloadContext = createScheduleMutationContext(database, definition, scheduledFor);
+    const payload = await resolveSchedulePayload(database, definition, scheduledFor, payloadContext);
+    const committed = await database.adapter.withTransaction(async (transactionAdapter: any) => {
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      const sql = transactionAdapter.dialect.sql;
+      // Lock and revalidate the current Schedule generation before any durable
+      // Job side effect or occurrence-row lock. Reconciliation takes the same
+      // Schedule-then-occurrence order, avoiding a PostgreSQL lock inversion.
+      const generation = await transactionAdapter.prepare(sql(
+        "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?",
+      )).run(definition.name, definition.fingerprint, definition.generationToken);
+      if (Number(generation.changes) !== 1) {
+        const completedAt = database.clock.now().toISOString();
+        await transactionAdapter.prepare(sql(
+          "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
+        )).run(completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
+        return { owned: true, state: null, next: null, superseded: true };
+      }
+      await database.scheduleOccurrenceFault?.("after-finalization-generation-lock", { scheduleName: definition.name, scheduledFor });
+      const ownership = await transactionAdapter.prepare(sql(
+        "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
+      )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
+      if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
+      let handlerFailed = false;
+      try {
+        let state = null;
+        if (payload.ok) {
+          transactionContext = createScheduleMutationContext(transactionDatabase, definition, scheduledFor);
+          state = await enqueueResolvedScheduledOccurrence(transactionDatabase, definition, scheduledFor, payload.value, transactionContext);
+          await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor, jobId: state.id });
+        }
+        const completedAt = database.clock.now().toISOString();
+        const outcome = state ? "enqueued" : "payload-failed";
+        const errorCode = state ? null : "SCHEDULE_PAYLOAD_FAILED";
+        const terminal = await transactionAdapter.prepare(sql(
+          "UPDATE [sporades_schedule_occurrences] SET [status]=?, [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=?, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
+        )).run(outcome, state?.id ?? null, errorCode, completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
+        if (Number(terminal.changes) !== 1) throw new Error("Schedule occurrence ownership changed during its owned transaction.");
+        const successor = nextScheduleCursor(definition, occurrence);
+        const summary = await transactionAdapter.prepare(sql(
+          "UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]=?, [latestJobId]=?, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?",
+        )).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, outcome, state?.id ?? null, errorCode, definition.name, definition.fingerprint, definition.generationToken);
+        if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence finalization.");
+        return { owned: true, state, ...successor };
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(transactionDatabase, transactionContext, handlerFailed);
+      }
+    });
+    if (!committed.owned) {
+      dropPendingJobDispatch(transactionContext);
+      return null;
+    }
+    if (committed.superseded) definition.enabled = false;
+    else {
+      definition.nextOccurrence = committed.nextOccurrence;
+      definition.exhausted = committed.exhausted;
+    }
+    await dispatchPendingJobs(transactionContext);
+    return committed.state;
+  } catch (error) {
+    dropPendingJobDispatch(transactionContext);
+    if (!database.__scheduleStopped) {
+      const failed = await database.adapter.withTransaction((transactionAdapter: any) => finishFailedScheduledOccurrence(
+        { ...database, adapter: transactionAdapter }, definition, occurrence, error, claim.token,
+      ));
+      if (failed.superseded) definition.enabled = false;
+      else if (failed.finished) {
+        definition.nextOccurrence = failed.nextOccurrence;
+        definition.exhausted = failed.exhausted;
+      }
+    }
+    throw error;
+  }
 }
 
 async function claimScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
@@ -714,33 +1175,251 @@ async function claimScheduledOccurrence(database: LooseRecord, definition: any, 
   const token = randomUUID();
   const now = database.clock.now();
   const nowIso = now.toISOString();
-  const expiresAt = new Date(now.getTime() + 30_000).toISOString();
-  const sql = database.adapter.dialect.sql;
-  try {
-    await database.adapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)")).run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
-    return { id, token };
-  } catch (error) {
-    const existing = await database.adapter.prepare(sql("SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
-    if (!existing) throw error;
-    if (existing.status !== "pending") return null;
-    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
-      schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
-      return null;
+  // The final occurrence can fire late enough that a full claim lease no
+  // longer fits. Keep the claim canonical and bounded by the end of the
+  // runtime domain; transaction ownership still prevents a stale claimant
+  // from finalizing after an overlapping runtime takes the expired claim.
+  const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
+  const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso)
+    ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString()
+    : null);
+  if (expiresAt === null) {
+    throw commandError("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
+  }
+  let recoveryAt: string | null = null;
+  const claimed = await database.adapter.withTransaction(async (transactionAdapter: any) => {
+    const sql = transactionAdapter.dialect.sql;
+    // The durable enabled Schedule row, not this runtime's captured declaration,
+    // owns the generation. Lock it before touching the occurrence so an outgoing
+    // runtime can only stop itself after a replacement has reconciled the name.
+    const generation = await transactionAdapter.prepare(sql(
+      "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?",
+    )).run(definition.name, definition.fingerprint, definition.generationToken);
+    if (Number(generation.changes) !== 1) return { claim: null, superseded: true };
+    await database.scheduleOccurrenceFault?.("after-generation-lock", { scheduleName: definition.name, scheduledFor });
+
+    const inserted = await transactionAdapter.prepare(sql(
+      "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) " +
+      "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+    )).run(id, definition.name, definition.fingerprint, definition.generationToken, scheduledFor, token, expiresAt, nowIso, nowIso);
+    if (Number(inserted.changes) === 1) return { claim: { id, token }, superseded: false };
+
+    let existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(id);
+    if (!existing) {
+      // A retained row with a forged id can still occupy the unique
+      // (scheduleName, scheduledFor) key. Treat that row as the failed claim
+      // target instead of turning a recoverable retained-state defect into a
+      // startup or timer-loop failure.
+      existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=? AND [scheduledFor]=?")).get(definition.name, scheduledFor);
+      if (!existing) throw new Error("Schedule occurrence conflict could not be resolved.");
     }
-    const result = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, nowIso);
-    return Number(result.changes) === 1 ? { id, token } : null;
+    if (!validRetainedScheduleOccurrenceIdentity(database, existing)
+      || String(existing.scheduleName) !== definition.name
+      || String(existing.scheduledFor) !== scheduledFor
+      || (existing.claimExpiresAt !== null && !isCanonicalJobTimestamp(existing.claimExpiresAt))) {
+      const invalid = await finishInvalidRetainedScheduleOccurrence(database, existing, transactionAdapter);
+      recoveryAt = earliestScheduleRecoveryAt(recoveryAt, invalid.recoveryAt);
+      return { claim: null, superseded: false };
+    }
+    // A still-live v0.8.5 runtime can insert after the finite upgrade scan
+    // because it does not know the reconciliation lock or identity columns.
+    // Bind only a pending, wholly legacy row to a durable same-definition restart;
+    // changed, disabled, removed, and restored generations never receive this flag.
+    if (existing.status === "pending"
+      && existing.definitionFingerprint === null
+      && existing.generationToken === null
+      && definition.__adoptLegacyPendingOccurrences === true) {
+      const adopted = await transactionAdapter.prepare(sql(
+        "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=?, [updatedAt]=? WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL",
+      )).run(definition.fingerprint, definition.generationToken, nowIso, existing.id, definition.name, scheduledFor);
+      if (Number(adopted.changes) === 1) {
+        existing = { ...existing, definitionFingerprint: definition.fingerprint, generationToken: definition.generationToken, updatedAt: nowIso };
+      } else {
+        existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(existing.id);
+        if (!existing) return { claim: null, superseded: false };
+      }
+    }
+    if (existing.definitionFingerprint !== definition.fingerprint || existing.generationToken !== definition.generationToken) {
+      // This occurrence was created before the live generation reconciled. It
+      // belongs to the replaced definition and must not be reinterpreted under
+      // the new payload or cadence. The durable generation lock above ensures a
+      // stale caller can never apply this transition to replacement-owned work.
+      if (existing.status === "pending") {
+        const superseded = await finishSupersededRetainedScheduleOccurrence(database, existing, transactionAdapter);
+        recoveryAt = earliestScheduleRecoveryAt(recoveryAt, superseded.recoveryAt);
+      }
+      return { claim: null, superseded: false };
+    }
+    if (existing.status !== "pending") return { claim: null, superseded: false };
+    if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
+      recoveryAt = existing.claimExpiresAt;
+      return { claim: null, superseded: false };
+    }
+    const result = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [claimToken]=?, [claimExpiresAt]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [definitionFingerprint]=? AND [generationToken]=? AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, expiresAt, nowIso, id, definition.fingerprint, definition.generationToken, nowIso);
+    return { claim: Number(result.changes) === 1 ? { id, token } : null, superseded: false };
+  });
+  if (claimed.superseded) definition.enabled = false;
+  armRetainedScheduleRecoveryAfterCommit(database, recoveryAt);
+  return claimed.claim;
+}
+
+async function recoverPendingScheduleOccurrences(database: LooseRecord, options: { validateOnly?: boolean } = {}) {
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql("SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all();
+  const nowMs = database.clock.now().getTime();
+  let earliestFutureClaimAt: number | null = null;
+  for (const row of rows) {
+    if (!validRetainedScheduleOccurrenceIdentity(database, row)
+      || (row.claimExpiresAt !== null && !isCanonicalJobTimestamp(row.claimExpiresAt))) {
+      if (!options.validateOnly) await finishInvalidRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?",
+    )).get(row.scheduleName);
+    if (options.validateOnly) continue;
+    const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
+    if (!durable || !Boolean(durable.enabled)) {
+      await finishSupersededRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    if (!definition || definition.fingerprint !== durable.definitionFingerprint || definition.generationToken !== durable.generationToken) {
+      if (definition) definition.enabled = false;
+      continue;
+    }
+    if (row.definitionFingerprint !== durable.definitionFingerprint || row.generationToken !== durable.generationToken) {
+      await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+      continue;
+    }
+    const claimExpiresAt = row.claimExpiresAt === null ? null : Date.parse(row.claimExpiresAt);
+    if (claimExpiresAt !== null && claimExpiresAt > nowMs) {
+      earliestFutureClaimAt = earliestFutureClaimAt === null ? claimExpiresAt : Math.min(earliestFutureClaimAt, claimExpiresAt);
+      continue;
+    }
+    await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+  }
+  if (earliestFutureClaimAt !== null) schedulePendingOccurrenceRecovery(database, new Date(earliestFutureClaimAt).toISOString());
+}
+
+async function recoverLateLegacyScheduleOccurrences(database: LooseRecord) {
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] " +
+    "FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL " +
+    "ORDER BY [scheduledFor] ASC, [scheduleName] ASC LIMIT ?",
+  )).all(LEGACY_SCHEDULE_DISCOVERY_LIMIT);
+  for (const row of rows) {
+    if (!validRetainedScheduleOccurrenceIdentity(database, row)
+      || (row.claimExpiresAt !== null && !isCanonicalJobTimestamp(row.claimExpiresAt))) {
+      await finishInvalidRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?",
+    )).get(row.scheduleName);
+    const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
+    if (!durable || !Boolean(durable.enabled)) {
+      await finishSupersededRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    if (!definition || definition.fingerprint !== durable.definitionFingerprint || definition.generationToken !== durable.generationToken) {
+      if (definition) definition.enabled = false;
+      continue;
+    }
+    await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
   }
 }
 
-async function recoverPendingScheduleOccurrences(database: LooseRecord) {
-  const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql("SELECT [scheduleName], [scheduledFor] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?) ORDER BY [scheduledFor] ASC, [scheduleName] ASC")).all(database.clock.now().toISOString());
-  for (const row of rows) {
-    const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
-    if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+function scheduleLateLegacyOccurrenceDiscovery(database: LooseRecord) {
+  if (database.__scheduleStopped || database.__scheduleLegacyDiscoveryTimer) return;
+  if (!database.schedules.some((definition: any) => definition.enabled && definition.__adoptLegacyPendingOccurrences === true)) return;
+  const timer = database.clock.setTimer(() => {
+    database.__scheduleTimers?.delete(timer);
+    database.__scheduleLegacyDiscoveryTimer = null;
+    if (database.__scheduleStopped) return;
+    const active = recoverLateLegacyScheduleOccurrences(database).catch((error: any) => {
+      database.log.emit({ category: "platform", event: "schedule.legacy_occurrence.discovery_failed", level: "error", message: "Late legacy Scheduled occurrence discovery failed", data: { code: String(error?.code ?? "SCHEDULE_LEGACY_DISCOVERY_FAILED").slice(0, 80) } });
+    }).finally(() => {
+      database.__activeScheduleOccurrences?.delete(active);
+      if (!database.__scheduleStopped) scheduleLateLegacyOccurrenceDiscovery(database);
+    });
+    database.__activeScheduleOccurrences?.add(active);
+    return active;
+  }, LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS);
+  database.__scheduleLegacyDiscoveryTimer = timer;
+  database.__scheduleTimers?.add(timer);
+}
+
+function validRetainedScheduleOccurrenceIdentity(database: LooseRecord, row: LooseRecord) {
+  return typeof row.id === "string" && row.id.length > 0
+    && typeof row.scheduleName === "string" && row.scheduleName.length > 0
+    && isCanonicalJobTimestamp(row.scheduledFor)
+    && row.id === scheduledOccurrenceIdentity(database, row.scheduleName, row.scheduledFor);
+}
+
+async function finishInvalidRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
+  const result = await database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+    finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", transactionAdapter));
+  armRetainedScheduleRecoveryAfterCommit(database, result.recoveryAt);
+  return result;
+}
+
+async function finishSupersededRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
+  const result = await database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+    finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", transactionAdapter));
+  armRetainedScheduleRecoveryAfterCommit(database, result.recoveryAt);
+  return result;
+}
+
+function earliestScheduleRecoveryAt(current: string | null, candidate: string | null) {
+  if (candidate === null) return current;
+  if (current === null) return candidate;
+  return Date.parse(candidate) < Date.parse(current) ? candidate : current;
+}
+
+function armRetainedScheduleRecoveryAfterCommit(database: LooseRecord, recoveryAt: string | null) {
+  if (recoveryAt !== null) schedulePendingOccurrenceRecovery(database, recoveryAt);
+}
+
+async function finishRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, errorCode: string, adapter: LooseRecord) {
+  const sql = adapter.dialect.sql;
+  if (typeof row.scheduleName === "string") {
+    await adapter.prepare(sql(
+      "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?",
+    )).run(row.scheduleName);
   }
-  const next = await database.adapter.prepare(sql("SELECT [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [claimExpiresAt] IS NOT NULL ORDER BY [claimExpiresAt] ASC LIMIT 1")).get();
-  if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
+  const completedAt = database.clock.now().toISOString();
+  const definitionFingerprint = row.definitionFingerprint ?? null;
+  const generationToken = row.generationToken ?? null;
+  const liveGenerationGuard = errorCode === "SCHEDULE_OCCURRENCE_SUPERSEDED"
+    ? " AND NOT EXISTS (SELECT 1 FROM [sporades_schedules] WHERE [name]=? AND [enabled]=1 AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL)))"
+    : "";
+  const liveGenerationParams = errorCode === "SCHEDULE_OCCURRENCE_SUPERSEDED"
+    ? [row.scheduleName, generationToken, generationToken]
+    : [];
+  const result = await adapter.prepare(sql(
+    "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]=?, [updatedAt]=? " +
+    "WHERE [id]=? AND [status]='pending' AND [scheduledFor]=? " +
+    "AND ([definitionFingerprint]=? OR ([definitionFingerprint] IS NULL AND ? IS NULL)) " +
+    "AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL)) " +
+    "AND ([claimToken]=? OR ([claimToken] IS NULL AND ? IS NULL)) " +
+    "AND ([claimExpiresAt]=? OR ([claimExpiresAt] IS NULL AND ? IS NULL))" + liveGenerationGuard,
+  )).run(errorCode, completedAt, row.id, row.scheduledFor, definitionFingerprint, definitionFingerprint, generationToken, generationToken, row.claimToken, row.claimToken, row.claimExpiresAt, row.claimExpiresAt, ...liveGenerationParams);
+  if (Number(result.changes) === 1) return { finished: true, recoveryAt: null };
+  const current = await adapter.prepare(sql(
+    "SELECT [status], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [id]=?",
+  )).get(row.id);
+  if (current?.status === "pending") {
+    const nowMs = database.clock.now().getTime();
+    const retainedExpiry = isCanonicalJobTimestamp(current.claimExpiresAt) ? Date.parse(current.claimExpiresAt) : Number.NaN;
+    const retryAt = Number.isFinite(retainedExpiry) && retainedExpiry > nowMs
+      ? current.claimExpiresAt
+      : new Date(nowMs + SCHEDULE_RECOVERY_RETRY_MS).toISOString();
+    return { finished: false, recoveryAt: retryAt };
+  }
+  return { finished: false, recoveryAt: null };
 }
 
 function schedulePendingOccurrenceRecovery(database: LooseRecord, claimExpiresAt: string) {
@@ -758,34 +1437,281 @@ function schedulePendingOccurrenceRecovery(database: LooseRecord, claimExpiresAt
     database.__scheduleRecoveryTimer = null;
     database.__scheduleRecoveryDueAt = null;
     if (database.__scheduleStopped) return;
+    if (dueAt > database.clock.now().getTime()) {
+      schedulePendingOccurrenceRecovery(database, claimExpiresAt);
+      return;
+    }
     const active = recoverPendingScheduleOccurrences(database).catch((error: any) => {
       database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
-    }).finally(() => database.__activeScheduleOccurrences?.delete(active));
+      if (!database.__scheduleStopped) {
+        schedulePendingOccurrenceRecovery(database, new Date(database.clock.now().getTime() + SCHEDULE_RECOVERY_RETRY_MS).toISOString());
+      }
+    }).finally(() => {
+      database.__activeScheduleOccurrences?.delete(active);
+      if (database.__scheduleRecoveryPromise === active) database.__scheduleRecoveryPromise = null;
+    });
+    database.__scheduleRecoveryPromise = active;
     database.__activeScheduleOccurrences?.add(active);
     return active;
-  }, Math.max(0, dueAt - database.clock.now().getTime()));
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, dueAt - database.clock.now().getTime())));
   database.__scheduleRecoveryTimer = timer;
   database.__scheduleTimers?.add(timer);
 }
 
 export async function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
   const scheduledFor = occurrence.toISOString();
-  const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
-  const context: LooseRecord = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+  const context = createScheduleMutationContext(database, definition, scheduledFor);
   const payload = await resolveSchedulePayload(database, definition, scheduledFor, context);
   if (!payload.ok) return null;
+  return enqueueResolvedScheduledOccurrence(database, definition, scheduledFor, payload.value, context);
+}
+
+function createScheduleMutationContext(database: LooseRecord, definition: any, scheduledFor: string) {
+  const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
+  return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+}
+
+async function enqueueResolvedScheduledOccurrence(database: LooseRecord, definition: any, scheduledFor: string, payload: any, context: LooseRecord) {
+  const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
   database.jobScheduleProvenanceByContext.set(context, { scheduleName: definition.name, scheduledFor });
   const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } },
-    (privilegedContext: any) => privilegedContext.jobs.enqueue(definition.job, payload.value, { retry: definition.retry, idempotencyKey: provenance }));
+    (privilegedContext: any) => privilegedContext.jobs.enqueue(definition.job, payload, { retry: definition.retry, idempotencyKey: provenance }));
   return state;
 }
 
 async function recoverExpiredJobLeases(database: LooseRecord) {
   const recoveredAt = database.clock.now(); const recoveredIso = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' AND [leaseExpiresAt] IS NOT NULL AND [leaseExpiresAt] <= ? ORDER BY [availableAt] ASC, [id] ASC")).all(recoveredIso);
-  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:recoveredIso}); if(Number(row.attempts)<retry.maxAttempts) { const availableAt=new Date(recoveredAt.getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(()=>scheduleCurrentUserJobWorker(database),retry.delayMs+1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),recoveredIso,JSON.stringify(history),row.id); }
-  if(rows.some((row: any) => Number(row.attempts) < JSON.parse(row.retryJson||'{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
+  const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
+  let earliestFutureLeaseAt: number | null = null;
+  for (const row of rows) {
+    if (jobClaimTokenIsMalformed(row.claimToken)) {
+      const failure = { code: "JOB_CLAIM_INVALID", message: "The stored Job claim ownership is invalid." };
+      const ownership = jobClaimOwnership(row.claimToken);
+      const leasePredicate = row.leaseExpiresAt === null
+        ? "[leaseExpiresAt] IS NULL"
+        : "[leaseExpiresAt] = ?";
+      const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+        "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate,
+      )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+      continue;
+    }
+    if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
+      const failure = { code: "JOB_LEASE_INVALID", message: "The stored Job claim lease is invalid." };
+      const ownership = jobClaimOwnership(row.claimToken);
+      const leasePredicate = row.leaseExpiresAt === null
+        ? "[leaseExpiresAt] IS NULL"
+        : "[leaseExpiresAt] = ?";
+      const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+        "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate,
+      )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+      continue;
+    }
+    const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
+    if (leaseExpiresAt > recoveredAt.getTime()) {
+      earliestFutureLeaseAt = earliestFutureLeaseAt === null
+        ? leaseExpiresAt
+        : Math.min(earliestFutureLeaseAt, leaseExpiresAt);
+      continue;
+    }
+    const retry = parsePersistedJobRetry(row.retryJson);
+    const storedFailure = invalidStoredJobFailure(row, recoveredAt);
+    const history = JSON.parse(row.attemptHistory || "[]");
+    history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
+    const ownership = jobClaimOwnership(row.claimToken);
+    const retryEligible = storedFailure === null && retry !== null && Number(row.attempts) < retry.maxAttempts;
+    const retryAvailableAt = retryEligible ? jobTimestampAfter(recoveredAt, retry.delayMs) : null;
+    const retryLeaseExpiresAt = retryAvailableAt === null
+      ? null
+      : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
+    if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+        "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
+      )).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+    } else {
+      const failure = storedFailure ?? (retry === null || retryEligible
+        ? invalidJobRetryPolicyFailure()
+        : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+        "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
+      )).run(JSON.stringify(failure), recoveredIso, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+    }
+  }
+  return earliestFutureLeaseAt;
+}
+
+function activateCurrentUserJobExecution(database: LooseRecord, recoveryAt: number | null) {
+  database.__jobStopped = false;
+  const failures: unknown[] = [];
+  try { scheduleJobLeaseRecoveryAt(database, recoveryAt); }
+  catch (error) { failures.push(error); }
+  try { scheduleCurrentUserJobWorker(database, true); }
+  catch (error) { failures.push(error); }
+  if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
+  if (failures.length === 1) throw failures[0];
+}
+
+function preflightCurrentUserJobExecution(database: LooseRecord) {
+  const timer = database.clock.setTimer(() => {}, MAX_NATIVE_TIMER_DELAY_MS);
+  database.clock.clearTimer(timer);
+}
+
+function scheduleJobLeaseRecoveryAt(database: LooseRecord, dueAt: number | null) {
+  if (database.__jobStopped) return;
+  // A scan owns the recovery chain until it has installed its next wake. Any
+  // request that arrives meanwhile belongs after that scan, so retain the
+  // earliest requested instant instead of starting a competing callback whose
+  // stale result could replace newer handoff state.
+  if (database.__jobLeaseRecoveryPromise) {
+    if (dueAt !== null) {
+      database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null
+        ? dueAt
+        : Math.min(database.__jobLeaseRecoveryRequestedAt, dueAt);
+    }
+    return;
+  }
+  if (dueAt !== null && database.__jobLeaseRecoveryTimer && database.__jobLeaseRecoveryDueAt !== null && database.__jobLeaseRecoveryDueAt <= dueAt) return;
+  scheduleJobLeaseRecoveryTimer(database, dueAt);
+}
+
+function startJobLeaseRecovery(database: LooseRecord) {
+  if (database.__jobStopped) return undefined;
+  if (database.__jobLeaseRecoveryPromise) {
+    const now = database.clock.now().getTime();
+    database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null
+      ? now
+      : Math.min(database.__jobLeaseRecoveryRequestedAt, now);
+    return database.__jobLeaseRecoveryPromise;
+  }
+  const recovery = runJobLeaseRecoveryChain(database);
+  database.__jobLeaseRecoveryPromise = recovery;
+  recovery.finally(() => {
+    if (database.__jobLeaseRecoveryPromise === recovery) database.__jobLeaseRecoveryPromise = null;
+  }).catch(() => {});
+  return recovery;
+}
+
+async function runJobLeaseRecoveryChain(database: LooseRecord) {
+  let wakeWorker = false;
+  while (!database.__jobStopped) {
+    database.__jobLeaseRecoveryRequestedAt = null;
+    let nextRecoveryAt: number | null;
+    try {
+      nextRecoveryAt = await recoverExpiredJobLeases(database);
+      wakeWorker = true;
+    } catch (error: any) {
+      try {
+        database.log.emit({ category: "platform", event: "job.lease_recovery.failed", level: "error", message: "Running Job lease recovery failed", data: { code: String(error?.code ?? "JOB_LEASE_RECOVERY_FAILED").slice(0, 80) } });
+      } catch {}
+      nextRecoveryAt = database.clock.now().getTime() + 1_000;
+    }
+    if (database.__jobStopped) return;
+    const requestedAt = database.__jobLeaseRecoveryRequestedAt;
+    database.__jobLeaseRecoveryRequestedAt = null;
+    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
+    const dueAt = requestedAt === null
+      ? nextRecoveryAt
+      : nextRecoveryAt === null ? requestedAt : Math.min(nextRecoveryAt, requestedAt);
+    scheduleJobLeaseRecoveryTimer(database, dueAt);
+    if (wakeWorker && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
+    return;
+  }
+}
+
+function scheduleJobLeaseRecoveryTimer(database: LooseRecord, dueAt: number | null) {
+  if (database.__jobLeaseRecoveryTimer) {
+    database.clock.clearTimer(database.__jobLeaseRecoveryTimer);
+    database.__jobLeaseRecoveryTimer = null;
+  }
+  database.__jobLeaseRecoveryDueAt = dueAt;
+  if (database.__jobStopped || dueAt === null) return;
+  database.__jobLeaseRecoveryTimer = database.clock.setTimer(async () => {
+    database.__jobLeaseRecoveryTimer = null;
+    database.__jobLeaseRecoveryDueAt = null;
+    if (!database.__jobStopped) await startJobLeaseRecovery(database);
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, dueAt - database.clock.now().getTime())));
+}
+
+const RUNTIME_CLAIM_LEASE_MS = 30_000;
+
+function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
+  if (!isCanonicalJobTimestamp(row.availableAt)) {
+    return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time is invalid." };
+  }
+  const retry = parsePersistedJobRetry(row.retryJson);
+  const attempts = Number(row.attempts);
+  const attemptsValid = Number.isInteger(attempts)
+    && (row.status === "running"
+      ? attempts >= 1 && attempts <= (retry?.maxAttempts ?? -1)
+      : attempts >= 0 && attempts < (retry?.maxAttempts ?? -1));
+  if (retry === null || !attemptsValid) return invalidJobRetryPolicyFailure();
+  const remainingAttempts = retry.maxAttempts - attempts;
+  if (remainingAttempts === 0) return null;
+  const firstAttempt = row.status === "running"
+    ? jobTimestampAfter(referenceInstant, retry.delayMs)
+    : new Date(Math.max(referenceInstant.getTime(), Date.parse(row.availableAt))).toISOString();
+  if (firstAttempt === null) return invalidJobRetryPolicyFailure();
+  if (!jobRetryHorizonFits(new Date(firstAttempt), retry, remainingAttempts, Boolean(row.scheduleName && row.scheduledFor && retry.maxAttempts === 1))) return invalidJobRetryPolicyFailure();
+  return null;
+}
+
+function jobRetryHorizonFits(firstAttempt: Date, retry: LooseRecord, attemptCount: number, allowShortFinalScheduleLease = false) {
+  let attemptAt = firstAttempt;
+  for (let attempt = 0; attempt < attemptCount; attempt += 1) {
+    if (jobTimestampAfter(attemptAt, RUNTIME_CLAIM_LEASE_MS) === null) {
+      return allowShortFinalScheduleLease
+        && attempt === attemptCount - 1
+        && isCanonicalJobTimestamp(attemptAt.toISOString());
+    }
+    if (attempt === attemptCount - 1) return true;
+    const nextAttempt = jobTimestampAfter(attemptAt, retry.delayMs);
+    if (nextAttempt === null) return false;
+    attemptAt = new Date(nextAttempt);
+  }
+  return true;
+}
+
+async function failInvalidQueuedJob(database: LooseRecord, row: LooseRecord, failure: LooseRecord) {
+  const sql = database.adapter.dialect.sql;
+  return await database.adapter.prepare(sql(
+    "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+    "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+  )).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
+}
+
+async function recoverInvalidRetainedJobState(database: LooseRecord) {
+  const recoveredAt = database.clock.now();
+  const failedAt = recoveredAt.toISOString();
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [id], [status], [availableAt], [attempts], [retryJson] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
+  )).all();
+  await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row: LooseRecord) => String(row.id)) });
+  for (const row of rows) {
+    const failure = invalidStoredJobFailure(row, recoveredAt);
+    if (!failure) continue;
+    await database.adapter.prepare(sql(
+      "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+      "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+    )).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
+  }
+}
+
+function jobClaimOwnership(claimToken: any) {
+  return claimToken === null || claimToken === undefined
+    ? { predicate: "[claimToken] IS NULL", params: [] }
+    : { predicate: "[claimToken] = ?", params: [claimToken] };
+}
+
+function jobClaimTokenIsMalformed(claimToken: any) {
+  return claimToken !== null && claimToken !== undefined
+    && (typeof claimToken !== "string" || claimToken.length === 0);
 }
 
 function logPayloadMaxBytes(config: LooseRecord = {}) {
@@ -797,6 +1723,8 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 
+const transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
+
 export function createRuntimeLogSink(options: { database: any; config: any; serverEnv: any; dataDir: any; }) {
   const path = requirePathModule();
   const logPath =
@@ -807,6 +1735,9 @@ export function createRuntimeLogSink(options: { database: any; config: any; serv
   mkdirSync(path.dirname(logPath), { recursive: true });
   return {
     path: logPath,
+    withDatabase(database: LooseRecord) {
+      return createRuntimeLogSink({ ...options, database });
+    },
     emit(input: any) {
       const event = createLogEnvelope({
         ...input,
@@ -826,7 +1757,10 @@ export function createRuntimeLogSink(options: { database: any; config: any; serv
       if (process.env.SPORADES_LOG_STDOUT === "1") {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       }
-      return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+      const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
+      const pendingWrites = options.database?.[transactionPendingLogWrites];
+      if (isPromiseLike(settled) && pendingWrites) pendingWrites.push(settled);
+      return settled;
     },
     recent(limit = logIndexLimit(options.config)) {
       return options.database.readRecentLogEvents(limit);
@@ -909,9 +1843,14 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
         try {
           callbackResult = await callback(privilegedContext);
           callbackSettled = true;
+          // The callback boundary, not the trailing audit writes, defines the
+          // lifetime of userless Team inspection. Detached inspection promises
+          // must fail closed while this run records its completion event.
+          privilegedContext.__privilegedRunActive = false;
         } catch (error: any) {
           callbackError = error;
           callbackSettled = true;
+          privilegedContext.__privilegedRunActive = false;
           throw error;
         }
         try {
@@ -950,6 +1889,7 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
               : undefined,
           );
         } finally {
+          privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
       }
@@ -973,7 +1913,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       provider: "privileged-server-role",
     },
   };
-  // Teams are current-user authority, never a Privileged server capability.
+  // User-scoped and mutating Team operations remain unavailable. This is the
+  // separate userless inspection projection, not inherited Team authority.
   delete privilegedContext.teams;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
@@ -985,6 +1926,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
+  privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;
 }
@@ -1166,7 +2108,44 @@ function schemaTableFromCapsuleTable(name: string, table: any) {
     name,
     acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
+    uniqueConstraints: normalizeUniqueConstraints(name, table.fields, table.uniqueConstraints),
   };
+}
+
+function normalizeUniqueConstraints(tableName: string, fields: Record<string, unknown>, declarations: unknown) {
+  if (declarations === undefined) return [];
+  if (!Array.isArray(declarations)) {
+    throw commandError(
+      `Invalid unique declaration on Capsule table: ${tableName}`,
+      "Declare uniqueness with .unique(\"field\") or .unique(\"firstField\", \"secondField\").",
+    );
+  }
+
+  const declaredFields = new Set(Object.keys(fields));
+  const seen = new Set<string>();
+  return declarations.map((declaration) => {
+    if (!Array.isArray(declaration) || declaration.length === 0 || declaration.some((field) => typeof field !== "string" || !declaredFields.has(field))) {
+      throw commandError(
+        `Invalid unique declaration on Capsule table: ${tableName}`,
+        "Each unique declaration must name one or more declared Capsule fields.",
+      );
+    }
+    if (new Set(declaration).size !== declaration.length) {
+      throw commandError(
+        `Invalid unique declaration on Capsule table: ${tableName}`,
+        "A unique declaration cannot repeat a Capsule field.",
+      );
+    }
+    const identity = [...declaration].sort().join("\u0000");
+    if (seen.has(identity)) {
+      throw commandError(
+        `Duplicate unique declaration on Capsule table: ${tableName}`,
+        "Declare each set of unique Capsule fields only once; field order does not make a new constraint.",
+      );
+    }
+    seen.add(identity);
+    return [...declaration];
+  }).sort((left, right) => [...left].sort().join("\u0000").localeCompare([...right].sort().join("\u0000")));
 }
 
 function assertNotReservedTeamTableName(name: string) {
@@ -1823,31 +2802,88 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      const endpointContext = createEndpointContext(transactionDatabase, endpointRequest, session);
-      context = (endpoint as LooseRecord).runtimeOwnedEmailEvent
-        ? endpointContext
-        : await applyContextMiddleware(transactionDatabase, endpointContext, "endpoint");
+      let handlerFailed = false;
       try {
+        context = createEndpointContext(transactionDatabase, endpointRequest, session);
+        if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
+          context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
+        }
         return await handler(context);
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
       } finally {
-        await drainPendingAclWrites(context);
-        transactionDatabase.rowCache.clear();
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
-    await flushPendingJobEnqueues(context);
+    await dispatchPendingJobs(context);
     return result;
   } catch (error) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     throw error;
   }
 }
 
-function createTransactionDatabase(database: LooseRecord, transactionAdapter: any) {
-  return transactionAdapter
-    ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }
-    : database;
+function createWriteTrackingAdapter(transactionAdapter: LooseRecord, writeState: { didWrite: boolean; }) {
+  return new Proxy(transactionAdapter, {
+    get(target, property, receiver) {
+      if (property === "prepare") {
+        return (sql: string) => {
+          const statement: any = Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]);
+          return Object.assign(Object.create(statement), {
+            run(...params: any[]) {
+              const result = Reflect.apply(statement.run, statement, params);
+              return thenIfPromise(result, (writeResult: LooseRecord) => {
+                if (Number(writeResult?.changes ?? 0) > 0) writeState.didWrite = true;
+                return writeResult;
+              });
+            },
+          });
+        };
+      }
+      if (property === "exec") {
+        return (sql: string) => thenIfPromise(
+          Reflect.apply(Reflect.get(target, property, receiver), receiver, [sql]),
+          (result: any) => { writeState.didWrite = true; return result; },
+        );
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+function createTransactionDatabase(database: LooseRecord, transactionAdapter: any, writeState?: { didWrite: boolean; }) {
+  const adapter = writeState ? createWriteTrackingAdapter(transactionAdapter, writeState) : transactionAdapter;
+  if (!transactionAdapter) return database;
+  const pendingLogWrites = transactionAdapter[transactionPendingLogWrites] ?? [];
+  if (!transactionAdapter[transactionPendingLogWrites]) {
+    Object.defineProperty(transactionAdapter, transactionPendingLogWrites, { value: pendingLogWrites });
+  }
+  const transactionDatabase: LooseRecord = {
+    ...database,
+    adapter,
+    sqlite: adapter,
+    __transactionActive: true,
+    __rootDatabase: database.__rootDatabase ?? database,
+    __pendingLogWrites: pendingLogWrites,
+  };
+  if (typeof database.log?.withDatabase === "function") {
+    transactionDatabase.log = database.log.withDatabase(adapter);
+    transactionDatabase.audit = createPrivilegedAuditEmitter(transactionDatabase.log);
+  }
+  transactionDatabase.mail = Object.assign(Object.create(database.mail), {
+    send(input: LooseRecord, deliveryLog?: (event: LooseRecord) => any) {
+      return database.mail.send(
+        input,
+        deliveryLog ?? ((event: LooseRecord) => transactionDatabase.log?.emit(event)),
+      );
+    },
+  });
+  return transactionDatabase;
 }
 
 async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any) {
@@ -1887,10 +2923,16 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   const holder = createContextHolder(context);
+  registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
-  context.mail = database.mail;
+  context.mail = {
+    enabled: database.mail.enabled,
+    send(input: LooseRecord) {
+      return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
+    },
+  };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
@@ -1928,6 +2970,55 @@ function createContextHolder(context: LooseRecord) {
   });
   return holder;
 }
+
+const handlerContextByDatabase = new WeakMap<object, () => LooseRecord>();
+
+function registerHandlerContextMapping(database: LooseRecord, holder: { current: LooseRecord; }) {
+  if (!database.__transactionActive) return;
+  releaseHandlerContextMapping(database);
+  const rootDatabase = database.__rootDatabase ?? database;
+  handlerContextByDatabase.set(database, () => holder.current);
+  rootDatabase.__handlerContextMappingCount += 1;
+  database.__releaseHandlerContextMapping = () => {
+    if (!handlerContextByDatabase.delete(database)) return;
+    rootDatabase.__handlerContextMappingCount -= 1;
+  };
+}
+
+function releaseHandlerContextMapping(database: LooseRecord) {
+  database.__releaseHandlerContextMapping?.();
+  delete database.__releaseHandlerContextMapping;
+}
+
+async function cleanupTransactionHandler(
+  database: LooseRecord,
+  context: LooseRecord | undefined,
+  preservePrimaryError: boolean,
+  clearCache = true,
+) {
+  let cleanupFailed = false;
+  try {
+    if (context) await drainPendingAclWrites(context);
+    await drainPendingLogWrites(database);
+  } catch (error) {
+    cleanupFailed = true;
+    if (!preservePrimaryError) throw error;
+  } finally {
+    try {
+      if (clearCache || cleanupFailed) database.rowCache.clear();
+    } finally {
+      releaseHandlerContextMapping(database);
+    }
+  }
+}
+
+async function drainPendingLogWrites(database: LooseRecord) {
+  const pending = database.__pendingLogWrites;
+  while (pending?.length > 0) {
+    await Promise.allSettled(pending.splice(0));
+  }
+}
+
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
   let context: LooseRecord = {
     ...baseContext,
@@ -2037,6 +3128,56 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
           const result = database.adapter.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
           database.rowCache.clear();
           return thenIfPromise(result, () => next);
+        });
+      };
+      const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
+      }
+      return operation;
+    },
+    insertOrIgnore(values: LooseRecord, ...conflictFields: string[]) {
+      if (
+        conflictFields.length === 0 ||
+        !table.uniqueConstraints?.some(
+          (constraint: string[]) =>
+            constraint.length === conflictFields.length && constraint.every((field, index) => field === conflictFields[index]),
+        )
+      ) {
+        throw new Error(`insertOrIgnore requires an exactly matching declared unique constraint on ${table.name}.`);
+      }
+      const now = new Date().toISOString();
+      const row: LooseRecord = {
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const fieldValues = table.fields.map((field: { name: PropertyKey; defaultValue: any; }) =>
+        fieldValueForWrite(
+          database,
+          field,
+          Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== undefined ? values[String(field.name)] : field.defaultValue,
+        ),
+      );
+      const finish = (resolvedValues: { [x: string]: any; }) => {
+        for (const [index, field] of table.fields.entries()) {
+          row[field.name] = resolvedValues[index];
+        }
+        const columns = Object.keys(row);
+        const next = deserializeRow(table, row);
+        return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+          const result = database.adapter.insertAppRowOrIgnore(
+            table,
+            Object.fromEntries(columns.map((column) => [column, row[column]])),
+            conflictFields,
+          );
+          return thenIfPromise(result, (writeResult: { changes: number; }) => {
+            if (writeResult.changes === 0) {
+              return null;
+            }
+            database.rowCache.clear();
+            return next;
+          });
         });
       };
       const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
@@ -2930,6 +4071,26 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return;
     }
 
+    if (message.type === "teams.countMembers") {
+      try {
+        const data = await countTeamMembers(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teams.countMembers.result", data, error: null });
+      } catch (error: any) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...(error?.code ? { code: error.code } : {}),
+            message: error?.message ?? "Could not read this Team's member count.",
+            hint: error?.hint ?? "Sign in as a current Team member and retry.",
+          },
+        });
+      }
+      return;
+    }
+
     if (message.type === "teams.updateApplicationRoles") {
       try {
         const data = await updateTeamMemberApplicationRoles(database, client.session.auth, message.teamId, message.userId, { add: message.add, remove: message.remove });
@@ -3109,7 +4270,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       const mutationName = message.mutation ?? message.name;
       const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
       sendJson(client, formatMutationResult(message, mutationName, result));
-      if (result.ok) {
+      if (result.ok && mutationResultsWithWrites.has(result)) {
         setTimeout(() => {
           for (const subscribedClient of clients) {
             for (const subscription of subscribedClient.subscriptions.values()) {
@@ -3302,12 +4463,10 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
 
 
-// Enqueues a runtime-owned Job under the reserved privileged actor. This writes
-// the queue row directly rather than going through the current-user Job API:
-// that API batches enqueues onto the calling Capsule context when a transaction
-// is active, and runtime code has no such context, so the row would be dropped.
-// A direct insert joins whatever transaction is already open, so a rolled-back
-// caller discards the Job with it.
+// Enqueues a runtime-owned Job under the reserved privileged actor. The direct
+// insert joins the handler transaction, while dispatch uses that transaction's
+// live context so the worker is not woken until commit. Outside a handler
+// transaction, runtime-owned Jobs retain ordinary immediate scheduling.
 async function enqueueRuntimeJob(
   database: LooseRecord,
   handlerName: string,
@@ -3316,10 +4475,11 @@ async function enqueueRuntimeJob(
   retry: LooseRecord | undefined = undefined,
 ) {
   const queueDatabase = database.__rootDatabase ?? database;
+  const jobAdapter = database.adapter;
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
-  await queueDatabase.adapter.prepare(
-    queueDatabase.adapter.dialect.sql(
+  await jobAdapter.prepare(
+    jobAdapter.dialect.sql(
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
       "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
       "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)",
@@ -3336,7 +4496,7 @@ async function enqueueRuntimeJob(
     now,
     JSON.stringify(normalizeJobRetry(retry)),
   );
-  scheduleCurrentUserJobWorker(queueDatabase);
+  deferOrScheduleJobDispatch(database, queueDatabase);
 }
 
 // Runtime-owned delivery may transiently fail after the request response has returned. Keep retries
@@ -3632,40 +4792,56 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
 }
 
 export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any) {
-  let context;
+  let context: LooseRecord | undefined;
   let result;
+  const writeState = { didWrite: false };
   try {
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
-      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
+      let handlerFailed = false;
+      try {
+        context = createMutationContext(transactionDatabase, auth);
+        context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
-      for (const hookSource of database.mutationHooks.beforeMutation) {
-        await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
-      }
+        for (const hookSource of database.mutationHooks.beforeMutation) {
+          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
+        }
 
-      result = await runCustomMutation(transactionDatabase, context, mutationName, args);
-      if (!result) {
-        result = mutationName.startsWith("update")
-          ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
-          : await runInsertMutation(transactionDatabase, context, mutationName, args);
-      }
-      await drainPendingAclWrites(context);
-
-      if (result.ok) {
-        for (const hookSource of database.mutationHooks.afterMutation) {
-          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+        result = await runCustomMutation(transactionDatabase, context, mutationName, args);
+        if (!result) {
+          result = mutationName.startsWith("update")
+            ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
+            : await runInsertMutation(transactionDatabase, context, mutationName, args);
         }
         await drainPendingAclWrites(context);
-      }
 
-      return result;
+        if (result.ok) {
+          for (const hookSource of database.mutationHooks.afterMutation) {
+            await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
+          }
+          await drainPendingAclWrites(context);
+        }
+
+        return result;
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+      }
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
-    await flushPendingJobEnqueues(context);
+    await dispatchPendingJobs(context);
+    if (writeState.didWrite) {
+      database.rowCache.clear();
+      mutationResultsWithWrites.add(committed);
+    }
     return committed;
   } catch (error: any) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.sporadesAclDenialLogData) {
@@ -3693,7 +4869,6 @@ async function runCustomMutation(database: LooseRecord, context: any, mutationNa
     result = await mutationHandler(context, ...args);
   } finally {
     await drainPendingAclWrites(context);
-    database.rowCache.clear();
   }
   if (result !== undefined) {
     assertJsonCompatible(result);
@@ -3743,29 +4918,30 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     const createHandler = new Function(`return (${handler.handlerSource});`);
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      context = await applyContextMiddleware(
-        transactionDatabase,
-        createMessageContext(transactionDatabase, auth, options.sendAppMessage),
-        "message",
-      );
-      let result;
+      let handlerFailed = false;
       try {
-        result = await createHandler()(context, data);
+        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+        context = await applyContextMiddleware(transactionDatabase, context, "message");
+        const result = await createHandler()(context, data);
+        if (result !== undefined) {
+          assertJsonCompatible(result);
+        }
+        return { data: result ?? null, error: null as any };
+      } catch (error) {
+        handlerFailed = true;
+        throw error;
       } finally {
-        await drainPendingAclWrites(context);
-        transactionDatabase.rowCache.clear();
+        await cleanupTransactionHandler(transactionDatabase, context, handlerFailed);
       }
-      if (result !== undefined) {
-        assertJsonCompatible(result);
-      }
-      return { data: result ?? null, error: null as any };
     });
+    commitPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context);
-    await flushPendingJobEnqueues(context);
+    await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
+    dropPendingJobCancellationAborts(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
-    await flushPendingJobEnqueues(context);
+    dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -3844,10 +5020,16 @@ function createMutationContext(database: LooseRecord, auth: any) {
     __pendingAclWrites: [],
   };
   const holder = createContextHolder(context);
+  registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
-  context.mail = database.mail;
+  context.mail = {
+    enabled: database.mail.enabled,
+    send(input: LooseRecord) {
+      return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
+    },
+  };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
@@ -3887,11 +5069,23 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
   return context;
 }
 
+function deferOrScheduleJobDispatch(database: LooseRecord, queueDatabase: LooseRecord, context: LooseRecord | undefined = undefined) {
+  const currentContext = context ?? handlerContextByDatabase.get(database)?.();
+  if (database.__transactionActive && currentContext) {
+    const pendingContext = currentContext.__jobParentContext ?? currentContext;
+    pendingContext.__pendingJobDispatch = true;
+    pendingContext.__jobQueueDatabase = queueDatabase;
+    return;
+  }
+  scheduleCurrentUserJobWorker(queueDatabase);
+}
+
 function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return {
     async enqueue(handlerName: any, payload: any, options: LooseRecord = {}) {
       const context = contextGetter();
       const queueDatabase = database.__rootDatabase ?? database;
+      const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
       const handler = database.jobs?.find((candidate: any) => candidate.name === handlerName);
       if (!handler) {
@@ -3906,54 +5100,62 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
-        const pending = (context.__jobParentContext ?? context).__pendingJobEnqueues?.find((candidate: any) =>
-          candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
-        );
-        if (pending) { assertJobScheduleProvenance(pending, scheduleProvenance); return jobState(pending, true); }
       }
       const id = crypto.randomUUID();
-      const now = queueDatabase.clock.now().toISOString();
-      const availableAt = options.availableAt === undefined ? now : new Date(options.availableAt).toISOString();
-      if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
+      const nowInstant = queueDatabase.clock.now();
+      const now = normalizeJobAvailableAt(nowInstant);
+      const availableAt = options.availableAt === undefined ? now : normalizeJobAvailableAt(options.availableAt);
       const retry = normalizeJobRetry(options.retry);
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
-      if (database.__transactionActive) {
-        const pendingContext = context.__jobParentContext ?? context;
-        pendingContext.__pendingJobEnqueues ??= [];
-        pendingContext.__jobQueueDatabase = queueDatabase;
-        pendingContext.__pendingJobEnqueues.push(row);
-        return jobState(row, true);
+      const firstAttemptInstant = availableAt > now ? new Date(availableAt) : nowInstant;
+      if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null && !scheduleProvenance) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value with room for a canonical runtime claim lease.");
       }
+      if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts, Boolean(scheduleProvenance && retry.maxAttempts === 1))) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
+      }
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
+      // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
+      // misreport handler work that is already durable.
       try {
-        await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)")).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
+          (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""),
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
+          const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+          if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
+          throw jobError("JOB_ENQUEUE_CONFLICT", "Could not resolve the existing idempotent Job.", "Retry the Job enqueue.");
+        }
       } catch (error: any) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         }
         throw error;
       }
-      scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
+      deferOrScheduleJobDispatch(database, queueDatabase, context);
+      if (database.__transactionActive) return jobState(row, true);
+      return jobState(await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id), true);
     },
     async get(id: any) {
       const context = contextGetter();
-      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const jobAdapter = database.adapter;
       const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
-    async cancel(id: any) { return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id); },
+    async cancel(id: any) { return await cancelJob(database, contextGetter(), id); },
     async list(options: LooseRecord = {}) {
       const context = contextGetter();
       if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["limit","cursor","status","handler","createdAfter","createdBefore"].includes(key))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass supported Job list filters only.");
       const limit = options.limit === undefined ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const queueDatabase = database.__rootDatabase ?? database;
-      const sql = queueDatabase.adapter.dialect.sql;
-      const clauses=["[actorUserId] = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.adapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
+      const jobAdapter = database.adapter;
+      const sql = jobAdapter.dialect.sql;
+      const clauses=["[actorUserId] = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await jobAdapter.prepare(sql(`SELECT * FROM [sporades_jobs] WHERE ${clauses.join(" AND ")} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
@@ -3966,7 +5168,7 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
     async enqueue(handler: any, payload: any, options: any = {}) { assertActivePrivilegedJobAccess(contextGetter); return await current.enqueue(handler, payload, options); },
     async get(id: any) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const jobAdapter = (database.__rootDatabase ?? database).adapter;
+      const jobAdapter = database.adapter;
       const row = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id);
       return row ? jobState(row, true) : null;
     },
@@ -3976,61 +5178,186 @@ function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => Loos
       const limit = options.limit === undefined ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const sqlite = (database.__rootDatabase ?? database).adapter;
+      const sqlite = database.adapter;
       const sql = sqlite.dialect.sql;
       const clauses:string[]=[]; const params:any[]=[]; if(options.status){clauses.push("[status] = ?");params.push(options.status)} if(options.handler){clauses.push("[handler] = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("[createdAt] >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("[createdAt] <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await sqlite.prepare(sql(`SELECT * FROM [sporades_jobs]${clauses.length?` WHERE ${clauses.join(" AND ")}`:""} ORDER BY [createdAt] ASC, [id] ASC LIMIT ?`)).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
-    async cancel(id: any) { assertActivePrivilegedJobAccess(contextGetter); return await cancelJob(database.__rootDatabase ?? database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id); },
+    async cancel(id: any) {
+      const context = contextGetter();
+      assertActivePrivilegedJobAccess(() => context);
+      return await cancelJob(database, Object.assign(Object.create(context), { __privilegedJobAccess: true }), id);
+    },
   };
 }
-async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
-  if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
+async function dispatchPendingJobs(context: LooseRecord | undefined) {
+  if (!context?.__pendingJobDispatch || context.__pendingJobsFlushed) return false;
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
-  for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.adapter.prepare(queueDatabase.adapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
-  }
-  scheduleCurrentUserJobWorker(queueDatabase);
+  context.__pendingJobDispatch = false;
+  try { scheduleCurrentUserJobWorker(queueDatabase); } catch {}
+  return false;
 }
 
-function scheduleCurrentUserJobWorker(database: LooseRecord) {
-  if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
+function dropPendingJobDispatch(context: LooseRecord | undefined) {
+  if (!context) return;
+  context.__pendingJobDispatch = false;
+  context.__pendingJobsFlushed = true;
+  delete context.__jobQueueDatabase;
+}
+
+function stopCurrentUserJobWorker(database: LooseRecord) {
+  database.__jobStopped = true;
+  database.__jobWorkerRerunRequested = false;
+  if (database.__jobWorkerTimer) { database.clock.clearTimer(database.__jobWorkerTimer); database.__jobWorkerTimer = null; }
+  database.__jobWorkerScheduled = false;
+  if (database.__jobWakeTimer) { database.clock.clearTimer(database.__jobWakeTimer); database.__jobWakeTimer = null; }
+  if (database.__jobLeaseRecoveryTimer) { database.clock.clearTimer(database.__jobLeaseRecoveryTimer); database.__jobLeaseRecoveryTimer = null; }
+  database.__jobLeaseRecoveryDueAt = null;
+  database.__jobLeaseRecoveryRequestedAt = null;
+  for (const activeClaim of database.__jobAbortControllers?.values?.() ?? []) (activeClaim?.controller ?? activeClaim)?.abort?.();
+  const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise]
+    .filter(Boolean)
+    .map((pending) => Promise.resolve(pending));
+  if (settlements.length === 0) return undefined;
+  if (settlements.length === 1) return settlements[0];
+  return Promise.all(settlements).then(() => undefined);
+}
+
+function scheduleCurrentUserJobWorker(database: LooseRecord, propagateSchedulingFailure = false) {
+  if (database.__jobStopped) return;
+  if (database.__jobWorkerRunning) {
+    // A transaction may commit after the active worker's final queue read but
+    // before that worker relinquishes ownership. Remember the dispatch so the
+    // worker cannot clear its running state without arranging another scan.
+    database.__jobWorkerRerunRequested = true;
+    return;
+  }
+  if (database.__jobWorkerScheduled) return;
   database.__jobWorkerScheduled = true;
-  database.clock.setTimer(async () => {
+  try {
+    database.__jobWorkerTimer = database.clock.setTimer(async () => {
+      database.__jobWorkerTimer = null;
+      database.__jobWorkerScheduled = false;
+      if (database.__jobStopped) return;
+      const worker = runCurrentUserJobWorker(database);
+      database.__jobWorkerPromise = worker;
+      try { await worker; }
+      finally { if (database.__jobWorkerPromise === worker) database.__jobWorkerPromise = null; }
+    }, 0);
+  } catch (error) {
     database.__jobWorkerScheduled = false;
-    await runCurrentUserJobWorker(database);
-  }, 0);
+    database.__jobWorkerTimer = null;
+    if (propagateSchedulingFailure) throw error;
+  }
+}
+
+function scheduleJobWorkerWake(database: LooseRecord, delayMs: number) {
+  if (database.__jobStopped) return;
+  if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
+  database.__jobWakeTimer = database.clock.setTimer(() => {
+    database.__jobWakeTimer = null;
+    scheduleCurrentUserJobWorker(database);
+  }, Math.min(MAX_NATIVE_TIMER_DELAY_MS, Math.max(0, delayMs)));
+}
+
+async function relinquishUnstartedJobClaim(database: LooseRecord, jobId: string, claimToken: string) {
+  const sql = database.adapter.dialect.sql;
+  await database.adapter.prepare(sql(
+    "UPDATE [sporades_jobs] SET " +
+    "[status] = CASE WHEN [cancelRequestedAt] IS NULL THEN 'queued' ELSE 'cancelled' END, " +
+    "[attempts] = CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, " +
+    "[startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL, " +
+    "[completedAt] = CASE WHEN [cancelRequestedAt] IS NULL THEN [completedAt] ELSE [cancelRequestedAt] END " +
+    "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+  )).run(jobId, claimToken);
 }
 
 async function scheduleNextDelayedJob(database: LooseRecord) {
-  const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [availableAt] FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
-  if (!row) return;
-  if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
-  database.__jobWakeTimer = database.clock.setTimer(() => { database.__jobWakeTimer = null; scheduleCurrentUserJobWorker(database); }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
+  while (true) {
+    const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
+    if (!row) return;
+    const failure = invalidStoredJobFailure(row, database.clock.now());
+    if (failure) {
+      await failInvalidQueuedJob(database, row, failure);
+      continue;
+    }
+    scheduleJobWorkerWake(database, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
+    return;
+  }
 }
 
 export async function runCurrentUserJobWorker(database: LooseRecord) {
-  if (database.__jobWorkerRunning) return;
+  if (database.__jobStopped || database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
   const sql = database.adapter.dialect.sql;
   try {
     while (true) {
-      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(database.clock.now().toISOString());
-      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(database.clock.now().toISOString());
+      if (database.__jobStopped) return;
+      const workerNow = database.clock.now();
+      const workerNowIso = workerNow.toISOString();
+      await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='queued' WHERE [status]='delayed' AND [availableAt] <= ?")).run(workerNowIso);
+      if (database.__jobStopped) return;
+      const row = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status] = 'queued' AND [availableAt] <= ? ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get(workerNowIso);
+      if (database.__jobStopped) return;
       if (!row) { await scheduleNextDelayedJob(database); return; }
-      const startedAt = database.clock.now().toISOString();
-      const claimed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ? WHERE [id] = ? AND [status] = 'queued'")).run(startedAt, new Date(database.clock.now().getTime()+30_000).toISOString(), row.id);
+      const storedFailure = invalidStoredJobFailure(row, workerNow);
+      if (storedFailure) {
+        await failInvalidQueuedJob(database, row, storedFailure);
+        continue;
+      }
+      const startedAt = workerNowIso;
+      // A Job created by the final representable Schedule occurrence may have
+      // less than one full lease remaining. It gets the same canonical domain
+      // clamp as its occurrence claim; ordinary Jobs still require full
+      // headroom at enqueue and claim time.
+      const fullLeaseExpiresAt = jobTimestampAfter(workerNow, RUNTIME_CLAIM_LEASE_MS);
+      const storedRetry = parsePersistedJobRetry(row.retryJson);
+      const leaseExpiresAt = fullLeaseExpiresAt ?? (row.scheduleName && row.scheduledFor && storedRetry?.maxAttempts === 1 && isCanonicalJobTimestamp(workerNowIso)
+        ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString()
+        : null);
+      if (leaseExpiresAt === null) {
+        await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
+        continue;
+      }
+      const claimToken = randomUUID();
+      const claimed = await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? " +
+        "WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')",
+      )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
       if (!claimed?.changes) continue;
+      if (database.__jobStopped) {
+        // Shutdown can begin while the asynchronous claim statement is in
+        // flight. The Job has not reached its handler boundary yet, so return
+        // the claim without consuming an attempt. A cancellation that raced
+        // the claim remains terminal instead of being resurrected as queued.
+        await relinquishUnstartedJobClaim(database, row.id, claimToken);
+        return;
+      }
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
-      database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, abortController);
+      database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
+      let handlerStarted = false;
       try {
+        // Cancellation may commit after the durable claim but before its
+        // in-memory controller is registered. Reconcile the exact owned claim
+        // before crossing the handler boundary so that window cannot lose the
+        // abort signal or affect a newer attempt.
+        const claimedState = await database.adapter.prepare(sql(
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+        )).get(row.id, claimToken);
+        if (!claimedState) continue;
+        if (database.__jobStopped) {
+          await relinquishUnstartedJobClaim(database, row.id, claimToken);
+          return;
+        }
+        if (claimedState?.cancelRequestedAt) abortController.abort();
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+            handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try { return await handler.handler(privilegedCtx, JSON.parse(row.payload)); }
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
@@ -4042,6 +5369,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
               "FROM [sporades_auth_users] WHERE [id] = ?",
             ),
           ).get(row.actorUserId);
+          if (database.__jobStopped) {
+            await relinquishUnstartedJobClaim(database, row.id, claimToken);
+            return;
+          }
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = {
             userId: user.id,
@@ -4053,19 +5384,78 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
           };
           const context = createMutationContext(database, auth); context.signal = abortController.signal;
+          handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try { result = await handler.handler(context, JSON.parse(row.payload)); }
           finally { database.__runtimeJobAttempts.delete(context); }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
-        const completedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt }); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [attemptHistory] = ? WHERE [id] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id);
+        const completedAt = database.clock.now().toISOString();
+        const history = JSON.parse(row.attemptHistory || "[]");
+        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
+        await database.adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
+          "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+        )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
       } catch (error: any) {
-        const failure = safeJobFailure(error);
-        const failedAt=database.clock.now().toISOString(); const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const abortError=error?.cause ?? error; const cancelled=abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:failedAt}); if(cancelled) await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [attemptHistory]=? WHERE [id]=?")).run(JSON.stringify(failure),failedAt,JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(database.clock.now().getTime()+retry.delayMs).toISOString(); await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attemptHistory]=? WHERE [id]=?")).run(availableAt,JSON.stringify(history),row.id); database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [attemptHistory]=? WHERE [id] = ?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt,JSON.stringify(history), row.id);
-      } finally { database.__jobAbortControllers?.delete(row.id);
+        if (database.__jobStopped && !handlerStarted) {
+          await relinquishUnstartedJobClaim(database, row.id, claimToken);
+          return;
+        }
+        const handlerFailure = safeJobFailure(error);
+        const failedAt = database.clock.now().toISOString();
+        const history = JSON.parse(row.attemptHistory || "[]");
+        const retry = parsePersistedJobRetry(row.retryJson);
+        const abortError = error?.cause ?? error;
+        const abortShaped = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
+        const cancellation = abortShaped
+          ? await database.adapter.prepare(sql(
+            "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+          )).get(row.id, claimToken)
+          : null;
+        const cancelled = Boolean(cancellation?.cancelRequestedAt);
+        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+          && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
+        const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
+        const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
+        const retryAvailableAt = retryAvailableAtCandidate !== null && retry !== null
+          && jobRetryHorizonFits(new Date(retryAvailableAtCandidate), retry, remainingAttempts)
+          ? retryAvailableAtCandidate
+          : null;
+        const retryPolicyInvalid = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+          && (retry === null || (retryEligible && retryAvailableAt === null));
+        const failure = retryPolicyInvalid
+          ? invalidJobRetryPolicyFailure()
+          : handlerFailure;
+        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
+        if (cancelled) {
+          await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+            "WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+          )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
+        } else if (retryAvailableAt !== null) {
+          const changed = await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+            "WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+          )).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry!.delayMs + 1);
+        } else {
+          await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+            "WHERE [id] = ? AND [status]='running' AND [claimToken]=?",
+          )).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
+        }
+      } finally {
+        const activeClaim = database.__jobAbortControllers?.get(row.id);
+        if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
       }
     }
-  } finally { database.__jobWorkerRunning = false; }
+  } finally {
+    database.__jobWorkerRunning = false;
+    const rerunRequested = database.__jobWorkerRerunRequested === true;
+    database.__jobWorkerRerunRequested = false;
+    if (rerunRequested && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
+  }
 }
 function createHookErrorResult(error: any) {
   return {

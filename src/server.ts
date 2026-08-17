@@ -40,15 +40,22 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
  * A server-only recurring Job declaration using numeric five-field cron.
  * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
  */
+type ScheduleJsonValue = null | boolean | number | string | ScheduleJsonValue[] | { [key: string]: ScheduleJsonValue };
 export type ScheduleDefinition = {
   expression: string;
   timezone?: string;
   job: string;
-  payload?: unknown | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   missedRun?: "skip" | "latest";
   enabled?: boolean;
-};
+} & (
+  | { payload?: ScheduleJsonValue; payloadVersion?: never }
+  | {
+    payload: SchedulePayloadFactory;
+    /** Stable identity for the factory source and every captured/configured input. Change it when any of those inputs change. */
+    payloadVersion?: string;
+  }
+);
 
 export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
 /**
@@ -57,7 +64,7 @@ export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: 
  * state mutation. Explicit Privileged side effects must tolerate repetition.
  * Timeout cancellation is cooperative and cannot undo completed side effects.
  */
-export type SchedulePayloadFactory = (occurrence: ScheduleOccurrence, ctx: Readonly<{ signal: AbortSignal; privileged: unknown }>) => unknown | Promise<unknown>;
+export type SchedulePayloadFactory = (occurrence: ScheduleOccurrence, ctx: Readonly<{ signal: AbortSignal; privileged: unknown }>) => ScheduleJsonValue | Promise<ScheduleJsonValue>;
 
 export type FieldDefinition<Value = unknown> = {
   kind: FieldKind;
@@ -79,7 +86,14 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
   kind: "table";
   fields: Fields;
   aclRules?: unknown;
+  uniqueConstraints?: readonly (readonly string[])[];
   acl(rules: unknown): TableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): TableDefinition<Fields>;
+};
+
+export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDefinition<Fields>, "acl" | "unique"> & {
+  acl(rules: unknown): CapsuleTableDefinition<Fields>;
+  unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 
 export type AuthContext = {
@@ -188,25 +202,31 @@ export function job<const HandlerType extends Handler>(handler: HandlerType): Jo
  * Declare a named, server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
  * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
- * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
- * attempt semantics.
+ * up at most one occurrence. Dynamic payload factories may supply a stable
+ * `payloadVersion` that changes with their code or captured configuration;
+ * omission preserves the weaker v0.8.5 source-text identity.
+ * Scheduled Jobs retain Job Queue at-least-once attempt semantics.
  */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" } {
   return { kind: "schedule", ...definition };
 }
 
-export function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields> {
+export function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields> {
   return tableDefinition(fields);
 }
 
-function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, aclRules?: unknown): TableDefinition<Fields> {
+function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, aclRules?: unknown, uniqueConstraints: readonly (readonly (keyof Fields & string)[])[] = []): CapsuleTableDefinition<Fields> {
   return {
     kind: "table",
     fields,
     acl(rules: unknown) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames: readonly (keyof Fields & string)[]) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 
@@ -339,14 +359,18 @@ export function table(fields) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields, aclRules, uniqueConstraints = []) {
   return {
     kind: "table",
     fields,
     acl(rules) {
-      return tableDefinition(fields, rules);
+      return tableDefinition(fields, rules, uniqueConstraints);
+    },
+    unique(...fieldNames) {
+      return tableDefinition(fields, aclRules, [...uniqueConstraints, fieldNames]);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
+    ...(uniqueConstraints.length === 0 ? {} : { uniqueConstraints }),
   };
 }
 

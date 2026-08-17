@@ -74,6 +74,16 @@ const STANDALONE_TABLE = {
 
 const STANDALONE_ALIAS_TABLE_NAME = "conformance_standalone_alias";
 
+const UNIQUE_TABLE = {
+  name: "conformance_unique_table",
+  fields: [
+    { name: "identity", kind: "String", sqliteType: "TEXT" },
+    { name: "email", kind: "String", sqliteType: "TEXT" },
+    { name: "select", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["identity"], ["select", "email"]],
+};
+
 // A Capsule table whose fields are named exactly the way the deleted Postgres column-name table
 // used to rename them. Created from inside a case rather than declared in the base schema, so the
 // inspection cases' exact table dump is unaffected.
@@ -97,13 +107,147 @@ const MIGRATED_STANDALONE_TABLE = {
   fields: [...STANDALONE_TABLE.fields, { name: "state", kind: "String", sqliteType: "TEXT", defaultValue: "unset" }],
 };
 
+const MIGRATION_NAME_COLLISION_TABLE = {
+  name: "conformance_migration_name_collision",
+  fields: [{ name: "key", kind: "String", sqliteType: "TEXT" }],
+};
+
+const MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY = {
+  ...MIGRATION_NAME_COLLISION_TABLE,
+  uniqueConstraints: [["key"]],
+};
+
+const HOSTILE_MIGRATION_NAME_TABLE = {
+  name: "__sporades_migrating_76e36d10ece95460807e8eac",
+  fields: [{ name: "marker", kind: "String", sqliteType: "TEXT" }],
+};
+
+const MIGRATION_NAME_COLLISION_ROLLBACK_TABLE = {
+  ...MIGRATION_NAME_COLLISION_TABLE,
+  name: "conformance_migration_name_collision_rollback",
+};
+
+const MIGRATION_NAME_COLLISION_ROLLBACK_TABLE_WITH_UNIQUE_KEY = {
+  ...MIGRATION_NAME_COLLISION_ROLLBACK_TABLE,
+  uniqueConstraints: [["key"]],
+};
+
+const HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE = {
+  ...HOSTILE_MIGRATION_NAME_TABLE,
+  name: "__sporades_migrating_763f0230fa87ee9684993581",
+};
+
 const MIGRATED_ENTRIES_TABLE = {
   ...ENTRIES_TABLE,
   fields: [...ENTRIES_TABLE.fields, { name: "status", kind: "String", sqliteType: "TEXT", defaultValue: "open" }],
 };
 
+const UNIQUE_MUTABILITY_TABLE = {
+  name: "conformance_unique_mutability",
+  fields: [
+    { name: "first", kind: "String", sqliteType: "TEXT" },
+    { name: "second", kind: "String", sqliteType: "TEXT" },
+    { name: "third", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["first", "second"]],
+};
+
+const UNIQUE_MIGRATION_TABLE = {
+  name: "conformance_unique_migration",
+  fields: [
+    { name: "teamId", kind: "String", sqliteType: "TEXT" },
+    { name: "slug", kind: "String", sqliteType: "TEXT" },
+    { name: "externalId", kind: "String", sqliteType: "TEXT" },
+  ],
+  uniqueConstraints: [["teamId", "slug"]],
+};
+
+const UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
+const UNIQUE_DUPLICATE_MIGRATION_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_duplicate_migration",
+};
+
+const UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_DUPLICATE_MIGRATION_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
+const UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_migration_infrastructure",
+};
+
+const UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
+const UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE = {
+  ...UNIQUE_MIGRATION_TABLE,
+  name: "conformance_unique_migration_unrelated_unique",
+};
+
+const UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE_WITH_EXTERNAL_ID = {
+  ...UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE,
+  uniqueConstraints: [["teamId", "slug"], ["externalId"]],
+};
+
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_EXTERNAL_ID = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID] };
+const MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_AND_MIGRATION = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_MIGRATION = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE, UNIQUE_DUPLICATE_MIGRATION_TABLE],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_EXTERNAL_ID = {
+  tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, UNIQUE_MUTABILITY_TABLE, UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE_WITH_EXTERNAL_ID,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE,
+  ],
+};
+const MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE_EXTERNAL_ID = {
+  tables: [
+    ...MIGRATED_SCHEMA.tables,
+    UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MUTABILITY_TABLE,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE_WITH_EXTERNAL_ID,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE_WITH_EXTERNAL_ID,
+  ],
+};
 
 // The two tables of the migration that must fail partway. A migration walks the schema's tables in
 // order, so putting a table that migrates cleanly ahead of one that cannot is what makes the
@@ -196,6 +340,21 @@ async function indexedLogMessages(adapter, limit = 50) {
 // against a fresh object literal built from the columns the case is actually asserting.
 function pick(row, keys) {
   return Object.fromEntries(keys.map((key) => [key, row?.[key]]));
+}
+
+function injectMigrationTemporaryTableError(adapter, tableName, error) {
+  const originalWithTransaction = adapter.withTransaction;
+  adapter.withTransaction = (fn) => originalWithTransaction.call(adapter, (transaction) => {
+    const originalCreateAppTable = transaction.createAppTable;
+    transaction.createAppTable = (table, temporaryTableName) => {
+      if (table.name === tableName && String(temporaryTableName).startsWith("__sporades_migrating_")) {
+        throw error;
+      }
+      return originalCreateAppTable.call(transaction, table, temporaryTableName);
+    };
+    return fn(transaction);
+  });
+  return () => { adapter.withTransaction = originalWithTransaction; };
 }
 
 async function prepareAppTableStorage(adapter) {
@@ -848,6 +1007,39 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "createAppTable enforces quoted single and composite unique constraints with ordinary SQL null semantics",
+    async run(adapter) {
+      await adapter.createAppTable(UNIQUE_TABLE);
+      const first = { id: "unique-one", createdAt: NOW, updatedAt: NOW, identity: "identity-one", email: "one@example.test", select: "reserved-word" };
+      await adapter.insertAppRow(UNIQUE_TABLE, first);
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-two", email: "two@example.test", select: "other" }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-three", identity: "identity-two" }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-four", identity: "identity-three", email: null, select: "reserved-word" });
+      await adapter.insertAppRow(UNIQUE_TABLE, { ...first, id: "unique-five", identity: "identity-four", email: null, select: "reserved-word" });
+    },
+  },
+  {
+    name: "insertAppRowOrIgnore returns no change only for its named unique constraint",
+    async run(adapter) {
+      const first = { id: "ignore-one", createdAt: NOW, updatedAt: NOW, identity: "ignore-identity", email: "ignore@example.test", select: "ignore-select" };
+      assert.equal((await adapter.insertAppRowOrIgnore(UNIQUE_TABLE, first, ["identity"])).changes, 1);
+      assert.equal(
+        (await adapter.insertAppRowOrIgnore(UNIQUE_TABLE, { ...first, id: "ignore-two", email: "other@example.test", select: "other-select" }, ["identity"])).changes,
+        0,
+      );
+      await assert.rejects(
+        async () => adapter.insertAppRowOrIgnore(UNIQUE_TABLE, { ...first, id: "ignore-three", identity: "other-identity" }, ["identity"]),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
     // The names that used to be renamed on the way out. The Postgres adapter restored the runtime's
     // declared spellings through a table of them, applied per result key with no table provenance,
     // so a Capsule field literally called `errorcode` or `jobid` came back as `errorCode` or
@@ -903,6 +1095,76 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "migrateExistingAppTable preserves a valid app table with a hostile internal-shaped name",
+    async run(adapter) {
+      await adapter.createAppTable(MIGRATION_NAME_COLLISION_TABLE);
+      await adapter.createAppTable(HOSTILE_MIGRATION_NAME_TABLE);
+      await adapter.insertAppRow(MIGRATION_NAME_COLLISION_TABLE, {
+        id: "migration-collision-target",
+        createdAt: NOW,
+        updatedAt: NOW,
+        key: "kept-key",
+      });
+      await adapter.insertAppRow(HOSTILE_MIGRATION_NAME_TABLE, {
+        id: "migration-collision-hostile",
+        createdAt: NOW,
+        updatedAt: NOW,
+        marker: "must survive",
+      });
+
+      await adapter.migrateExistingAppTable(MIGRATION_NAME_COLLISION_TABLE, MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY);
+
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY, "migration-collision-target")).key, "kept-key");
+      assert.equal((await adapter.selectAppRowById(HOSTILE_MIGRATION_NAME_TABLE, "migration-collision-hostile")).marker, "must survive");
+      assert.deepEqual(
+        (await adapter.listInspectableTables()).filter((name) => name.startsWith("__sporades_migrating_")).sort(),
+        [HOSTILE_MIGRATION_NAME_TABLE.name],
+      );
+      await assert.rejects(
+        async () => adapter.insertAppRow(MIGRATION_NAME_COLLISION_TABLE_WITH_UNIQUE_KEY, {
+          id: "migration-collision-duplicate",
+          createdAt: NOW,
+          updatedAt: NOW,
+          key: "kept-key",
+        }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
+    name: "a failed colliding-name migration rolls back without changing either valid app table",
+    async run(adapter) {
+      await adapter.createAppTable(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE);
+      await adapter.createAppTable(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE);
+      for (const id of ["migration-rollback-a", "migration-rollback-b"]) {
+        await adapter.insertAppRow(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, {
+          id,
+          createdAt: NOW,
+          updatedAt: NOW,
+          key: "duplicate-key",
+        });
+      }
+      await adapter.insertAppRow(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE, {
+        id: "migration-rollback-hostile",
+        createdAt: NOW,
+        updatedAt: NOW,
+        marker: "must survive rollback",
+      });
+
+      await assert.rejects(
+        async () => adapter.migrateExistingAppTable(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, MIGRATION_NAME_COLLISION_ROLLBACK_TABLE_WITH_UNIQUE_KEY),
+        (error) => error.message === "Unable to apply unique constraint migration.",
+      );
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, "migration-rollback-a")).key, "duplicate-key");
+      assert.equal((await adapter.selectAppRowById(MIGRATION_NAME_COLLISION_ROLLBACK_TABLE, "migration-rollback-b")).key, "duplicate-key");
+      assert.equal((await adapter.selectAppRowById(HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE, "migration-rollback-hostile")).marker, "must survive rollback");
+      assert.deepEqual(
+        (await adapter.listInspectableTables()).filter((name) => name.startsWith("__sporades_migrating_")).sort(),
+        [HOSTILE_MIGRATION_NAME_TABLE.name, HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name].sort(),
+      );
+    },
+  },
+  {
     name: "migrateExistingAppTable adds a field with its default to an existing table and keeps stored rows",
     async run(adapter) {
       assert.equal((await adapter.selectAppRowById(STANDALONE_TABLE, "standalone-kept")).state, undefined);
@@ -930,6 +1192,225 @@ const APP_TABLE_CONFORMANCE_CASES = [
       const inspectable = await adapter.listInspectableTables();
       assert.equal(inspectable.includes(STANDALONE_TABLE.name), true);
       assert.equal(inspectable.includes(`__sporades_migrating_${STANDALONE_TABLE.name}`), false);
+    },
+  },
+  {
+    name: "migrateAppSchema adds a unique constraint atomically and records the migrated schema",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_TABLE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_TABLE, {
+        id: "unique-migration-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_EXTERNAL_ID);
+
+      assert.deepEqual(
+        pick(await adapter.selectAppRowById(UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, "unique-migration-kept"), ["teamId", "slug", "externalId"]),
+        { teamId: "team-a", slug: "home", externalId: "external-a" },
+      );
+      const stored = JSON.parse((await adapter.readSchemaMetadata()).value);
+      assert.deepEqual(
+        stored.tables.find((table) => table.name === UNIQUE_MIGRATION_TABLE.name).uniqueConstraints,
+        [["teamId", "slug"], ["externalId"]],
+      );
+      assert.equal(typeof (await adapter.readSystemMetadata("schemaHash")).value, "string");
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`), false);
+      await assert.rejects(
+        async () => adapter.insertAppRow(UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, {
+          id: "unique-migration-conflict",
+          createdAt: NOW,
+          updatedAt: NOW,
+          teamId: "team-b",
+          slug: "other",
+          externalId: "external-a",
+        }),
+        /unique constraint|duplicate key|constraint failed/i,
+      );
+    },
+  },
+  {
+    name: "migrateAppSchema rejects non-additive unique changes without rebuilding, copying, or rewriting metadata",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MUTABILITY_AND_MIGRATION);
+      await adapter.insertAppRow(UNIQUE_MUTABILITY_TABLE, {
+        id: "unique-mutability-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        first: "first",
+        second: "second",
+        third: "third",
+      });
+
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const tableBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
+      const changes = [
+        { name: "remove", uniqueConstraints: [] },
+        { name: "replace", uniqueConstraints: [["first"]] },
+        { name: "composite-order", uniqueConstraints: [["second", "first"]] },
+      ];
+
+      for (const change of changes) {
+        const changedTable = { ...UNIQUE_MUTABILITY_TABLE, uniqueConstraints: change.uniqueConstraints };
+        const changedSchema = { tables: [...MIGRATED_SCHEMA.tables, UNIQUE_MIGRATION_TABLE_WITH_EXTERNAL_ID, changedTable] };
+        await assert.rejects(adapter.migrateAppSchema(changedSchema), {
+          message: "Unsupported Capsule schema change.",
+          hint: "Only adding new tables, fields, or unique constraints is supported right now. Revert changed constraints, or move data aside and recreate the Runtime directory.",
+        }, change.name);
+
+        const tableAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_MUTABILITY_TABLE.name);
+        assert.deepEqual(tableAfter.columns, tableBefore.columns, `${change.name} must not change columns`);
+        assert.deepEqual(tableAfter.rows, tableBefore.rows, `${change.name} must not copy or change rows`);
+        assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_MUTABILITY_TABLE.name}`), false, `${change.name} must not create a rebuild table`);
+        assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore, `${change.name} must not rewrite schema metadata`);
+        assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore, `${change.name} must not rewrite schema metadata hash`);
+        await assert.rejects(
+          async () => adapter.insertAppRow(UNIQUE_MUTABILITY_TABLE, {
+            id: `unique-mutability-${change.name}`,
+            createdAt: NOW,
+            updatedAt: NOW,
+            first: "first",
+            second: "second",
+            third: `after-${change.name}`,
+          }),
+          /unique constraint|duplicate key|constraint failed/i,
+          `${change.name} must preserve the original composite unique constraint`,
+        );
+      }
+    },
+  },
+  {
+    name: "migrateAppSchema rejects duplicate data atomically with one opaque unique-migration error",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_MIGRATION);
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-one",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "first",
+        externalId: "duplicate-value",
+      });
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-two",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "second",
+        externalId: "duplicate-value",
+      });
+
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const tableBefore = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_DUPLICATE_MIGRATION_TABLE.name);
+      await assert.rejects(
+        adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_DUPLICATE_EXTERNAL_ID),
+        (error) => {
+          assert.equal(error.message, "Unable to apply unique constraint migration.");
+          assert.match(error.hint, /Remove or resolve duplicate data/i);
+          assert.doesNotMatch(error.message, /duplicate-value|postgres|key \(/i);
+          assert.doesNotMatch(error.hint, /duplicate-value|postgres|key \(/i);
+          return true;
+        },
+      );
+
+      const tableAfter = (await adapter.dumpInspectableDatabase()).find((table) => table.name === UNIQUE_DUPLICATE_MIGRATION_TABLE.name);
+      assert.deepEqual(tableAfter.columns, tableBefore.columns);
+      assert.deepEqual(tableAfter.rows, tableBefore.rows);
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`), false);
+      assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore);
+      assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore);
+      await adapter.insertAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, {
+        id: "unique-duplicate-after-rollback",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "third",
+        externalId: "duplicate-value",
+      });
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-one");
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-two");
+      await adapter.deleteAppRow(UNIQUE_DUPLICATE_MIGRATION_TABLE, "unique-duplicate-after-rollback");
+    },
+  },
+  {
+    name: "migrateAppSchema preserves a foreign-key engine error during the unique-constraint rebuild",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, {
+        id: "unique-infrastructure-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      // The Database engine is the system boundary below this conformance seam. Injecting its
+      // foreign-key outcome after the transaction callback begins verifies that only duplicate
+      // copy failures are redacted, not every engine constraint failure during a rebuild.
+      const injected = new Error("FOREIGN KEY constraint failed: injected migration rebuild failure");
+      if (adapter.engine === "postgres") {
+        injected.code = "23503";
+      }
+      const restoreWithTransaction = injectMigrationTemporaryTableError(adapter, UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name, injected);
+      try {
+        await assert.rejects(
+          adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNIQUE_MIGRATION_INFRASTRUCTURE_EXTERNAL_ID),
+          (error) => {
+            assert.equal(error.message, "FOREIGN KEY constraint failed: injected migration rebuild failure");
+            assert.equal(error.code, adapter.engine === "postgres" ? "23503" : undefined);
+            return true;
+          },
+        );
+      } finally {
+        restoreWithTransaction();
+      }
+
+      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE, "unique-infrastructure-kept");
+      assert.equal(stored.externalId, "external-a");
+    },
+  },
+  {
+    name: "migrateAppSchema preserves an unrelated unique engine error during the unique-constraint rebuild",
+    async run(adapter) {
+      await adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE);
+      await adapter.insertAppRow(UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE, {
+        id: "unrelated-unique-kept",
+        createdAt: NOW,
+        updatedAt: NOW,
+        teamId: "team-a",
+        slug: "home",
+        externalId: "external-a",
+      });
+
+      const injected = new Error("UNIQUE constraint failed: injected unrelated migration rebuild failure");
+      if (adapter.engine === "postgres") {
+        injected.code = "23505";
+      } else {
+        injected.errcode = 2067;
+      }
+      const restoreWithTransaction = injectMigrationTemporaryTableError(adapter, UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name, injected);
+      try {
+        await assert.rejects(
+          adapter.migrateAppSchema(MIGRATED_SCHEMA_WITH_UNRELATED_UNIQUE_EXTERNAL_ID),
+          (error) => {
+            assert.equal(error.message, "UNIQUE constraint failed: injected unrelated migration rebuild failure");
+            assert.equal(error.code, adapter.engine === "postgres" ? "23505" : undefined);
+            return true;
+          },
+        );
+      } finally {
+        restoreWithTransaction();
+      }
+
+      const stored = await adapter.selectAppRowById(UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE, "unrelated-unique-kept");
+      assert.equal(stored.externalId, "external-a");
     },
   },
   {
@@ -1018,9 +1499,27 @@ export const CONFORMANCE_SURFACE = {
     STANDALONE_TABLE.name,
     STANDALONE_ALIAS_TABLE_NAME,
     COLLIDING_NAMES_TABLE.name,
+    UNIQUE_TABLE.name,
+    UNIQUE_MUTABILITY_TABLE.name,
+    UNIQUE_MIGRATION_TABLE.name,
+    UNIQUE_DUPLICATE_MIGRATION_TABLE.name,
+    UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name,
+    UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name,
+    MIGRATION_NAME_COLLISION_TABLE.name,
+    HOSTILE_MIGRATION_NAME_TABLE.name,
+    `${HOSTILE_MIGRATION_NAME_TABLE.name}_1`,
+    `__sporades_migrating_${MIGRATION_NAME_COLLISION_TABLE.name}`,
+    MIGRATION_NAME_COLLISION_ROLLBACK_TABLE.name,
+    HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name,
+    `${HOSTILE_MIGRATION_ROLLBACK_NAME_TABLE.name}_1`,
+    `__sporades_migrating_${MIGRATION_NAME_COLLISION_ROLLBACK_TABLE.name}`,
     `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_DUPLICATE_MIGRATION_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_INFRASTRUCTURE_TABLE.name}`,
+    `__sporades_migrating_${UNIQUE_MIGRATION_UNRELATED_UNIQUE_TABLE.name}`,
   ],
   prepareStorage: prepareAppTableStorage,
   cases: APP_TABLE_CONFORMANCE_CASES,

@@ -98,7 +98,7 @@ effective timezone.
 30. As a Capsule author, I want Schedule evaluation to use the timezone database shipped with the runtime, so that explicit and server-default timezone behavior is defined by the executing environment.
 31. As a Capsule author, I want removing a declaration to delete its runtime Schedule state, so that redeclaring the name later starts fresh.
 32. As an operator, I want historical Jobs from a removed schedule to remain inspectable, so that changing configuration does not erase operational history.
-33. As a Capsule author, I want changing a schedule expression, timezone, payload, or retry policy to affect future occurrences only, so that deployed definition changes do not rewrite completed history.
+33. As a Capsule author, I want changing a schedule expression, timezone, static payload, optional factory `payloadVersion`, or retry policy to affect future occurrences only, so that deployed definition changes do not rewrite completed history.
 34. As a Capsule author, I want changing a definition not to backfill occurrences under the old definition, so that deployments do not surprise me with stale work.
 35. As a Capsule author, I want renaming a schedule to create a new schedule identity, so that identity changes are explicit rather than guessed.
 36. As an operator, I want malformed persisted schedule state to fail closed with a bounded structured error, so that corruption does not cause a duplicate storm.
@@ -118,7 +118,7 @@ effective timezone.
 50. As a Capsule author, I want retries to remain attempts of the same occurrence's Job, so that a retry is not confused with a new scheduled occurrence.
 51. As a Capsule author, I want the scheduler to pass exactly the payload declared by the schedule, so that ordinary Job handlers receive no hidden scheduling-specific input.
 52. As a Capsule author, I want to declare schedules in a named map alongside my named Jobs, so that schedule identity and handler references are explicit.
-53. As a Capsule author, I want a schedule payload to be either a JSON-safe value or a payload factory evaluated for each occurrence, so that recurring Jobs can receive occurrence-specific ordinary input.
+53. As a Capsule author, I want a schedule payload to be either a JSON-safe value or a payload factory evaluated for each occurrence with an optional stable `payloadVersion`, so that recurring Jobs can receive occurrence-specific ordinary input, existing v0.8.5 factories remain valid, and versioned captured configuration changes create a new generation.
 54. As a Capsule author, I want to declare a Schedule disabled, so that I can retain and inspect its definition without allowing it to run.
 55. As a Capsule author, I want removing a Schedule declaration to forget its runtime Schedule state, so that redeclaring the same name later starts fresh rather than remapping historical state.
 
@@ -153,6 +153,11 @@ effective timezone.
   evaluated when an occurrence is being scheduled. The factory produces the
   ordinary JSON payload passed to Job Queue enqueue; it does not change the
   `job()` handler contract.
+- A payload factory may declare a stable non-empty `payloadVersion` of at most
+  128 characters and should change it whenever factory code or captured
+  configuration changes. Omission preserves the v0.8.5 source-text fingerprint
+  for backward compatibility, though source text cannot reveal closure state.
+  Static payloads are fingerprinted directly and do not accept `payloadVersion`.
 - `payload` defaults to JSON `null` when omitted. Authors use an explicit value
   or payload factory only when the Job needs input.
 - A payload factory receives immutable occurrence metadata plus a scheduling
@@ -181,7 +186,8 @@ effective timezone.
 - Different Schedules may evaluate payload factories concurrently under a
   fixed Capsule-wide limit of four. A single Schedule never evaluates two of
   its occurrences concurrently. V1 does not make this concurrency limit
-  configurable.
+  configurable. Shutdown aborts factories already evaluating and removes queued
+  factories before they acquire a slot, so none starts after scheduling stops.
 - When multiple Schedules are due at the same UTC instant, Sporades begins
   their occurrence and payload evaluation in declaration order, subject to the
   concurrency limit. Payload completion and Job execution order are not
@@ -246,7 +252,10 @@ effective timezone.
   Handlers must still tolerate duplicate execution attempts.
 - Scheduler evaluation is single-writer per claimed schedule evaluation, with
   conditional persistent claims protecting against overlapping workers or
-  runtime starts. Expired claims are recoverable.
+  runtime starts. Expired claims are recoverable. A fresh incarnation token on
+  the enabled durable Schedule row is authority during claim and recovery; a stale runtime leaves
+  replacement-owned pending occurrences untouched and disables its local
+  generation.
 - Schedule state records the stable name, normalized expression, timezone,
   missed-run policy, definition fingerprint, enabled state, next occurrence,
   latest occurrence summary, claim state, and bounded safe error state. The
@@ -254,6 +263,39 @@ effective timezone.
   `payload-failed`), the Job ID when enqueued, or a safe error code when payload
   creation failed. Payload contents are not included in inspection output.
 - Runtime startup reconciles declared schedules with persisted definitions.
+  The complete declaration set and fresh incarnation tokens publish atomically
+  only after candidate recovery and timer capability can be validated; actual
+  timers arm after commit, including a recovery wake planned when a retained-state
+  compare-and-set loses, so callbacks cannot inherit completed transaction
+  ownership and failed candidate initialization leaves the previous scheduler
+  functional. Every retained or freshly calculated next-occurrence cursor must
+  be a canonical four-digit UTC timestamp; malformed retained state or a
+  startup calculation outside that domain fails startup with bounded
+  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms. An
+  enabled active Schedule has a cursor, an enabled exhausted Schedule has none,
+  and a disabled Schedule is non-exhausted with no cursor. Startup and
+  inspection reject every other retained combination before writes or timers.
+  If an
+  already-due occurrence is the final representable instant, its success,
+  payload failure, or enqueue failure and latest summary commit atomically;
+  future scheduling is durably exhausted, inspection returns `enabled: true`
+  with `nextOccurrence: null`, and restart arms no replacement timer. When that
+  final cursor is already due at restart, `latest` recovers it before atomic
+  exhaustion while `skip` exhausts without enqueueing. A late
+  final occurrence and its single-attempt Job clamp their claims to the
+  remaining canonical domain; a retry policy that requires a later attempt
+  commits the bounded enqueue-failure outcome.
+  Inspection applies the same domain to the next cursor and latest-occurrence
+  timestamp. Reconciliation,
+  claim, and finalization lock the Schedule row before occurrence rows.
+  Same-definition restart transfers
+  compatible pending occurrences after locking the durable Schedule generation.
+  A one-time migration records durable legacy-adoption lineage for genuine
+  v0.8.5 rows. Only uninterrupted same-definition enabled lineage remains open;
+  change, disablement, removal, or restoration closes it irreversibly. An open
+  lineage runs a tracked once-per-second indexed discovery scan of at most 100
+  wholly legacy pending rows, including rows written after startup by an overlapping
+  v0.8.5 runtime. Shutdown cancels the scan and awaits an active batch.
   New declarations begin from startup time and do not backfill time before they
   existed. `enabled` defaults to `true`; a declaration may set `enabled: false`,
   in which case it remains persisted and inspectable but creates no
@@ -262,10 +304,14 @@ effective timezone.
   timezone, Job handler reference, payload declaration, missed-run policy, and
   retry options. Disabling suppresses scheduling only, so changing `enabled` to
   `true` requires no additional definition fields or deferred validation.
-- Schedule evaluation begins only after the Capsule `init()` hook completes
-  successfully and stops accepting new occurrences before `shutdown()` begins.
-  A failed initialization creates no Scheduled occurrences. Jobs already
-  enqueued remain governed by ordinary Job Queue shutdown and recovery behavior.
+- Job dispatch, Job recovery wakes, and Schedule evaluation remain stopped from
+  runtime construction until the Capsule `init()` hook, retained Schedule
+  validation, declaration reconciliation, and timer capability gates all
+  complete successfully. A Job durably enqueued by `init()` cannot dispatch
+  before that boundary. A failed initialization creates no Scheduled
+  occurrences, unwinds and awaits all Job and Schedule runtime work, and leaves
+  retained Jobs for recovery by a later successful open. Scheduling stops
+  accepting new occurrences before `shutdown()` begins.
 - Re-enabling a declared Schedule resumes from the deployment that enabled it
   and does not backfill its disabled interval. Removing the declaration deletes
   its runtime Schedule state while existing Jobs retain their historical

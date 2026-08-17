@@ -28,6 +28,7 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
     },
   });
   try {
+    await database.init();
     const queued = await runMutation(database, auth("user-a"), "enqueue", []);
     assert.equal(queued.ok, true);
     assert.deepEqual(queued.data.actor, { mode: "privileged-server-role" });
@@ -52,5 +53,5 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
 test("privileged Job cancellation propagates its signal", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-privileged-cancel-")); let started; let release;
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{wait:job(async(ctx)=>{started(); await new Promise(r=>release=r); assert.equal(ctx.signal.aborted,true); const e=new Error("abort");e.name="AbortError";throw e;})},mutations:{enqueue:mutation((ctx)=>ctx.privileged.run({operation:"jobs.enqueue",targetResourceKind:"job-queue"},p=>p.jobs.enqueue("wait",{}))),cancel:mutation((ctx,id)=>ctx.privileged.run({operation:"jobs.cancel",targetResourceKind:"job-queue"},p=>p.jobs.cancel(id))),get:mutation((ctx,id)=>ctx.privileged.run({operation:"jobs.get",targetResourceKind:"job-queue"},p=>p.jobs.get(id)))}});
- try {const began=new Promise(r=>started=r); const q=await runMutation(db,auth("u"),"enqueue",[]); await began; await runMutation(db,auth("u"),"cancel",[q.data.id]); release(); await new Promise(r=>setTimeout(r,15)); assert.equal((await runMutation(db,auth("u"),"get",[q.data.id])).data.status,"cancelled");} finally {db.close();await rm(dir,{recursive:true,force:true});}
+ try {await db.init();const began=new Promise(r=>started=r); const q=await runMutation(db,auth("u"),"enqueue",[]); await began; await runMutation(db,auth("u"),"cancel",[q.data.id]); release(); await new Promise(r=>setTimeout(r,15)); assert.equal((await runMutation(db,auth("u"),"get",[q.data.id])).data.status,"cancelled");} finally {db.close();await rm(dir,{recursive:true,force:true});}
 });

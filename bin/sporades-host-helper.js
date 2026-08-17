@@ -165,6 +165,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 
 // src/runtime-log-policy.ts
 function isSensitiveLogKey(key) {
@@ -262,6 +264,7 @@ var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
+var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 
 // src/server-runtime-source.ts
 function logPayloadMaxBytes(config = {}) {
@@ -271,6 +274,7 @@ function logPayloadMaxBytes(config = {}) {
 function logRedactedValue() {
   return "[REDACTED]";
 }
+var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};

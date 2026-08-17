@@ -27,7 +27,7 @@
     }
   },
   "scripts": {
-    "build": "node ./scripts/write-cli-version.mjs && tsc --project tsconfig.json && tsc --project tsconfig.runtime.json && node ./scripts/build-bin.mjs",
+    "build": "node ./scripts/write-cli-version.mjs && tsc --project tsconfig.json && tsc --project tsconfig.runtime.json && node ./scripts/build-bin.mjs && node ./scripts/write-generated-source-manifest.mjs",
     "docs:build": "node ./scripts/build-docs.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:preview": "vitepress preview docs",

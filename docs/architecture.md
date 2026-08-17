@@ -170,6 +170,32 @@ refresh what is served to the browser. Failed rebuilds keep the last successful
 Bundle active, which is critical for agent loops: the app stays inspectable
 while the agent fixes the error.
 
+An orderly restart or runtime shutdown stops scheduling new Job work, clears
+immediate, delayed, and retry worker timers, aborts active Job handlers, and
+awaits scheduled worker settlement before the Capsule shutdown hook and before
+the Database adapter, database connection, mail transport, and file storage
+close. Durable queued and delayed Job state remains in the database and
+recovers on runtime restart. An active
+worker settles its current attempt without claiming another queued Job, and a
+worker settlement failure does not skip resource closure. The same close
+ordering is used by Dev lifecycle transitions and the bundled process signal
+path. Signal shutdown first stops accepting HTTP connections and drains in-flight
+requests, then settles runtime work and closes resources, so neither a request
+nor a worker can continue against an already closed adapter. A Job committed
+during an active worker scan records a required rerun before the worker clears
+its running state, so the commit cannot be stranded until another enqueue or
+process restart.
+Capsule shutdown hook failure still proceeds to Database adapter closure.
+Candidate initialization is the Dev replacement ownership boundary. If teardown
+of the prior runtime then reports a failure after closing its resources, Dev
+promotes the initialized candidate and records a bounded warning; it never keeps
+serving through the closed prior runtime or closes its only viable replacement.
+The Job activation timer is preflighted before prior-runtime teardown without
+dispatching a handler. If activation scheduling degrades after teardown, Dev
+still promotes the request-capable candidate and records a bounded
+`dev.runtime.job_activation_degraded` warning instead of returning control to the
+closed prior runtime.
+
 ### Local Container Session
 
 `sporades deploy` runs the bundled Capsule in Docker using the Sporades Base

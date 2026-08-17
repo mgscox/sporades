@@ -9,8 +9,8 @@
 // it names and bounding its payload with `boundedJobJson`, and `resolveSchedulePayload` turns an
 // occurrence into a Job payload. Splitting them would put that shared surface on a module boundary.
 //
-// **What moved and what did not.** The domain is 51 declarations by inspection — 50 functions and
-// `RESERVED_JOB_NAME_PREFIX`. Thirty-four are here; seventeen stayed behind, and the reference
+// **What moved and what did not.** The domain is 52 declarations by inspection — 51 functions and
+// `RESERVED_JOB_NAME_PREFIX`. Thirty-five are here; seventeen stayed behind, and the reference
 // graph says exactly why. Closing the domain leaves three things outside it:
 //
 //   - `createMutationContext`, which is the composition point where every domain's API is wired
@@ -34,7 +34,7 @@
 // **`enqueueRuntimeJob` is among them, so this batch does not unblock batch 3's
 // `sendEmailPasswordResetLink`** — auth's blocker moved one link down the chain rather than away.
 //
-// **What is exported and what is not.** Twenty-nine of the thirty-four are exported and five are
+// **What is exported and what is not.** Thirty of the thirty-five are exported and five are
 // private. The exports are not a designed interface — they are the names something outside this
 // file still resolves: what the seventeen stranded functions call, what `openDevDatabase` wires at
 // startup, what `server-bundle-entry.ts` reaches for the two `--sporades-action` inspections, and
@@ -94,8 +94,8 @@ export function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
     for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
         if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name))
             throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-        if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key)))
-            throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
+        if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key)))
+            throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
         if (schedules.some((candidate) => candidate.name === name))
             throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
         if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job))
@@ -103,8 +103,29 @@ export function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
         const expression = parseScheduleExpression(definition.expression);
         const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
         const payload = definition.payload === undefined ? null : definition.payload;
-        if (typeof payload !== "function")
+        let payloadFingerprint;
+        let payloadVersion;
+        if (typeof payload === "function") {
+            if (definition.payloadVersion !== undefined
+                && (typeof definition.payloadVersion !== "string"
+                    || definition.payloadVersion.length < 1
+                    || definition.payloadVersion.length > 128
+                    || definition.payloadVersion.trim() !== definition.payloadVersion)) {
+                throw commandError(`Invalid Schedule payloadVersion: ${name}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+            }
+            // v0.8.5 identified factories by source text. Keep that exact serialized
+            // shape for existing declarations; payloadVersion is the explicit,
+            // closure-safe identity available to new and upgraded declarations.
+            payloadFingerprint = definition.payloadVersion === undefined ? String(payload) : null;
+            payloadVersion = definition.payloadVersion;
+        }
+        else {
+            if (definition.payloadVersion !== undefined) {
+                throw commandError(`Invalid Schedule payloadVersion: ${name}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
+            }
             boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+            payloadFingerprint = payload;
+        }
         const retry = normalizeJobRetry(definition.retry);
         const missedRun = definition.missedRun ?? "skip";
         if (missedRun !== "skip" && missedRun !== "latest")
@@ -113,8 +134,8 @@ export function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
             throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
         const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
         const enabled = definition.enabled ?? true;
-        const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
-        schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
+        const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...(payloadVersion === undefined ? {} : { payloadVersion }) });
+        schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, payloadVersion: definition.payloadVersion, retry, missedRun, enabled, fingerprint });
     }
     return schedules;
 }
@@ -199,48 +220,179 @@ export function nextScheduleOccurrence(fields, after, timezone) {
         const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
         const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
         const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-        if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month))
-            return new Date(candidate);
+        if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
+            const occurrence = new Date(candidate);
+            if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
+                throw commandError("Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before restarting the Capsule.", "SCHEDULE_STATE_INVALID");
+            }
+            return occurrence;
+        }
     }
     throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
-export async function ensureScheduleStorage(sqlite) {
+export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     const sql = sqlite.dialect.sql;
-    await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, " +
+    await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, " +
         "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
-        "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
+        "[enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
         "[latestJobId] TEXT, [latestErrorCode] TEXT)"));
+    await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, " +
+        "[definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"));
     await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
-        "[scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
+        "[definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
         "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"));
+    await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
+    await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
+    await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
+    await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
+    await sqlite.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING")).run();
+    const migrateLegacyScheduleIdentity = async (adapter) => {
+        const migrationSql = adapter.dialect.sql;
+        await adapter.prepare(migrationSql("UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'")).run();
+        const lineageMigration = await adapter.prepare(migrationSql("SELECT [value] FROM [sporades] WHERE [key]='schedule-legacy-adoption-lineage-v1'")).get();
+        const initializeLegacyLineage = !lineageMigration;
+        const schedules = await adapter.prepare(migrationSql("SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC")).all();
+        const scheduleByName = new Map();
+        for (const row of schedules) {
+            // Migration/adoption follows the same Schedule-then-occurrence lock order
+            // as reconciliation and occurrence finalization.
+            await adapter.prepare(migrationSql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?")).run(row.name);
+            let generationToken = row.generationToken;
+            const wasLegacySchedule = typeof generationToken !== "string" || generationToken.length === 0;
+            if (typeof generationToken !== "string" || generationToken.length === 0) {
+                const proposed = nodeCryptoModule.randomUUID();
+                await adapter.prepare(migrationSql("UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')")).run(proposed, row.name);
+                const current = await adapter.prepare(migrationSql("SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?")).get(row.name);
+                generationToken = current?.generationToken ?? proposed;
+                row.definitionFingerprint = current?.definitionFingerprint ?? row.definitionFingerprint;
+            }
+            if (initializeLegacyLineage) {
+                await adapter.prepare(migrationSql("INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, ?) ON CONFLICT ([scheduleName]) DO NOTHING")).run(row.name, row.definitionFingerprint, wasLegacySchedule ? 1 : 0);
+            }
+            const lineage = await adapter.prepare(migrationSql("SELECT [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?")).get(row.name);
+            scheduleByName.set(String(row.name), {
+                definitionFingerprint: row.definitionFingerprint,
+                generationToken,
+                legacyAdoptionOpen: Number(lineage?.adoptionOpen) === 1 && lineage?.definitionFingerprint === row.definitionFingerprint,
+            });
+        }
+        const pending = await adapter.prepare(migrationSql("SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC")).all();
+        await scheduleStorageFault?.("after-legacy-pending-scan", { adapter });
+        for (const row of pending) {
+            const schedule = scheduleByName.get(String(row.scheduleName));
+            if (!schedule)
+                continue;
+            if (row.definitionFingerprint !== null && row.definitionFingerprint !== undefined
+                && row.definitionFingerprint !== schedule.definitionFingerprint)
+                continue;
+            if ((row.definitionFingerprint === null || row.definitionFingerprint === undefined)
+                && !schedule.legacyAdoptionOpen)
+                continue;
+            await adapter.prepare(migrationSql("UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')")).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
+        }
+        if (initializeLegacyLineage) {
+            await adapter.prepare(migrationSql("INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-legacy-adoption-lineage-v1', 'complete') ON CONFLICT ([key]) DO NOTHING")).run();
+        }
+    };
+    if (typeof sqlite.withTransaction === "function") {
+        for (let attempt = 0;; attempt += 1) {
+            try {
+                await sqlite.withTransaction(migrateLegacyScheduleIdentity);
+                break;
+            }
+            catch (error) {
+                if (sqlite.engine !== "sqlite" || attempt >= 100 || String(error?.message ?? "") !== "database is locked")
+                    throw error;
+                await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1)));
+            }
+        }
+    }
+    else
+        await migrateLegacyScheduleIdentity(sqlite);
     await sqlite.exec(sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
         "ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"));
+    await sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] " +
+        "ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"));
 }
-export async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
+export async function finishFailedScheduledOccurrence(database, definition, occurrence, error, claimToken) {
     const scheduledFor = occurrence.toISOString();
     const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
     const completedAt = database.clock.now().toISOString();
     const code = "SCHEDULE_ENQUEUE_FAILED";
     const sql = database.adapter.dialect.sql;
-    await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending'")).run(code, completedAt, id);
-    const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
-    definition.nextOccurrence = next;
-    await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1")).run(next, scheduledFor, code, definition.name);
+    const generation = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
+    if (Number(generation.changes) !== 1) {
+        await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
+        return { finished: false, nextOccurrence: null, superseded: true };
+    }
+    const terminal = await database.adapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code, completedAt, id, claimToken, definition.fingerprint, definition.generationToken);
+    if (Number(terminal.changes) !== 1)
+        return { finished: false, nextOccurrence: null };
+    const successor = nextScheduleCursor(definition, occurrence);
+    const summary = await database.adapter.prepare(sql("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code, definition.name, definition.fingerprint, definition.generationToken);
+    if (Number(summary.changes) !== 1)
+        throw new Error("Schedule definition changed during occurrence failure finalization.");
+    return { finished: true, ...successor };
+}
+export function nextScheduleCursor(definition, occurrence) {
+    try {
+        return {
+            nextOccurrence: nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString(),
+            exhausted: false,
+        };
+    }
+    catch (error) {
+        if (error?.code !== "SCHEDULE_STATE_INVALID")
+            throw error;
+        return { nextOccurrence: null, exhausted: true };
+    }
 }
 export function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
     return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
 }
-async function acquireSchedulePayloadFactorySlot(database) {
-    if (database.schedulePayloadFactoryActive >= 4)
-        await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
-    database.schedulePayloadFactoryActive += 1;
+function schedulePayloadFactoryAbortError() {
+    const error = new Error("Schedule payload factory aborted.");
+    error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+    return error;
+}
+async function acquireSchedulePayloadFactorySlot(database, signal) {
+    if (signal.aborted || database.__scheduleStopped)
+        throw schedulePayloadFactoryAbortError();
+    if (database.schedulePayloadFactoryActive < 4 && database.schedulePayloadFactoryWaiters.length === 0) {
+        database.schedulePayloadFactoryActive += 1;
+    }
+    else {
+        await new Promise((resolve, reject) => {
+            const waiter = {};
+            const remove = () => {
+                const index = database.schedulePayloadFactoryWaiters.indexOf(waiter);
+                if (index >= 0)
+                    database.schedulePayloadFactoryWaiters.splice(index, 1);
+            };
+            const onAbort = () => {
+                remove();
+                reject(schedulePayloadFactoryAbortError());
+            };
+            waiter.grant = () => {
+                signal.removeEventListener("abort", onAbort);
+                resolve();
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+            database.schedulePayloadFactoryWaiters.push(waiter);
+            if (signal.aborted || database.__scheduleStopped)
+                onAbort();
+        });
+    }
     let released = false;
     return () => {
         if (released)
             return;
         released = true;
-        database.schedulePayloadFactoryActive -= 1;
-        database.schedulePayloadFactoryWaiters.shift()?.();
+        const waiter = database.schedulePayloadFactoryWaiters.shift();
+        if (waiter)
+            waiter.grant();
+        else
+            database.schedulePayloadFactoryActive -= 1;
     };
 }
 async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
@@ -263,7 +415,7 @@ async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
 export async function resolveSchedulePayload(database, definition, scheduledFor, context) {
     if (typeof definition.payload !== "function")
         return { ok: true, value: definition.payload };
-    const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    let releaseLane;
     let releaseSlot;
     const controller = new AbortController();
     const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? new Set();
@@ -272,8 +424,14 @@ export async function resolveSchedulePayload(database, definition, scheduledFor,
     const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
     const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
     let timeout;
+    let removeAbortListener;
     try {
-        releaseSlot = await acquireSchedulePayloadFactorySlot(database);
+        releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+        if (controller.signal.aborted || database.__scheduleStopped)
+            throw schedulePayloadFactoryAbortError();
+        releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
+        if (controller.signal.aborted || database.__scheduleStopped)
+            throw schedulePayloadFactoryAbortError();
         const timeoutFailure = new Promise((_resolve, reject) => {
             timeout = database.clock.setTimer(() => {
                 controller.abort();
@@ -282,11 +440,14 @@ export async function resolveSchedulePayload(database, definition, scheduledFor,
                 reject(error);
             }, database.schedulePayloadFactoryTimeoutMs);
         });
-        const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
-            const error = new Error("Schedule payload factory aborted.");
-            error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-            reject(error);
-        }, { once: true }));
+        const aborted = new Promise((_resolve, reject) => {
+            const onAbort = () => reject(schedulePayloadFactoryAbortError());
+            removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+            if (controller.signal.aborted)
+                onAbort();
+            else
+                controller.signal.addEventListener("abort", onAbort, { once: true });
+        });
         const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
         database.clock.clearTimer(timeout);
         boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
@@ -301,11 +462,12 @@ export async function resolveSchedulePayload(database, definition, scheduledFor,
         return { ok: false };
     }
     finally {
+        removeAbortListener?.();
         controllers.delete(controller);
         if (controllers.size === 0)
             database.schedulePayloadFactoryControllers.delete(definition.name);
         releaseSlot?.();
-        releaseLane();
+        releaseLane?.();
     }
 }
 export function abortSchedulePayloadFactories(database) {
@@ -423,7 +585,7 @@ export async function ensureJobStorage(sqlite) {
     // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
     // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
     // "PRAGMA"` before the Job queue existed.
-    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
+    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
         await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
     await sqlite.exec(sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"));
 }
@@ -444,14 +606,16 @@ export async function scheduleSummary(sqlite, row) {
         throw invalid("missedRun");
     if (![0, 1, false, true].includes(row.enabled))
         throw invalid("enabled");
-    const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
-    if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence))
+    const exhausted = row.exhausted ?? 0;
+    if (![0, 1, false, true].includes(exhausted) || !scheduleCursorStateIsConsistent(row.enabled, exhausted, row.nextOccurrence))
+        throw invalid("exhausted");
+    if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence))
         throw invalid("nextOccurrence");
     const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
     let latestOccurrence = null;
     if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null))
         throw invalid("latestOccurrence");
-    if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor))
+    if (latestOutcome !== null && !isCanonicalJobTimestamp(row.latestScheduledFor))
         throw invalid("latestOccurrence.scheduledFor");
     if (latestOutcome === "enqueued") {
         if (typeof row.latestJobId !== "string" || !row.latestJobId)
@@ -478,6 +642,14 @@ export async function scheduleSummary(sqlite, row) {
         name: String(row.name), expression: String(row.expression), timezone: String(row.effectiveTimezone),
         missedRun: String(row.missedRunPolicy), enabled: Boolean(row.enabled), nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence), latestOccurrence,
     };
+}
+export function scheduleCursorStateIsConsistent(enabled, exhausted, nextOccurrence) {
+    if (![0, 1, false, true].includes(enabled) || ![0, 1, false, true].includes(exhausted))
+        return false;
+    const hasNextOccurrence = nextOccurrence !== null && nextOccurrence !== undefined;
+    return Boolean(enabled)
+        ? hasNextOccurrence !== Boolean(exhausted)
+        : !Boolean(exhausted) && !hasNextOccurrence;
 }
 export function assertJobScheduleProvenance(row, expected) {
     if (!expected)
@@ -591,18 +763,145 @@ export async function inspectRuntimeSchedules(adapter) {
         throw jobError("SCHEDULE_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Schedule inspection.", "Upgrade the Sporades runtime and retry inspection.");
     return await adapter.withReadOnlySnapshot(read);
 }
-export function normalizeJobRetry(value) { if (value === undefined)
-    return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0)
-    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
-export async function cancelJob(database, context, id) { const sql = database.adapter.dialect.sql; const row = context.__privilegedJobAccess ? await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id) : await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId); if (!row)
-    return null; const now = database.clock.now().toISOString(); if (["queued", "delayed"].includes(row.status)) {
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, status: "cancelled", completedAt: now }, true);
-} if (row.status === "running") {
-    database.__jobAbortControllers?.get(id)?.abort();
-    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=?")).run(now, id);
-    return jobState({ ...row, cancelRequestedAt: now }, true);
-} throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled."); }
+export const MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+export const MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
+export function normalizeJobAvailableAt(value) {
+    let milliseconds = Number.NaN;
+    try {
+        if (typeof value === "string") {
+            if (/^[+-]?\d+(?:\.\d+)?$/.test(value.trim()))
+                throw new TypeError("Unsupported Job availability value.");
+            milliseconds = new Date(value).getTime();
+        }
+        else {
+            milliseconds = Date.prototype.getTime.call(value);
+        }
+    }
+    catch { }
+    if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value in the supported four-digit UTC timestamp range.");
+    }
+    return new Date(milliseconds).toISOString();
+}
+export function isCanonicalJobTimestamp(value) {
+    if (typeof value !== "string")
+        return false;
+    try {
+        return normalizeJobAvailableAt(value) === value;
+    }
+    catch {
+        return false;
+    }
+}
+export function normalizeJobRetry(value) {
+    if (value === undefined)
+        return { maxAttempts: 1, delayMs: 0 };
+    let maxAttempts;
+    let delayMs;
+    let hasMaxAttempts = false;
+    let keys = [];
+    try {
+        if (!value || typeof value !== "object" || Array.isArray(value))
+            throw new TypeError("Invalid Job retry policy.");
+        keys = Reflect.ownKeys(value);
+        hasMaxAttempts = Object.prototype.hasOwnProperty.call(value, "maxAttempts");
+        maxAttempts = value.maxAttempts;
+        delayMs = Object.prototype.hasOwnProperty.call(value, "delayMs") ? value.delayMs : 0;
+    }
+    catch { }
+    if (!hasMaxAttempts || keys.some((key) => typeof key !== "string" || !["maxAttempts", "delayMs"].includes(key))
+        || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20
+        || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_JOB_TIMESTAMP_MS) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and retry.delayMs within the supported Job timestamp range.");
+    }
+    return { maxAttempts, delayMs };
+}
+export function parsePersistedJobRetry(value) {
+    try {
+        return normalizeJobRetry(value ? JSON.parse(value) : undefined);
+    }
+    catch {
+        return null;
+    }
+}
+export function jobTimestampAfter(instant, delayMs) {
+    const milliseconds = instant.getTime() + delayMs;
+    if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS)
+        return null;
+    return new Date(milliseconds).toISOString();
+}
+export function invalidJobRetryPolicyFailure() {
+    return { code: "JOB_RETRY_POLICY_INVALID", message: "The stored Job retry policy is invalid." };
+}
+export async function cancelJob(database, context, id) {
+    const sql = database.adapter.dialect.sql;
+    const read = () => context.__privilegedJobAccess
+        ? database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id)
+        : database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id, context.auth.userId);
+    // Cancellation is a state transition, not a stale projection update. Retry
+    // when another runtime wins between the authorized read and the guarded
+    // write so a queued cancellation cannot overwrite a newly running claim.
+    for (let transition = 0; transition < 8; transition += 1) {
+        const row = await read();
+        if (!row)
+            return null;
+        const now = database.clock.now().toISOString();
+        if (["queued", "delayed"].includes(row.status)) {
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, " +
+                "[leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?")).run(now, id, row.status);
+            if (Number(changed?.changes ?? 0) === 1)
+                return jobState({ ...row, status: "cancelled", completedAt: now, startedAt: null, leaseExpiresAt: null }, true);
+            continue;
+        }
+        if (row.status === "running") {
+            const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " +
+                (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL"))).run(now, id, ...(hasClaimToken ? [row.claimToken] : []));
+            if (Number(changed?.changes ?? 0) !== 1)
+                continue;
+            const runtimeDatabase = database.__rootDatabase ?? database;
+            if (database.__transactionActive) {
+                const pendingContext = context.__jobParentContext ?? context;
+                // The context holder belongs to the transaction and survives supported
+                // middleware replacement; the current context projection may not.
+                const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+                pendingOwner.__pendingJobCancellationAborts ??= new Map();
+                pendingOwner.__pendingJobCancellationAborts.set(id, { runtimeDatabase, claimToken: row.claimToken });
+            }
+            else {
+                abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
+            }
+            return jobState({ ...row, cancelRequestedAt: now }, true);
+        }
+        throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+    }
+    throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
+export function commitPendingJobCancellationAborts(context) {
+    if (!context)
+        return;
+    const pendingContext = context.__jobParentContext ?? context;
+    const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+    const pending = pendingOwner.__pendingJobCancellationAborts;
+    if (!(pending instanceof Map))
+        return;
+    delete pendingOwner.__pendingJobCancellationAborts;
+    for (const [id, claim] of pending)
+        abortRuntimeJobClaim(claim.runtimeDatabase, id, claim.claimToken);
+}
+export function dropPendingJobCancellationAborts(context) {
+    if (!context)
+        return;
+    const pendingContext = context.__jobParentContext ?? context;
+    const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+    delete pendingOwner.__pendingJobCancellationAborts;
+}
+function abortRuntimeJobClaim(runtimeDatabase, id, claimToken) {
+    const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id);
+    const controller = activeClaim?.controller ?? activeClaim;
+    if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken)
+        controller?.abort?.();
+}
 export function jobSummary(row) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 export function encodeJobCursor(row) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
 export function decodeJobCursor(value) {

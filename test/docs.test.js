@@ -109,6 +109,45 @@ test("the feature reference is split by lookup intent behind a compatible index"
   assert.match(operations, /Sporades Doctor/);
 });
 
+test("the idempotent insert example awaits both asynchronous database paths", async () => {
+  const [server, tableApi] = await Promise.all([
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/api/types/server.TableApi.html"),
+  ]);
+  assert.match(
+    server,
+    /const inserted = await ctx\.db\.subscriptions\.insertOrIgnore\(\{ teamId, plan: "pro" \}, "teamId"\);/,
+  );
+  assert.match(
+    server,
+    /return inserted \?\? await ctx\.db\.subscriptions\.where\("teamId", teamId\)\.get\(\);/,
+  );
+  assert.match(
+    tableApi,
+    /id="insertorignore-1"[\s\S]*?MaybePromise[\s\S]*?Row[\s\S]*?null/,
+  );
+});
+
+test("canonical database docs scope additive unique migration errors and rollback", async () => {
+  const [prd, serverReference, roadmap] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/ROADMAP.md"),
+  ]);
+
+  for (const document of [prd, serverReference]) {
+    assert.match(document, /add(?:ing|itive)[\s\S]*unique constraint/i);
+    assert.match(document, /newly\s+added\s+constraint[\s\S]*row copy/i);
+    assert.match(document, /foreign-key[\s\S]*unrelated\s+unique[\s\S]*(?:remain|retain)[\s\S]*(?:original|ordinary) error/i);
+    assert.match(document, /original table[\s\S]*rows[\s\S]*schema metadata[\s\S]*hash/i);
+    assert.match(document, /no temporary table[\s\S]*debris/i);
+    assert.match(document, /temporary table name[\s\S]*(?:collide|collision)[\s\S]*valid app table[\s\S]*(?:preserv|untouched)/i);
+  }
+  assert.match(roadmap, /Capsule table uniqueness \| implemented/);
+  assert.match(roadmap, /`insertOrIgnore`/);
+  assert.match(roadmap, /SQLite, libSQL, and PostgreSQL/);
+});
+
 test("README documentation links resolve from the npm package page", async () => {
   const readme = await readProjectFile("README.md");
   assert.doesNotMatch(readme, /\]\(docs\/[A-Za-z0-9_./-]+\.md(?:#[^)]+)?\)/);
@@ -411,8 +450,16 @@ test("published docs describe the complete Job scheduling contract", async () =>
   }
 
   assert.match(guide, /payload factor(?:y|ies)[\s\S]*may run more than once/i);
+  assert.match(guide, /payloadVersion[\s\S]*captured configuration/i);
+  assert.match(guide, /payloadVersion[\s\S]*(?:optional|v0\.8\.5)/i);
+  assert.match(guide, /durable incarnation[\s\S]*(?:generation )?authority/i);
+  assert.match(guide, /failed candidate[\s\S]*(?:live|previous|prior) scheduler/i);
+  assert.match(guide, /queued factories[\s\S]*never starts?/i);
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
+  assert.match(guide, /four-digit UTC timestamp/i);
+  assert.match(guide, /JOB_ACTOR_UNAVAILABLE[\s\S]*remaining retry attempts/i);
+  assert.match(guide, /shutdown hook[\s\S]*mail closure[\s\S]*both failures/i);
   assert.match(guide, /import \{ capsule, job, schedule \} from "sporades\/server"/);
   assert.match(guide, /sendDigest:\s*job\(/);
   assert.match(guide, /jobs:\s*\{[\s\S]*sendDigest[\s\S]*schedules:\s*\{/);
@@ -744,12 +791,14 @@ test("docs describe the implemented Privileged audit event contract", async () =
 });
 
 test("docs describe the implemented Privileged server role and Job Queue contracts", async () => {
-  const [roadmap, prd, userGuide, apiServer, apiPrivileged, apiJob, apiJobApi, apiClient] = await Promise.all([
+  const [roadmap, prd, userGuide, apiServer, apiPrivileged, apiPrivilegedTeams, apiPrivilegedLink, apiJob, apiJobApi, apiClient] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/api/modules/server.html"),
     readProjectFile("docs/api/types/server.PrivilegedApi.html"),
+    readProjectFile("docs/api/types/server.PrivilegedTeamsApi.html"),
+    readProjectFile("docs/api/types/server.PrivilegedTeamJoinLink.html"),
     readProjectFile("docs/api/functions/server.job.html"),
     readProjectFile("docs/api/types/server.JobApi.html"),
     readProjectFile("docs/api/modules/client.html"),
@@ -807,6 +856,16 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(apiServer, /PrivilegedContext/);
   assert.match(apiPrivileged, /ctx\.privileged\.run/);
   assert.match(apiPrivileged, /server-only/);
+  for (const inspection of ["countMembers", "listMembers", "listJoinLinks", "inspectJoinLink"]) {
+    assert.match(apiPrivilegedTeams, new RegExp(inspection));
+  }
+  assert.match(apiPrivilegedLink, /Target email is admin-only/);
+  assert.match(prd, /read-only exact-Team inspection surface/);
+  assert.match(prd, /`TEAM_NOT_FOUND`/);
+  assert.match(prd, /Join-link metadata without\s+the target email/);
+  assert.match(prd, /detached or aborted in-flight work fails closed/i);
+  assert.match(apiPrivilegedTeams, /In-flight inspection rejects/);
+  assert.match(prd, /Current-user\s+Team listing and email-bound Join-link validation remain unavailable/);
 
   for (const command of ["sporades jobs", "sporades deploy jobs", "sporades host jobs"]) {
     assert.match(userGuide, new RegExp(command));
@@ -841,6 +900,56 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(apiJobApi, /get/);
   assert.match(apiJobApi, /list/);
   assert.doesNotMatch(apiClient, /JobApi/);
+});
+
+test("canonical, feature, and reference Job docs describe transaction-bound enqueue lifecycle", async () => {
+  const [canonicalPrd, featurePrd, jobReference] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile(".scratch/job-queue/PRD.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+  ]);
+
+  for (const document of [canonicalPrd, featurePrd, jobReference]) {
+    assert.match(document, /`ctx\.jobs\.enqueue`[\s\S]*same (?:mutation,\s+App\s+message,\s+or\s+Custom\s+endpoint|handler) transaction/i);
+    assert.match(document, /handler\s+rollback[\s\S]*removes\s+the\s+Job/i);
+    assert.match(document, /worker dispatch[\s\S]*only\s+after\s+(?:the\s+)?transaction\s+commits/i);
+    assert.match(document, /dispatch\s+registration\s+failure[\s\S]*does\s+not\s+(?:reverse|undo)[\s\S]*committed\s+handler/i);
+    assert.match(document, /dispatch\s+registration\s+failure[\s\S]*does\s+not[\s\S]*misreport[\s\S]*committed\s+handler/i);
+    assert.match(document, /later\s+(?:worker\s+)?wake[\s\S]*runtime\s+restart/i);
+    assert.doesNotMatch(document, /enqueue is a durable runtime side effect outside the[\s\S]*Transaction boundary/i);
+    assert.doesNotMatch(document, /queue writes are not atomic with Capsule app mutation writes/i);
+    assert.doesNotMatch(document, /prove enqueue does not claim atomicity with Capsule mutation writes/i);
+    assert.doesNotMatch(document, /do not promise[\s\S]*transactional enqueue with Capsule app mutations/i);
+  }
+});
+
+test("canonical Job and architecture docs describe settled runtime shutdown", async () => {
+  const [canonicalPrd, jobReference, architecture] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/jobs-and-schedules.md"),
+    readProjectFile("docs/architecture.md"),
+  ]);
+
+  for (const document of [canonicalPrd, jobReference, architecture]) {
+    assert.match(document, /stop(?:s)? scheduling new Job work/i);
+    assert.match(document, /clear(?:s)?[\s\S]*(?:immediate|delayed|retry)[\s\S]*timers/i);
+    assert.match(document, /abort(?:s)?[\s\S]*(?:active|running) Job handlers/i);
+    assert.match(document, /await(?:s)?[\s\S]*(?:worker|Job work)[\s\S]*before[\s\S]*(?:Database adapter|database connection)/i);
+    assert.match(document, /worker settlement[\s\S]*before[\s\S]*Capsule shutdown hook/i);
+    assert.match(document, /worker settlement[\s\S]*before[\s\S]*mail/i);
+    assert.match(document, /active[\s\S]*worker[\s\S]*current attempt[\s\S]*without[\s\S]*claiming another/i);
+    assert.match(document, /worker settlement[\s\S]*failure[\s\S]*does not skip[\s\S]*resource closure/i);
+    assert.match(document, /Capsule shutdown hook[\s\S]*failure[\s\S]*(?:Database adapter|database connection)[\s\S]*(?:close|closure)/i);
+    assert.match(document, /Signal shutdown[\s\S]*stop(?:s)? accepting[\s\S]*drain(?:s)?[\s\S]*HTTP/i);
+    assert.match(document, /commit[\s\S]*(?:empty queue (?:read|scan)|worker scan)[\s\S]*(?:another scan|required rerun)/i);
+    assert.match(document, /Candidate\s+initialization[\s\S]*Dev replacement ownership boundary/i);
+    assert.match(document, /teardown[\s\S]*(?:prior|previous) runtime[\s\S]*(?:failure|reports a failure)/i);
+    assert.match(document, /promote(?:s)?[\s\S]*(?:viable|initialized)[\s\S]*candidate/i);
+    assert.match(document, /closed[\s\S]*(?:(?:prior|previous)[\s\S]*)?runtime/i);
+    assert.match(document, /Job activation timer[\s\S]*preflight(?:ed|s)?[\s\S]*before[\s\S]*(?:prior|outgoing)[\s\S]*teardown/i);
+    assert.match(document, /activation\s+scheduling[\s\S]*(?:degrades|fails)[\s\S]*promote(?:s|d)?[\s\S]*candidate/i);
+    assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
+  }
 });
 
 test("roadmap records delivered explicit-Team ACL decisions without claiming automatic data partitioning", async () => {

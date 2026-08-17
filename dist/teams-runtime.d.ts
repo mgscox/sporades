@@ -1,4 +1,16 @@
 type LooseRecord = Record<string, any>;
+type TeamJoinLinkInspection = {
+    team: null;
+    expiresAt: null;
+    usable: boolean;
+} | {
+    team: {
+        id: string;
+        name: string;
+    };
+    expiresAt: string;
+    usable: boolean;
+};
 export declare const TEAM_MEMBER_LIST_MAX = 100;
 export declare const TEAM_MEMBER_LIST_DEFAULT = 100;
 export declare const TEAM_MEMBERSHIP_MAX = 25;
@@ -21,6 +33,7 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         team: any;
     }>;
     listMembers(teamId: any, options?: LooseRecord): Promise<any>;
+    countMembers(teamId: any): Promise<any>;
     updateApplicationRoles(teamId: any, userId: any, changes: any): Promise<{
         updated: boolean;
     }>;
@@ -34,18 +47,7 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
     revokeJoinLink(teamId: any, joinLinkId: any): Promise<{
         revoked: boolean;
     }>;
-    inspectJoinLink(code: any): Promise<{
-        team: null;
-        expiresAt: null;
-        usable: boolean;
-    } | {
-        team: {
-            id: string;
-            name: string;
-        };
-        expiresAt: string;
-        usable: boolean;
-    }>;
+    inspectJoinLink(code: any): Promise<TeamJoinLinkInspection>;
     validateJoinLink(code: any): Promise<{
         valid: any;
     }>;
@@ -68,6 +70,18 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
         deleted: boolean;
     }>;
 };
+/**
+ * The Privileged server role is userless: it can inspect exact Team state, but
+ * never acquires current-user membership or administrative authority. Keep
+ * this a separate projection rather than reusing the current-user API, whose
+ * methods mix inspections with user-scoped and mutating operations.
+ */
+export declare function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    countMembers(teamId: any): Promise<any>;
+    listMembers(teamId: any, options?: LooseRecord): Promise<any>;
+    listJoinLinks(teamId: any): Promise<any>;
+    inspectJoinLink(code: any): Promise<TeamJoinLinkInspection>;
+}>;
 export declare function resolveTeamJoinLinkConfig(config: LooseRecord): {
     path: string;
     origin: string;
@@ -89,18 +103,7 @@ export declare function listTeamJoinLinks(database: LooseRecord, auth: LooseReco
 export declare function revokeTeamJoinLink(database: LooseRecord, auth: LooseRecord, teamId: any, joinLinkId: any, eventContext?: LooseRecord): Promise<{
     revoked: boolean;
 }>;
-export declare function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<{
-    team: null;
-    expiresAt: null;
-    usable: boolean;
-} | {
-    team: {
-        id: string;
-        name: string;
-    };
-    expiresAt: string;
-    usable: boolean;
-}>;
+export declare function inspectTeamJoinLink(database: LooseRecord, code: any): Promise<TeamJoinLinkInspection>;
 export declare function validateTeamJoinLink(database: LooseRecord, auth: LooseRecord, code: any): Promise<{
     valid: any;
 }>;
@@ -141,6 +144,8 @@ export declare function deleteCurrentUserTeam(database: LooseRecord, auth: Loose
     deleted: boolean;
 }>;
 export declare function listTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any, options?: LooseRecord): Promise<any>;
+/** Returns only the exact accepted-membership total for the caller's current Team. */
+export declare function countTeamMembers(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
 export declare function bootstrapInitialTeamForLinkedUser(tx: LooseRecord, userId: any): Promise<string>;
 export declare function flushTeamSecurityEvents(database: LooseRecord, context: LooseRecord | undefined, options?: LooseRecord): void;
 export {};
