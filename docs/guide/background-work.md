@@ -26,13 +26,20 @@ and cannot persist a Job or overwrite a replacement generation's cursor or
 winning outcome. A runtime that loses this generation check stops re-arming its
 stale local Schedule. Declaration reconciliation and ownership publication are
 one transaction and occur only after a candidate can validate retained recovery
-state and arm its timers, so a failed
+state and preflight timer capability, so a failed
 candidate leaves the previous scheduler functional. Shutdown removes queued factories before they can acquire
 an evaluation slot. Changing, disabling, or removing a Schedule terminally
 supersedes its own pending occurrences; later reuse starts with the next future
 occurrence instead of resurrecting old work. During upgrade, legacy pending
 occurrences inherit their matching pre-reconciliation durable identity before a
-compatible runtime publication transfers them; removed or disabled work does not.
+compatible runtime publication transfers them. Actual occurrence and recovery
+timers are armed only after that publication transaction commits. Sporades keeps
+a durable legacy-adoption lineage: only an uninterrupted same-definition v0.8.5
+upgrade remains open, while change, disablement, removal, or later restoration
+closes adoption permanently. While a lineage is open, a tracked once-per-second
+indexed scan checks at most 100 wholly legacy rows written after startup;
+shutdown cancels the scan. Reconciliation, claim, and finalization lock the Schedule row
+before its occurrence rows so PostgreSQL races cannot invert the lock order.
 
 One-time `availableAt` values and retry instants stay within canonical
 four-digit UTC timestamps. Supply availability as a timestamp string or `Date`;

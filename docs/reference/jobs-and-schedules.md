@@ -218,16 +218,23 @@ leaves replacement-owned pending work untouched, cannot enqueue or overwrite
 the replacement generation's cursor or durable outcome, and stops re-arming its
 local copy of the Schedule. The complete declaration set and its new incarnations
 publish in one Database transaction only after candidate recovery validation and
-timer setup succeed. A
+timer capability preflight succeed. Live occurrence and recovery timers are
+armed only after that transaction commits, so their callbacks do not retain its
+transaction ownership. A
 failed candidate rolls back that publication and leaves the live scheduler
 authoritative. Compatible pending work is transferred during a same-definition
 restart only after reconciliation locks and rotates the durable Schedule row, so
 an overlapping outgoing claim cannot insert between the transfer scan and the
-new incarnation. Legacy rows are first backfilled from the pre-reconciliation
-durable Schedule. If an overlapping v0.8.5 runtime writes a wholly legacy pending
-row after that finite scan, the matching enabled definition adopts it during
-reconciliation or claim recovery. Changed, disabled, removed, or later-restored
-work is never transferred or adopted.
+new incarnation. Reconciliation, claim, and finalization consistently lock the
+Schedule row before occurrence rows. Legacy rows are first backfilled from the
+pre-reconciliation durable Schedule. A one-time migration records durable
+adoption lineage only for genuine v0.8.5 rows. An uninterrupted matching enabled
+definition keeps that lineage open; change, disablement, removal, or restoration
+closes it irreversibly, including across later same-definition restarts. While
+one is open, a tracked discovery timer uses an indexed scan of at most 100
+wholly legacy pending rows once per second, allowing rows written after startup by an overlapping
+v0.8.5 runtime to be adopted without a hot scan. Shutdown cancels the timer and
+awaits an active batch. Closed lineages are never transferred or adopted.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into

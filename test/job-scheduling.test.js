@@ -407,6 +407,56 @@ test("a matching static Schedule enqueues and runs one ordinary Privileged Job",
   }
 });
 
+test("a native timer callback can transact after Schedule publication commits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-native-timer-owner-"));
+  const realStartedAt = Date.now();
+  const clockStartedAt = Date.parse("2030-01-01T00:00:59.980Z");
+  const clock = {
+    now: () => new Date(clockStartedAt + (Date.now() - realStartedAt)),
+    setTimer: (callback, delayMs) => setTimeout(callback, Math.max(1, Math.min(50, delayMs))),
+    clearTimer: (timer) => clearTimeout(timer),
+  };
+  const executions = [];
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-native-timer-owner" }, {
+    jobs: { record: job((_ctx, payload) => { executions.push(payload); return null; }) },
+    schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: "native" }) },
+  }, { clock });
+  try {
+    await database.init();
+    for (let attempt = 0; attempt < 40 && executions.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(executions, ["native"]);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Schedule occurrence finalization acquires generation authority before occurrence ownership", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-finalization-lock-order-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const boundaries = [];
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled-finalization-lock-order" }, {
+    jobs: { record: job(() => null) },
+    schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record" }) },
+  }, {
+    clock,
+    scheduleOccurrenceFault: (boundary) => { boundaries.push(boundary); },
+  });
+  try {
+    await database.init();
+    clock.advanceBy(30_000);
+    await clock.runDueTimers();
+    assert.equal(boundaries.includes("after-finalization-generation-lock"), true);
+  } finally {
+    await database.shutdown();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Privileged Schedule inspection is bounded, ordered, correlated, and side-effect free", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-inspection-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
@@ -1043,6 +1093,9 @@ test("a v0.8.5 pending occurrence is migrated into the published restart incarna
     await database.init();
     await clock.runDueTimers();
     assert.deepEqual(executions, ["legacy"]);
+    const lineage = database.adapter.prepare("SELECT definitionFingerprint, adoptionOpen FROM sporades_schedule_legacy_adoption WHERE scheduleName=?").get(scheduleName);
+    assert.equal(lineage.definitionFingerprint, fingerprint);
+    assert.equal(Number(lineage.adoptionOpen), 1);
   } finally {
     try { await database.shutdown(); } catch {}
     try { await database.close(); } catch {}
@@ -1122,6 +1175,7 @@ async function proveLegacyPendingOccurrenceUpgrade(openRuntime, capsuleName, sch
     await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
     await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
     await database.init();
+    await database.adapter.prepare(sql("UPDATE [sporades_schedule_legacy_adoption] SET [adoptionOpen]=1 WHERE [scheduleName]=?")).run(scheduleName);
     await database.shutdown();
     await database.adapter.prepare(sql(
       "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
@@ -1181,6 +1235,9 @@ async function proveLateLegacyPendingOccurrenceAdoption(openRuntime, capsuleName
     await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
     await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
     await database.init();
+    await database.adapter.prepare(database.adapter.dialect.sql(
+      "UPDATE [sporades_schedule_legacy_adoption] SET [adoptionOpen]=1 WHERE [scheduleName]=?",
+    )).run(scheduleName);
     await database.shutdown();
     await database.close();
 
@@ -1267,6 +1324,7 @@ test("PostgreSQL adopts a v0.8.5 occurrence committed after the migration scan",
     await seed.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
     await seed.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
     await seed.init();
+    await seed.adapter.prepare(sql("UPDATE [sporades_schedule_legacy_adoption] SET [adoptionOpen]=1 WHERE [scheduleName]=?")).run(scheduleName);
     await seed.shutdown();
     await seed.close();
     seed = null;
@@ -1305,6 +1363,111 @@ test("PostgreSQL adopts a v0.8.5 occurrence committed after the migration scan",
     } catch {}
     await Promise.allSettled([seed?.shutdown(), seed?.close(), candidate?.shutdown(), candidate?.close(), writer.close()]);
   }
+});
+
+async function provePastLateLegacyDiscovery(openRuntime, capsuleName, scheduleName) {
+  const clock = createControllableRuntimeClock("2030-01-01T00:02:00.000Z");
+  const scheduledFor = "2030-01-01T00:01:00.000Z";
+  const occurrenceId = createHash("sha256").update(JSON.stringify([capsuleName, scheduleName, scheduledFor])).digest("hex");
+  const stoppedScheduledFor = "2030-01-01T00:00:00.000Z";
+  const stoppedOccurrenceId = createHash("sha256").update(JSON.stringify([capsuleName, scheduleName, stoppedScheduledFor])).digest("hex");
+  const executions = [];
+  const capsule = {
+    jobs: { record: job((_ctx, payload) => { executions.push(payload); return null; }) },
+    schedules: { [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: "legacy" }) },
+  };
+  let database = await openRuntime(capsule, clock, "seed");
+  let sql = database.adapter.dialect.sql;
+  try {
+    await database.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+    await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+    await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+    await database.init();
+    await database.adapter.prepare(sql(
+      "UPDATE [sporades_schedule_legacy_adoption] SET [adoptionOpen]=1 WHERE [scheduleName]=?",
+    )).run(scheduleName);
+    await database.shutdown();
+    await database.close();
+    database = await openRuntime(capsule, clock, "current");
+    sql = database.adapter.dialect.sql;
+    await database.init();
+    await database.adapter.prepare(sql(
+      "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)",
+    )).run(occurrenceId, scheduleName, scheduledFor, scheduledFor, scheduledFor);
+
+    clock.advanceBy(999);
+    await clock.runDueTimers();
+    assert.deepEqual(executions, []);
+    clock.advanceBy(1);
+    await clock.runDueTimers();
+    assert.deepEqual(executions, ["legacy"]);
+    const occurrence = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken], [status], [jobId] FROM [sporades_schedule_occurrences] WHERE [id]=?",
+    )).get(occurrenceId);
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?",
+    )).get(scheduleName);
+    assert.deepEqual({ definitionFingerprint: occurrence.definitionFingerprint, generationToken: occurrence.generationToken }, { ...durable });
+    assert.equal(occurrence.status, "enqueued");
+    assert.ok(occurrence.jobId);
+
+    await database.shutdown();
+    await database.adapter.prepare(sql(
+      "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)",
+    )).run(stoppedOccurrenceId, scheduleName, stoppedScheduledFor, stoppedScheduledFor, stoppedScheduledFor);
+    clock.advanceBy(1_000);
+    await clock.runDueTimers();
+    assert.deepEqual(executions, ["legacy"]);
+    assert.equal((await database.adapter.prepare(sql("SELECT [status] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(stoppedOccurrenceId)).status, "pending");
+  } finally {
+    try {
+      await database.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+    } catch {}
+    await Promise.allSettled([database.shutdown(), database.close()]);
+  }
+}
+
+test("SQLite discovers a past v0.8.5 occurrence written after initialization without hot scanning", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-late-legacy-discovery-sqlite-"));
+  const file = path.join(dir, "data.db");
+  try {
+    await provePastLateLegacyDiscovery(
+      (capsule, clock) => openDevDatabase(file, "", {}, { name: "scheduled-late-legacy-discovery-sqlite" }, capsule, { clock }),
+      "scheduled-late-legacy-discovery-sqlite",
+      "lateLegacyDiscoverySqlite",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("libSQL discovers a past v0.8.5 occurrence written after initialization without hot scanning", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-late-legacy-discovery-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-late-legacy-discovery-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await provePastLateLegacyDiscovery(
+        (capsule, clock, phase) => openDevDatabase(path.join(dir, `unused-${phase}.db`), "", {}, config, capsule, { clock, serviceEnv }),
+        config.name,
+        "lateLegacyDiscoveryLibsql",
+      );
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PostgreSQL discovers a past v0.8.5 occurrence written after initialization without hot scanning", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL late-legacy discovery test.",
+}, async () => {
+  const config = { name: "scheduled-late-legacy-discovery-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await provePastLateLegacyDiscovery(
+    (capsule, clock) => openDevDatabase("unused.db", "", {}, config, capsule, { clock, serviceEnv }),
+    config.name,
+    "lateLegacyDiscoveryPostgres",
+  );
 });
 
 test("static Schedule fingerprints remain compatible across payload-version identity adoption", async () => {
@@ -1613,6 +1776,83 @@ test("PostgreSQL reconciliation transfers an occurrence inserted by the locked o
   }
 });
 
+test("PostgreSQL occurrence finalization and reconciliation share one lock order", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL Schedule finalization handoff race.",
+}, async () => {
+  const capsuleName = "scheduled-postgres-finalization-handoff";
+  const scheduleName = "finalizationHandoffPostgres";
+  const config = { name: capsuleName, services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  const outgoingClock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const candidateClock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = {
+    jobs: { record: job(() => ({ owner: "outgoing" })) },
+    schedules: { [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: null }) },
+  };
+  let releaseFinalizer;
+  let markFinalizerLocked;
+  const finalizerLocked = new Promise((resolve) => { markFinalizerLocked = resolve; });
+  let markCandidateAtGeneration;
+  const candidateAtGeneration = new Promise((resolve) => { markCandidateAtGeneration = resolve; });
+  const outgoing = await openDevDatabase("unused-finalizer.db", "", {}, config, capsule, {
+    clock: outgoingClock,
+    serviceEnv,
+    scheduleOccurrenceFault: async (boundary) => {
+      if (boundary !== "after-finalization-generation-lock") return;
+      markFinalizerLocked();
+      await new Promise((resolve) => { releaseFinalizer = resolve; });
+    },
+  });
+  let candidate;
+  try {
+    const sql = outgoing.adapter.dialect.sql;
+    await outgoing.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+    await outgoing.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+    await outgoing.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+    await outgoing.init();
+    candidate = await openDevDatabase("unused-candidate.db", "", {}, config, capsule, {
+      clock: candidateClock,
+      serviceEnv,
+      scheduleReconciliationFault: (boundary) => {
+        if (boundary === "before-generation-lock") markCandidateAtGeneration();
+      },
+    });
+
+    outgoingClock.advanceBy(30_000);
+    const finalization = outgoingClock.runDueTimers();
+    await Promise.race([
+      finalizerLocked,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("finalization never acquired the Schedule lock first")), 2_000)),
+    ]);
+    const candidateInit = candidate.init();
+    await candidateAtGeneration;
+    releaseFinalizer();
+    await Promise.race([
+      Promise.all([finalization, candidateInit]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Schedule finalization and reconciliation deadlocked")), 5_000)),
+    ]);
+
+    const occurrence = await candidate.adapter.prepare(sql(
+      "SELECT [status], [jobId] FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?",
+    )).get(scheduleName);
+    assert.equal(occurrence.status, "enqueued");
+    assert.ok(occurrence.jobId);
+    assert.equal(Number((await candidate.adapter.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_jobs] WHERE [scheduleName]=?",
+    )).get(scheduleName)).count), 1);
+  } finally {
+    releaseFinalizer?.();
+    const cleanup = candidate ?? outgoing;
+    try {
+      const sql = cleanup.adapter.dialect.sql;
+      await cleanup.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+      await cleanup.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+      await cleanup.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+    } catch {}
+    await Promise.allSettled([outgoing.shutdown(), outgoing.close(), candidate?.shutdown(), candidate?.close()]);
+  }
+});
+
 test("a live superseded Schedule generation stops its local timer", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-live-superseded-cursor-"));
   const file = path.join(dir, "data.db");
@@ -1765,6 +2005,75 @@ test("stale Schedule incarnations cannot regain authority after an equivalent de
         await rm(dir, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("a later-restored Schedule keeps legacy adoption closed across a same-definition restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-restored-legacy-lineage-"));
+  const file = path.join(dir, "data.db");
+  const capsuleName = "scheduled-restored-legacy-lineage";
+  const scheduleName = "recurring";
+  const scheduledFor = "2030-01-01T00:01:00.000Z";
+  const occurrenceId = createHash("sha256").update(JSON.stringify([capsuleName, scheduleName, scheduledFor])).digest("hex");
+  const fingerprint = JSON.stringify({
+    expression: "* * * * *", timezone: "UTC", job: "record", payload: "A",
+    retry: { maxAttempts: 1, delayMs: 0 }, missedRun: "skip",
+  });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(
+    "CREATE TABLE sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL);" +
+    "CREATE TABLE sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT);" +
+    "CREATE TABLE sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);" +
+    "CREATE UNIQUE INDEX sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor);",
+  );
+  legacy.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, 1, ?)")
+    .run(scheduleName, fingerprint, "* * * * *", "UTC", "skip", "2030-01-01T00:01:00.000Z");
+  legacy.close();
+
+  const jobs = { record: job((_ctx, payload) => { executions.push(payload); return null; }) };
+  const scheduleA = () => ({ [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", payload: "A" }) });
+  const executions = [];
+  const phases = [
+    { now: "2030-01-01T00:00:30.000Z", schedules: scheduleA() },
+    { now: "2030-01-01T00:01:30.000Z", schedules: {} },
+    { now: "2030-01-01T00:02:30.000Z", schedules: scheduleA() },
+  ];
+  let database;
+  try {
+    for (const phase of phases) {
+      database = await openDevDatabase(file, "", {}, { name: capsuleName }, { jobs, schedules: phase.schedules }, { clock: createControllableRuntimeClock(phase.now) });
+      await database.init();
+      await database.shutdown();
+      await database.close();
+      if (Object.keys(phase.schedules).length === 0) {
+        // A still-running v0.8.5 writer can recreate the deleted Schedule row,
+        // but it cannot erase the upgraded runtime's durable closed lineage.
+        const oldWriter = new DatabaseSync(file);
+        oldWriter.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, 1, ?)")
+          .run(scheduleName, fingerprint, "* * * * *", "UTC", "skip", "2030-01-01T00:03:00.000Z");
+        oldWriter.close();
+      }
+    }
+
+    const clock = createControllableRuntimeClock("2030-01-01T00:03:30.000Z");
+    database = await openDevDatabase(file, "", {}, { name: capsuleName }, { jobs, schedules: scheduleA() }, { clock });
+    await database.init();
+    const sql = database.adapter.dialect.sql;
+    await database.adapter.prepare(sql(
+      "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)",
+    )).run(occurrenceId, scheduleName, scheduledFor, scheduledFor, scheduledFor);
+    clock.advanceBy(1_000);
+    await clock.runDueTimers();
+    assert.deepEqual(executions, []);
+    assert.equal(Number((await database.adapter.prepare(sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_jobs] WHERE [scheduleName]=? AND [scheduledFor]=?",
+    )).get(scheduleName, scheduledFor)).count), 0);
+    assert.equal(Number((await database.adapter.prepare(sql(
+      "SELECT [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?",
+    )).get(scheduleName)).adoptionOpen), 0);
+  } finally {
+    await Promise.allSettled([database?.shutdown(), database?.close()]);
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -1954,7 +2263,7 @@ test("libSQL persists and reconciles Schedule state through the configured adapt
 
 test("Postgres persists Schedule state through the configured adapter", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." }, async () => {
   const admin = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
-  await admin.exec("DROP TABLE IF EXISTS sporades_schedules, sporades_jobs, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, sporades_auth_oauth_states, sporades_user_preferences, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, sporades_log_events");
+  await admin.exec("DROP TABLE IF EXISTS sporades_schedule_occurrences, sporades_schedule_legacy_adoption, sporades_schedules, sporades_jobs, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, sporades_auth_oauth_states, sporades_user_preferences, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, sporades_log_events");
   await admin.close();
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
   const config = { name: "scheduled", services: { database: { kind: "database", engine: "postgres" } } };

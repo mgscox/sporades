@@ -30,6 +30,7 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_files",
   "sporades_jobs",
   "sporades_log_events",
+  "sporades_schedule_legacy_adoption",
   "sporades_schedule_occurrences",
   "sporades_schedules",
   "sporades_team_bootstrap",

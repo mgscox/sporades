@@ -420,6 +420,10 @@ _Avoid_: config file (too generic — it's the specific project config)
 The `sporades.json` configuration for Capsule-wide Job Scheduling runtime limits, such as payload-factory timeout. It controls scheduler operation rather than defining individual Schedules.
 _Avoid_: Schedule definition, cron config, Job retry policy
 
+**Schedule legacy-adoption lineage**:
+Runtime-owned durable upgrade state that records whether a genuine v0.8.5 Schedule may still adopt wholly identity-less pending occurrences from an overlapping old process. Only an uninterrupted same-definition enabled upgrade remains open. Definition change, disablement, removal, or later restoration closes the lineage irreversibly, independently of whether an old writer recreates the Schedule row.
+_Avoid_: Schedule generation, occurrence claim, reusable compatibility flag
+
 **Security policy**:
 The `sporades.json` configuration that defines Capsule HTTP security posture, including CORS and Content Security Policy defaults and overrides. It is runtime policy, not app business logic.
 _Avoid_: security middleware, helmet config

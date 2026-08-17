@@ -264,13 +264,17 @@ effective timezone.
   creation failed. Payload contents are not included in inspection output.
 - Runtime startup reconciles declared schedules with persisted definitions.
   The complete declaration set and fresh incarnation tokens publish atomically
-  only after candidate recovery can be validated and timers can be armed, so failed candidate initialization
-  leaves the previous scheduler functional. Same-definition restart transfers
-  compatible pending occurrences after locking the durable Schedule generation;
-  upgrade migration first binds legacy pending rows to the pre-reconciliation
-  durable Schedule identity. A matching enabled definition also adopts a wholly
-  legacy pending row written after that finite scan by an overlapping v0.8.5
-  runtime. Changed, disabled, removed, and later-restored work is never adopted.
+  only after candidate recovery and timer capability can be validated; actual
+  timers arm after commit, so failed candidate initialization leaves the
+  previous scheduler functional. Reconciliation, claim, and finalization lock
+  the Schedule row before occurrence rows. Same-definition restart transfers
+  compatible pending occurrences after locking the durable Schedule generation.
+  A one-time migration records durable legacy-adoption lineage for genuine
+  v0.8.5 rows. Only uninterrupted same-definition enabled lineage remains open;
+  change, disablement, removal, or restoration closes it irreversibly. An open
+  lineage runs a tracked once-per-second indexed discovery scan of at most 100
+  wholly legacy pending rows, including rows written after startup by an overlapping
+  v0.8.5 runtime. Shutdown cancels the scan and awaits an active batch.
   New declarations begin from startup time and do not backfill time before they
   existed. `enabled` defaults to `true`; a declaration may set `enabled: false`,
   in which case it remains persisted and inspectable but creates no

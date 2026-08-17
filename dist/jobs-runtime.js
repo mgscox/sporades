@@ -231,6 +231,8 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
         "[expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, " +
         "[enabled] INTEGER NOT NULL, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, " +
         "[latestJobId] TEXT, [latestErrorCode] TEXT)"));
+    await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, " +
+        "[definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"));
     await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, " +
         "[definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, " +
         "[errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"));
@@ -241,10 +243,16 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     const migrateLegacyScheduleIdentity = async (adapter) => {
         const migrationSql = adapter.dialect.sql;
         await adapter.prepare(migrationSql("UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'")).run();
+        const lineageMigration = await adapter.prepare(migrationSql("SELECT [value] FROM [sporades] WHERE [key]='schedule-legacy-adoption-lineage-v1'")).get();
+        const initializeLegacyLineage = !lineageMigration;
         const schedules = await adapter.prepare(migrationSql("SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC")).all();
         const scheduleByName = new Map();
         for (const row of schedules) {
+            // Migration/adoption follows the same Schedule-then-occurrence lock order
+            // as reconciliation and occurrence finalization.
+            await adapter.prepare(migrationSql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?")).run(row.name);
             let generationToken = row.generationToken;
+            const wasLegacySchedule = typeof generationToken !== "string" || generationToken.length === 0;
             if (typeof generationToken !== "string" || generationToken.length === 0) {
                 const proposed = nodeCryptoModule.randomUUID();
                 await adapter.prepare(migrationSql("UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')")).run(proposed, row.name);
@@ -252,7 +260,15 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
                 generationToken = current?.generationToken ?? proposed;
                 row.definitionFingerprint = current?.definitionFingerprint ?? row.definitionFingerprint;
             }
-            scheduleByName.set(String(row.name), { definitionFingerprint: row.definitionFingerprint, generationToken });
+            if (initializeLegacyLineage) {
+                await adapter.prepare(migrationSql("INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, ?) ON CONFLICT ([scheduleName]) DO NOTHING")).run(row.name, row.definitionFingerprint, wasLegacySchedule ? 1 : 0);
+            }
+            const lineage = await adapter.prepare(migrationSql("SELECT [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?")).get(row.name);
+            scheduleByName.set(String(row.name), {
+                definitionFingerprint: row.definitionFingerprint,
+                generationToken,
+                legacyAdoptionOpen: Number(lineage?.adoptionOpen) === 1 && lineage?.definitionFingerprint === row.definitionFingerprint,
+            });
         }
         const pending = await adapter.prepare(migrationSql("SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC")).all();
         await scheduleStorageFault?.("after-legacy-pending-scan", { adapter });
@@ -263,7 +279,13 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
             if (row.definitionFingerprint !== null && row.definitionFingerprint !== undefined
                 && row.definitionFingerprint !== schedule.definitionFingerprint)
                 continue;
+            if ((row.definitionFingerprint === null || row.definitionFingerprint === undefined)
+                && !schedule.legacyAdoptionOpen)
+                continue;
             await adapter.prepare(migrationSql("UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')")).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
+        }
+        if (initializeLegacyLineage) {
+            await adapter.prepare(migrationSql("INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-legacy-adoption-lineage-v1', 'complete') ON CONFLICT ([key]) DO NOTHING")).run();
         }
     };
     if (typeof sqlite.withTransaction === "function") {
@@ -283,6 +305,8 @@ export async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
         await migrateLegacyScheduleIdentity(sqlite);
     await sqlite.exec(sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] " +
         "ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"));
+    await sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] " +
+        "ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"));
 }
 export async function finishFailedScheduledOccurrence(database, definition, occurrence, error, claimToken) {
     const scheduledFor = occurrence.toISOString();

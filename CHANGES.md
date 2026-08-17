@@ -59,6 +59,10 @@ Changes since v0.8.5.
   the nominal instant is due before persisting or enqueueing, preventing monthly
   and annual recurrences from firing immediately when Node clamps a long delay.
   Apply the same bounded, tracked recheck to future retained occurrence claims.
+  Timer capability is preflighted before Schedule publication, but live
+  occurrence, recovery, and legacy-discovery timers are armed only after the
+  reconciliation transaction commits, so delayed callbacks do not inherit a
+  completed transaction owner.
 - Bind every pending Schedule occurrence to its complete deterministic identity,
   definition fingerprint, and per-publication incarnation token. Malformed retained rows are quarantined without
   blocking their unique occurrence slot, while changed, disabled, or removed
@@ -68,10 +72,14 @@ Changes since v0.8.5.
   the replacement Schedule's cursor and summary. Reconciliation publishes the
   complete declaration set atomically only after candidate recovery reads and timers are viable,
   locking each durable Schedule generation before it scans and transfers that
-  generation's pending work. Legacy pending rows inherit the pre-reconciliation
-  durable incarnation, and a same-definition runtime also adopts wholly legacy
-  pending rows written late by an overlapping v0.8.5 process; changed, disabled,
-  removed, and later-restored work remains fenced.
+  generation's pending work in the same Schedule-row-then-occurrence-row lock
+  order used by occurrence claims and finalization. A one-time migration records
+  durable legacy-adoption lineage for genuine v0.8.5 Schedule rows. Only an
+  uninterrupted same-definition lineage remains eligible; change, disablement,
+  removal, and later restoration close it irreversibly. Eligible runtimes scan
+  an indexed lookup for wholly legacy rows written late by an overlapping v0.8.5
+  process in tracked batches of at most 100 once per second, and shutdown
+  cancels that scan.
 - Let dynamic Schedule payload factories opt into a stable `payloadVersion`,
   because JavaScript source text cannot identify captured configuration. Changing
   the version creates a future-only Schedule generation; unversioned v0.8.5

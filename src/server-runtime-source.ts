@@ -674,9 +674,12 @@ export async function openDevDatabase(
     database.__scheduleRecoveryTimer = null;
     database.__scheduleRecoveryDueAt = null;
     database.__scheduleRecoveryPromise = null;
+    database.__scheduleLegacyDiscoveryTimer = null;
     await armJobLeaseRecovery(database);
     await recoverPendingScheduleOccurrences(database, { validateOnly: true });
-    const reconciled = await reconcileSchedules(database, () => startStaticSchedules(database));
+    preflightStaticScheduleTimers(database);
+    const reconciled = await reconcileSchedules(database);
+    startStaticSchedules(database, reconciled.timerPlans);
     // Orderly shutdown deliberately retains queued and delayed Jobs. A fresh
     // runtime has no inherited worker/wake timer, so one normal worker pass
     // must rediscover ready work and recreate the earliest delayed wake.
@@ -699,6 +702,7 @@ export async function openDevDatabase(
         database.__scheduleTimers?.clear?.();
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
+        database.__scheduleLegacyDiscoveryTimer = null;
         if (workerSettlement) await workerSettlement;
         await settleActiveScheduleWork(database);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
@@ -751,7 +755,7 @@ function resolveJourneySessionInactivityMinutes(config: RuntimeConfig = {}) {
   return Math.min(1_440, Math.max(1, Math.round(value)));
 }
 
-async function reconcileSchedules(database: LooseRecord, beforeCommit?: () => any) {
+async function reconcileSchedules(database: LooseRecord) {
   const now = database.clock.now();
   const declaredNames = new Set(database.schedules.map((definition: any) => definition.name));
   for (let attempt = 0; ; attempt += 1) {
@@ -765,6 +769,10 @@ async function reconcileSchedules(database: LooseRecord, beforeCommit?: () => an
           "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'",
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        const legacyLineages = await transactionAdapter.prepare(sql(
+          "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]",
+        )).all();
+        const legacyLineageByName = new Map<string, LooseRecord>(legacyLineages.map((lineage: any) => [String(lineage.scheduleName), lineage]));
         const plans = [];
         for (const definition of database.schedules) {
           const row = persisted.find((candidate: any) => candidate.name === definition.name);
@@ -791,7 +799,15 @@ async function reconcileSchedules(database: LooseRecord, beforeCommit?: () => an
         // Every declaration, including calendars with no possible future instant,
         // has now been evaluated without mutating durable state.
         for (const row of persisted) {
-          if (!declaredNames.has(String(row.name))) await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+          if (!declaredNames.has(String(row.name))) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?",
+            )).run(row.definitionFingerprint, row.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING",
+            )).run(row.name, row.definitionFingerprint);
+            await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+          }
         }
         const updateScheduleSql = sql(
           "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, " +
@@ -803,7 +819,11 @@ async function reconcileSchedules(database: LooseRecord, beforeCommit?: () => an
           // disabled, removed, and later-restored generations never inherit it.
           const sameEnabledDefinition = Boolean(row) && Boolean(row.enabled) && definition.enabled
             && row.definitionFingerprint === definition.fingerprint;
-          definition.__adoptLegacyPendingOccurrences = sameEnabledDefinition;
+          const legacyLineage = legacyLineageByName.get(definition.name);
+          const legacyAdoptionOpen = sameEnabledDefinition
+            && Number(legacyLineage?.adoptionOpen) === 1
+            && legacyLineage?.definitionFingerprint === definition.fingerprint;
+          definition.__adoptLegacyPendingOccurrences = legacyAdoptionOpen;
           if (row) {
             await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
             // Lock and rotate the durable Schedule before scanning its pending
@@ -815,17 +835,32 @@ async function reconcileSchedules(database: LooseRecord, beforeCommit?: () => an
               "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
           }
+          if (!legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?",
+            )).run(definition.fingerprint, definition.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING",
+            )).run(definition.name, definition.fingerprint);
+          }
           if (sameEnabledDefinition) {
             await transactionAdapter.prepare(sql(
-              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND (([definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))) OR ([definitionFingerprint] IS NULL AND [generationToken] IS NULL))",
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))",
             )).run(definition.fingerprint, generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
+          }
+          if (legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL",
+            )).run(definition.fingerprint, generationToken, definition.name);
           }
           definition.nextOccurrence = nextOccurrence;
           definition.generationToken = generationToken;
         }
         candidateArmed = true;
-        await beforeCommit?.();
-        return { recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })) };
+        return {
+          recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })),
+          timerPlans: plans.filter(({ definition }) => definition.enabled).map(({ definition }) => ({ definition })),
+        };
       });
     } catch (error: any) {
       // node:sqlite operations are synchronous. A busy timeout would block the
@@ -853,6 +888,8 @@ async function recoverReconciledSchedules(database: LooseRecord, recoveredOccurr
 
 const MAX_NATIVE_TIMER_DELAY_MS = 2_147_483_647;
 const SCHEDULE_RECOVERY_RETRY_MS = 1_000;
+const LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1_000;
+const LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 
 function settleActiveScheduleWork(database: LooseRecord) {
   const active = new Set<any>(database.__activeScheduleOccurrences ?? []);
@@ -861,11 +898,18 @@ function settleActiveScheduleWork(database: LooseRecord) {
   return Promise.allSettled([...active]).then(() => undefined);
 }
 
-async function startStaticSchedules(database: LooseRecord) {
-  database.__scheduleTimers ??= new Set();
-  database.__activeScheduleOccurrences ??= new Set();
+function preflightStaticScheduleTimers(database: LooseRecord) {
   for (const definition of database.schedules) {
     if (!definition.enabled) continue;
+    const timer = database.clock.setTimer(() => {}, MAX_NATIVE_TIMER_DELAY_MS);
+    database.clock.clearTimer(timer);
+  }
+}
+
+function startStaticSchedules(database: LooseRecord, timerPlans: LooseRecord[]) {
+  database.__scheduleTimers ??= new Set();
+  database.__activeScheduleOccurrences ??= new Set();
+  for (const { definition } of timerPlans) {
     const arm = () => {
       if (database.__scheduleStopped || !definition.enabled) return;
       const occurrence = new Date(definition.nextOccurrence);
@@ -893,6 +937,7 @@ async function startStaticSchedules(database: LooseRecord) {
     };
     arm();
   }
+  scheduleLateLegacyOccurrenceDiscovery(database);
 }
 
 async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
@@ -915,24 +960,24 @@ async function recordScheduledOccurrence(database: LooseRecord, definition: any,
     const committed = await database.adapter.withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       const sql = transactionAdapter.dialect.sql;
-      const ownership = await transactionAdapter.prepare(sql(
-        "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
-      )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
-      if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
       // Lock and revalidate the current Schedule generation before any durable
-      // Job side effect. Dev replacement initializes the candidate before
-      // stopping the old runtime, so a name alone is not an ownership token.
+      // Job side effect or occurrence-row lock. Reconciliation takes the same
+      // Schedule-then-occurrence order, avoiding a PostgreSQL lock inversion.
       const generation = await transactionAdapter.prepare(sql(
         "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?",
       )).run(definition.name, definition.fingerprint, definition.generationToken);
       if (Number(generation.changes) !== 1) {
         const completedAt = database.clock.now().toISOString();
-        const superseded = await transactionAdapter.prepare(sql(
+        await transactionAdapter.prepare(sql(
           "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
         )).run(completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
-        if (Number(superseded.changes) !== 1) throw new Error("Schedule occurrence ownership changed during generation invalidation.");
         return { owned: true, state: null, next: null, superseded: true };
       }
+      await database.scheduleOccurrenceFault?.("after-finalization-generation-lock", { scheduleName: definition.name, scheduledFor });
+      const ownership = await transactionAdapter.prepare(sql(
+        "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?",
+      )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
+      if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
       let handlerFailed = false;
       try {
         let state = null;
@@ -1103,6 +1148,55 @@ async function recoverPendingScheduleOccurrences(database: LooseRecord, options:
   if (earliestFutureClaimAt !== null) schedulePendingOccurrenceRecovery(database, new Date(earliestFutureClaimAt).toISOString());
 }
 
+async function recoverLateLegacyScheduleOccurrences(database: LooseRecord) {
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] " +
+    "FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL " +
+    "ORDER BY [scheduledFor] ASC, [scheduleName] ASC LIMIT ?",
+  )).all(LEGACY_SCHEDULE_DISCOVERY_LIMIT);
+  for (const row of rows) {
+    if (!validRetainedScheduleOccurrenceIdentity(database, row)
+      || (row.claimExpiresAt !== null && !isCanonicalJobTimestamp(row.claimExpiresAt))) {
+      await finishInvalidRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?",
+    )).get(row.scheduleName);
+    const definition = database.schedules.find((candidate: any) => candidate.enabled && candidate.name === row.scheduleName);
+    if (!durable || !Boolean(durable.enabled)) {
+      await finishSupersededRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    if (!definition || definition.fingerprint !== durable.definitionFingerprint || definition.generationToken !== durable.generationToken) {
+      if (definition) definition.enabled = false;
+      continue;
+    }
+    await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+  }
+}
+
+function scheduleLateLegacyOccurrenceDiscovery(database: LooseRecord) {
+  if (database.__scheduleStopped || database.__scheduleLegacyDiscoveryTimer) return;
+  if (!database.schedules.some((definition: any) => definition.enabled && definition.__adoptLegacyPendingOccurrences === true)) return;
+  const timer = database.clock.setTimer(() => {
+    database.__scheduleTimers?.delete(timer);
+    database.__scheduleLegacyDiscoveryTimer = null;
+    if (database.__scheduleStopped) return;
+    const active = recoverLateLegacyScheduleOccurrences(database).catch((error: any) => {
+      database.log.emit({ category: "platform", event: "schedule.legacy_occurrence.discovery_failed", level: "error", message: "Late legacy Scheduled occurrence discovery failed", data: { code: String(error?.code ?? "SCHEDULE_LEGACY_DISCOVERY_FAILED").slice(0, 80) } });
+    }).finally(() => {
+      database.__activeScheduleOccurrences?.delete(active);
+      if (!database.__scheduleStopped) scheduleLateLegacyOccurrenceDiscovery(database);
+    });
+    database.__activeScheduleOccurrences?.add(active);
+    return active;
+  }, LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS);
+  database.__scheduleLegacyDiscoveryTimer = timer;
+  database.__scheduleTimers?.add(timer);
+}
+
 function validRetainedScheduleOccurrenceIdentity(database: LooseRecord, row: LooseRecord) {
   return typeof row.id === "string" && row.id.length > 0
     && typeof row.scheduleName === "string" && row.scheduleName.length > 0
@@ -1110,16 +1204,25 @@ function validRetainedScheduleOccurrenceIdentity(database: LooseRecord, row: Loo
     && row.id === scheduledOccurrenceIdentity(database, row.scheduleName, row.scheduledFor);
 }
 
-async function finishInvalidRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter = database.adapter) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
+async function finishInvalidRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
+  return database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+    finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", transactionAdapter));
 }
 
-async function finishSupersededRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter = database.adapter) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
+async function finishSupersededRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, adapter?: LooseRecord) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
+  return database.adapter.withTransaction((transactionAdapter: LooseRecord) =>
+    finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", transactionAdapter));
 }
 
 async function finishRetainedScheduleOccurrence(database: LooseRecord, row: LooseRecord, errorCode: string, adapter = database.adapter) {
   const sql = adapter.dialect.sql;
+  if (typeof row.scheduleName === "string") {
+    await adapter.prepare(sql(
+      "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?",
+    )).run(row.scheduleName);
+  }
   const completedAt = database.clock.now().toISOString();
   const definitionFingerprint = row.definitionFingerprint ?? null;
   const generationToken = row.generationToken ?? null;

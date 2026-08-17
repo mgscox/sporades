@@ -993,15 +993,19 @@ cannot quarantine replacement-owned pending work, enqueue, finalize, or
 overwrite a replacement generation's cursor or summary after another runtime
 reclaims or replaces the occurrence. It leaves that work for the matching
 runtime and stops its superseded local Schedule generation instead of re-arming
-it. The full declaration reconciliation and ownership publication are atomic and
-occur only after candidate recovery can be validated and timers can be armed. A candidate failure rolls back
+it. Reconciliation, claim, and finalization lock the Schedule row before its
+occurrence rows. The full declaration reconciliation and ownership publication
+are atomic and occur only after candidate recovery and timer capability can be
+validated. Actual timers arm after commit. A candidate failure rolls back
 its state so the old scheduler remains functional. Same-definition restart
 locks the durable Schedule generation before transferring matching pending
-occurrences to the new incarnation. During upgrade, legacy pending occurrences
-first inherit the pre-reconciliation durable definition and incarnation. A
-same-definition runtime also adopts a wholly legacy pending row written after
-that finite migration scan by an overlapping v0.8.5 runtime; changed, disabled,
-removed, or later-restored work is not resurrected.
+occurrences to the new incarnation. A one-time upgrade migration records durable
+legacy-adoption lineage for genuine v0.8.5 rows. Only an uninterrupted
+same-definition enabled lineage remains open; change, disablement, removal, or
+later restoration closes it permanently. While open, a tracked discovery timer
+uses an indexed lookup for at most 100 wholly legacy pending rows once per
+second, including rows an overlapping v0.8.5 runtime writes after startup. Shutdown cancels that timer and
+awaits any active batch. Closed lineage work is not resurrected.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long

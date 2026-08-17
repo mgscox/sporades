@@ -6033,6 +6033,11 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
   );
   await sqlite.exec(
     sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"
+    )
+  );
+  await sqlite.exec(
+    sql(
       "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )
   );
@@ -6047,12 +6052,20 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
     await adapter.prepare(migrationSql(
       "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
     )).run();
+    const lineageMigration = await adapter.prepare(migrationSql(
+      "SELECT [value] FROM [sporades] WHERE [key]='schedule-legacy-adoption-lineage-v1'"
+    )).get();
+    const initializeLegacyLineage = !lineageMigration;
     const schedules = await adapter.prepare(migrationSql(
       "SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC"
     )).all();
     const scheduleByName = /* @__PURE__ */ new Map();
     for (const row of schedules) {
+      await adapter.prepare(migrationSql(
+        "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?"
+      )).run(row.name);
       let generationToken = row.generationToken;
+      const wasLegacySchedule = typeof generationToken !== "string" || generationToken.length === 0;
       if (typeof generationToken !== "string" || generationToken.length === 0) {
         const proposed = nodeCryptoModule.randomUUID();
         await adapter.prepare(migrationSql(
@@ -6064,7 +6077,19 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
         generationToken = current?.generationToken ?? proposed;
         row.definitionFingerprint = current?.definitionFingerprint ?? row.definitionFingerprint;
       }
-      scheduleByName.set(String(row.name), { definitionFingerprint: row.definitionFingerprint, generationToken });
+      if (initializeLegacyLineage) {
+        await adapter.prepare(migrationSql(
+          "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, ?) ON CONFLICT ([scheduleName]) DO NOTHING"
+        )).run(row.name, row.definitionFingerprint, wasLegacySchedule ? 1 : 0);
+      }
+      const lineage = await adapter.prepare(migrationSql(
+        "SELECT [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?"
+      )).get(row.name);
+      scheduleByName.set(String(row.name), {
+        definitionFingerprint: row.definitionFingerprint,
+        generationToken,
+        legacyAdoptionOpen: Number(lineage?.adoptionOpen) === 1 && lineage?.definitionFingerprint === row.definitionFingerprint
+      });
     }
     const pending = await adapter.prepare(migrationSql(
       "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC"
@@ -6074,9 +6099,15 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
       const schedule = scheduleByName.get(String(row.scheduleName));
       if (!schedule) continue;
       if (row.definitionFingerprint !== null && row.definitionFingerprint !== void 0 && row.definitionFingerprint !== schedule.definitionFingerprint) continue;
+      if ((row.definitionFingerprint === null || row.definitionFingerprint === void 0) && !schedule.legacyAdoptionOpen) continue;
       await adapter.prepare(migrationSql(
         "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')"
       )).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
+    }
+    if (initializeLegacyLineage) {
+      await adapter.prepare(migrationSql(
+        "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-legacy-adoption-lineage-v1', 'complete') ON CONFLICT ([key]) DO NOTHING"
+      )).run();
     }
   };
   if (typeof sqlite.withTransaction === "function") {
@@ -6093,6 +6124,11 @@ async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
   await sqlite.exec(
     sql(
       "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
+    )
+  );
+  await sqlite.exec(
+    sql(
+      "CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"
     )
   );
 }
@@ -15447,9 +15483,12 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database.__scheduleRecoveryTimer = null;
     database.__scheduleRecoveryDueAt = null;
     database.__scheduleRecoveryPromise = null;
+    database.__scheduleLegacyDiscoveryTimer = null;
     await armJobLeaseRecovery(database);
     await recoverPendingScheduleOccurrences(database, { validateOnly: true });
-    const reconciled = await reconcileSchedules(database, () => startStaticSchedules(database));
+    preflightStaticScheduleTimers(database);
+    const reconciled = await reconcileSchedules(database);
+    startStaticSchedules(database, reconciled.timerPlans);
     scheduleCurrentUserJobWorker(database);
     database.__runtimeInitialized = true;
     await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
@@ -15469,6 +15508,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         database.__scheduleTimers?.clear?.();
         database.__scheduleRecoveryTimer = null;
         database.__scheduleRecoveryDueAt = null;
+        database.__scheduleLegacyDiscoveryTimer = null;
         if (workerSettlement) await workerSettlement;
         await settleActiveScheduleWork(database);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
@@ -15522,7 +15562,7 @@ function resolveJourneySessionInactivityMinutes(config = {}) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 30;
   return Math.min(1440, Math.max(1, Math.round(value)));
 }
-async function reconcileSchedules(database, beforeCommit) {
+async function reconcileSchedules(database) {
   const now = database.clock.now();
   const declaredNames = new Set(database.schedules.map((definition) => definition.name));
   for (let attempt = 0; ; attempt += 1) {
@@ -15534,6 +15574,10 @@ async function reconcileSchedules(database, beforeCommit) {
           "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
+        const legacyLineages = await transactionAdapter.prepare(sql(
+          "SELECT [scheduleName], [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption]"
+        )).all();
+        const legacyLineageByName = new Map(legacyLineages.map((lineage) => [String(lineage.scheduleName), lineage]));
         const plans = [];
         for (const definition of database.schedules) {
           const row = persisted.find((candidate) => candidate.name === definition.name);
@@ -15560,14 +15604,24 @@ async function reconcileSchedules(database, beforeCommit) {
           plans.push({ definition, row, nextOccurrence, recoveredOccurrence, generationToken: randomUUID3() });
         }
         for (const row of persisted) {
-          if (!declaredNames.has(String(row.name))) await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+          if (!declaredNames.has(String(row.name))) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?"
+            )).run(row.definitionFingerprint, row.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING"
+            )).run(row.name, row.definitionFingerprint);
+            await transactionAdapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(row.name);
+          }
         }
         const updateScheduleSql = sql(
           "UPDATE [sporades_schedules] SET [definitionFingerprint]=?, [generationToken]=?, [expression]=?, [effectiveTimezone]=?, [missedRunPolicy]=?, [enabled]=?, [nextOccurrence]=? WHERE [name]=?"
         );
         for (const { definition, row, nextOccurrence, generationToken } of plans) {
           const sameEnabledDefinition = Boolean(row) && Boolean(row.enabled) && definition.enabled && row.definitionFingerprint === definition.fingerprint;
-          definition.__adoptLegacyPendingOccurrences = sameEnabledDefinition;
+          const legacyLineage = legacyLineageByName.get(definition.name);
+          const legacyAdoptionOpen = sameEnabledDefinition && Number(legacyLineage?.adoptionOpen) === 1 && legacyLineage?.definitionFingerprint === definition.fingerprint;
+          definition.__adoptLegacyPendingOccurrences = legacyAdoptionOpen;
           if (row) {
             await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
             await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
@@ -15576,17 +15630,32 @@ async function reconcileSchedules(database, beforeCommit) {
               "INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
           }
+          if (!legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_legacy_adoption] SET [definitionFingerprint]=?, [adoptionOpen]=0 WHERE [scheduleName]=?"
+            )).run(definition.fingerprint, definition.name);
+            await transactionAdapter.prepare(sql(
+              "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, 0) ON CONFLICT ([scheduleName]) DO NOTHING"
+            )).run(definition.name, definition.fingerprint);
+          }
           if (sameEnabledDefinition) {
             await transactionAdapter.prepare(sql(
-              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND (([definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))) OR ([definitionFingerprint] IS NULL AND [generationToken] IS NULL))"
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))"
             )).run(definition.fingerprint, generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
+          }
+          if (legacyAdoptionOpen) {
+            await transactionAdapter.prepare(sql(
+              "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL"
+            )).run(definition.fingerprint, generationToken, definition.name);
           }
           definition.nextOccurrence = nextOccurrence;
           definition.generationToken = generationToken;
         }
         candidateArmed = true;
-        await beforeCommit?.();
-        return { recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })) };
+        return {
+          recoveredOccurrences: plans.filter(({ recoveredOccurrence }) => recoveredOccurrence).map(({ definition, recoveredOccurrence }) => ({ definition, recoveredOccurrence })),
+          timerPlans: plans.filter(({ definition }) => definition.enabled).map(({ definition }) => ({ definition }))
+        };
       });
     } catch (error) {
       if (candidateArmed || database.adapter.engine !== "sqlite" || attempt >= 100 || !String(error?.message ?? "").includes("database is locked")) throw error;
@@ -15610,17 +15679,26 @@ async function recoverReconciledSchedules(database, recoveredOccurrences) {
 }
 var MAX_NATIVE_TIMER_DELAY_MS = 2147483647;
 var SCHEDULE_RECOVERY_RETRY_MS = 1e3;
+var LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS = 1e3;
+var LEGACY_SCHEDULE_DISCOVERY_LIMIT = 100;
 function settleActiveScheduleWork(database) {
   const active = new Set(database.__activeScheduleOccurrences ?? []);
   if (database.__scheduleRecoveryPromise) active.add(database.__scheduleRecoveryPromise);
   if (active.size === 0) return void 0;
   return Promise.allSettled([...active]).then(() => void 0);
 }
-async function startStaticSchedules(database) {
-  database.__scheduleTimers ??= /* @__PURE__ */ new Set();
-  database.__activeScheduleOccurrences ??= /* @__PURE__ */ new Set();
+function preflightStaticScheduleTimers(database) {
   for (const definition of database.schedules) {
     if (!definition.enabled) continue;
+    const timer = database.clock.setTimer(() => {
+    }, MAX_NATIVE_TIMER_DELAY_MS);
+    database.clock.clearTimer(timer);
+  }
+}
+function startStaticSchedules(database, timerPlans) {
+  database.__scheduleTimers ??= /* @__PURE__ */ new Set();
+  database.__activeScheduleOccurrences ??= /* @__PURE__ */ new Set();
+  for (const { definition } of timerPlans) {
     const arm = () => {
       if (database.__scheduleStopped || !definition.enabled) return;
       const occurrence = new Date(definition.nextOccurrence);
@@ -15644,6 +15722,7 @@ async function startStaticSchedules(database) {
     };
     arm();
   }
+  scheduleLateLegacyOccurrenceDiscovery(database);
 }
 async function recordScheduledOccurrence(database, definition, occurrence) {
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
@@ -15660,21 +15739,21 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
     const committed = await database.adapter.withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       const sql = transactionAdapter.dialect.sql;
-      const ownership = await transactionAdapter.prepare(sql(
-        "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
-      )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
-      if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
       const generation = await transactionAdapter.prepare(sql(
         "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
       )).run(definition.name, definition.fingerprint, definition.generationToken);
       if (Number(generation.changes) !== 1) {
         const completedAt = database.clock.now().toISOString();
-        const superseded = await transactionAdapter.prepare(sql(
+        await transactionAdapter.prepare(sql(
           "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
         )).run(completedAt, claim.id, claim.token, definition.fingerprint, definition.generationToken);
-        if (Number(superseded.changes) !== 1) throw new Error("Schedule occurrence ownership changed during generation invalidation.");
         return { owned: true, state: null, next: null, superseded: true };
       }
+      await database.scheduleOccurrenceFault?.("after-finalization-generation-lock", { scheduleName: definition.name, scheduledFor });
+      const ownership = await transactionAdapter.prepare(sql(
+        "UPDATE [sporades_schedule_occurrences] SET [updatedAt]=[updatedAt] WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
+      )).run(claim.id, claim.token, definition.fingerprint, definition.generationToken);
+      if (Number(ownership.changes) !== 1) return { owned: false, state: null, next: null };
       let handlerFailed = false;
       try {
         let state = null;
@@ -15821,17 +15900,68 @@ async function recoverPendingScheduleOccurrences(database, options = {}) {
   }
   if (earliestFutureClaimAt !== null) schedulePendingOccurrenceRecovery(database, new Date(earliestFutureClaimAt).toISOString());
 }
+async function recoverLateLegacyScheduleOccurrences(database) {
+  const sql = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql(
+    "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL ORDER BY [scheduledFor] ASC, [scheduleName] ASC LIMIT ?"
+  )).all(LEGACY_SCHEDULE_DISCOVERY_LIMIT);
+  for (const row of rows) {
+    if (!validRetainedScheduleOccurrenceIdentity(database, row) || row.claimExpiresAt !== null && !isCanonicalJobTimestamp(row.claimExpiresAt)) {
+      await finishInvalidRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    const durable = await database.adapter.prepare(sql(
+      "SELECT [definitionFingerprint], [generationToken], [enabled] FROM [sporades_schedules] WHERE [name]=?"
+    )).get(row.scheduleName);
+    const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
+    if (!durable || !Boolean(durable.enabled)) {
+      await finishSupersededRetainedScheduleOccurrence(database, row);
+      continue;
+    }
+    if (!definition || definition.fingerprint !== durable.definitionFingerprint || definition.generationToken !== durable.generationToken) {
+      if (definition) definition.enabled = false;
+      continue;
+    }
+    await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+  }
+}
+function scheduleLateLegacyOccurrenceDiscovery(database) {
+  if (database.__scheduleStopped || database.__scheduleLegacyDiscoveryTimer) return;
+  if (!database.schedules.some((definition) => definition.enabled && definition.__adoptLegacyPendingOccurrences === true)) return;
+  const timer = database.clock.setTimer(() => {
+    database.__scheduleTimers?.delete(timer);
+    database.__scheduleLegacyDiscoveryTimer = null;
+    if (database.__scheduleStopped) return;
+    const active = recoverLateLegacyScheduleOccurrences(database).catch((error) => {
+      database.log.emit({ category: "platform", event: "schedule.legacy_occurrence.discovery_failed", level: "error", message: "Late legacy Scheduled occurrence discovery failed", data: { code: String(error?.code ?? "SCHEDULE_LEGACY_DISCOVERY_FAILED").slice(0, 80) } });
+    }).finally(() => {
+      database.__activeScheduleOccurrences?.delete(active);
+      if (!database.__scheduleStopped) scheduleLateLegacyOccurrenceDiscovery(database);
+    });
+    database.__activeScheduleOccurrences?.add(active);
+    return active;
+  }, LEGACY_SCHEDULE_DISCOVERY_INTERVAL_MS);
+  database.__scheduleLegacyDiscoveryTimer = timer;
+  database.__scheduleTimers?.add(timer);
+}
 function validRetainedScheduleOccurrenceIdentity(database, row) {
   return typeof row.id === "string" && row.id.length > 0 && typeof row.scheduleName === "string" && row.scheduleName.length > 0 && isCanonicalJobTimestamp(row.scheduledFor) && row.id === scheduledOccurrenceIdentity(database, row.scheduleName, row.scheduledFor);
 }
-async function finishInvalidRetainedScheduleOccurrence(database, row, adapter = database.adapter) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
+async function finishInvalidRetainedScheduleOccurrence(database, row, adapter) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", adapter);
+  return database.adapter.withTransaction((transactionAdapter) => finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_INVALID", transactionAdapter));
 }
-async function finishSupersededRetainedScheduleOccurrence(database, row, adapter = database.adapter) {
-  return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
+async function finishSupersededRetainedScheduleOccurrence(database, row, adapter) {
+  if (adapter) return finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", adapter);
+  return database.adapter.withTransaction((transactionAdapter) => finishRetainedScheduleOccurrence(database, row, "SCHEDULE_OCCURRENCE_SUPERSEDED", transactionAdapter));
 }
 async function finishRetainedScheduleOccurrence(database, row, errorCode3, adapter = database.adapter) {
   const sql = adapter.dialect.sql;
+  if (typeof row.scheduleName === "string") {
+    await adapter.prepare(sql(
+      "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?"
+    )).run(row.scheduleName);
+  }
   const completedAt = database.clock.now().toISOString();
   const definitionFingerprint = row.definitionFingerprint ?? null;
   const generationToken = row.generationToken ?? null;
