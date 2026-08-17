@@ -852,21 +852,23 @@ test("libSQL database adapter owns remote connection, result normalization, and 
   );
 });
 
-test("libSQL database adapter does not share transaction baton with non-transaction operations", async () => {
+test("libSQL database adapter rejects captured-root public operations instead of sharing its transaction baton", async () => {
   await withLibsqlAdapter(
     async (adapter, { requests }) => {
       await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
-      await adapter.withTransaction(async (transaction) => {
-        await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
-        await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
-      });
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
+          await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
+        }),
+        /nested database transactions are not supported/i,
+      );
 
       const outsideSelect = requests.find((request) =>
         request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
       );
-      assert(outsideSelect, JSON.stringify(requests));
-      assert.equal(outsideSelect.baton, undefined);
+      assert.equal(outsideSelect, undefined, JSON.stringify(requests));
     },
     { fileName: "libsql-transaction-scope.db" },
   );

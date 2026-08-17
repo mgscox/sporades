@@ -157,7 +157,7 @@ A named Capsule declaration that determines when Sporades should enqueue an ordi
 _Avoid_: cron job, recurring Job, timer
 
 **Scheduled occurrence**:
-One UTC instant produced by one fingerprinted definition and per-publication incarnation of a Schedule. Its complete retained identity binds the Capsule, Schedule name, and UTC instant; its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds. The enabled durable Schedule incarnation is authority, so a stale runtime leaves replacement-owned pending work untouched and stops its local generation. Payload calculation itself may be repeated during recovery, but a changed, disabled, or removed generation supersedes its own pending occurrences.
+One UTC instant produced by one fingerprinted definition and per-publication incarnation of a Schedule. Its complete retained identity binds the Capsule, Schedule name, and UTC instant; its claim-owned durable transition atomically associates a deterministic Job identity, terminal occurrence outcome, and latest Schedule summary when enqueue succeeds. The enabled durable Schedule incarnation is authority, so a stale runtime leaves replacement-owned pending work untouched and stops its local generation. A same-definition upgrade may adopt a wholly legacy pending occurrence written late by an overlapping v0.8.5 runtime; changed, disabled, removed, and later-restored generations never do. Payload calculation itself may be repeated during recovery, but a changed, disabled, or removed generation supersedes its own pending occurrences.
 _Avoid_: run, tick, retry
 
 **Job inspection action**:

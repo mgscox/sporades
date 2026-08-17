@@ -996,9 +996,12 @@ runtime and stops its superseded local Schedule generation instead of re-arming
 it. The full declaration reconciliation and ownership publication are atomic and
 occur only after candidate recovery can be validated and timers can be armed. A candidate failure rolls back
 its state so the old scheduler remains functional. Same-definition restart
-transfers matching pending occurrences to the new incarnation. During upgrade,
-legacy pending occurrences first inherit the pre-reconciliation durable
-definition and incarnation; removed or disabled work is not resurrected.
+locks the durable Schedule generation before transferring matching pending
+occurrences to the new incarnation. During upgrade, legacy pending occurrences
+first inherit the pre-reconciliation durable definition and incarnation. A
+same-definition runtime also adopts a wholly legacy pending row written after
+that finite migration scan by an overlapping v0.8.5 runtime; changed, disabled,
+removed, or later-restored work is not resurrected.
 The next-occurrence timer uses bounded native-timer chunks and rechecks that the
 nominal instant is due before it persists or enqueues anything, so distant
 monthly and annual occurrences cannot run early when a host timer clamps a long

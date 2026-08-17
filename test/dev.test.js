@@ -9529,6 +9529,7 @@ test("sporades db dump returns structured table data from the running dev sessio
               name: "sporades",
               columns: ["key", "value"],
               rows: [
+                { key: "schedule-reconciliation-lock", value: "v1" },
                 { key: "schemaVersion", value: "v1:additive-fields" },
                 { key: "schemaHash", value: "f5a4b88b9bf85d0836797e22fa37197b8b38e8d9baddbec676ea15def328c3a0" },
                 {

@@ -215,7 +215,7 @@ export function nextScheduleOccurrence(fields: Set<number>[], after: Date, timez
   throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
 
-export async function ensureScheduleStorage(sqlite: LooseRecord) {
+export async function ensureScheduleStorage(sqlite: LooseRecord, scheduleStorageFault?: (boundary: string, details: LooseRecord) => any) {
   const sql = sqlite.dialect.sql;
   await sqlite.exec(
     sql(
@@ -265,6 +265,7 @@ export async function ensureScheduleStorage(sqlite: LooseRecord) {
     const pending = await adapter.prepare(migrationSql(
       "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC",
     )).all();
+    await scheduleStorageFault?.("after-legacy-pending-scan", { adapter });
     for (const row of pending) {
       const schedule = scheduleByName.get(String(row.scheduleName));
       if (!schedule) continue;

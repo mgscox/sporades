@@ -266,8 +266,11 @@ effective timezone.
   The complete declaration set and fresh incarnation tokens publish atomically
   only after candidate recovery can be validated and timers can be armed, so failed candidate initialization
   leaves the previous scheduler functional. Same-definition restart transfers
-  compatible pending occurrences; upgrade migration first binds legacy pending
-  rows to the pre-reconciliation durable Schedule identity.
+  compatible pending occurrences after locking the durable Schedule generation;
+  upgrade migration first binds legacy pending rows to the pre-reconciliation
+  durable Schedule identity. A matching enabled definition also adopts a wholly
+  legacy pending row written after that finite scan by an overlapping v0.8.5
+  runtime. Changed, disabled, removed, and later-restored work is never adopted.
   New declarations begin from startup time and do not backfill time before they
   existed. `enabled` defaults to `true`; a declaration may set `enabled: false`,
   in which case it remains persisted and inspectable but creates no

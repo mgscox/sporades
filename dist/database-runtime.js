@@ -197,6 +197,12 @@ function createConnectionTransactionGate() {
         }
     };
     const runOperation = (operation) => {
+        // A root adapter captured by its own transaction callback cannot queue
+        // behind that transaction: the owner is waiting for the callback, so the
+        // queued operation could never begin. Scoped owner operations bypass this
+        // gate through runDirectly; genuinely external callers still wait below.
+        if (transactionOwnership.getStore() === transactionOwner)
+            return rejectNestedTransactionScope();
         if (!transactionActive)
             return operation();
         return new Promise((resolve, reject) => pending.push({ operation, resolve, reject }));

@@ -60,6 +60,41 @@ async function assertCapturedRootTransactionReentryRejectsPromptly(adapter) {
   }
 }
 
+async function assertCapturedRootPublicOperationReentryRejectsPromptly(adapter, prefix) {
+  const table = `${prefix}_captured_root_rows`;
+  await adapter.exec(`CREATE TABLE ${table} (id TEXT PRIMARY KEY)`);
+  await adapter.prepare(`INSERT INTO ${table} (id) VALUES (?)`).run("one");
+  const operations = [
+    { name: "exec", invoke: () => adapter.exec("SELECT 1") },
+    { name: "prepare.get", invoke: () => adapter.prepare(`SELECT id FROM ${table} WHERE id = ?`).get("one") },
+    { name: "prepare.all", invoke: () => adapter.prepare(`SELECT id FROM ${table} ORDER BY id`).all() },
+    { name: "prepare.run", invoke: () => adapter.prepare(`UPDATE ${table} SET id = id WHERE id = ?`).run("one") },
+  ];
+  for (const outerMode of ["withTransaction", "withReadOnlySnapshot"]) {
+    for (const operation of operations) {
+      for (const timing of ["before await", "after await"]) {
+        let nested;
+        const outcome = await adapter[outerMode](async (owner) => {
+          assert.equal(Number((await owner.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).count), 1);
+          if (timing === "after await") await Promise.resolve();
+          nested = Promise.resolve().then(operation.invoke);
+          return await Promise.race([
+            nested.then(
+              () => ({ kind: "resolved" }),
+              (error) => ({ kind: "rejected", error }),
+            ),
+            new Promise((resolve) => setTimeout(() => resolve({ kind: "timed-out" }), 100)),
+          ]);
+        });
+
+        if (nested) await nested.catch(() => {});
+        assert.equal(outcome.kind, "rejected", `captured root ${outerMode} -> ${operation.name} reentry ${timing} rejects instead of waiting on its own connection queue`);
+        assert.match(outcome.error.message, /nested database transactions are not supported/i);
+      }
+    }
+  }
+}
+
 async function assertPublicOperationsWaitForTransactionOwner(adapter, prefix) {
   const rowsTable = `${prefix}_rows`;
   await adapter.exec(`CREATE TABLE ${rowsTable} (id TEXT PRIMARY KEY)`);
@@ -236,6 +271,17 @@ test("SQLite rejects captured root transaction reentry before and after await", 
   }
 });
 
+test("SQLite rejects captured root public operation reentry before and after await", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-captured-root-operation-sqlite-"));
+  const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+  try {
+    await assertCapturedRootPublicOperationReentryRejectsPromptly(adapter, "captured_sqlite");
+  } finally {
+    adapter.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("libSQL transaction callbacks reject nested transaction modes without deadlocking", async () => {
   await withLibsqlAdapter(async (adapter) => {
     await assertNestedTransactionModesRejectPromptly(adapter);
@@ -245,6 +291,12 @@ test("libSQL transaction callbacks reject nested transaction modes without deadl
 test("libSQL rejects captured root transaction reentry before and after await", async () => {
   await withLibsqlAdapter(async (adapter) => {
     await assertCapturedRootTransactionReentryRejectsPromptly(adapter);
+  }, { isolateProcess: true });
+});
+
+test("libSQL rejects captured root public operation reentry before and after await", async () => {
+  await withLibsqlAdapter(async (adapter) => {
+    await assertCapturedRootPublicOperationReentryRejectsPromptly(adapter, "libsql");
   }, { isolateProcess: true });
 });
 
@@ -320,6 +372,14 @@ test("Postgres rejects captured root transaction reentry before and after await"
   await withPostgresAdapter(async (adapter) => {
     await assertCapturedRootTransactionReentryRejectsPromptly(adapter);
   });
+});
+
+test("Postgres rejects captured root public operation reentry before and after await", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  await withPostgresAdapter(async (adapter) => {
+    await assertCapturedRootPublicOperationReentryRejectsPromptly(adapter, "postgres");
+  }, { appTableNames: ["postgres_captured_root_rows"] });
 });
 
 test("SQLite keeps public operations outside a transaction while owner operations proceed", async () => {

@@ -5,7 +5,7 @@ export declare function scheduleDefinitionsFromCapsule(capsuleDefinition: any, j
 export declare function resolveSchedulePayloadFactoryTimeoutMs(config?: RuntimeConfig): number;
 export declare function parseScheduleExpression(value: any): any;
 export declare function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string): Date;
-export declare function ensureScheduleStorage(sqlite: LooseRecord): Promise<void>;
+export declare function ensureScheduleStorage(sqlite: LooseRecord, scheduleStorageFault?: (boundary: string, details: LooseRecord) => any): Promise<void>;
 export declare function finishFailedScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date, error: any, claimToken: string): Promise<{
     finished: boolean;
     nextOccurrence: null;

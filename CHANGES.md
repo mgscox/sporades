@@ -67,8 +67,11 @@ Changes since v0.8.5.
   runtime cannot quarantine replacement-owned work, enqueue a Job, or overwrite
   the replacement Schedule's cursor and summary. Reconciliation publishes the
   complete declaration set atomically only after candidate recovery reads and timers are viable,
-  while legacy pending rows inherit the pre-reconciliation durable incarnation
-  so compatible crash recovery survives an upgrade.
+  locking each durable Schedule generation before it scans and transfers that
+  generation's pending work. Legacy pending rows inherit the pre-reconciliation
+  durable incarnation, and a same-definition runtime also adopts wholly legacy
+  pending rows written late by an overlapping v0.8.5 process; changed, disabled,
+  removed, and later-restored work remains fenced.
 - Let dynamic Schedule payload factories opt into a stable `payloadVersion`,
   because JavaScript source text cannot identify captured configuration. Changing
   the version creates a future-only Schedule generation; unversioned v0.8.5

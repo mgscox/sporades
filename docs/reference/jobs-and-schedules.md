@@ -221,8 +221,13 @@ publish in one Database transaction only after candidate recovery validation and
 timer setup succeed. A
 failed candidate rolls back that publication and leaves the live scheduler
 authoritative. Compatible pending work is transferred during a same-definition
-restart; legacy rows are first backfilled from the pre-reconciliation durable
-Schedule. Changed, disabled, removed, or later-restored work is never transferred.
+restart only after reconciliation locks and rotates the durable Schedule row, so
+an overlapping outgoing claim cannot insert between the transfer scan and the
+new incarnation. Legacy rows are first backfilled from the pre-reconciliation
+durable Schedule. If an overlapping v0.8.5 runtime writes a wholly legacy pending
+row after that finite scan, the matching enabled definition adopts it during
+reconciliation or claim recovery. Changed, disabled, removed, or later-restored
+work is never transferred or adopted.
 Long waits for the next occurrence are re-armed in bounded native-timer chunks.
 Every wake rechecks the current instant before persisting an occurrence, so
 monthly, annual, and other distant recurrences cannot be overflow-clamped into

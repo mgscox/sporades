@@ -510,6 +510,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         clock,
         capsuleIdentity: String(config.name ?? "capsule"),
         scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
+        scheduleReconciliationFault: options?.scheduleReconciliationFault,
         jobRecoveryFault: options?.jobRecoveryFault,
         schedulePayloadFactoryTimeoutMs,
         schedulePayloadFactoryActive: 0,
@@ -699,7 +700,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await sqlite.ensureUserPreferencesStorage();
     await sqlite.ensureTeamsStorage();
     await ensureJobStorage(sqlite);
-    await ensureScheduleStorage(sqlite);
+    await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
     await sqlite.ensureFileStorage();
     await sqlite.ensureLogStorage();
     await recoverInvalidRetainedJobState(database);
@@ -765,14 +766,21 @@ async function reconcileSchedules(database, beforeCommit) {
                     // Every successful runtime publication receives a fresh incarnation. A
                     // same-definition restart transfers only its still-pending work; changed,
                     // disabled, removed, and later-restored generations never inherit it.
-                    if (row && Boolean(row.enabled) && definition.enabled && row.definitionFingerprint === definition.fingerprint) {
-                        await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND [definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))")).run(generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
-                    }
+                    const sameEnabledDefinition = Boolean(row) && Boolean(row.enabled) && definition.enabled
+                        && row.definitionFingerprint === definition.fingerprint;
+                    definition.__adoptLegacyPendingOccurrences = sameEnabledDefinition;
                     if (row) {
+                        await database.scheduleReconciliationFault?.("before-generation-lock", { scheduleName: definition.name });
+                        // Lock and rotate the durable Schedule before scanning its pending
+                        // work. An outgoing claim holds this row until its occurrence insert
+                        // commits, so the transfer below cannot miss that insert on Postgres.
                         await transactionAdapter.prepare(updateScheduleSql).run(definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
                     }
                     else {
                         await transactionAdapter.prepare(sql("INSERT INTO [sporades_schedules] ([name], [definitionFingerprint], [generationToken], [expression], [effectiveTimezone], [missedRunPolicy], [enabled], [nextOccurrence]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run(definition.name, definition.fingerprint, generationToken, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+                    }
+                    if (sameEnabledDefinition) {
+                        await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [scheduleName]=? AND [status]='pending' AND (([definitionFingerprint]=? AND ([generationToken]=? OR ([generationToken] IS NULL AND ? IS NULL))) OR ([definitionFingerprint] IS NULL AND [generationToken] IS NULL))")).run(definition.fingerprint, generationToken, definition.name, definition.fingerprint, row.generationToken ?? null, row.generationToken ?? null);
                     }
                     definition.nextOccurrence = nextOccurrence;
                     definition.generationToken = generationToken;
@@ -958,6 +966,7 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
         const generation = await transactionAdapter.prepare(sql("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
         if (Number(generation.changes) !== 1)
             return { claim: null, superseded: true };
+        await database.scheduleOccurrenceFault?.("after-generation-lock", { scheduleName: definition.name, scheduledFor });
         const inserted = await transactionAdapter.prepare(sql("INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) " +
             "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING")).run(id, definition.name, definition.fingerprint, definition.generationToken, scheduledFor, token, expiresAt, nowIso, nowIso);
         if (Number(inserted.changes) === 1)
@@ -978,6 +987,24 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
             || (existing.claimExpiresAt !== null && !isCanonicalJobTimestamp(existing.claimExpiresAt))) {
             await finishInvalidRetainedScheduleOccurrence(database, existing, transactionAdapter);
             return { claim: null, superseded: false };
+        }
+        // A still-live v0.8.5 runtime can insert after the finite upgrade scan
+        // because it does not know the reconciliation lock or identity columns.
+        // Bind only a pending, wholly legacy row to a durable same-definition restart;
+        // changed, disabled, removed, and restored generations never receive this flag.
+        if (existing.status === "pending"
+            && existing.definitionFingerprint === null
+            && existing.generationToken === null
+            && definition.__adoptLegacyPendingOccurrences === true) {
+            const adopted = await transactionAdapter.prepare(sql("UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=?, [updatedAt]=? WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=? AND [status]='pending' AND [definitionFingerprint] IS NULL AND [generationToken] IS NULL")).run(definition.fingerprint, definition.generationToken, nowIso, existing.id, definition.name, scheduledFor);
+            if (Number(adopted.changes) === 1) {
+                existing = { ...existing, definitionFingerprint: definition.fingerprint, generationToken: definition.generationToken, updatedAt: nowIso };
+            }
+            else {
+                existing = await transactionAdapter.prepare(sql("SELECT [id], [status], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [claimToken], [claimExpiresAt], [errorCode] FROM [sporades_schedule_occurrences] WHERE [id]=?")).get(existing.id);
+                if (!existing)
+                    return { claim: null, superseded: false };
+            }
         }
         if (existing.definitionFingerprint !== definition.fingerprint || existing.generationToken !== definition.generationToken) {
             // This occurrence was created before the live generation reconciled. It
