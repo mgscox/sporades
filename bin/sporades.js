@@ -15313,6 +15313,7 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   try {
     await candidateDatabase.__deferJobExecution?.();
     await candidateDatabase.init();
+    candidateDatabase.__preflightJobExecutionActivation?.();
   } catch (initError) {
     try {
       await candidateDatabase.close();
@@ -15327,28 +15328,50 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   } catch (error) {
     teardownError = error;
   }
-  if (typeof candidateDatabase.__activateJobExecution === "function") {
-    candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
-  } else {
-    scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
-    scheduleCurrentUserJobWorker(candidateDatabase);
+  let activationError;
+  try {
+    if (typeof candidateDatabase.__activateJobExecution === "function") {
+      candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+    } else {
+      scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
+      scheduleCurrentUserJobWorker(candidateDatabase);
+    }
+  } catch (error) {
+    activationError = error;
+  }
+  if (activationError !== void 0) {
+    emitRuntimeReplacementWarning(
+      candidateDatabase,
+      "dev.runtime.job_activation_degraded",
+      "Replacement runtime Job activation degraded",
+      activationError,
+      "RUNTIME_JOB_ACTIVATION_FAILED"
+    );
   }
   if (teardownError !== void 0) {
-    try {
-      const warning = candidateDatabase.log?.emit?.({
-        category: "platform",
-        event: "dev.runtime.previous_teardown_failed",
-        level: "warn",
-        message: "Previous Dev runtime teardown failed after replacement",
-        data: { code: String(teardownError?.code ?? "RUNTIME_TEARDOWN_FAILED").slice(0, 80) }
-      });
-      Promise.resolve(warning).catch(() => {
-      });
-    } catch {
-    }
-    return candidateDatabase;
+    emitRuntimeReplacementWarning(
+      candidateDatabase,
+      "dev.runtime.previous_teardown_failed",
+      "Previous Dev runtime teardown failed after replacement",
+      teardownError,
+      "RUNTIME_TEARDOWN_FAILED"
+    );
   }
   return candidateDatabase;
+}
+function emitRuntimeReplacementWarning(database, event, message, error, fallbackCode) {
+  try {
+    const warning = database.log?.emit?.({
+      category: "platform",
+      event,
+      level: "warn",
+      message,
+      data: { code: String(error?.code ?? fallbackCode).slice(0, 80) }
+    });
+    Promise.resolve(warning).catch(() => {
+    });
+  } catch {
+  }
 }
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -15534,6 +15557,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __activateJobExecution: (recoveryAt) => {
       database.__jobActivationDeferred = false;
       activateCurrentUserJobExecution(database, recoveryAt);
+    },
+    __preflightJobExecutionActivation: () => {
+      preflightCurrentUserJobExecution(database);
     }
   };
   database.init = async () => {
@@ -16219,8 +16245,24 @@ async function recoverExpiredJobLeases(database) {
 }
 function activateCurrentUserJobExecution(database, recoveryAt) {
   database.__jobStopped = false;
-  scheduleJobLeaseRecoveryAt(database, recoveryAt);
-  scheduleCurrentUserJobWorker(database);
+  const failures = [];
+  try {
+    scheduleJobLeaseRecoveryAt(database, recoveryAt);
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    scheduleCurrentUserJobWorker(database, true);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
+  if (failures.length === 1) throw failures[0];
+}
+function preflightCurrentUserJobExecution(database) {
+  const timer = database.clock.setTimer(() => {
+  }, MAX_NATIVE_TIMER_DELAY_MS);
+  database.clock.clearTimer(timer);
 }
 function scheduleJobLeaseRecoveryAt(database, dueAt) {
   if (database.__jobStopped) return;
@@ -19550,7 +19592,7 @@ function stopCurrentUserJobWorker(database) {
   if (settlements.length === 1) return settlements[0];
   return Promise.all(settlements).then(() => void 0);
 }
-function scheduleCurrentUserJobWorker(database) {
+function scheduleCurrentUserJobWorker(database, propagateSchedulingFailure = false) {
   if (database.__jobStopped) return;
   if (database.__jobWorkerRunning) {
     database.__jobWorkerRerunRequested = true;
@@ -19571,9 +19613,10 @@ function scheduleCurrentUserJobWorker(database) {
         if (database.__jobWorkerPromise === worker) database.__jobWorkerPromise = null;
       }
     }, 0);
-  } catch {
+  } catch (error) {
     database.__jobWorkerScheduled = false;
     database.__jobWorkerTimer = null;
+    if (propagateSchedulingFailure) throw error;
   }
 }
 function scheduleJobWorkerWake(database, delayMs) {

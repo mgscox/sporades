@@ -356,13 +356,17 @@ does not gate completion.
   until `availableAt`; a retry remains another attempt for the same Job ID.
 - Dev replacement completes candidate viability initialization while keeping
   candidate Job recovery and dispatch stopped. After the outgoing runtime
-  settles, the promoted candidate refreshes tracked running-lease recovery
+  passes a no-dispatch Job activation-timer preflight and settles, the promoted
+  candidate refreshes tracked running-lease recovery
   before another worker pass,
   even when outgoing teardown reports a failure. Recovery remains single-flight:
   a refresh requested during an active scan runs afterward at the earliest
   requested instant, and shutdown awaits that complete chain. A claim acquired
   after the candidate's startup scan, retained by failed teardown, relinquished,
   or delayed during handoff therefore cannot strand.
+  If activation scheduling still degrades after outgoing teardown, Dev records a
+  bounded warning and promotes the request-capable candidate instead of retaining
+  the already-closed outgoing runtime.
 - Normal server context lists Jobs assigned to the current user. Privileged
   server context lists all Capsule Jobs. Both expose safe summaries rather than
   raw queue internals.

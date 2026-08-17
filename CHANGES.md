@@ -58,6 +58,10 @@ Changes since v0.8.5.
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
   Candidate viability initialization keeps Job recovery and dispatch stopped.
+  Job activation timer capability is preflighted without dispatch before
+  prior-runtime teardown. If activation scheduling still degrades after teardown,
+  Dev records a bounded warning and promotes the request-capable candidate instead
+  of returning control to the closed prior runtime.
   Every promoted candidate activates and refreshes tracked running-lease recovery
   before a fresh Job worker pass after prior-runtime teardown settles, including
   the warning path. Lease recovery is single-flight: a refresh requested during an

@@ -930,6 +930,11 @@ prior runtime subsequently reports a failure after closing its resources,
 Sporades promotes the viable candidate and records a bounded warning; it does
 not retain a closed prior runtime or close its only viable replacement.
 Candidate viability initialization keeps its Job recovery and dispatch stopped.
+The Job activation timer is preflighted before prior-runtime teardown without
+dispatching a handler. If activation scheduling degrades after teardown,
+Sporades still promotes the request-capable candidate and records a bounded
+`dev.runtime.job_activation_degraded` warning instead of retaining the closed
+prior runtime.
 After prior-runtime teardown settles, including its failure path, the candidate
 activates and refreshes tracked running-lease recovery before a fresh Job worker
 pass. Lease

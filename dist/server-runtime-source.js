@@ -401,6 +401,7 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
     try {
         await candidateDatabase.__deferJobExecution?.();
         await candidateDatabase.init();
+        candidateDatabase.__preflightJobExecutionActivation?.();
     }
     catch (initError) {
         try {
@@ -423,34 +424,45 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
     // tracked recovery and runnable work after outgoing settlement: a failed
     // teardown may leave the claim leased, while orderly settlement may return
     // it to delayed/queued state.
-    if (typeof candidateDatabase.__activateJobExecution === "function") {
-        candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+    let activationError;
+    try {
+        if (typeof candidateDatabase.__activateJobExecution === "function") {
+            candidateDatabase.__activateJobExecution(candidateDatabase.clock.now().getTime());
+        }
+        else {
+            scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
+            scheduleCurrentUserJobWorker(candidateDatabase);
+        }
     }
-    else {
-        scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
-        scheduleCurrentUserJobWorker(candidateDatabase);
+    catch (error) {
+        activationError = error;
+    }
+    if (activationError !== undefined) {
+        emitRuntimeReplacementWarning(candidateDatabase, "dev.runtime.job_activation_degraded", "Replacement runtime Job activation degraded", activationError, "RUNTIME_JOB_ACTIVATION_FAILED");
     }
     if (teardownError !== undefined) {
         // Candidate initialization is the ownership decision. The old runtime may
         // already be stopped and its adapter has been closed by the teardown helper,
         // so rejecting here would leave the Dev server pointing at a dead runtime
         // while also destroying its only viable replacement.
-        try {
-            const warning = candidateDatabase.log?.emit?.({
-                category: "platform",
-                event: "dev.runtime.previous_teardown_failed",
-                level: "warn",
-                message: "Previous Dev runtime teardown failed after replacement",
-                data: { code: String(teardownError?.code ?? "RUNTIME_TEARDOWN_FAILED").slice(0, 80) },
-            });
-            // Ownership must return to the caller without waiting for logging I/O;
-            // otherwise requests can still observe the already-closed prior runtime.
-            Promise.resolve(warning).catch(() => { });
-        }
-        catch { }
-        return candidateDatabase;
+        emitRuntimeReplacementWarning(candidateDatabase, "dev.runtime.previous_teardown_failed", "Previous Dev runtime teardown failed after replacement", teardownError, "RUNTIME_TEARDOWN_FAILED");
     }
     return candidateDatabase;
+}
+function emitRuntimeReplacementWarning(database, event, message, error, fallbackCode) {
+    try {
+        const warning = database.log?.emit?.({
+            category: "platform",
+            event,
+            level: "warn",
+            message,
+            data: { code: String(error?.code ?? fallbackCode).slice(0, 80) },
+        });
+        // Ownership must return to the caller without waiting for logging I/O;
+        // otherwise requests can still observe the already-closed prior runtime.
+        Promise.resolve(warning).catch(() => { });
+    }
+    catch { }
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -653,6 +665,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __activateJobExecution: (recoveryAt) => {
             database.__jobActivationDeferred = false;
             activateCurrentUserJobExecution(database, recoveryAt);
+        },
+        __preflightJobExecutionActivation: () => {
+            preflightCurrentUserJobExecution(database);
         },
     };
     database.init = async () => {
@@ -1443,8 +1458,27 @@ async function recoverExpiredJobLeases(database) {
 }
 function activateCurrentUserJobExecution(database, recoveryAt) {
     database.__jobStopped = false;
-    scheduleJobLeaseRecoveryAt(database, recoveryAt);
-    scheduleCurrentUserJobWorker(database);
+    const failures = [];
+    try {
+        scheduleJobLeaseRecoveryAt(database, recoveryAt);
+    }
+    catch (error) {
+        failures.push(error);
+    }
+    try {
+        scheduleCurrentUserJobWorker(database, true);
+    }
+    catch (error) {
+        failures.push(error);
+    }
+    if (failures.length > 1)
+        throw new AggregateError(failures, "Job activation scheduling failed.");
+    if (failures.length === 1)
+        throw failures[0];
+}
+function preflightCurrentUserJobExecution(database) {
+    const timer = database.clock.setTimer(() => { }, MAX_NATIVE_TIMER_DELAY_MS);
+    database.clock.clearTimer(timer);
 }
 function scheduleJobLeaseRecoveryAt(database, dueAt) {
     if (database.__jobStopped)
@@ -4922,7 +4956,7 @@ function stopCurrentUserJobWorker(database) {
         return settlements[0];
     return Promise.all(settlements).then(() => undefined);
 }
-function scheduleCurrentUserJobWorker(database) {
+function scheduleCurrentUserJobWorker(database, propagateSchedulingFailure = false) {
     if (database.__jobStopped)
         return;
     if (database.__jobWorkerRunning) {
@@ -4952,9 +4986,11 @@ function scheduleCurrentUserJobWorker(database) {
             }
         }, 0);
     }
-    catch {
+    catch (error) {
         database.__jobWorkerScheduled = false;
         database.__jobWorkerTimer = null;
+        if (propagateSchedulingFailure)
+            throw error;
     }
 }
 function scheduleJobWorkerWake(database, delayMs) {

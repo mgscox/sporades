@@ -140,6 +140,94 @@ test("runtime database replacement promotes the initialized candidate when old t
   ]);
 });
 
+test("runtime replacement rejects a Job activation timer failure before outgoing teardown", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-replacement-preflight-"));
+  const activationError = new Error("job activation timer unavailable");
+  const calls = [];
+  const current = {
+    async shutdown() { calls.push("current.shutdown"); },
+    async close() { calls.push("current.close"); },
+  };
+  const candidate = await runtime.openDevDatabase(path.join(dir, "candidate.db"), "", {}, { name: "candidate" }, {
+    mutations: { probe: mutation(() => ({ runtime: "candidate" })) },
+  }, {
+    clock: {
+      now: () => new Date("2030-01-01T00:00:00.000Z"),
+      setTimer() { calls.push("candidate.timer"); throw activationError; },
+      clearTimer() {},
+    },
+  });
+  const closeCandidate = candidate.close.bind(candidate);
+  candidate.close = async () => { calls.push("candidate.close"); await closeCandidate(); };
+
+  try {
+    await assert.rejects(runtime.replaceRuntimeDatabase(current, candidate), (error) => error === activationError);
+    assert.deepEqual(calls, ["candidate.timer", "candidate.close"]);
+  } finally {
+    await Promise.resolve().then(() => closeCandidate()).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runtime replacement promotes a request-capable candidate when Job activation degrades after teardown", async (t) => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const auth = { userId: "replacement-user", displayName: "Replacement", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
+  for (const teardownFails of [false, true]) await t.test(teardownFails ? "after teardown failure" : "after orderly teardown", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-replacement-activation-degraded-"));
+    const teardownError = new Error("old teardown failed");
+    const activationError = new Error("job activation timer unavailable");
+    const calls = [];
+    let timerAttempt = 0;
+    const candidate = await runtime.openDevDatabase(path.join(dir, "candidate.db"), "", {}, { name: "candidate" }, {
+      mutations: { probe: mutation(() => { calls.push("candidate.request"); return { runtime: "candidate" }; }) },
+    }, {
+      clock: {
+        now: () => new Date("2030-01-01T00:00:00.000Z"),
+        setTimer() {
+          timerAttempt += 1;
+          calls.push(`candidate.timer.${timerAttempt}`);
+          if (timerAttempt > 1) throw activationError;
+          return timerAttempt;
+        },
+        clearTimer(timer) { calls.push(`candidate.clear.${timer}`); },
+      },
+    });
+    candidate.log = {
+      emit(event) { calls.push(`candidate.warning:${event.event}`); },
+    };
+    const current = {
+      async shutdown() { calls.push("current.shutdown"); if (teardownFails) throw teardownError; },
+      async close() { calls.push("current.close"); },
+    };
+    let promoted;
+
+    try {
+      promoted = await runtime.replaceRuntimeDatabase(current, candidate);
+      assert.equal(promoted, candidate);
+      assert.deepEqual(await runtime.runMutation(promoted, auth, "probe", []), {
+        ok: true,
+        data: { runtime: "candidate" },
+        error: null,
+      });
+      assert.deepEqual(calls, [
+        "candidate.timer.1",
+        "candidate.clear.1",
+        "current.shutdown",
+        "current.close",
+        "candidate.timer.2",
+        "candidate.timer.3",
+        "candidate.warning:dev.runtime.job_activation_degraded",
+        ...(teardownFails ? ["candidate.warning:dev.runtime.previous_teardown_failed"] : []),
+        "candidate.request",
+      ]);
+    } finally {
+      await Promise.resolve(promoted ?? candidate).then((database) => database.close()).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("a replacement remains request-capable after the old runtime shutdown hook fails", async () => {
   const runtime = await import("../dist/server-runtime-source.js");
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-runtime-replacement-"));

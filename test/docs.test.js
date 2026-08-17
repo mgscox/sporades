@@ -946,6 +946,8 @@ test("canonical Job and architecture docs describe settled runtime shutdown", as
     assert.match(document, /teardown[\s\S]*(?:prior|previous) runtime[\s\S]*(?:failure|reports a failure)/i);
     assert.match(document, /promote(?:s)?[\s\S]*(?:viable|initialized)[\s\S]*candidate/i);
     assert.match(document, /closed[\s\S]*(?:(?:prior|previous)[\s\S]*)?runtime/i);
+    assert.match(document, /Job activation timer[\s\S]*preflight(?:ed|s)?[\s\S]*before[\s\S]*(?:prior|outgoing)[\s\S]*teardown/i);
+    assert.match(document, /activation\s+scheduling[\s\S]*(?:degrades|fails)[\s\S]*promote(?:s|d)?[\s\S]*candidate/i);
     assert.match(document, /durable[\s\S]*(?:queued|delayed)[\s\S]*runtime restart/i);
   }
 });

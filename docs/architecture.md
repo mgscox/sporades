@@ -190,6 +190,11 @@ Candidate initialization is the Dev replacement ownership boundary. If teardown
 of the prior runtime then reports a failure after closing its resources, Dev
 promotes the initialized candidate and records a bounded warning; it never keeps
 serving through the closed prior runtime or closes its only viable replacement.
+The Job activation timer is preflighted before prior-runtime teardown without
+dispatching a handler. If activation scheduling degrades after teardown, Dev
+still promotes the request-capable candidate and records a bounded
+`dev.runtime.job_activation_degraded` warning instead of returning control to the
+closed prior runtime.
 
 ### Local Container Session
 
