@@ -15313,7 +15313,6 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   try {
     await candidateDatabase.__deferJobExecution?.();
     await candidateDatabase.init();
-    candidateDatabase.__preflightJobExecutionActivation?.();
   } catch (initError) {
     try {
       await candidateDatabase.close();
@@ -15321,6 +15320,16 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
       throw new AggregateError([initError, closeError], "Runtime initialization and candidate database closure both failed.");
     }
     throw initError;
+  }
+  try {
+    candidateDatabase.__preflightJobExecutionActivation?.();
+  } catch (preflightError) {
+    try {
+      await shutdownAndCloseDatabase(candidateDatabase);
+    } catch (cleanupError) {
+      throw new AggregateError([preflightError, cleanupError], "Runtime activation preflight and candidate database cleanup both failed.");
+    }
+    throw preflightError;
   }
   let teardownError;
   try {

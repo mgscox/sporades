@@ -150,6 +150,10 @@ test("runtime replacement rejects a Job activation timer failure before outgoing
     async close() { calls.push("current.close"); },
   };
   const candidate = await runtime.openDevDatabase(path.join(dir, "candidate.db"), "", {}, { name: "candidate" }, {
+    hooks: {
+      init() { calls.push("candidate.init"); },
+      shutdown() { calls.push("candidate.shutdown"); },
+    },
     mutations: { probe: mutation(() => ({ runtime: "candidate" })) },
   }, {
     clock: {
@@ -163,11 +167,51 @@ test("runtime replacement rejects a Job activation timer failure before outgoing
 
   try {
     await assert.rejects(runtime.replaceRuntimeDatabase(current, candidate), (error) => error === activationError);
-    assert.deepEqual(calls, ["candidate.timer", "candidate.close"]);
+    assert.deepEqual(calls, [
+      "candidate.init",
+      "candidate.timer",
+      "candidate.shutdown",
+      "candidate.close",
+    ]);
   } finally {
     await Promise.resolve().then(() => closeCandidate()).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("runtime replacement preserves activation preflight and candidate cleanup failures", async () => {
+  const runtime = await import("../dist/server-runtime-source.js");
+  const activationError = new Error("job activation timer unavailable");
+  const shutdownError = new Error("candidate shutdown failed");
+  const closeError = new Error("candidate close failed");
+  const calls = [];
+  const current = {
+    async shutdown() { calls.push("current.shutdown"); },
+    async close() { calls.push("current.close"); },
+  };
+  const candidate = {
+    async __deferJobExecution() { calls.push("candidate.defer"); },
+    async init() { calls.push("candidate.init"); },
+    __preflightJobExecutionActivation() { calls.push("candidate.preflight"); throw activationError; },
+    async shutdown() { calls.push("candidate.shutdown"); throw shutdownError; },
+    async close() { calls.push("candidate.close"); throw closeError; },
+  };
+
+  await assert.rejects(
+    runtime.replaceRuntimeDatabase(current, candidate),
+    (error) => error instanceof AggregateError
+      && error.errors[0] === activationError
+      && error.errors[1] instanceof AggregateError
+      && error.errors[1].errors[0] === shutdownError
+      && error.errors[1].errors[1] === closeError,
+  );
+  assert.deepEqual(calls, [
+    "candidate.defer",
+    "candidate.init",
+    "candidate.preflight",
+    "candidate.shutdown",
+    "candidate.close",
+  ]);
 });
 
 test("runtime replacement promotes a request-capable candidate when Job activation degrades after teardown", async (t) => {
