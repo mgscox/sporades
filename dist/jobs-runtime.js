@@ -607,8 +607,7 @@ export async function scheduleSummary(sqlite, row) {
     if (![0, 1, false, true].includes(row.enabled))
         throw invalid("enabled");
     const exhausted = row.exhausted ?? 0;
-    if (![0, 1, false, true].includes(exhausted)
-        || (Boolean(exhausted) && (!Boolean(row.enabled) || row.nextOccurrence != null)))
+    if (![0, 1, false, true].includes(exhausted) || !scheduleCursorStateIsConsistent(row.enabled, exhausted, row.nextOccurrence))
         throw invalid("exhausted");
     if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence))
         throw invalid("nextOccurrence");
@@ -643,6 +642,14 @@ export async function scheduleSummary(sqlite, row) {
         name: String(row.name), expression: String(row.expression), timezone: String(row.effectiveTimezone),
         missedRun: String(row.missedRunPolicy), enabled: Boolean(row.enabled), nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence), latestOccurrence,
     };
+}
+export function scheduleCursorStateIsConsistent(enabled, exhausted, nextOccurrence) {
+    if (![0, 1, false, true].includes(enabled) || ![0, 1, false, true].includes(exhausted))
+        return false;
+    const hasNextOccurrence = nextOccurrence !== null && nextOccurrence !== undefined;
+    return Boolean(enabled)
+        ? hasNextOccurrence !== Boolean(exhausted)
+        : !Boolean(exhausted) && !hasNextOccurrence;
 }
 export function assertJobScheduleProvenance(row, expected) {
     if (!expected)

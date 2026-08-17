@@ -78,6 +78,7 @@ export declare function scheduleSummary(sqlite: LooseRecord, row: any): Promise<
         jobId?: undefined;
     } | null;
 }>;
+export declare function scheduleCursorStateIsConsistent(enabled: any, exhausted: any, nextOccurrence: any): boolean;
 export declare function assertJobScheduleProvenance(row: any, expected: any): void;
 export declare function jobError(code: string, message: string, hint: string): any;
 export declare function boundedJobJson(value: any, limit: number, code: string, label: string): string;

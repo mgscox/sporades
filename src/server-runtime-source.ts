@@ -99,7 +99,7 @@ import {
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
   normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
   resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
-  scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
+  scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
@@ -465,9 +465,19 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
     }
     throw initError;
   }
+  let teardownError: unknown;
   try {
     await shutdownAndCloseDatabase(currentDatabase);
-  } catch (teardownError) {
+  } catch (error) {
+    teardownError = error;
+  }
+  // Candidate startup can finish its only queue scan while the outgoing
+  // worker still owns a running claim. Outgoing settlement may then return
+  // that Job to delayed/queued state after the candidate has gone idle. Make
+  // the completed handoff itself a wake boundary so durable work cannot depend
+  // on an unrelated enqueue or another restart.
+  scheduleCurrentUserJobWorker(candidateDatabase);
+  if (teardownError !== undefined) {
     // Candidate initialization is the ownership decision. The old runtime may
     // already be stopped and its adapter has been closed by the teardown helper,
     // so rejecting here would leave the Dev server pointing at a dead runtime
@@ -799,7 +809,7 @@ async function reconcileSchedules(database: LooseRecord) {
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
         for (const row of persisted) {
-          if (![0, 1, false, true].includes(row.exhausted)
+          if (!scheduleCursorStateIsConsistent(row.enabled, row.exhausted, row.nextOccurrence)
             || (row.nextOccurrence !== null && row.nextOccurrence !== undefined && !isCanonicalJobTimestamp(row.nextOccurrence))) {
             throw commandError(
               "Stored Schedule state is invalid.",
@@ -829,10 +839,28 @@ async function reconcileSchedules(database: LooseRecord) {
               nextOccurrence = String(row.nextOccurrence);
               if (Date.parse(nextOccurrence) <= now.getTime()) {
                 let latest = new Date(nextOccurrence);
-                let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
-                while (future.getTime() <= now.getTime()) { latest = future; future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone); }
-                nextOccurrence = future.toISOString();
-                if (definition.missedRun === "latest") recoveredOccurrence = latest;
+                let successor = nextScheduleCursor(definition, latest);
+                while (!successor.exhausted && Date.parse(successor.nextOccurrence!) <= now.getTime()) {
+                  latest = new Date(successor.nextOccurrence!);
+                  successor = nextScheduleCursor(definition, latest);
+                }
+                if (definition.missedRun === "latest") {
+                  recoveredOccurrence = latest;
+                  // Keep the final due cursor durable until occurrence
+                  // finalization commits its Job/outcome and terminal cursor
+                  // together. A process loss after reconciliation can then
+                  // recover the same occurrence instead of preserving a
+                  // prematurely exhausted Schedule that never created it.
+                  if (successor.exhausted) {
+                    nextOccurrence = latest.toISOString();
+                    exhausted = false;
+                  } else {
+                    nextOccurrence = successor.nextOccurrence;
+                  }
+                } else {
+                  nextOccurrence = successor.nextOccurrence;
+                  exhausted = successor.exhausted;
+                }
               }
             }
           }

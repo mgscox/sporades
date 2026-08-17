@@ -929,6 +929,9 @@ initialization is the Dev replacement ownership boundary. If teardown of the
 prior runtime subsequently reports a failure after closing its resources,
 Sporades promotes the viable candidate and records a bounded warning; it does
 not retain a closed prior runtime or close its only viable replacement.
+After prior-runtime teardown settles, including its failure path, the candidate
+runs a fresh Job worker pass so work relinquished or delayed by the outgoing
+worker during handoff remains discoverable.
 Durable queued and delayed Job state remains stored and recovers on runtime
 restart. Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.
@@ -1022,12 +1025,16 @@ only after its transaction commits, so it can open a fresh recovery transaction.
 Every retained or freshly calculated Schedule `nextOccurrence` cursor must be
 a canonical four-digit UTC timestamp. Malformed retained state or a startup
 calculation beyond that domain fails startup with `SCHEDULE_STATE_INVALID`
-before persistence or live timers arm. When a due occurrence is the last
+before persistence or live timers arm. Retained state is canonical only when an
+enabled active Schedule has a cursor, an enabled exhausted Schedule has none,
+or a disabled Schedule is non-exhausted with no cursor; startup and inspection
+reject all inverse combinations before writes or timers. When a due occurrence is the last
 representable instant for its recurrence, successful enqueue, payload failure,
 or enqueue failure commits its occurrence and latest summary atomically and
 durably exhausts future scheduling. Inspection then reports the declaration as
 `enabled: true` with `nextOccurrence: null`; restart preserves exhaustion and no
-timer is re-armed. A late final occurrence and its single-attempt Job use claim
+timer is re-armed. A final cursor already due at restart is recovered under
+`latest` before atomic exhaustion; `skip` exhausts without enqueueing. A late final occurrence and its single-attempt Job use claim
 leases clamped to the remaining canonical domain; a retry policy requiring a
 later attempt instead commits the bounded enqueue-failure outcome. Schedule
 inspection applies that same

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase as openStoppedDevDatabase, resolveAnonymousSession, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { cancelJob, createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase as openStoppedDevDatabase, replaceRuntimeDatabase, resolveAnonymousSession, runAppMessage, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 const auth = { userId: "u", displayName: "u", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
@@ -397,6 +397,26 @@ test("runtime initialization wakes queued and delayed Jobs retained by an orderl
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-restart-wake-"));const file=path.join(dir,"data.db");const seen=[];const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const capsule={jobs:{record:job((ctx,p)=>seen.push(p.id))},mutations:{enqueue:mutation((ctx,id,options)=>ctx.jobs.enqueue("record",{id},options))}};let db;
  try {db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");await runMutation(db,auth,"enqueue",["queued",{}]);await runMutation(db,auth,"enqueue",["delayed",{availableAt:new Date(clock.now().getTime()+100).toISOString()}]);await db.close();db=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock});await db.init();assert.equal(db.__jobWorkerScheduled,true);await clock.runDueTimers();assert.deepEqual(seen,["queued"]);clock.advanceBy(101);await clock.runDueTimers();assert.deepEqual(seen,["queued","delayed"]);}
  finally {await Promise.resolve(db?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
+test("Dev replacement rediscovers a retry settled by the outgoing runtime", async (t) => {
+ for (const teardownFailure of [false,true]) await t.test(teardownFailure?"after outgoing shutdown hook failure":"after orderly outgoing teardown",async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-replacement-handoff-"));const file=path.join(dir,"data.db");const outgoingClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const candidateClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let attempts=0;let firstStarted;const firstBegan=new Promise(resolve=>{firstStarted=resolve;});
+  const capsule={jobs:{work:job(async ctx=>{attempts+=1;if(attempts===1){firstStarted();await new Promise((resolve,reject)=>ctx.signal.addEventListener("abort",()=>{const error=new Error("outgoing runtime stopped");error.name="AbortError";reject(error);},{once:true}));}return {attempts};})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("work",null,{retry:{maxAttempts:2,delayMs:0}}))},...(teardownFailure?{hooks:{shutdown(){throw new Error("expected outgoing teardown failure");}}}:{})};let outgoing;let candidate;let releaseCandidateRead=()=>{};
+  try{
+   outgoing=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:outgoingClock});await outgoing.init();
+   outgoing.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",outgoingClock.now().toISOString(),"u",null,null,0,1,"anonymous");
+   candidate=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:candidateClock});await candidate.init();
+   const candidateBase=candidate.adapter;let candidateReadStarted;const candidateReadBegan=new Promise(resolve=>{candidateReadStarted=resolve;});candidate.adapter=pauseEmptyQueuedJobRead(candidateBase,()=>candidateReadStarted(),release=>{releaseCandidateRead=release;});
+   const candidateDrain=candidateClock.runDueTimers();await candidateReadBegan;
+   const queued=await runMutation(outgoing,auth,"enqueue",[]);const outgoingDrain=outgoingClock.runDueTimers();await firstBegan;
+   releaseCandidateRead();releaseCandidateRead=()=>{};await candidateDrain;candidate.adapter=candidateBase;
+   candidate=await replaceRuntimeDatabase(outgoing,candidate);outgoing=null;
+   await candidateClock.runDueTimers();await outgoingDrain;
+   const state=(await inspectRuntimeJobs(candidate.adapter)).find(row=>row.id===queued.data.id);
+   assert.equal(state.status,"succeeded");assert.equal(state.attempts,2);assert.equal(attempts,2);
+  }finally{releaseCandidateRead();await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.shutdown()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+ });
 });
 
 test("far-future Jobs re-arm bounded timer chunks without tight rescans", async () => {

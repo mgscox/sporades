@@ -2011,9 +2011,14 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
           let result;
           try { result = await fn(snapshotAdapter); }
           finally { revokeTransactionScopedAdapter(snapshotAdapter); }
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: false });
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = OFF", params: [], close: true });
           return result;
-        } catch (error) { try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true }); } catch {} throw error; }
+        } catch (error) {
+          try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: false }); } catch {}
+          try { await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = OFF", params: [], close: true }); } catch {}
+          throw error;
+        }
         finally { activeTransactions.delete(transaction); }
       });
     },

@@ -54,11 +54,16 @@ instant together and skips a malformed unique-key occupant without failing
 startup or spinning its timer. Every retained or freshly calculated Schedule
 `nextOccurrence` cursor is also canonical; malformed retained state or a
 startup calculation outside the four-digit UTC domain fails startup with
-`SCHEDULE_STATE_INVALID` before persistence or a live timer is armed.
+`SCHEDULE_STATE_INVALID` before persistence or a live timer is armed. An active
+enabled Schedule has a cursor, an exhausted enabled Schedule has none, and a
+disabled Schedule is non-exhausted with no cursor; startup and inspection reject
+all inconsistent retained combinations before writes or timers.
 If an already-due occurrence is the final representable instant, its Job or
 bounded failure outcome commits with the latest Schedule summary and future
 scheduling becomes durably exhausted. Inspection reports `enabled: true` and
-`nextOccurrence: null`; restart does not re-arm a timer. A late final occurrence
+`nextOccurrence: null`; restart does not re-arm a timer. If restart discovers
+that final cursor already due, `latest` recovers it before exhaustion while
+`skip` exhausts without enqueueing. A late final occurrence
 and its single-attempt Job clamp their claim leases to the remaining canonical
 domain; a retry policy requiring later attempts becomes the bounded enqueue
 failure.

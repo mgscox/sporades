@@ -115,7 +115,10 @@ failure still proceeds to Database adapter closure. Candidate initialization is
 the Dev replacement ownership boundary: if teardown of the prior runtime then
 reports a failure after closing its resources, Sporades promotes the viable
 candidate and records a bounded warning instead of retaining a closed runtime or
-closing its only usable replacement. Runtime close independently attempts mail,
+closing its only usable replacement. After prior-runtime teardown settles,
+successful or not, the promoted candidate performs another Job worker pass. A
+claim that the outgoing worker relinquished or delayed during handoff therefore
+cannot wait indefinitely for an unrelated enqueue or restart. Runtime close independently attempts mail,
 Database adapter, and file-storage closure; if more than one fails, it reports
 the failures together after every closer has been attempted. If worker
 settlement or the Capsule shutdown hook fails alongside mail closure, shutdown
@@ -255,11 +258,16 @@ canonical four-digit UTC timestamp. A malformed or coercible retained cursor,
 or a startup calculation beyond that domain, fails startup with
 `SCHEDULE_STATE_INVALID` before persistence or any live timer arms. Privileged
 and operator inspection applies the same domain to the next cursor and latest
-occurrence timestamp. If an already-due occurrence
+occurrence timestamp. Enabled, exhausted, and cursor state is also canonical:
+an enabled active Schedule has a cursor, an enabled exhausted Schedule has no
+cursor, and a disabled Schedule is non-exhausted with no cursor. Startup and
+inspection reject every other combination before writes or timers. If an already-due occurrence
 is the final representable instant, its Job or bounded failure outcome and
 latest summary commit atomically and future scheduling becomes durably
 exhausted. Inspection reports `enabled: true` with `nextOccurrence: null`;
-restart does not re-arm a timer. A late final occurrence and its single-attempt
+restart does not re-arm a timer. When restart finds that final cursor already
+due, `latest` recovers the occurrence and then exhausts the Schedule atomically;
+`skip` exhausts it without enqueueing. A late final occurrence and its single-attempt
 Job clamp their claim leases to the remaining canonical domain; a retry policy
 requiring later attempts commits the bounded enqueue-failure outcome. Retained occurrence
 instants and claim expiries must be canonical four-digit UTC timestamps;

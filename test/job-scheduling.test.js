@@ -1107,6 +1107,92 @@ test("PostgreSQL rejects malformed retained Schedule cursors before arming live 
   );
 });
 
+async function proveInconsistentRetainedScheduleExhaustionFailsClosed(openRuntime, scheduleName) {
+  const capsule = {
+    jobs: { record: job(() => null) },
+    schedules: { [scheduleName]: schedule({ expression: "* * * * *", timezone: "UTC", job: "record" }) },
+  };
+  const validCursor = "2030-01-01T00:01:00.000Z";
+  let database = await openRuntime(capsule, createControllableRuntimeClock("2030-01-01T00:00:30.000Z"));
+  try {
+    await database.init();
+    await database.shutdown();
+    for (const [scenario, enabled, exhausted, nextOccurrence] of [
+      ["exhausted Schedule with a next cursor", 1, 1, validCursor],
+      ["disabled exhausted Schedule", 0, 1, null],
+      ["disabled exhausted Schedule with a next cursor", 0, 1, validCursor],
+      ["enabled non-exhausted Schedule without a next cursor", 1, 0, null],
+      ["disabled Schedule with a next cursor", 0, 0, validCursor],
+    ]) {
+      const sql = database.adapter.dialect.sql;
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_schedules] SET [enabled]=?, [exhausted]=?, [nextOccurrence]=? WHERE [name]=?",
+      )).run(enabled, exhausted, nextOccurrence, scheduleName);
+      await database.close();
+
+      const timers = new Map();
+      let nextTimerId = 1;
+      const clock = {
+        now: () => new Date("2030-01-01T00:00:30.000Z"),
+        setTimer(callback, delayMs) { const id = nextTimerId++; timers.set(id, { callback, delayMs }); return id; },
+        clearTimer(id) { timers.delete(id); },
+      };
+      database = await openRuntime(capsule, clock);
+      await assert.rejects(inspectRuntimeSchedules(database.adapter), { code: "SCHEDULE_INSPECTION_INVALID_STATE" }, `${scenario} must fail inspection`);
+      await assert.rejects(database.init(), { code: "SCHEDULE_STATE_INVALID" }, `${scenario} must fail startup`);
+      assert.equal(timers.size, 0, `${scenario} must not arm a live timer`);
+      assert.deepEqual({ ...await database.adapter.prepare(sql(
+        "SELECT [enabled], [exhausted], [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?",
+      )).get(scheduleName) }, { enabled, exhausted, nextOccurrence });
+    }
+  } finally {
+    try {
+      const sql = database.adapter.dialect.sql;
+      await database.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+      await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?")).run(scheduleName);
+    } catch {}
+    try { await database.close(); } catch {}
+  }
+}
+
+test("SQLite rejects inconsistent retained Schedule exhaustion before publication", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-exhaustion-"));
+  const file = path.join(dir, "data.db");
+  try {
+    await proveInconsistentRetainedScheduleExhaustionFailsClosed(
+      (capsule, clock) => openDevDatabase(file, "", {}, { name: "scheduled-invalid-exhaustion" }, capsule, { clock }),
+      "invalidSqliteExhaustion",
+    );
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("libSQL rejects inconsistent retained Schedule exhaustion before publication", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-exhaustion-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-invalid-exhaustion-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveInconsistentRetainedScheduleExhaustionFailsClosed(
+        (capsule, clock) => openDevDatabase(path.join(dir, "unused.db"), "", {}, config, capsule, { clock, serviceEnv }),
+        "invalidLibsqlExhaustion",
+      );
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PostgreSQL rejects inconsistent retained Schedule exhaustion before publication", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL retained-exhaustion test.",
+}, async () => {
+  const config = { name: "scheduled-invalid-exhaustion-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await proveInconsistentRetainedScheduleExhaustionFailsClosed(
+    (capsule, clock) => openDevDatabase("unused.db", "", {}, config, capsule, { clock, serviceEnv }),
+    "invalidPostgresExhaustion",
+  );
+});
+
 test("Schedule startup rejects a freshly computed cursor outside the four-digit UTC domain", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-computed-cursor-overflow-"));
   const timers = new Map();
@@ -1334,6 +1420,138 @@ test("an enqueue rollback at the final canonical Schedule occurrence commits exh
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+async function proveFinalCanonicalRestartRecovery(openRuntime, schedulePrefix) {
+  const scenarios = [
+    { suffix: "latest", missedRun: "latest", expected: "succeeded" },
+    { suffix: "skip", missedRun: "skip", expected: "skipped" },
+    { suffix: "failure", missedRun: "latest", expected: "payload-failed", payload: () => { throw new Error("expected final recovery payload failure"); } },
+    { suffix: "interrupted", missedRun: "latest", expected: "succeeded", interruptRecovery: true },
+  ];
+  let database;
+  try {
+    for (const scenario of scenarios) {
+      const scheduleName = `${schedulePrefix}${scenario.suffix}`;
+      const clock = createControllableRuntimeClock("9999-12-31T23:58:30.000Z");
+      const capsule = {
+        jobs: { work: job(() => ({ recovered: true })) },
+        schedules: {
+          [scheduleName]: schedule({
+            expression: "* * * * *",
+            timezone: "UTC",
+            job: "work",
+            missedRun: scenario.missedRun,
+            ...(scenario.payload ? { payload: scenario.payload } : {}),
+          }),
+        },
+      };
+      database = await openRuntime(capsule, clock);
+      await database.init();
+      await database.shutdown();
+      await database.close();
+
+      clock.setInstant("9999-12-31T23:59:30.000Z");
+      let interruptRecovery = scenario.interruptRecovery === true;
+      database = await openRuntime(capsule, clock, scenario.interruptRecovery ? {
+        scheduleOccurrenceFault(boundary) {
+          if (boundary === "after-generation-lock" && interruptRecovery) {
+            interruptRecovery = false;
+            throw new Error("expected final recovery interruption");
+          }
+        },
+      } : {});
+      await database.init();
+      if (scenario.interruptRecovery) {
+        const sql = database.adapter.dialect.sql;
+        assert.deepEqual({ ...await database.adapter.prepare(sql(
+          "SELECT [exhausted], [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?",
+        )).get(scheduleName) }, { exhausted: 0, nextOccurrence: "9999-12-31T23:59:00.000Z" });
+        await database.shutdown();
+        await database.close();
+        database = await openRuntime(capsule, clock);
+        await database.init();
+      }
+      await clock.runDueTimers();
+
+      const sql = database.adapter.dialect.sql;
+      const durable = await database.adapter.prepare(sql(
+        "SELECT [enabled], [exhausted], [nextOccurrence], [latestOutcome], [latestErrorCode] FROM [sporades_schedules] WHERE [name]=?",
+      )).get(scheduleName);
+      assert.equal(Boolean(durable.enabled), true);
+      assert.equal(Boolean(durable.exhausted), true);
+      assert.equal(durable.nextOccurrence, null);
+      const jobs = await database.adapter.prepare(sql(
+        "SELECT [status] FROM [sporades_jobs] WHERE [scheduleName]=? ORDER BY [createdAt] ASC",
+      )).all(scheduleName);
+      if (scenario.expected === "succeeded") {
+        assert.deepEqual(jobs.map((row) => row.status), ["succeeded"]);
+        assert.equal(durable.latestOutcome, "enqueued");
+        assert.equal(durable.latestErrorCode, null);
+      } else if (scenario.expected === "skipped") {
+        assert.deepEqual(jobs, []);
+        assert.equal(durable.latestOutcome, null);
+        assert.equal(durable.latestErrorCode, null);
+      } else {
+        assert.deepEqual(jobs, []);
+        assert.equal(durable.latestOutcome, "payload-failed");
+        assert.equal(durable.latestErrorCode, "SCHEDULE_PAYLOAD_FAILED");
+      }
+      assert.equal((await inspectRuntimeSchedules(database.adapter)).find((entry) => entry.name === scheduleName).nextOccurrence, null);
+      await database.shutdown();
+      await database.close();
+      database = undefined;
+    }
+  } finally {
+    try {
+      if (!database) database = await openRuntime({ jobs: {}, schedules: {} }, createControllableRuntimeClock("9999-12-31T23:59:30.000Z"));
+      const sql = database.adapter.dialect.sql;
+      for (const scenario of scenarios) {
+        const scheduleName = `${schedulePrefix}${scenario.suffix}`;
+        await database.adapter.prepare(sql("DELETE FROM [sporades_jobs] WHERE [scheduleName]=?")).run(scheduleName);
+        await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_occurrences] WHERE [scheduleName]=?")).run(scheduleName);
+        await database.adapter.prepare(sql("DELETE FROM [sporades_schedules] WHERE [name]=?")).run(scheduleName);
+        await database.adapter.prepare(sql("DELETE FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?")).run(scheduleName);
+      }
+    } catch {}
+    try { await database?.close(); } catch {}
+  }
+}
+
+test("SQLite restart handles the final canonical Schedule occurrence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-restart-"));
+  const file = path.join(dir, "data.db");
+  try {
+    await proveFinalCanonicalRestartRecovery(
+      (capsule, clock, options = {}) => openDevDatabase(file, "", {}, { name: "scheduled-final-restart" }, capsule, { clock, ...options }),
+      "sqliteFinal",
+    );
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("libSQL restart handles the final canonical Schedule occurrence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-final-restart-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+      const config = { name: "scheduled-final-restart-libsql", services: { database: { kind: "database", engine: "libsql" } } };
+      const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveFinalCanonicalRestartRecovery(
+        (capsule, clock, options = {}) => openDevDatabase(path.join(dir, "unused.db"), "", {}, config, capsule, { clock, serviceEnv, ...options }),
+        "libsqlFinal",
+      );
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("PostgreSQL restart handles the final canonical Schedule occurrence", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the PostgreSQL final-occurrence restart test.",
+}, async () => {
+  const config = { name: "scheduled-final-restart-postgres", services: { database: { kind: "database", engine: "postgres" } } };
+  const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  await proveFinalCanonicalRestartRecovery(
+    (capsule, clock, options = {}) => openDevDatabase("unused.db", "", {}, config, capsule, { clock, serviceEnv, ...options }),
+    "postgresFinal",
+  );
 });
 
 test("an armed Schedule timer keeps its intended occurrence identity when it fires late", async () => {

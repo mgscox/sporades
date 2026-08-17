@@ -57,6 +57,9 @@ Changes since v0.8.5.
   failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
+  Every promoted candidate performs a fresh Job worker pass after prior-runtime
+  teardown settles, including the warning path, so a claim relinquished or
+  delayed by the outgoing worker during handoff cannot remain stranded.
 - Allocate additive-migration temporary table names without colliding with valid
   Capsule tables, preserving those tables on both successful and rolled-back
   SQLite, libSQL, and PostgreSQL migrations.
@@ -73,13 +76,19 @@ Changes since v0.8.5.
   cursors must be canonical four-digit UTC timestamps; malformed retained state
   or a startup calculation beyond that domain now fails startup with
   `SCHEDULE_STATE_INVALID` before persistence or any live timer can hot-loop.
+  Retained enabled, exhausted, and cursor fields must also form one canonical
+  state: an enabled active Schedule has a cursor, an enabled exhausted Schedule
+  does not, and a disabled Schedule is neither exhausted nor armed. Startup and
+  inspection reject every inconsistent combination before mutation.
   When an already-due occurrence is the final representable minute, its Job or
   bounded failure outcome and Schedule summary commit atomically, future
   scheduling becomes durably exhausted with `nextOccurrence: null`, and no
   zero-delay timer is re-armed. A late final occurrence and its single-attempt
   Job clamp their claim leases to the remaining canonical time domain; a retry
   policy requiring later attempts becomes the bounded enqueue-failure outcome.
-  Restart preserves the exhausted state.
+  Restart preserves the exhausted state. If that final cursor is already due at
+  restart, `latest` still recovers it before atomically exhausting the Schedule;
+  `skip` exhausts without enqueueing it.
   Privileged and operator inspection applies the same domain to both the next
   cursor and latest-occurrence timestamp.
 - Bind every pending Schedule occurrence to its complete deterministic identity,
@@ -110,6 +119,8 @@ Changes since v0.8.5.
   read-only snapshots, and public operations so captured-root re-entry rejects
   promptly while external callers remain serialized. Closing libSQL now seals
   and drains queued ownership so no transaction or snapshot begins after close.
+  Read-only snapshots restore `query_only` on success and failure before their
+  session closes, so a rejected inspection cannot poison later startup writes.
 - Seal generated JavaScript, declarations, source maps, CLI bundles, and their
   generator inputs in the generated-source manifest so corruption or deletion
   cannot pass the freshness check.

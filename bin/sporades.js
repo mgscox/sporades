@@ -6368,7 +6368,7 @@ async function scheduleSummary(sqlite, row) {
   if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
   if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
   const exhausted = row.exhausted ?? 0;
-  if (![0, 1, false, true].includes(exhausted) || Boolean(exhausted) && (!Boolean(row.enabled) || row.nextOccurrence != null)) throw invalid("exhausted");
+  if (![0, 1, false, true].includes(exhausted) || !scheduleCursorStateIsConsistent(row.enabled, exhausted, row.nextOccurrence)) throw invalid("exhausted");
   if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
@@ -6395,6 +6395,11 @@ async function scheduleSummary(sqlite, row) {
     nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
     latestOccurrence
   };
+}
+function scheduleCursorStateIsConsistent(enabled, exhausted, nextOccurrence) {
+  if (![0, 1, false, true].includes(enabled) || ![0, 1, false, true].includes(exhausted)) return false;
+  const hasNextOccurrence = nextOccurrence !== null && nextOccurrence !== void 0;
+  return Boolean(enabled) ? hasNextOccurrence !== Boolean(exhausted) : !Boolean(exhausted) && !hasNextOccurrence;
 }
 function assertJobScheduleProvenance(row, expected) {
   if (!expected) return;
@@ -14792,11 +14797,16 @@ async function createLibsqlDatabaseAdapter(options) {
           } finally {
             revokeTransactionScopedAdapter(snapshotAdapter);
           }
-          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: false });
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = OFF", params: [], close: true });
           return result;
         } catch (error) {
           try {
-            await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+            await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: false });
+          } catch {
+          }
+          try {
+            await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = OFF", params: [], close: true });
           } catch {
           }
           throw error;
@@ -15310,9 +15320,14 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
     }
     throw initError;
   }
+  let teardownError;
   try {
     await shutdownAndCloseDatabase(currentDatabase);
-  } catch (teardownError) {
+  } catch (error) {
+    teardownError = error;
+  }
+  scheduleCurrentUserJobWorker(candidateDatabase);
+  if (teardownError !== void 0) {
     try {
       const warning = candidateDatabase.log?.emit?.({
         category: "platform",
@@ -15622,7 +15637,7 @@ async function reconcileSchedules(database) {
         )).run();
         const persisted = await transactionAdapter.prepare(sql("SELECT * FROM [sporades_schedules]")).all();
         for (const row of persisted) {
-          if (![0, 1, false, true].includes(row.exhausted) || row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
+          if (!scheduleCursorStateIsConsistent(row.enabled, row.exhausted, row.nextOccurrence) || row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
             throw commandError2(
               "Stored Schedule state is invalid.",
               "Repair or remove the malformed Schedule before restarting the Capsule.",
@@ -15651,13 +15666,23 @@ async function reconcileSchedules(database) {
               nextOccurrence = String(row.nextOccurrence);
               if (Date.parse(nextOccurrence) <= now.getTime()) {
                 let latest = new Date(nextOccurrence);
-                let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
-                while (future.getTime() <= now.getTime()) {
-                  latest = future;
-                  future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
+                let successor = nextScheduleCursor(definition, latest);
+                while (!successor.exhausted && Date.parse(successor.nextOccurrence) <= now.getTime()) {
+                  latest = new Date(successor.nextOccurrence);
+                  successor = nextScheduleCursor(definition, latest);
                 }
-                nextOccurrence = future.toISOString();
-                if (definition.missedRun === "latest") recoveredOccurrence = latest;
+                if (definition.missedRun === "latest") {
+                  recoveredOccurrence = latest;
+                  if (successor.exhausted) {
+                    nextOccurrence = latest.toISOString();
+                    exhausted = false;
+                  } else {
+                    nextOccurrence = successor.nextOccurrence;
+                  }
+                } else {
+                  nextOccurrence = successor.nextOccurrence;
+                  exhausted = successor.exhausted;
+                }
               }
             }
           }

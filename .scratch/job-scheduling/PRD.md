@@ -271,11 +271,17 @@ effective timezone.
   functional. Every retained or freshly calculated next-occurrence cursor must
   be a canonical four-digit UTC timestamp; malformed retained state or a
   startup calculation outside that domain fails startup with bounded
-  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms. If an
+  `SCHEDULE_STATE_INVALID` state before persistence or a live timer arms. An
+  enabled active Schedule has a cursor, an enabled exhausted Schedule has none,
+  and a disabled Schedule is non-exhausted with no cursor. Startup and
+  inspection reject every other retained combination before writes or timers.
+  If an
   already-due occurrence is the final representable instant, its success,
   payload failure, or enqueue failure and latest summary commit atomically;
   future scheduling is durably exhausted, inspection returns `enabled: true`
-  with `nextOccurrence: null`, and restart arms no replacement timer. A late
+  with `nextOccurrence: null`, and restart arms no replacement timer. When that
+  final cursor is already due at restart, `latest` recovers it before atomic
+  exhaustion while `skip` exhausts without enqueueing. A late
   final occurrence and its single-attempt Job clamp their claims to the
   remaining canonical domain; a retry policy that requires a later attempt
   commits the bounded enqueue-failure outcome.
