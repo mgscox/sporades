@@ -799,6 +799,7 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
   let other;
   let cancelledRecipient;
   const originalAdmission = runtime.database.runTeamJoinAdmission;
+  const originalWithTransaction = runtime.database.adapter.withTransaction;
   try {
     owner = await runtime.open();
     recipient = await runtime.open();
@@ -834,13 +835,27 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
 
     const cancelledCode = await issue("boundary-cancelled-link", "boundary-cancelled@example.com");
     const cancellation = new AbortController();
-    runtime.database.runTeamJoinAdmission = async function (...args) {
-      const decision = await originalAdmission.apply(this, args);
-      cancellation.abort();
-      return decision;
+    let boundaryReachedResolve;
+    let releaseBoundaryResolve;
+    const boundaryReached = new Promise((resolve) => { boundaryReachedResolve = resolve; });
+    const releaseBoundary = new Promise((resolve) => { releaseBoundaryResolve = resolve; });
+    runtime.database.adapter.withTransaction = function (callback) {
+      return originalWithTransaction.call(this, async (transactionAdapter) => {
+        const result = await callback(transactionAdapter);
+        const checks = transactionAdapter[Symbol.for("sporades.database.transactionBeforeCommitChecks")];
+        checks?.unshift(async () => {
+          boundaryReachedResolve();
+          await releaseBoundary;
+        });
+        return result;
+      });
     };
+    const cancelledJoin = joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode, { signal: cancellation.signal });
+    await boundaryReached;
+    cancellation.abort();
+    releaseBoundaryResolve();
     await assert.rejects(
-      joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode, { signal: cancellation.signal }),
+      cancelledJoin,
       (error) => error.code === "TEAM_JOIN_DENIED",
     );
     assert.equal(runtime.database.adapter.prepare(
@@ -850,10 +865,11 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
     ).get(team.id, cancelledSignUp.data.auth.userId).count, 0, "late cancellation rolls back membership");
 
-    runtime.database.runTeamJoinAdmission = originalAdmission;
+    runtime.database.adapter.withTransaction = originalWithTransaction;
     assert.equal((await joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode)).team.memberCount, 3);
   } finally {
     runtime.database.runTeamJoinAdmission = originalAdmission;
+    runtime.database.adapter.withTransaction = originalWithTransaction;
     admissionAuthMutationTarget = null;
     admissionAuthMutationRejected = false;
     owner?.close(); recipient?.close(); other?.close(); cancelledRecipient?.close();

@@ -277,6 +277,11 @@ function revokeTransactionScopedAdapter(adapter) {
     transactionScopes.delete(adapter);
 }
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
+const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+async function runTransactionBeforeCommitChecks(transactionAdapter) {
+    for (const check of transactionAdapter[transactionBeforeCommitChecks] ?? [])
+        await check();
+}
 export async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
     if (config.services?.database?.engine === "libsql" &&
         serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
@@ -970,6 +975,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     let result;
                     try {
                         result = await fn(transactionAdapter);
+                        await runTransactionBeforeCommitChecks(transactionAdapter);
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);
@@ -1114,6 +1120,7 @@ export async function createPostgresDatabaseAdapter(options) {
                     let result;
                     try {
                         result = await fn(transactionAdapter);
+                        await runTransactionBeforeCommitChecks(transactionAdapter);
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);
@@ -1661,6 +1668,7 @@ export async function createLibsqlDatabaseAdapter(options) {
                     let result;
                     try {
                         result = await fn(transactionAdapter);
+                        await runTransactionBeforeCommitChecks(transactionAdapter);
                     }
                     finally {
                         revokeTransactionScopedAdapter(transactionAdapter);

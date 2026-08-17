@@ -253,6 +253,7 @@ var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
 var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
 var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
@@ -265,6 +266,7 @@ var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
+var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");

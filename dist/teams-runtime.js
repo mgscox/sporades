@@ -23,6 +23,7 @@ export const TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
 export const TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
 const TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
 const TEAM_JOIN_LINK_SECRET_ID = "v1";
+const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 export const TEAM_APPLICATION_ROLE_MAX = 32;
 export const TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
 const TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -484,23 +485,18 @@ export async function joinCurrentUserTeam(database, auth, code, eventContext) {
             let membership = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(row.teamId, joiningUserId);
             if (!membership) {
                 await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
-                throwIfTeamJoinCancelled(eventContext?.signal);
+                registerTeamJoinCancellationBeforeCommit(tx, eventContext?.signal);
                 await ensureMembershipCounterOnAdapter(tx, joiningUserId);
-                throwIfTeamJoinCancelled(eventContext?.signal);
                 const claim = await tx.prepare(sql("UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
                     "WHERE [userId] = ? AND [membershipCount] < ?")).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
                 if (Number(claim?.changes ?? 0) !== 1) {
                     throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
                 }
-                throwIfTeamJoinCancelled(eventContext?.signal);
                 await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)")).run(row.teamId, joiningUserId, now);
-                throwIfTeamJoinCancelled(eventContext?.signal);
                 membership = { role: "member" };
             }
             await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
-            throwIfTeamJoinCancelled(eventContext?.signal);
             const count = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
-            throwIfTeamJoinCancelled(eventContext?.signal);
             return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
         });
     }
@@ -531,6 +527,16 @@ async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamI
 function throwIfTeamJoinCancelled(signal) {
     if (signal?.aborted)
         throw teamJoinDenied();
+}
+function registerTeamJoinCancellationBeforeCommit(transactionAdapter, signal) {
+    if (!signal)
+        return;
+    let checks = transactionAdapter[transactionBeforeCommitChecks];
+    if (!Object.prototype.hasOwnProperty.call(transactionAdapter, transactionBeforeCommitChecks)) {
+        checks = [];
+        Object.defineProperty(transactionAdapter, transactionBeforeCommitChecks, { value: checks });
+    }
+    checks.push(() => throwIfTeamJoinCancelled(signal));
 }
 function normalizeTeamJoinEmail(email) {
     const normalized = String(email ?? "").trim().toLowerCase();

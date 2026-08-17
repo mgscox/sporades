@@ -300,6 +300,11 @@ function revokeTransactionScopedAdapter(adapter: LooseRecord) {
 }
 
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
+const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+
+async function runTransactionBeforeCommitChecks(transactionAdapter: LooseRecord) {
+  for (const check of (transactionAdapter as any)[transactionBeforeCommitChecks] ?? []) await check();
+}
 
 export async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
   if (
@@ -1287,7 +1292,10 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         await transactionExec("BEGIN");
         try {
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await transactionExec("COMMIT");
           return result;
@@ -1422,7 +1430,10 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         try {
           const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await rawQuery("COMMIT");
           return result;
@@ -1995,7 +2006,10 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
           return result;
