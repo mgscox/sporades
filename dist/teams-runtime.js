@@ -480,7 +480,7 @@ export async function joinCurrentUserTeam(database, auth, code, eventContext) {
             await ensureInitialTeamOnAdapter(tx, auth.userId);
             let membership = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(row.teamId, auth.userId);
             if (!membership) {
-                await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
+                await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId), eventContext?.signal);
                 await ensureMembershipCounterOnAdapter(tx, auth.userId);
                 const claim = await tx.prepare(sql("UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
                     "WHERE [userId] = ? AND [membershipCount] < ?")).run(auth.userId, TEAM_MEMBERSHIP_MAX);
@@ -502,17 +502,16 @@ export async function joinCurrentUserTeam(database, auth, code, eventContext) {
     emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
     return { team: joined };
 }
-async function enforceTeamJoinAdmission(database, tx, auth, teamId) {
-    if (typeof database.teamJoinAdmission !== "function")
+async function enforceTeamJoinAdmission(database, tx, auth, teamId, signal) {
+    if (typeof database.runTeamJoinAdmission !== "function")
         return;
     const count = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
     try {
-        const context = database.createTeamJoinAdmissionContext(tx, auth);
-        const decision = await database.teamJoinAdmission(context, {
+        const decision = await database.runTeamJoinAdmission(tx, auth, {
             teamId,
             userId: auth.userId,
             currentMemberCount: Number(count?.count ?? 0),
-        });
+        }, signal);
         if (decision?.allow !== true)
             throw teamJoinDenied();
     }

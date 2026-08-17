@@ -105,6 +105,7 @@ import {
 
 const mutationResultsWithWrites = new WeakSet<object>();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
+const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -660,10 +661,21 @@ export async function openDevDatabase(
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
-    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
-    createTeamJoinAdmissionContext(transactionAdapter: LooseRecord, auth: LooseRecord) {
-      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
-    },
+    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
+      ? function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
+        const rootDatabase = this.__rootDatabase ?? this;
+        const trustedTransaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        return withTrustedRead(rootDatabase, {
+          transaction: trustedTransaction,
+          purpose: "teams.join-admission",
+          subject: { teamId: input.teamId, userId: input.userId },
+          signal,
+        }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+          createTeamJoinAdmissionContext(rootDatabase, auth, trustedDb),
+          input,
+        ));
+      }
+      : undefined,
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -2870,6 +2882,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     adapter,
     sqlite: adapter,
     __transactionActive: true,
+    [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites,
   };
@@ -5134,14 +5147,13 @@ function createMutationContext(database: LooseRecord, auth: any) {
   return context;
 }
 
-function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord) {
+function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
   const context: LooseRecord = {
     auth,
     env: database.serverEnv,
     log: createEndpointLogger(database),
+    db: trustedDb,
   };
-  const holder = createContextHolder(context);
-  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 

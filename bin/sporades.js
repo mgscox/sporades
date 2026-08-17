@@ -9258,7 +9258,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
       )).get(row.teamId, auth.userId);
       if (!membership) {
-        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
+        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId), eventContext?.signal);
         await ensureMembershipCounterOnAdapter(tx, auth.userId);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
@@ -9282,18 +9282,17 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
   emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
 }
-async function enforceTeamJoinAdmission(database, tx, auth, teamId) {
-  if (typeof database.teamJoinAdmission !== "function") return;
+async function enforceTeamJoinAdmission(database, tx, auth, teamId, signal) {
+  if (typeof database.runTeamJoinAdmission !== "function") return;
   const count = await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
   )).get(teamId);
   try {
-    const context = database.createTeamJoinAdmissionContext(tx, auth);
-    const decision = await database.teamJoinAdmission(context, {
+    const decision = await database.runTeamJoinAdmission(tx, auth, {
       teamId,
       userId: auth.userId,
       currentMemberCount: Number(count?.count ?? 0)
-    });
+    }, signal);
     if (decision?.allow !== true) throw teamJoinDenied();
   } catch {
     throw teamJoinDenied();
@@ -13283,6 +13282,12 @@ async function rejectNestedTransactionScope() {
   );
 }
 var transactionScopes = /* @__PURE__ */ new WeakMap();
+function isActiveTransactionScopedAdapter(value, owner) {
+  const scope = value && typeof value === "object" ? transactionScopes.get(value) : void 0;
+  return Boolean(
+    scope && (owner === void 0 || scope.owner === owner)
+  );
+}
 function createTransactionScopedAdapter(adapter, operations = {}, owner = adapter) {
   let active = true;
   const assertActive = () => {
@@ -15260,6 +15265,8 @@ function quoteIdentifier(identifier) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
+var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 async function shutdownAndCloseDatabase(database) {
   let shutdownError;
   let closeError;
@@ -15490,10 +15497,19 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
-    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
-    createTeamJoinAdmissionContext(transactionAdapter, auth) {
-      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
-    },
+    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? function(transactionAdapter, auth, input, signal) {
+      const rootDatabase = this.__rootDatabase ?? this;
+      const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+      return withTrustedRead(rootDatabase, {
+        transaction: trustedTransaction,
+        purpose: "teams.join-admission",
+        subject: { teamId: input.teamId, userId: input.userId },
+        signal
+      }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+        createTeamJoinAdmissionContext(rootDatabase, auth, trustedDb),
+        input
+      ));
+    } : void 0,
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -17384,6 +17400,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     adapter,
     sqlite: adapter,
     __transactionActive: true,
+    [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites
   };
@@ -17611,6 +17628,66 @@ function trustedReadResult(value, assertActive) {
     assertActive();
     return result;
   });
+}
+async function withTrustedRead(database, options, callback) {
+  if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
+    throw commandError2(
+      "Trusted app-database reads require an active transaction.",
+      "Start the trusted policy from the runtime-owned transition transaction.",
+      "TRUSTED_READ_TRANSACTION_REQUIRED"
+    );
+  }
+  if (!trustedReadPurposes.has(options?.purpose)) {
+    throw commandError2(
+      "Trusted app-database read purpose is invalid.",
+      "Use a runtime-owned trusted policy purpose.",
+      "INVALID_TRUSTED_READ_PURPOSE"
+    );
+  }
+  const signal = options?.signal;
+  const abortError = () => commandError2(
+    "Trusted app-database read was aborted.",
+    "Retry the runtime-owned trusted policy if cancellation was not intended.",
+    "TRUSTED_READ_ABORTED"
+  );
+  if (signal?.aborted) throw abortError();
+  const transactionDatabase = createTransactionDatabase(database, options.transaction);
+  let active = true;
+  const assertActive = () => {
+    if (!active) {
+      throw commandError2(
+        "Trusted app-database read access is no longer active.",
+        "Start a new runtime-owned trusted policy callback before reading app data.",
+        "TRUSTED_READ_ACCESS_INACTIVE"
+      );
+    }
+    if (signal?.aborted) throw abortError();
+  };
+  const context = {
+    subject: options.subject,
+    purpose: options.purpose,
+    signal
+  };
+  grantPrivilegedDbAccess(context);
+  const holder = createContextHolder(context);
+  const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+  try {
+    try {
+      const result = await callback(db);
+      assertActive();
+      return result;
+    } catch {
+      if (signal?.aborted) throw abortError();
+      throw commandError2(
+        "Trusted app-database read failed.",
+        "The runtime-owned trusted policy could not be evaluated.",
+        "TRUSTED_READ_FAILED"
+      );
+    }
+  } finally {
+    active = false;
+    revokePrivilegedDbAccess(context);
+  }
 }
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
@@ -19392,14 +19469,13 @@ function createMutationContext(database, auth) {
   };
   return context;
 }
-function createTeamJoinAdmissionContext(database, auth) {
+function createTeamJoinAdmissionContext(database, auth, trustedDb) {
   const context = {
     auth,
     env: database.serverEnv,
-    log: createEndpointLogger(database)
+    log: createEndpointLogger(database),
+    db: trustedDb
   };
-  const holder = createContextHolder(context);
-  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = void 0) {

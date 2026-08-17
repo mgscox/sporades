@@ -553,7 +553,7 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
       )).get(row.teamId, auth.userId);
       if (!membership) {
-        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
+        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId), eventContext?.signal);
         await ensureMembershipCounterOnAdapter(tx, auth.userId);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
@@ -579,18 +579,17 @@ export async function joinCurrentUserTeam(database: LooseRecord, auth: LooseReco
   return { team: joined };
 }
 
-async function enforceTeamJoinAdmission(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, teamId: string) {
-  if (typeof database.teamJoinAdmission !== "function") return;
+async function enforceTeamJoinAdmission(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, teamId: string, signal?: AbortSignal) {
+  if (typeof database.runTeamJoinAdmission !== "function") return;
   const count = await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
   )).get(teamId);
   try {
-    const context = database.createTeamJoinAdmissionContext(tx, auth);
-    const decision = await database.teamJoinAdmission(context, {
+    const decision = await database.runTeamJoinAdmission(tx, auth, {
       teamId,
       userId: auth.userId,
       currentMemberCount: Number(count?.count ?? 0),
-    });
+    }, signal);
     if (decision?.allow !== true) throw teamJoinDenied();
   } catch {
     throw teamJoinDenied();

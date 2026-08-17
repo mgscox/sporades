@@ -267,6 +267,7 @@ var nodeFsModule = process.getBuiltinModule("node:fs");
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
 
 // src/server-runtime-source.ts
+var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;

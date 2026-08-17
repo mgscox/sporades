@@ -44,6 +44,7 @@ import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageA
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
+const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
 // and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
@@ -585,10 +586,18 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         passwordResetConfig: resolvePasswordResetConfig(config),
         teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
         teamApplicationRoles,
-        teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
-        createTeamJoinAdmissionContext(transactionAdapter, auth) {
-            return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
-        },
+        runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
+            ? function (transactionAdapter, auth, input, signal) {
+                const rootDatabase = this.__rootDatabase ?? this;
+                const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+                return withTrustedRead(rootDatabase, {
+                    transaction: trustedTransaction,
+                    purpose: "teams.join-admission",
+                    subject: { teamId: input.teamId, userId: input.userId },
+                    signal,
+                }, (trustedDb) => capsuleDefinition.teams.admitJoin(createTeamJoinAdmissionContext(rootDatabase, auth, trustedDb), input));
+            }
+            : undefined,
         fileAcl,
         securityPolicy: resolveRuntimeSecurityPolicy(config),
         fileStorage,
@@ -2645,6 +2654,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         adapter,
         sqlite: adapter,
         __transactionActive: true,
+        [trustedReadTransactionAdapter]: transactionAdapter,
         __rootDatabase: database.__rootDatabase ?? database,
         __pendingLogWrites: pendingLogWrites,
     };
@@ -4792,14 +4802,13 @@ function createMutationContext(database, auth) {
     };
     return context;
 }
-function createTeamJoinAdmissionContext(database, auth) {
+function createTeamJoinAdmissionContext(database, auth, trustedDb) {
     const context = {
         auth,
         env: database.serverEnv,
         log: createEndpointLogger(database),
+        db: trustedDb,
     };
-    const holder = createContextHolder(context);
-    context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
     return context;
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = undefined) {

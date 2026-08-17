@@ -151,7 +151,8 @@ The repository currently includes:
   Admin membership enumeration supports opaque cursor pagination with an exact
   uncapped total, while the Team-summary count remains display-only. Capsules
   may declare a trusted `teams.admitJoin` policy that reads app-owned state
-  through transaction-bound `ctx.db`; the runtime serializes the policy and
+  through transaction-bound, read-only `ctx.db` while bypassing the joining
+  user's ordinary app-table row ACLs; the runtime serializes the policy and
   membership insert under the Team lifecycle lock for atomic seat admission.
 
 ### Future scope

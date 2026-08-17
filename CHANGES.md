@@ -14,6 +14,7 @@ Changes since v0.8.5.
 
 ### 🐛 Bug Fixes
 
+- Let trusted Team Join admission read ACL-protected app state.
 - Shut down rejected runtime candidates (5ec8198).
 - Preserve candidate on activation degradation (302268c).
 - Activate replacement jobs after teardown (ee4db9f).
@@ -134,4 +135,3 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
