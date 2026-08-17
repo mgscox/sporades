@@ -355,8 +355,10 @@ does not gate completion.
 - Retry behavior is bounded and deterministic. Delayed Jobs are not runnable
   until `availableAt`; a retry remains another attempt for the same Job ID.
 - After Dev replacement waits for the outgoing runtime to settle, the promoted
-  candidate performs another worker pass even when outgoing teardown reports a
-  failure, so a claim relinquished or delayed during handoff cannot strand.
+  candidate refreshes tracked running-lease recovery before another worker pass,
+  even when outgoing teardown reports a failure. A claim acquired after the
+  candidate's startup scan, retained by failed teardown, relinquished, or delayed
+  during handoff therefore cannot strand.
 - Normal server context lists Jobs assigned to the current user. Privileged
   server context lists all Capsule Jobs. Both expose safe summaries rather than
   raw queue internals.

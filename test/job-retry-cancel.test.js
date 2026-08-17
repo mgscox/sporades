@@ -419,6 +419,35 @@ test("Dev replacement rediscovers a retry settled by the outgoing runtime", asyn
  });
 });
 
+test("Dev replacement re-arms a running lease created after candidate initialization", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-replacement-lease-handoff-"));const file=path.join(dir,"data.db");const outgoingClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const candidateClock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");let attempts=0;let firstStarted;let secondStarted;let releaseSecond=()=>{};const firstBegan=new Promise(resolve=>{firstStarted=resolve;});const secondBegan=new Promise(resolve=>{secondStarted=resolve;});const settlementError=new Error("expected outgoing retry settlement failure");
+ const capsule={jobs:{work:job(async ctx=>{attempts+=1;if(attempts===1){firstStarted();await new Promise((resolve,reject)=>ctx.signal.addEventListener("abort",()=>{const error=new Error("outgoing runtime stopped");error.name="AbortError";reject(error);},{once:true}));}secondStarted();await new Promise(resolve=>{releaseSecond=resolve;});return {attempts};})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("work",null,{retry:{maxAttempts:2,delayMs:0}}))}};let outgoing;let candidate;let outgoingDrain;
+ try {
+  outgoing=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:outgoingClock});await outgoing.init();
+  outgoing.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",outgoingClock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  candidate=await openStoppedDevDatabase(file,"",{},{name:"jobs"},capsule,{clock:candidateClock});await candidate.init();
+
+  const queued=await runMutation(outgoing,auth,"enqueue",[]);outgoingDrain=outgoingClock.runDueTimers();outgoingDrain.catch(()=>{});await firstBegan;
+  const outgoingBase=outgoing.adapter;outgoing.adapter=failJobRetrySettlement(outgoingBase,settlementError);
+  candidate=await replaceRuntimeDatabase(outgoing,candidate);outgoing=null;
+  await assert.rejects(outgoingDrain,error=>error===settlementError);outgoingDrain=null;
+
+  await candidateClock.runDueTimers();
+  const retained=await candidate.adapter.prepare(candidate.adapter.dialect.sql("SELECT [status], [attempts], [claimToken], [leaseExpiresAt] FROM [sporades_jobs] WHERE [id]=?")).get(queued.data.id);
+  assert.equal(retained.status,"running");assert.equal(Number(retained.attempts),1);assert.equal(retained.leaseExpiresAt,"2030-01-01T00:00:30.000Z");const staleClaimToken=retained.claimToken;
+
+  candidateClock.advanceBy(30_001);const candidateDrain=candidateClock.runDueTimers();const recoveredStarted=await Promise.race([secondBegan.then(()=>true),candidateDrain.then(()=>false)]);
+  assert.equal(recoveredStarted,true,"the promoted candidate must recover the outgoing claim without another enqueue or restart");
+  const recovered=await candidate.adapter.prepare(candidate.adapter.dialect.sql("SELECT [status], [attempts], [claimToken] FROM [sporades_jobs] WHERE [id]=?")).get(queued.data.id);
+  assert.equal(recovered.status,"running");assert.equal(Number(recovered.attempts),2);assert.notEqual(recovered.claimToken,staleClaimToken);
+  const staleWrite=await candidate.adapter.prepare(candidate.adapter.dialect.sql("UPDATE [sporades_jobs] SET [status]='failed' WHERE [id]=? AND [status]='running' AND [claimToken]=?")).run(queued.data.id,staleClaimToken);
+  assert.equal(Number(staleWrite.changes),0,"the outgoing claim token must not mutate the recovered owner");
+  releaseSecond();releaseSecond=()=>{};await candidateDrain;
+  const completed=(await inspectRuntimeJobs(candidate.adapter)).find(row=>row.id===queued.data.id);
+  assert.equal(completed.status,"succeeded");assert.equal(completed.attempts,2);assert.equal(attempts,2);
+ } finally {releaseSecond();await Promise.resolve(outgoingDrain).catch(()=>{});await Promise.resolve(outgoing?.close()).catch(()=>{});await Promise.resolve(candidate?.shutdown()).catch(()=>{});await Promise.resolve(candidate?.close()).catch(()=>{});await rm(dir,{recursive:true,force:true});}
+});
+
 test("far-future Jobs re-arm bounded timer chunks without tight rescans", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-future-timer-"));const maximumDelay=2_147_483_647;const tracked=nodeTimerCeilingClock("2030-01-01T00:00:00.000Z",maximumDelay);const seen=[];let db;
  try {
@@ -562,6 +591,26 @@ function pauseJobCancellationRead(adapter,onStarted,onRelease) {
        await new Promise(resolve=>onRelease(resolve));
        return result;
       };
+     },
+    });
+   };
+  },
+ });
+}
+
+function failJobRetrySettlement(adapter,error) {
+ return new Proxy(adapter,{
+  get(target,property,receiver) {
+   const value=Reflect.get(target,property,receiver);
+   if(property!=="prepare"||typeof value!=="function") return value;
+   return statement=>{
+    const prepared=value.call(target,statement);
+    if(!/UPDATE\s+["\[]sporades_jobs["\]]\s+SET\s+["\[]status["\]]\s*=\s*'delayed'/i.test(String(statement))) return prepared;
+    return new Proxy(prepared,{
+     get(preparedTarget,preparedProperty,preparedReceiver) {
+      const method=Reflect.get(preparedTarget,preparedProperty,preparedReceiver);
+      if(preparedProperty!=="run"||typeof method!=="function") return method;
+      return ()=>{throw error;};
      },
     });
    };

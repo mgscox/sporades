@@ -57,9 +57,11 @@ Changes since v0.8.5.
   failures still close database resources, and when prior-runtime
   teardown fails after candidate initialization, Dev promotes that viable
   candidate instead of retaining a closed runtime or leaking both instances.
-  Every promoted candidate performs a fresh Job worker pass after prior-runtime
-  teardown settles, including the warning path, so a claim relinquished or
-  delayed by the outgoing worker during handoff cannot remain stranded.
+  Every promoted candidate refreshes tracked running-lease recovery before a
+  fresh Job worker pass after prior-runtime teardown settles, including the
+  warning path. A claim acquired after the candidate's startup scan, retained
+  by failed teardown, relinquished, or delayed by the outgoing worker during
+  handoff therefore cannot remain stranded.
 - Allocate additive-migration temporary table names without colliding with valid
   Capsule tables, preserving those tables on both successful and rolled-back
   SQLite, libSQL, and PostgreSQL migrations.

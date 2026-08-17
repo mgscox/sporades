@@ -417,11 +417,12 @@ export async function replaceRuntimeDatabase(currentDatabase, candidateDatabase)
     catch (error) {
         teardownError = error;
     }
-    // Candidate startup can finish its only queue scan while the outgoing
-    // worker still owns a running claim. Outgoing settlement may then return
-    // that Job to delayed/queued state after the candidate has gone idle. Make
-    // the completed handoff itself a wake boundary so durable work cannot depend
-    // on an unrelated enqueue or another restart.
+    // Candidate startup can finish its lease and queue scans while the outgoing
+    // worker still owns, or is about to acquire, a running claim. Refresh both
+    // tracked recovery and runnable work after outgoing settlement: a failed
+    // teardown may leave the claim leased, while orderly settlement may return
+    // it to delayed/queued state.
+    scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
     scheduleCurrentUserJobWorker(candidateDatabase);
     if (teardownError !== undefined) {
         // Candidate initialization is the ownership decision. The old runtime may

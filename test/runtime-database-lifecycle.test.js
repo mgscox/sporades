@@ -121,6 +121,7 @@ test("runtime database replacement promotes the initialized candidate when old t
     async init() { calls.push("candidate.init"); },
     async shutdown() { calls.push("candidate.shutdown"); },
     async close() { calls.push("candidate.close"); },
+    clock: { now: () => new Date("2030-01-01T00:00:00.000Z"), setTimer: () => 1, clearTimer() {} },
     log: { emit() { calls.push("candidate.warning"); return pendingWarning; } },
   };
 

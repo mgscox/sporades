@@ -15326,6 +15326,7 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   } catch (error) {
     teardownError = error;
   }
+  scheduleJobLeaseRecoveryAt(candidateDatabase, candidateDatabase.clock.now().getTime());
   scheduleCurrentUserJobWorker(candidateDatabase);
   if (teardownError !== void 0) {
     try {
