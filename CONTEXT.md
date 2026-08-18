@@ -401,6 +401,14 @@ _Avoid_: permission helper, manual auth check, database filter
 A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, `ctx.acl.storage.exists()`, and explicit-Team `ctx.acl.teams` membership, admin, and declared application-role decisions so database and storage ACL rules can check stable resources without exposing normal runtime APIs or allowing writes. Team helpers never choose a current Team, enumerate memberships, or manage membership state.
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
+**Trusted read capability**:
+An internal, transaction-bound, read-only authority used only by a Sporades-owned transition policy that must decide from Capsule app state hidden by the transition subject's ordinary row ACL. It bypasses app-table ACL evaluation through an unforgeable runtime capability, exposes no runtime-owned tables or mutations, and is revoked when the policy callback settles. Public surfaces remain purpose-specific; Capsule and browser code cannot request a generic ACL bypass.
+_Avoid_: Privileged server role, bypassACL API, pending-member role
+
+**Team Join admission policy**:
+The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
+_Avoid_: subscription hook, pending member, billing ACL exception
+
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
 Inside an active audited callback it may inspect one explicit existing Team's accepted-member count, safe member projection, and active Join-link metadata (never the target email), or safely inspect a Join link. It cannot list a current user's Teams, validate an email-bound Join link, or mutate Team state; no Team inspection grants or invents user identity or membership authority. In-flight inspection fails closed if the callback ends or its AbortSignal aborts before a result returns. Unknown or deleted explicit Teams fail as `TEAM_NOT_FOUND`; safe Join-link inspection preserves its invalid-capability result.

@@ -54,6 +54,8 @@ sporades host push --restart
 - **Built-in collaboration, explicitly authorized**: runtime-owned Teams,
   email-bound Join links, membership application roles, and explicit Team ACL
   decisions—without a hidden current Team or automatic data partitioning.
+  Trusted `teams.admitJoin` policies may make atomic seat decisions from
+  read-only app state hidden by the joining user's ordinary row ACLs.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation

@@ -82,17 +82,46 @@ const rolesCapsule = {
 };
 
 const observedJoinAdmissions = [];
+let admissionFailureMessage = null;
+let leakedAdmissionTable = null;
+let admissionAuthMutationTarget = null;
+let admissionAuthMutationRejected = false;
 const admissionCapsule = {
   ...capsule,
   name: "teams-admission-test",
   schema: {
-    seatPolicies: table({ teamId: StringField(), maximumMembers: NumberField() }),
+    seatPolicies: table({ teamId: StringField(), maximumMembers: NumberField() }).acl({
+      read: ({ row, ctx }) => ctx.acl.teams.isMember(row.teamId),
+    }),
+  },
+  queries: {
+    ...capsule.queries,
+    seatPolicies: query((ctx, teamId) => ctx.db.seatPolicies.where("teamId", teamId).all()),
   },
   teams: {
     async admitJoin(ctx, input) {
       const policies = await ctx.db.seatPolicies.where("teamId", input.teamId).all();
-      observedJoinAdmissions.push({ ...input, actorUserId: ctx.auth.userId });
-      return { allow: input.currentMemberCount < (policies[0]?.maximumMembers ?? Infinity) };
+      ctx.log.info("Team join admission checked", {
+        teamId: input.teamId,
+        userId: input.userId,
+        currentMemberCount: input.currentMemberCount,
+      });
+      leakedAdmissionTable = ctx.db.seatPolicies;
+      observedJoinAdmissions.push({
+        ...input,
+        actorUserId: ctx.auth.userId,
+        contextKeys: Object.keys(ctx).sort(),
+        tableKeys: Object.keys(ctx.db.seatPolicies).sort(),
+      });
+      if (admissionAuthMutationTarget) {
+        try {
+          ctx.auth.userId = admissionAuthMutationTarget;
+        } catch {
+          admissionAuthMutationRejected = true;
+        }
+      }
+      if (admissionFailureMessage) throw new Error(admissionFailureMessage);
+      return { allow: Boolean(policies[0] && input.currentMemberCount < policies[0].maximumMembers) };
     },
   },
   mutations: {
@@ -623,6 +652,8 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
   let firstRecipient;
   let secondRecipient;
   let thirdRecipient;
+  let fifthRecipient;
+  let sixthRecipient;
   try {
     owner = await first.open();
     firstRecipient = await first.open();
@@ -650,6 +681,11 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
       name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } },
     }, admissionCapsule);
     observedJoinAdmissions.length = 0;
+    assert.deepEqual(
+      await runQuery(first.database, firstSignUp.data.auth, "seatPolicies", [team.id]),
+      { data: [], error: null },
+      "ordinary invitee reads remain filtered by the member-only row ACL",
+    );
     const attempts = await Promise.allSettled([
       joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
       joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
@@ -663,7 +699,26 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
     });
     assert.equal(observedJoinAdmissions.length, 2, "every new-membership join invokes trusted policy");
     assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+    assert.equal(
+      (await first.database.adapter.readRecentLogEvents(50)).filter(
+        (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+      ).length,
+      1,
+      "only the admitted Join commits its transaction-scoped application log",
+    );
     assert.ok(observedJoinAdmissions.every((entry) => entry.teamId === team.id && entry.userId === entry.actorUserId));
+    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["auth", "db", "env", "log"])));
+    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.tableKeys) === JSON.stringify(["all", "get", "limit", "orderBy", "where"])));
+    assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+
+    const admittedIndex = attempts.findIndex((attempt) => attempt.status === "fulfilled");
+    const admissionsBeforeRetry = observedJoinAdmissions.length;
+    await joinCurrentUserTeam(
+      first.database,
+      admittedIndex === 0 ? firstSignUp.data.auth : secondSignUp.data.auth,
+      admittedIndex === 0 ? firstCode : secondCode,
+    );
+    assert.equal(observedJoinAdmissions.length, admissionsBeforeRetry, "same-user retries do not re-run admission");
 
     const members = await send(owner, { id: "admission-members", type: "teams.listMembers", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
     assert.equal(members.data.totalCount, 2);
@@ -692,10 +747,175 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
     assertNoTeamLeak(publicDenied, [team.id, "admission-fourth@example.com", fourthCode, "maximumMembers"]);
     assert.equal(observedJoinAdmissions.length, 4, "trusted and public join transports cannot omit or bypass admission");
     fourthRecipient.close();
+
+    await first.database.adapter.prepare("DELETE FROM [seatPolicies] WHERE [id] = ?").run("seat-policy");
+    fifthRecipient = await first.open();
+    const fifthSignUp = await signUp(fifthRecipient, "admission-fifth", "admission-fifth@example.com", "Fifth Recipient");
+    const fifthCode = await issue("admission-fifth-link", "admission-fifth@example.com");
+    const missingPolicy = await send(fifthRecipient, {
+      id: "admission-missing-policy", type: "teams.join", code: fifthCode, sessionToken: fifthSignUp.data.sessionToken,
+    });
+    assert.equal(missingPolicy.error.code, "TEAM_JOIN_DENIED");
+    assert.equal(first.database.adapter.prepare(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    ).get(fifthCode.split(".")[1]).consumedAt, null, "missing protected policy data leaves the Join link usable");
+
+    await first.database.adapter.prepare(
+      "INSERT INTO [seatPolicies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
+    ).run("seat-policy", now, now, team.id, 4);
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const admissionsBeforeCancellation = observedJoinAdmissions.length;
+    await assert.rejects(
+      joinCurrentUserTeam(first.database, fifthSignUp.data.auth, fifthCode, { signal: cancelled.signal }),
+      (error) => error.code === "TEAM_JOIN_DENIED",
+    );
+    assert.equal(observedJoinAdmissions.length, admissionsBeforeCancellation, "pre-cancelled admission never invokes Capsule policy");
+    assert.equal(first.database.adapter.prepare(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    ).get(fifthCode.split(".")[1]).consumedAt, null, "cancelled admission leaves the Join link usable");
+    assert.equal((await joinCurrentUserTeam(first.database, fifthSignUp.data.auth, fifthCode)).team.memberCount, 4);
+
+    await first.database.adapter.prepare("UPDATE [seatPolicies] SET [maximumMembers] = ? WHERE [id] = ?").run(5, "seat-policy");
+    sixthRecipient = await first.open();
+    const sixthSignUp = await signUp(sixthRecipient, "admission-sixth", "admission-sixth@example.com", "Sixth Recipient");
+    const sixthCode = await issue("admission-sixth-link", "admission-sixth@example.com");
+    admissionFailureMessage = `protected policy failure ${team.id}`;
+    const failedPolicy = await send(sixthRecipient, {
+      id: "admission-policy-failure", type: "teams.join", code: sixthCode, sessionToken: sixthSignUp.data.sessionToken,
+    });
+    admissionFailureMessage = null;
+    assert.deepEqual(failedPolicy.error, {
+      code: "TEAM_JOIN_DENIED", message: "Could not join this Team.", hint: "Ask a Team administrator for access.",
+    });
+    assertNoTeamLeak(failedPolicy, [team.id, sixthCode, "protected policy failure"]);
+    assert.equal(first.database.adapter.prepare(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    ).get(sixthCode.split(".")[1]).consumedAt, null, "failed admission leaves the Join link usable");
+    assert.equal((await joinCurrentUserTeam(first.database, sixthSignUp.data.auth, sixthCode)).team.memberCount, 5);
   } finally {
-    owner?.close(); firstRecipient?.close(); secondRecipient?.close(); thirdRecipient?.close();
+    admissionFailureMessage = null;
+    leakedAdmissionTable = null;
+    owner?.close(); firstRecipient?.close(); secondRecipient?.close(); thirdRecipient?.close(); fifthRecipient?.close(); sixthRecipient?.close();
     await second?.close();
     await first.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Capsule Team admission cannot replace the joining identity and late cancellation rolls back the Join", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-teams-admission-boundary-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"), admissionCapsule);
+  let owner;
+  let recipient;
+  let other;
+  let cancelledRecipient;
+  const originalAdmission = runtime.database.runTeamJoinAdmission;
+  const originalWithTransaction = runtime.database.adapter.withTransaction;
+  let releaseAdmissionLogWriteResolve = () => {};
+  try {
+    owner = await runtime.open();
+    recipient = await runtime.open();
+    other = await runtime.open();
+    cancelledRecipient = await runtime.open();
+    const ownerSignUp = await signUp(owner, "boundary-owner", "boundary-owner@example.com", "Boundary Owner");
+    const recipientSignUp = await signUp(recipient, "boundary-recipient", "boundary-recipient@example.com", "Boundary Recipient");
+    const otherSignUp = await signUp(other, "boundary-other", "boundary-other@example.com", "Boundary Other");
+    const cancelledSignUp = await signUp(cancelledRecipient, "boundary-cancelled", "boundary-cancelled@example.com", "Boundary Cancelled");
+    const team = (await send(owner, { id: "boundary-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [seatPolicies] ([id], [createdAt], [updatedAt], [teamId], [maximumMembers]) VALUES (?, ?, ?, ?, ?)",
+    ).run("boundary-policy", now, now, team.id, 4);
+    const issue = async (id, email) => {
+      const result = await send(owner, { id, type: "teams.createJoinLink", teamId: team.id, email, ttlSeconds: 300, sessionToken: ownerSignUp.data.sessionToken });
+      assert.equal(result.error, null, JSON.stringify(result.error));
+      return new URL(result.data.link).searchParams.get("code");
+    };
+
+    const recipientCode = await issue("boundary-recipient-link", "boundary-recipient@example.com");
+    admissionAuthMutationTarget = otherSignUp.data.auth.userId;
+    admissionAuthMutationRejected = false;
+    let admissionLogWriteStartedResolve;
+    const admissionLogWriteStarted = new Promise((resolve) => { admissionLogWriteStartedResolve = resolve; });
+    const releaseAdmissionLogWrite = new Promise((resolve) => { releaseAdmissionLogWriteResolve = resolve; });
+    runtime.database.adapter.withTransaction = function (callback) {
+      return originalWithTransaction.call(this, (transactionAdapter) => {
+        const originalInsertLogIndexEvent = transactionAdapter.insertLogIndexEvent;
+        transactionAdapter.insertLogIndexEvent = function (event) {
+          const result = originalInsertLogIndexEvent.call(this, event);
+          if (event.message !== "Team join admission checked") return result;
+          admissionLogWriteStartedResolve();
+          return Promise.resolve(result).then(async (value) => {
+            await releaseAdmissionLogWrite;
+            return value;
+          });
+        };
+        return callback(transactionAdapter);
+      });
+    };
+    const recipientJoin = joinCurrentUserTeam(runtime.database, recipientSignUp.data.auth, recipientCode);
+    await admissionLogWriteStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.throws(
+      () => leakedAdmissionTable.all(),
+      (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE",
+      "trusted admission reads revoke before pending transaction log writes settle",
+    );
+    releaseAdmissionLogWriteResolve();
+    await recipientJoin;
+    runtime.database.adapter.withTransaction = originalWithTransaction;
+    assert.equal(admissionAuthMutationRejected, true, "the admission auth snapshot is immutable");
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    ).get(team.id, recipientSignUp.data.auth.userId).count, 1, "membership belongs to the link recipient");
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    ).get(team.id, otherSignUp.data.auth.userId).count, 0, "admission cannot substitute another user");
+    admissionAuthMutationTarget = null;
+
+    const cancelledCode = await issue("boundary-cancelled-link", "boundary-cancelled@example.com");
+    const cancellation = new AbortController();
+    let boundaryReachedResolve;
+    let releaseBoundaryResolve;
+    const boundaryReached = new Promise((resolve) => { boundaryReachedResolve = resolve; });
+    const releaseBoundary = new Promise((resolve) => { releaseBoundaryResolve = resolve; });
+    runtime.database.adapter.withTransaction = function (callback) {
+      return originalWithTransaction.call(this, async (transactionAdapter) => {
+        const result = await callback(transactionAdapter);
+        const checks = transactionAdapter[Symbol.for("sporades.database.transactionBeforeCommitChecks")];
+        checks?.unshift(async () => {
+          boundaryReachedResolve();
+          await releaseBoundary;
+        });
+        return result;
+      });
+    };
+    const cancelledJoin = joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode, { signal: cancellation.signal });
+    await boundaryReached;
+    cancellation.abort();
+    releaseBoundaryResolve();
+    await assert.rejects(
+      cancelledJoin,
+      (error) => error.code === "TEAM_JOIN_DENIED",
+    );
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    ).get(cancelledCode.split(".")[1]).consumedAt, null, "late cancellation rolls back link consumption");
+    assert.equal(runtime.database.adapter.prepare(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    ).get(team.id, cancelledSignUp.data.auth.userId).count, 0, "late cancellation rolls back membership");
+
+    runtime.database.adapter.withTransaction = originalWithTransaction;
+    assert.equal((await joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode)).team.memberCount, 3);
+  } finally {
+    releaseAdmissionLogWriteResolve();
+    runtime.database.runTeamJoinAdmission = originalAdmission;
+    runtime.database.adapter.withTransaction = originalWithTransaction;
+    admissionAuthMutationTarget = null;
+    admissionAuthMutationRejected = false;
+    owner?.close(); recipient?.close(); other?.close(); cancelledRecipient?.close();
+    await runtime.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -715,12 +935,15 @@ test("Postgres Team admission serializes concurrent joins for the final seat", {
   let owner;
   let firstRecipient;
   let secondRecipient;
+  let thirdRecipient;
   try {
     owner = await first.open(); firstRecipient = await first.open(); secondRecipient = await first.open();
     const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const ownerSignUp = await signUp(owner, "pg-admission-owner", `pg-owner-${unique}@example.com`, "Postgres Owner");
     const firstSignUp = await signUp(firstRecipient, "pg-admission-first", `pg-first-${unique}@example.com`, "Postgres First");
     const secondSignUp = await signUp(secondRecipient, "pg-admission-second", `pg-second-${unique}@example.com`, "Postgres Second");
+    thirdRecipient = await first.open();
+    const thirdSignUp = await signUp(thirdRecipient, "pg-admission-third", `pg-third-${unique}@example.com`, "Postgres Third");
     const team = (await send(owner, { id: "pg-admission-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
     const now = new Date().toISOString();
     await first.database.adapter.prepare(first.database.adapter.dialect.sql(
@@ -738,18 +961,39 @@ test("Postgres Team admission serializes concurrent joins for the final seat", {
     second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, {
       name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } }, services: { database: { engine: "postgres" } },
     }, admissionCapsule, { serviceEnv: serverEnv });
+    observedJoinAdmissions.length = 0;
+    assert.deepEqual(await runQuery(first.database, firstSignUp.data.auth, "seatPolicies", [team.id]), { data: [], error: null });
     const attempts = await Promise.allSettled([
       joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
       joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
     ]);
     assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
     assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
+    assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+    assert.equal(
+      (await first.database.adapter.readRecentLogEvents(50)).filter(
+        (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+      ).length,
+      1,
+      "only the admitted Postgres Join commits its transaction-scoped application log",
+    );
+    assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+    const deniedCode = attempts[0].status === "rejected" ? firstCode : secondCode;
+    const deniedLink = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+      "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+    )).get(deniedCode.split(".")[1]);
+    assert.equal(deniedLink.consumedAt, null, "Postgres denial rolls back link consumption");
     const count = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(team.id);
     assert.equal(Number(count.count), 2);
+    const thirdCode = await issue("pg-admission-third-link", thirdSignUp.data.auth.email);
+    const sameTransaction = await runMutation(first.database, thirdSignUp.data.auth, "updateSeatPolicyAndJoin", [`pg-policy-${unique}`, 3, thirdCode]);
+    assert.equal(sameTransaction.ok, true, JSON.stringify(sameTransaction));
+    assert.equal(sameTransaction.data.team.memberCount, 3, "Postgres admission sees earlier writes in the mutation transaction");
   } finally {
-    owner?.close(); firstRecipient?.close(); secondRecipient?.close();
+    leakedAdmissionTable = null;
+    owner?.close(); firstRecipient?.close(); secondRecipient?.close(); thirdRecipient?.close();
     await second?.close(); await first.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -768,12 +1012,15 @@ test("libSQL Team admission serializes concurrent joins for the final seat", asy
     let owner;
     let firstRecipient;
     let secondRecipient;
+    let thirdRecipient;
     try {
       owner = await first.open(); firstRecipient = await first.open(); secondRecipient = await first.open();
       const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const ownerSignUp = await signUp(owner, "libsql-admission-owner", `libsql-owner-${unique}@example.com`, "libSQL Owner");
       const firstSignUp = await signUp(firstRecipient, "libsql-admission-first", `libsql-first-${unique}@example.com`, "libSQL First");
       const secondSignUp = await signUp(secondRecipient, "libsql-admission-second", `libsql-second-${unique}@example.com`, "libSQL Second");
+      thirdRecipient = await first.open();
+      const thirdSignUp = await signUp(thirdRecipient, "libsql-admission-third", `libsql-third-${unique}@example.com`, "libSQL Third");
       const team = (await send(owner, { id: "libsql-admission-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
       const now = new Date().toISOString();
       await first.database.adapter.prepare(first.database.adapter.dialect.sql(
@@ -791,18 +1038,39 @@ test("libSQL Team admission serializes concurrent joins for the final seat", asy
       second = await openDevDatabase(path.join(dir, "second.db"), "", serverEnv, {
         name: "teams-admission-test", auth: { providers: { anonymous: true, email: true } }, services: { database: { kind: "database", engine: "libsql" } },
       }, admissionCapsule, { serviceEnv: serverEnv });
+      observedJoinAdmissions.length = 0;
+      assert.deepEqual(await runQuery(first.database, firstSignUp.data.auth, "seatPolicies", [team.id]), { data: [], error: null });
       const attempts = await Promise.allSettled([
         joinCurrentUserTeam(first.database, firstSignUp.data.auth, firstCode),
         joinCurrentUserTeam(second, secondSignUp.data.auth, secondCode),
       ]);
       assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
       assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
+      assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+      assert.equal(
+        (await first.database.adapter.readRecentLogEvents(50)).filter(
+          (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+        ).length,
+        1,
+        "only the admitted libSQL Join commits its transaction-scoped application log",
+      );
+      assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+      const deniedCode = attempts[0].status === "rejected" ? firstCode : secondCode;
+      const deniedLink = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
+        "SELECT [consumedAt] FROM [sporades_team_join_links] WHERE [selector] = ?",
+      )).get(deniedCode.split(".")[1]);
+      assert.equal(deniedLink.consumedAt, null, "libSQL denial rolls back link consumption");
       const count = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
         "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
       )).get(team.id);
       assert.equal(Number(count.count), 2);
+      const thirdCode = await issue("libsql-admission-third-link", thirdSignUp.data.auth.email);
+      const sameTransaction = await runMutation(first.database, thirdSignUp.data.auth, "updateSeatPolicyAndJoin", [`libsql-policy-${unique}`, 3, thirdCode]);
+      assert.equal(sameTransaction.ok, true, JSON.stringify(sameTransaction));
+      assert.equal(sameTransaction.data.team.memberCount, 3, "libSQL admission sees earlier writes in the mutation transaction");
     } finally {
-      owner?.close(); firstRecipient?.close(); secondRecipient?.close();
+      leakedAdmissionTable = null;
+      owner?.close(); firstRecipient?.close(); secondRecipient?.close(); thirdRecipient?.close();
       await second?.close(); await first.close();
     }
   });

@@ -246,9 +246,20 @@ async function rejectNestedTransactionScope(): Promise<never> {
   );
 }
 
-const transactionScopeRevokers = new WeakMap<object, () => void>();
+type TransactionScopeKind = "transaction" | "snapshot";
 
-function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseRecord = {}) {
+const transactionScopes = new WeakMap<object, { revoke: () => void; owner: object; kind: TransactionScopeKind }>();
+
+export function isActiveTransactionScopedAdapter(value: any, owner?: any) {
+  const scope = value && typeof value === "object" ? transactionScopes.get(value) : undefined;
+  return Boolean(
+    scope
+    && scope.kind === "transaction"
+    && (owner === undefined || scope.owner === owner),
+  );
+}
+
+function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseRecord, owner: LooseRecord, kind: TransactionScopeKind) {
   let active = true;
   const assertActive = () => {
     if (!active) throw commandError(
@@ -279,16 +290,25 @@ function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseR
     withTransaction: rejectNestedTransactionScope,
     withReadOnlySnapshot: rejectNestedTransactionScope,
   });
-  transactionScopeRevokers.set(scopedAdapter, () => { active = false; });
+  transactionScopes.set(scopedAdapter, {
+    revoke: () => { active = false; },
+    owner,
+    kind,
+  });
   return scopedAdapter;
 }
 
 function revokeTransactionScopedAdapter(adapter: LooseRecord) {
-  transactionScopeRevokers.get(adapter)?.();
-  transactionScopeRevokers.delete(adapter);
+  transactionScopes.get(adapter)?.revoke();
+  transactionScopes.delete(adapter);
 }
 
 const transactionOperations = Symbol.for("sporades.database.transactionOperations");
+const transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+
+async function runTransactionBeforeCommitChecks(transactionAdapter: LooseRecord) {
+  for (const check of (transactionAdapter as any)[transactionBeforeCommitChecks] ?? []) await check();
+}
 
 export async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
   if (
@@ -1271,12 +1291,15 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         const ownerOperations: LooseRecord = typeof (this as any)[transactionOperations] === "function"
           ? (this as any)[transactionOperations]()
           : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN");
         try {
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await transactionExec("COMMIT");
           return result;
@@ -1291,7 +1314,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         const ownerOperations: LooseRecord = typeof (this as any)[transactionOperations] === "function"
           ? (this as any)[transactionOperations]()
           : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "snapshot");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN"); await transactionExec("PRAGMA query_only = ON");
         try { let result; try { result = await fn(ownerAdapter); } finally { revokeTransactionScopedAdapter(ownerAdapter); } await transactionExec("COMMIT"); return result; }
@@ -1409,9 +1432,12 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
-          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await rawQuery("COMMIT");
           return result;
@@ -1425,7 +1451,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     },
     async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
       return await connectionGate.runTransaction(async () => {
-        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "snapshot");
         await rawQuery("BEGIN TRANSACTION READ ONLY");
         try { let result; try { result = await fn(transactionAdapter); } finally { revokeTransactionScopedAdapter(transactionAdapter); } await rawQuery("COMMIT"); return result; }
         catch (error) { try { await rawQuery("ROLLBACK"); } catch {} throw error; }
@@ -1979,12 +2005,15 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
           ...createOperations(transaction, runDirectly),
-        });
+        }, {}, adapter, "transaction");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
           let result;
-          try { result = await fn(transactionAdapter); }
+          try {
+            result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
+          }
           finally { revokeTransactionScopedAdapter(transactionAdapter); }
           await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
           return result;
@@ -2003,7 +2032,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
         const transaction = { baton: null as any, baseUrl: endpoint };
-        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
+        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter, "snapshot");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });

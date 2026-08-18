@@ -2,6 +2,7 @@ import type { PathLike } from "node:fs";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 type RuntimeEnv = Record<string, string | undefined>;
+export declare function isActiveTransactionScopedAdapter(value: any, owner?: any): boolean;
 export declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord>;
 export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
 export declare function createDatabaseDialect(spec: LooseRecord): LooseRecord;

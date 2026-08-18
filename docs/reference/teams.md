@@ -78,7 +78,7 @@ Inspection before authentication exposes only safe Team presentation and usabili
 
 ### Trusted Join admission
 
-A Capsule may declare `teams.admitJoin` in trusted server code to decide whether a validated Join link may create a new membership. The policy receives the target `teamId`, joining `userId`, and exact `currentMemberCount`, plus a transaction-bound context containing read-only `ctx.db`, `ctx.auth`, `ctx.env`, and `ctx.log`.
+A Capsule may declare `teams.admitJoin` in trusted server code to decide whether a validated Join link may create a new membership. The policy receives the target `teamId`, joining `userId`, and exact `currentMemberCount`, plus a transaction-bound context containing read-only `ctx.db`, `ctx.auth`, `ctx.env`, and `ctx.log`. Its app-table reads bypass the joining user's ordinary row ACLs so the policy can inspect state, such as a subscription row, that is correctly hidden until membership exists. The database projection exposes no runtime-owned tables, mutation methods, raw adapter, schema, or nested transaction.
 
 ```ts
 export default capsule({
@@ -93,7 +93,7 @@ export default capsule({
 });
 ```
 
-The runtime invokes this policy only after authentication, Join-link validation, intended-recipient matching, and the Team lifecycle lock, but before membership insertion. The check, any read-only `ctx.db` access, capability consumption, and membership insert share one transaction. Concurrent joins for a final seat therefore serialize against the same Team row: one may commit and the next observes the new exact count. A denial or policy error rolls the transaction back and returns only the generic `TEAM_JOIN_DENIED` client error; policy data and internal errors are not exposed. Browser callers cannot supply, alter, or omit this policy. Capsules without `admitJoin` preserve the 0.8.1 Join behavior, and idempotent retries by an already-joined member do not create or re-admit a membership.
+The runtime invokes this policy only after authentication, Join-link validation, intended-recipient matching, and the Team lifecycle lock, but before membership insertion. The joining user remains the policy subject; trusted reads grant neither membership, Team administration, nor the Privileged server role. The check, any read-only `ctx.db` access, capability consumption, and membership insert share one transaction. Concurrent joins for a final seat therefore serialize against the same Team row: one may commit and the next observes the new exact count. A denial, missing policy state, invalid decision, cancellation, or policy error rolls the transaction back and returns only the generic `TEAM_JOIN_DENIED` client error; policy data and internal errors are not exposed, and the otherwise-valid Join link remains usable. Browser callers cannot supply, alter, or omit this policy. Capsules without `admitJoin` preserve the 0.8.1 Join behavior, and idempotent retries by an already-joined member do not create or re-admit a membership.
 
 Sporades compares normalized email equality across the current linked user's attached addresses, but does not require verified email. Email-verification policy belongs to the Capsule. Malformed, expired, revoked, consumed, unknown, and email-mismatched capabilities all have generic invalid results. Repeated same-user join attempts are idempotent.
 

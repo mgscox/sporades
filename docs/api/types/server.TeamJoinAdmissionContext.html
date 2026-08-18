@@ -21,7 +21,7 @@
 <ul class="tsd-parameters">
 <li class="tsd-parameter">
 <h5><span class="tsd-kind-property">db</span><span class="tsd-signature-symbol">: </span><a href="server.ReadOnlyDatabaseFromSchema.html" class="tsd-signature-type tsd-kind-type-alias">ReadOnlyDatabaseFromSchema</a><span class="tsd-signature-symbol">&lt;</span><a class="tsd-signature-type tsd-kind-type-parameter" href="#schema">Schema</a><span class="tsd-signature-symbol">&gt;</span></h5>
-<div class="tsd-comment tsd-typography"><p>Transaction-bound application reads. Admission policies cannot mutate app state.</p>
+<div class="tsd-comment tsd-typography"><p>Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable.</p>
 </div></li></ul></div><aside class="tsd-sources">
 <ul>
 <li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L414">server.d.ts:414</a></li></ul></aside></div>

@@ -268,8 +268,8 @@ export type ReadOnlyTableApi<Row extends Record<string, unknown> = Record<string
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): ReadOnlyTableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): ReadOnlyTableApi<Row>;
   limit(count: number): ReadOnlyTableApi<Row>;
-  get(): Row | null;
-  all(): Row[];
+  get(): Promise<Row | null>;
+  all(): Promise<Row[]>;
 };
 
 export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
@@ -412,7 +412,7 @@ export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 export type TeamJoinAdmissionInput = { teamId: string; userId: string; currentMemberCount: number };
 export type TeamJoinAdmissionDecision = { allow: boolean };
 export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
-  /** Transaction-bound application reads. Admission policies cannot mutate app state. */
+  /** Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
 };
 export type CurrentUserTeamsApi = {

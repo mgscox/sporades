@@ -118,7 +118,10 @@ const app = capsule({
   teams: {
     appRoles: ["author", "reviewer"],
     admitJoin: async (ctx, input) => {
-      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      const rowsPromise: Promise<unknown[]> = ctx.db.todos.where("ownerId", input.teamId).all();
+      const rowPromise: Promise<unknown> = ctx.db.todos.where("ownerId", input.teamId).get();
+      const rows = await rowsPromise;
+      await rowPromise;
       // @ts-expect-error admission policy data access is transaction-bound and read-only.
       ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
       ctx.log.info("team admission", input.currentMemberCount, input.userId);

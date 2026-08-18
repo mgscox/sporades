@@ -64,10 +64,11 @@ import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import {
   createLogIndexTables, insertLogIndexEvent, pruneLogIndex, readRecentLogEvents,
 } from "./log-index-storage.js";
-// Batch 9. One name, which is what is left of this file's relationship with the Database engines:
-// `openDevDatabase` builds the Capsule's adapter with it. It was fifty-nine declarations in this
-// file, and every domain above reached the engines through them.
-import { createRuntimeDatabaseAdapter } from "./database-runtime.js";
+// Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
+// with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
+// transaction scope. The runtime reaches engine behavior through those two names rather than
+// owning another adapter path here.
+import { createRuntimeDatabaseAdapter, isActiveTransactionScopedAdapter } from "./database-runtime.js";
 import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFieldValue } from "./stored-value-coding.js";
 // Twenty-one names, which is what the three functions of that domain still in this file plus
 // `openDevDatabase`, the endpoint table API, the schema extractor and the four mutation and message
@@ -103,6 +104,8 @@ import {
 } from "./jobs-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
+const trustedReadPurposes = new Set(["teams.join-admission"]);
+const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -658,10 +661,26 @@ export async function openDevDatabase(
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
-    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
-    createTeamJoinAdmissionContext(transactionAdapter: LooseRecord, auth: LooseRecord) {
-      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
-    },
+    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
+        const rootDatabase = this.__rootDatabase ?? this;
+        const trustedTransaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        const admissionDatabase = createTransactionDatabase(rootDatabase, trustedTransaction);
+        try {
+          return await withTrustedRead(rootDatabase, {
+            transaction: trustedTransaction,
+            purpose: "teams.join-admission",
+            subject: { teamId: input.teamId, userId: input.userId },
+            signal,
+          }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+            createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+            input,
+          ));
+        } finally {
+          await drainPendingLogWrites(admissionDatabase);
+        }
+      }
+      : undefined,
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -2868,6 +2887,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     adapter,
     sqlite: adapter,
     __transactionActive: true,
+    [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites,
   };
@@ -3073,33 +3093,106 @@ export function createEndpointDatabaseApi(database: LooseRecord, contextGetter: 
   );
 }
 
-function createEndpointReadOnlyDatabaseApi(database: LooseRecord, contextGetter: any = null) {
+function createEndpointReadOnlyDatabaseApi(database: LooseRecord, contextGetter: any = null, assertActive: () => void = () => {}) {
   return Object.fromEntries(
     database.schema.tables.map((table: { name: any; }) => [
       table.name,
-      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter)),
+      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter), assertActive),
     ]),
   );
 }
 
-function readOnlyEndpointTableApi(tableApi: LooseRecord): LooseRecord {
+function readOnlyEndpointTableApi(tableApi: LooseRecord, assertActive: () => void): LooseRecord {
   return {
     where(fieldName: any, value: any) {
-      return readOnlyEndpointTableApi(tableApi.where(fieldName, value));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.where(fieldName, value), assertActive);
     },
     orderBy(fieldName: any, direction = "asc") {
-      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction), assertActive);
     },
     limit(count: any) {
-      return readOnlyEndpointTableApi(tableApi.limit(count));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.limit(count), assertActive);
     },
     get() {
-      return tableApi.get();
+      assertActive();
+      return trustedReadResult(tableApi.get(), assertActive);
     },
     all() {
-      return tableApi.all();
+      assertActive();
+      return trustedReadResult(tableApi.all(), assertActive);
     },
   };
+}
+
+function trustedReadResult(value: any, assertActive: () => void) {
+  return Promise.resolve(value).then((result) => {
+    assertActive();
+    return result;
+  });
+}
+
+export async function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord) => any) {
+  if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
+    throw commandError(
+      "Trusted app-database reads require an active transaction.",
+      "Start the trusted policy from the runtime-owned transition transaction.",
+      "TRUSTED_READ_TRANSACTION_REQUIRED",
+    );
+  }
+  if (!trustedReadPurposes.has(options?.purpose)) {
+    throw commandError(
+      "Trusted app-database read purpose is invalid.",
+      "Use a runtime-owned trusted policy purpose.",
+      "INVALID_TRUSTED_READ_PURPOSE",
+    );
+  }
+  const signal = options?.signal;
+  const abortError = () => commandError(
+    "Trusted app-database read was aborted.",
+    "Retry the runtime-owned trusted policy if cancellation was not intended.",
+    "TRUSTED_READ_ABORTED",
+  );
+  if (signal?.aborted) throw abortError();
+  const transactionDatabase = createTransactionDatabase(database, options.transaction);
+  let active = true;
+  const assertActive = () => {
+    if (!active) {
+      throw commandError(
+        "Trusted app-database read access is no longer active.",
+        "Start a new runtime-owned trusted policy callback before reading app data.",
+        "TRUSTED_READ_ACCESS_INACTIVE",
+      );
+    }
+    if (signal?.aborted) throw abortError();
+  };
+  const context: LooseRecord = {
+    subject: options.subject,
+    purpose: options.purpose,
+    signal,
+  };
+  grantPrivilegedDbAccess(context);
+  const holder = createContextHolder(context);
+  const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+  try {
+    try {
+      const result = await callback(db);
+      assertActive();
+      return result;
+    } catch {
+      if (signal?.aborted) throw abortError();
+      throw commandError(
+        "Trusted app-database read failed.",
+        "The runtime-owned trusted policy could not be evaluated.",
+        "TRUSTED_READ_FAILED",
+      );
+    }
+  } finally {
+    active = false;
+    revokePrivilegedDbAccess(context);
+  }
 }
 
 function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query: LooseRecord = {}, contextGetter: any = null) {
@@ -5058,14 +5151,13 @@ function createMutationContext(database: LooseRecord, auth: any) {
   return context;
 }
 
-function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord) {
+function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
   const context: LooseRecord = {
-    auth,
+    auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
+    db: trustedDb,
   };
-  const holder = createContextHolder(context);
-  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 

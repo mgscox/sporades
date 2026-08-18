@@ -8842,6 +8842,7 @@ var TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
 var TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
 var TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
 var TEAM_JOIN_LINK_SECRET_ID = "v1";
+var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 var TEAM_APPLICATION_ROLE_MAX = 32;
 var TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
 var TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -9195,8 +9196,11 @@ async function validateTeamJoinLink(database, auth, code) {
 async function joinCurrentUserTeam(database, auth, code, eventContext) {
   let joined;
   let deniedTeamId = null;
+  let auditUserId = null;
   try {
     requireAuth({ auth }, { linked: true });
+    const joiningUserId = String(auth.userId);
+    auditUserId = joiningUserId;
     const parsed = parseTeamJoinCode(code);
     if (!parsed) throw invalidTeamJoinLink();
     joined = await withTeamTransaction(database, async (tx) => {
@@ -9226,7 +9230,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       if (!team) throw invalidTeamJoinLink();
       const attachedEmails = await tx.prepare(sql(
         "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
-      )).all(auth.userId, auth.userId);
+      )).all(joiningUserId, joiningUserId);
       const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
       if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
         deniedTeamId = String(team.id);
@@ -9236,12 +9240,12 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
       )).get(row.id);
       if (row.consumedAt) {
-        if (redemption?.userId !== auth.userId) throw invalidTeamJoinLink();
+        if (redemption?.userId !== joiningUserId) throw invalidTeamJoinLink();
         const membership2 = await tx.prepare(sql(
           "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-        )).get(row.teamId, auth.userId);
+        )).get(row.teamId, joiningUserId);
         if (!membership2) throw invalidTeamJoinLink();
-        await ensureInitialTeamOnAdapter(tx, auth.userId);
+        await ensureInitialTeamOnAdapter(tx, joiningUserId);
         const count2 = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
         return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
       }
@@ -9252,23 +9256,24 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
       await tx.prepare(sql(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(row.id, row.teamId, auth.userId, now);
-      await ensureInitialTeamOnAdapter(tx, auth.userId);
+      )).run(row.id, row.teamId, joiningUserId, now);
+      await ensureInitialTeamOnAdapter(tx, joiningUserId);
       let membership = await tx.prepare(sql(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-      )).get(row.teamId, auth.userId);
+      )).get(row.teamId, joiningUserId);
       if (!membership) {
-        await enforceTeamJoinAdmission(database, tx, auth, String(row.teamId));
-        await ensureMembershipCounterOnAdapter(tx, auth.userId);
+        await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
+        registerTeamJoinCancellationBeforeCommit(tx, eventContext?.signal);
+        await ensureMembershipCounterOnAdapter(tx, joiningUserId);
         const claim = await tx.prepare(sql(
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
-        )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
+        )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
         if (Number(claim?.changes ?? 0) !== 1) {
           throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
         await tx.prepare(sql(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
-        )).run(row.teamId, auth.userId, now);
+        )).run(row.teamId, joiningUserId, now);
         membership = { role: "member" };
       }
       await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
@@ -9276,28 +9281,39 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
     });
   } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
     throw error;
   }
-  emitTeamSecurityEvent(database, eventContext, "teams.joined", auth.userId, joined.id, "succeeded", "TEAM_JOINED");
+  emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
   return { team: joined };
 }
-async function enforceTeamJoinAdmission(database, tx, auth, teamId) {
-  if (typeof database.teamJoinAdmission !== "function") return;
+async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamId, signal) {
+  if (typeof database.runTeamJoinAdmission !== "function") return;
   const count = await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
   )).get(teamId);
   try {
-    const context = database.createTeamJoinAdmissionContext(tx, auth);
-    const decision = await database.teamJoinAdmission(context, {
+    const decision = await database.runTeamJoinAdmission(tx, auth, {
       teamId,
-      userId: auth.userId,
+      userId: joiningUserId,
       currentMemberCount: Number(count?.count ?? 0)
-    });
+    }, signal);
     if (decision?.allow !== true) throw teamJoinDenied();
   } catch {
     throw teamJoinDenied();
   }
+}
+function throwIfTeamJoinCancelled(signal) {
+  if (signal?.aborted) throw teamJoinDenied();
+}
+function registerTeamJoinCancellationBeforeCommit(transactionAdapter, signal) {
+  if (!signal) return;
+  let checks = transactionAdapter[transactionBeforeCommitChecks];
+  if (!Object.prototype.hasOwnProperty.call(transactionAdapter, transactionBeforeCommitChecks)) {
+    checks = [];
+    Object.defineProperty(transactionAdapter, transactionBeforeCommitChecks, { value: checks });
+  }
+  checks.push(() => throwIfTeamJoinCancelled(signal));
 }
 function normalizeTeamJoinEmail(email) {
   const normalized = String(email ?? "").trim().toLowerCase();
@@ -13282,8 +13298,14 @@ async function rejectNestedTransactionScope() {
     "Keep mutation work inside a single Sporades mutation transaction."
   );
 }
-var transactionScopeRevokers = /* @__PURE__ */ new WeakMap();
-function createTransactionScopedAdapter(adapter, operations = {}) {
+var transactionScopes = /* @__PURE__ */ new WeakMap();
+function isActiveTransactionScopedAdapter(value, owner) {
+  const scope = value && typeof value === "object" ? transactionScopes.get(value) : void 0;
+  return Boolean(
+    scope && scope.kind === "transaction" && (owner === void 0 || scope.owner === owner)
+  );
+}
+function createTransactionScopedAdapter(adapter, operations, owner, kind) {
   let active = true;
   const assertActive = () => {
     if (!active) throw commandError2(
@@ -13317,16 +13339,24 @@ function createTransactionScopedAdapter(adapter, operations = {}) {
     withTransaction: rejectNestedTransactionScope,
     withReadOnlySnapshot: rejectNestedTransactionScope
   });
-  transactionScopeRevokers.set(scopedAdapter, () => {
-    active = false;
+  transactionScopes.set(scopedAdapter, {
+    revoke: () => {
+      active = false;
+    },
+    owner,
+    kind
   });
   return scopedAdapter;
 }
 function revokeTransactionScopedAdapter(adapter) {
-  transactionScopeRevokers.get(adapter)?.();
-  transactionScopeRevokers.delete(adapter);
+  transactionScopes.get(adapter)?.revoke();
+  transactionScopes.delete(adapter);
 }
 var transactionOperations = Symbol.for("sporades.database.transactionOperations");
+var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+async function runTransactionBeforeCommitChecks(transactionAdapter) {
+  for (const check of transactionAdapter[transactionBeforeCommitChecks2] ?? []) await check();
+}
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
   if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
     return await createLibsqlDatabaseAdapter({
@@ -14106,13 +14136,14 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     async withTransaction(fn) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const transactionAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "transaction");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN");
         try {
           let result;
           try {
             result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
@@ -14127,7 +14158,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
         const ownerOperations = typeof this[transactionOperations] === "function" ? this[transactionOperations]() : { exec: this.exec.bind(this), prepare: this.prepare.bind(this) };
-        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations);
+        const ownerAdapter = createTransactionScopedAdapter(this, ownerOperations, this, "snapshot");
         const transactionExec = ownerOperations.exec;
         await transactionExec("BEGIN");
         await transactionExec("PRAGMA query_only = ON");
@@ -14250,10 +14281,11 @@ async function createPostgresDatabaseAdapter(options) {
       return await connectionGate.runTransaction(async () => {
         await rawQuery("BEGIN");
         try {
-          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+          const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "transaction");
           let result;
           try {
             result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
@@ -14270,7 +14302,7 @@ async function createPostgresDatabaseAdapter(options) {
     },
     async withReadOnlySnapshot(fn) {
       return await connectionGate.runTransaction(async () => {
-        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly));
+        const transactionAdapter = createTransactionScopedAdapter(adapter, createOperations(runDirectly), adapter, "snapshot");
         await rawQuery("BEGIN TRANSACTION READ ONLY");
         try {
           let result;
@@ -14758,13 +14790,14 @@ async function createLibsqlDatabaseAdapter(options) {
         const transactionAdapter = createTransactionScopedAdapter({
           ...adapter,
           ...createOperations(transaction, runDirectly)
-        });
+        }, {}, adapter, "transaction");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
           let result;
           try {
             result = await fn(transactionAdapter);
+            await runTransactionBeforeCommitChecks(transactionAdapter);
           } finally {
             revokeTransactionScopedAdapter(transactionAdapter);
           }
@@ -14786,7 +14819,7 @@ async function createLibsqlDatabaseAdapter(options) {
       return await connectionGate.runTransaction(async () => {
         assertLibsqlOpen(closed);
         const transaction = { baton: null, baseUrl: endpoint };
-        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) });
+        const snapshotAdapter = createTransactionScopedAdapter({ ...adapter, ...createOperations(transaction, runDirectly) }, {}, adapter, "snapshot");
         activeTransactions.add(transaction);
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
@@ -15257,6 +15290,8 @@ function quoteIdentifier(identifier) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
+var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 async function shutdownAndCloseDatabase(database) {
   let shutdownError;
   let closeError;
@@ -15487,10 +15522,24 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
-    teamJoinAdmission: capsuleDefinition?.teams?.admitJoin,
-    createTeamJoinAdmissionContext(transactionAdapter, auth) {
-      return createTeamJoinAdmissionContext(createTransactionDatabase(database, transactionAdapter), auth);
-    },
+    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? async function(transactionAdapter, auth, input, signal) {
+      const rootDatabase = this.__rootDatabase ?? this;
+      const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+      const admissionDatabase = createTransactionDatabase(rootDatabase, trustedTransaction);
+      try {
+        return await withTrustedRead(rootDatabase, {
+          transaction: trustedTransaction,
+          purpose: "teams.join-admission",
+          subject: { teamId: input.teamId, userId: input.userId },
+          signal
+        }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+          createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+          input
+        ));
+      } finally {
+        await drainPendingLogWrites(admissionDatabase);
+      }
+    } : void 0,
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
@@ -17381,6 +17430,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     adapter,
     sqlite: adapter,
     __transactionActive: true,
+    [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
     __pendingLogWrites: pendingLogWrites
   };
@@ -17569,32 +17619,104 @@ function createEndpointDatabaseApi(database, contextGetter = null) {
     database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)])
   );
 }
-function createEndpointReadOnlyDatabaseApi(database, contextGetter = null) {
+function createEndpointReadOnlyDatabaseApi(database, contextGetter = null, assertActive = () => {
+}) {
   return Object.fromEntries(
     database.schema.tables.map((table) => [
       table.name,
-      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter))
+      readOnlyEndpointTableApi(createEndpointTableApi(database, table, {}, contextGetter), assertActive)
     ])
   );
 }
-function readOnlyEndpointTableApi(tableApi) {
+function readOnlyEndpointTableApi(tableApi, assertActive) {
   return {
     where(fieldName, value) {
-      return readOnlyEndpointTableApi(tableApi.where(fieldName, value));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.where(fieldName, value), assertActive);
     },
     orderBy(fieldName, direction = "asc") {
-      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.orderBy(fieldName, direction), assertActive);
     },
     limit(count) {
-      return readOnlyEndpointTableApi(tableApi.limit(count));
+      assertActive();
+      return readOnlyEndpointTableApi(tableApi.limit(count), assertActive);
     },
     get() {
-      return tableApi.get();
+      assertActive();
+      return trustedReadResult(tableApi.get(), assertActive);
     },
     all() {
-      return tableApi.all();
+      assertActive();
+      return trustedReadResult(tableApi.all(), assertActive);
     }
   };
+}
+function trustedReadResult(value, assertActive) {
+  return Promise.resolve(value).then((result) => {
+    assertActive();
+    return result;
+  });
+}
+async function withTrustedRead(database, options, callback) {
+  if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
+    throw commandError2(
+      "Trusted app-database reads require an active transaction.",
+      "Start the trusted policy from the runtime-owned transition transaction.",
+      "TRUSTED_READ_TRANSACTION_REQUIRED"
+    );
+  }
+  if (!trustedReadPurposes.has(options?.purpose)) {
+    throw commandError2(
+      "Trusted app-database read purpose is invalid.",
+      "Use a runtime-owned trusted policy purpose.",
+      "INVALID_TRUSTED_READ_PURPOSE"
+    );
+  }
+  const signal = options?.signal;
+  const abortError = () => commandError2(
+    "Trusted app-database read was aborted.",
+    "Retry the runtime-owned trusted policy if cancellation was not intended.",
+    "TRUSTED_READ_ABORTED"
+  );
+  if (signal?.aborted) throw abortError();
+  const transactionDatabase = createTransactionDatabase(database, options.transaction);
+  let active = true;
+  const assertActive = () => {
+    if (!active) {
+      throw commandError2(
+        "Trusted app-database read access is no longer active.",
+        "Start a new runtime-owned trusted policy callback before reading app data.",
+        "TRUSTED_READ_ACCESS_INACTIVE"
+      );
+    }
+    if (signal?.aborted) throw abortError();
+  };
+  const context = {
+    subject: options.subject,
+    purpose: options.purpose,
+    signal
+  };
+  grantPrivilegedDbAccess(context);
+  const holder = createContextHolder(context);
+  const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+  try {
+    try {
+      const result = await callback(db);
+      assertActive();
+      return result;
+    } catch {
+      if (signal?.aborted) throw abortError();
+      throw commandError2(
+        "Trusted app-database read failed.",
+        "The runtime-owned trusted policy could not be evaluated.",
+        "TRUSTED_READ_FAILED"
+      );
+    }
+  } finally {
+    active = false;
+    revokePrivilegedDbAccess(context);
+  }
 }
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
@@ -19376,14 +19498,13 @@ function createMutationContext(database, auth) {
   };
   return context;
 }
-function createTeamJoinAdmissionContext(database, auth) {
+function createTeamJoinAdmissionContext(database, auth, trustedDb) {
   const context = {
-    auth,
+    auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
-    log: createEndpointLogger(database)
+    log: createEndpointLogger(database),
+    db: trustedDb
   };
-  const holder = createContextHolder(context);
-  context.db = createEndpointReadOnlyDatabaseApi(database, () => holder.current);
   return context;
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = void 0) {
@@ -25655,7 +25776,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.8.5";
+var CLI_VERSION = "0.8.6";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);

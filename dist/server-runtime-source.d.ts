@@ -89,6 +89,7 @@ export declare function runEndpoint(database: any, endpoint: {
 export declare function createEndpointDatabaseApi(database: LooseRecord, contextGetter?: any): {
     [k: string]: any;
 };
+export declare function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord) => any): Promise<any>;
 export declare function normalizeJourneyPolicy(value: any): {
     ttlSeconds: any;
     capture: any;
