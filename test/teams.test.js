@@ -101,6 +101,11 @@ const admissionCapsule = {
   teams: {
     async admitJoin(ctx, input) {
       const policies = await ctx.db.seatPolicies.where("teamId", input.teamId).all();
+      ctx.log.info("Team join admission checked", {
+        teamId: input.teamId,
+        userId: input.userId,
+        currentMemberCount: input.currentMemberCount,
+      });
       leakedAdmissionTable = ctx.db.seatPolicies;
       observedJoinAdmissions.push({
         ...input,
@@ -694,6 +699,13 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
     });
     assert.equal(observedJoinAdmissions.length, 2, "every new-membership join invokes trusted policy");
     assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+    assert.equal(
+      (await first.database.adapter.readRecentLogEvents(50)).filter(
+        (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+      ).length,
+      1,
+      "only the admitted Join commits its transaction-scoped application log",
+    );
     assert.ok(observedJoinAdmissions.every((entry) => entry.teamId === team.id && entry.userId === entry.actorUserId));
     assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["auth", "db", "env", "log"])));
     assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.tableKeys) === JSON.stringify(["all", "get", "limit", "orderBy", "where"])));
@@ -800,6 +812,7 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
   let cancelledRecipient;
   const originalAdmission = runtime.database.runTeamJoinAdmission;
   const originalWithTransaction = runtime.database.adapter.withTransaction;
+  let releaseAdmissionLogWriteResolve = () => {};
   try {
     owner = await runtime.open();
     recipient = await runtime.open();
@@ -823,7 +836,35 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
     const recipientCode = await issue("boundary-recipient-link", "boundary-recipient@example.com");
     admissionAuthMutationTarget = otherSignUp.data.auth.userId;
     admissionAuthMutationRejected = false;
-    await joinCurrentUserTeam(runtime.database, recipientSignUp.data.auth, recipientCode);
+    let admissionLogWriteStartedResolve;
+    const admissionLogWriteStarted = new Promise((resolve) => { admissionLogWriteStartedResolve = resolve; });
+    const releaseAdmissionLogWrite = new Promise((resolve) => { releaseAdmissionLogWriteResolve = resolve; });
+    runtime.database.adapter.withTransaction = function (callback) {
+      return originalWithTransaction.call(this, (transactionAdapter) => {
+        const originalInsertLogIndexEvent = transactionAdapter.insertLogIndexEvent;
+        transactionAdapter.insertLogIndexEvent = function (event) {
+          const result = originalInsertLogIndexEvent.call(this, event);
+          if (event.message !== "Team join admission checked") return result;
+          admissionLogWriteStartedResolve();
+          return Promise.resolve(result).then(async (value) => {
+            await releaseAdmissionLogWrite;
+            return value;
+          });
+        };
+        return callback(transactionAdapter);
+      });
+    };
+    const recipientJoin = joinCurrentUserTeam(runtime.database, recipientSignUp.data.auth, recipientCode);
+    await admissionLogWriteStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.throws(
+      () => leakedAdmissionTable.all(),
+      (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE",
+      "trusted admission reads revoke before pending transaction log writes settle",
+    );
+    releaseAdmissionLogWriteResolve();
+    await recipientJoin;
+    runtime.database.adapter.withTransaction = originalWithTransaction;
     assert.equal(admissionAuthMutationRejected, true, "the admission auth snapshot is immutable");
     assert.equal(runtime.database.adapter.prepare(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
@@ -868,6 +909,7 @@ test("Capsule Team admission cannot replace the joining identity and late cancel
     runtime.database.adapter.withTransaction = originalWithTransaction;
     assert.equal((await joinCurrentUserTeam(runtime.database, cancelledSignUp.data.auth, cancelledCode)).team.memberCount, 3);
   } finally {
+    releaseAdmissionLogWriteResolve();
     runtime.database.runTeamJoinAdmission = originalAdmission;
     runtime.database.adapter.withTransaction = originalWithTransaction;
     admissionAuthMutationTarget = null;
@@ -928,6 +970,13 @@ test("Postgres Team admission serializes concurrent joins for the final seat", {
     assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
     assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
     assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+    assert.equal(
+      (await first.database.adapter.readRecentLogEvents(50)).filter(
+        (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+      ).length,
+      1,
+      "only the admitted Postgres Join commits its transaction-scoped application log",
+    );
     assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     const deniedCode = attempts[0].status === "rejected" ? firstCode : secondCode;
     const deniedLink = await first.database.adapter.prepare(first.database.adapter.dialect.sql(
@@ -998,6 +1047,13 @@ test("libSQL Team admission serializes concurrent joins for the final seat", asy
       assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
       assert.equal(attempts.find((attempt) => attempt.status === "rejected").reason.code, "TEAM_JOIN_DENIED");
       assert.deepEqual(observedJoinAdmissions.map((entry) => entry.currentMemberCount).sort(), [1, 2]);
+      assert.equal(
+        (await first.database.adapter.readRecentLogEvents(50)).filter(
+          (entry) => entry.message === "Team join admission checked" && entry.data?.teamId === team.id,
+        ).length,
+        1,
+        "only the admitted libSQL Join commits its transaction-scoped application log",
+      );
       assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
       const deniedCode = attempts[0].status === "rejected" ? firstCode : secondCode;
       const deniedLink = await first.database.adapter.prepare(first.database.adapter.dialect.sql(

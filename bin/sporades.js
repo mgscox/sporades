@@ -15522,18 +15522,23 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
-    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? function(transactionAdapter, auth, input, signal) {
+    runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? async function(transactionAdapter, auth, input, signal) {
       const rootDatabase = this.__rootDatabase ?? this;
       const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
-      return withTrustedRead(rootDatabase, {
-        transaction: trustedTransaction,
-        purpose: "teams.join-admission",
-        subject: { teamId: input.teamId, userId: input.userId },
-        signal
-      }, (trustedDb) => capsuleDefinition.teams.admitJoin(
-        createTeamJoinAdmissionContext(rootDatabase, auth, trustedDb),
-        input
-      ));
+      const admissionDatabase = createTransactionDatabase(rootDatabase, trustedTransaction);
+      try {
+        return await withTrustedRead(rootDatabase, {
+          transaction: trustedTransaction,
+          purpose: "teams.join-admission",
+          subject: { teamId: input.teamId, userId: input.userId },
+          signal
+        }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+          createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+          input
+        ));
+      } finally {
+        await drainPendingLogWrites(admissionDatabase);
+      }
     } : void 0,
     fileAcl,
     securityPolicy: resolveRuntimeSecurityPolicy(config),

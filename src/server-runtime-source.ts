@@ -662,18 +662,23 @@ export async function openDevDatabase(
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
-      ? function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
         const rootDatabase = this.__rootDatabase ?? this;
         const trustedTransaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
-        return withTrustedRead(rootDatabase, {
-          transaction: trustedTransaction,
-          purpose: "teams.join-admission",
-          subject: { teamId: input.teamId, userId: input.userId },
-          signal,
-        }, (trustedDb) => capsuleDefinition.teams.admitJoin(
-          createTeamJoinAdmissionContext(rootDatabase, auth, trustedDb),
-          input,
-        ));
+        const admissionDatabase = createTransactionDatabase(rootDatabase, trustedTransaction);
+        try {
+          return await withTrustedRead(rootDatabase, {
+            transaction: trustedTransaction,
+            purpose: "teams.join-admission",
+            subject: { teamId: input.teamId, userId: input.userId },
+            signal,
+          }, (trustedDb) => capsuleDefinition.teams.admitJoin(
+            createTeamJoinAdmissionContext(admissionDatabase, auth, trustedDb),
+            input,
+          ));
+        } finally {
+          await drainPendingLogWrites(admissionDatabase);
+        }
       }
       : undefined,
     fileAcl,
