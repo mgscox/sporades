@@ -5,7 +5,6 @@ import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -91,7 +90,7 @@ import {
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
+import { confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import {
   DOCTOR_SESSIONS,
   createDoctorEnvelope,
@@ -645,29 +644,11 @@ function parseAccessKeyOperatorArgs(args: string[]): LooseRecord {
   };
 }
 
-async function confirmOperatorAccessKeyAction(options: LooseRecord) {
-  if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw commandError("Destructive Access-key operation requires confirmation.", "Retry with `--yes` in non-interactive use.");
-  }
-  const expected = options.subcommand === "revoke-all" ? options.userId : "yes";
-  const prompt = options.subcommand === "revoke-all"
-    ? `Type the owner ID ${options.userId} to revoke all current Access keys: `
-    : `Type yes to ${options.subcommand} Access key ${options.keyId}: `;
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await readline.question(prompt);
-    if (answer !== expected) throw commandError("Access-key operation cancelled.", "No Access-key state was changed.");
-  } finally {
-    readline.close();
-  }
-}
-
-function parseAccessKeyOperatorProcess(result: SpawnSyncReturns<string>, hint: string) {
+function parseAccessKeyOperatorProcess(result: SpawnSyncReturns<string>, options: LooseRecord, hint: string) {
   let envelope;
   try { envelope = JSON.parse(result.stdout.trim()); }
   catch { throw commandError("Runtime Access-key action returned invalid JSON.", hint); }
-  return sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+  return sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
     throw commandError("Runtime Access-key action returned an invalid response.", hint);
   });
 }
@@ -681,7 +662,6 @@ function accessKeyActionInput(options: LooseRecord) {
       ...(options.limit ? { limit: options.limit } : {}),
       ...(options.status ? { status: options.status } : {}),
     } } : {}),
-    executionSource: `operator-cli-${options.session}`,
   };
 }
 
@@ -693,7 +673,7 @@ function accessKeyActionArgs(options: LooseRecord) {
 }
 
 async function manageOperatorAccessKeys(options: LooseRecord) {
-  await confirmOperatorAccessKeyAction(options);
+  await confirmAccessKeyOperatorAction(options);
   let envelope;
   if (options.session === "dev") {
     const session = await readDevSession(options.projectDir);
@@ -705,14 +685,14 @@ async function manageOperatorAccessKeys(options: LooseRecord) {
       cwd: options.projectDir, encoding: "utf8",
       env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
     });
-    envelope = parseAccessKeyOperatorProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
+    envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
   } else if (options.session === "container") {
     const { binding } = await requireLocalContainerBinding(options, "access-keys");
     const running = runDocker(["inspect", "--format", "{{.State.Running}}", binding.containerId], options.projectDir,
       "Unable to inspect the local Container session.", "Check Docker and retry the Access-key operation.");
     if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
     const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], { cwd: options.projectDir, encoding: "utf8" });
-    envelope = parseAccessKeyOperatorProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
+    envelope = parseAccessKeyOperatorProcess(result, options, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
   } else {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -727,7 +707,7 @@ async function manageOperatorAccessKeys(options: LooseRecord) {
         hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, redeploy the Capsule, and retry the command.`,
       } };
     }
-    envelope = sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+    envelope = sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
       throw commandError("Hosted Access-key action returned an invalid response.", "Upgrade the Host helper and redeploy the Capsule.");
     });
   }

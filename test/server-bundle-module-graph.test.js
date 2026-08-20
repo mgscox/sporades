@@ -1168,7 +1168,7 @@ test("the bundle unseals a sealed Server env", async () => {
 test("the generated Bundle runs audited Access-key operator actions without credential material", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-action-"));
   try {
-    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const source = await buildBundle({ config: capsuleConfig({ __sporadesSession: "container" }), serverEnv: {}, serverSource: CAPSULE_SOURCE });
     const dir = path.join(root, "graph");
     await mkdir(dir, { recursive: true });
     await writePublicTree(dir, "<!doctype html><html><body></body></html>");
@@ -1190,8 +1190,13 @@ test("the generated Bundle runs audited Access-key operator actions without cred
     } finally { adapter.close(); }
 
     const bundlePath = path.join(dir, "server.mjs");
+    const forgedSource = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", options: {}, executionSource: "operator-cli-hosted" },
+    })).stdout);
+    assert.equal(forgedSource.ok, false);
+    assert.equal(forgedSource.error.code, "INVALID_ACCESS_KEY_ACTION_INPUT");
     const listed = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
-      cwd: dir, input: { userId: "bundle-owner", executionSource: "operator-cli-container" },
+      cwd: dir, input: { userId: "bundle-owner", options: {} },
     })).stdout);
     assert.equal(listed.ok, true, JSON.stringify(listed));
     assert.equal(listed.data.accessKeys[0].id, "bundle-key");
@@ -1200,7 +1205,7 @@ test("the generated Bundle runs audited Access-key operator actions without cred
     assert.equal(/selector|verifier|digest|token|private@example/i.test(JSON.stringify(listed)), false);
 
     const revoked = JSON.parse((await runBundleAction(bundlePath, "access-keys.revoke", {
-      cwd: dir, input: { keyId: "bundle-key", executionSource: "operator-cli-container" },
+      cwd: dir, input: { keyId: "bundle-key" },
     })).stdout);
     assert.equal(revoked.ok, true, JSON.stringify(revoked));
     assert.equal(revoked.data.accessKey.status, "revoked");
@@ -1212,7 +1217,7 @@ test("the generated Bundle runs audited Access-key operator actions without cred
         .run("secret-adapter-detail", "bundle-key");
     } finally { corruptAdapter.close(); }
     const redacted = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
-      cwd: dir, input: { userId: "bundle-owner", executionSource: "operator-cli-container" },
+      cwd: dir, input: { userId: "bundle-owner", options: {} },
     })).stdout);
     assert.deepEqual(redacted, {
       ok: false,

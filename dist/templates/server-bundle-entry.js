@@ -21,6 +21,7 @@ import path from "node:path";
 import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
+import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { sporadesCapsuleModuleUrl, sporadesConfig, sporadesSealedServerEnv, sporadesServerEnv, sporadesServerSource, } from "sporades:server-bundle-inputs";
 // The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
 // the same module interface, not because a deployed Capsule imports itself: `server.mjs` is
@@ -32,7 +33,10 @@ const sporadesActionInputIndex = process.argv.indexOf("--sporades-action-input")
 let sporadesActionInput = {};
 if (sporadesActionInputIndex >= 0) {
     try {
-        sporadesActionInput = JSON.parse(Buffer.from(process.argv[sporadesActionInputIndex + 1] ?? "", "base64url").toString("utf8"));
+        const encoded = process.argv[sporadesActionInputIndex + 1] ?? "";
+        if (Buffer.byteLength(encoded, "utf8") > 24 * 1024)
+            throw new Error("oversized");
+        sporadesActionInput = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
     }
     catch {
         sporadesActionInput = null;
@@ -53,14 +57,17 @@ const runtimeConfig = {
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
 if (sporadesAction) {
-    const accessKeyActions = ["access-keys.list", "access-keys.inspect", "access-keys.revoke", "access-keys.revoke-all", "access-keys.delete"];
+    const accessKeyActions = ACCESS_KEY_OPERATOR_ACTIONS;
     if (!["jobs.inspect", "schedules.inspect", ...accessKeyActions].includes(sporadesAction)) {
         process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
         process.exit(1);
     }
-    if (accessKeyActions.includes(sporadesAction) && (!sporadesActionInput || typeof sporadesActionInput !== "object" || Array.isArray(sporadesActionInput))) {
-        process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: "INVALID_ACCESS_KEY_ACTION_INPUT", message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
-        process.exit(1);
+    if (accessKeyActions.includes(sporadesAction)) {
+        sporadesActionInput = validateAccessKeyOperatorActionInput(sporadesAction, sporadesActionInput, () => {
+            process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: "INVALID_ACCESS_KEY_ACTION_INPUT", message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
+            process.exit(1);
+            throw new Error("unreachable");
+        });
     }
     const adapter = accessKeyActions.includes(sporadesAction) ? null : await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
     let actionDatabase = null;
@@ -69,7 +76,9 @@ if (sporadesAction) {
             actionDatabase = await openDevDatabase(databasePath, "", runtimeServerEnv, runtimeConfig, {
                 accessKeys: { scopes: sporadesConfig.accessKeys?.scopes ?? [] },
             }, { serviceEnv: runtimeServiceEnv, runtimeActionOnly: true });
-            const result = await runRuntimeAccessKeyOperatorAction(actionDatabase, sporadesAction, sporadesActionInput, sporadesActionInput.executionSource ?? "runtime-action");
+            const session = runtimeConfig.__sporadesSession;
+            const executionSource = session === "hosted" ? "operator-cli-hosted" : session === "container" ? "operator-cli-container" : session === "dev" || session === "public-dev" ? "operator-cli-dev" : "runtime-action";
+            const result = await runRuntimeAccessKeyOperatorAction(actionDatabase, sporadesAction, sporadesActionInput, executionSource);
             process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, ...result }, error: null }) + "\n");
         }
         else {

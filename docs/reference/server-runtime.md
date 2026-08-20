@@ -380,8 +380,10 @@ An explicit `ctx.privileged.run(...)` callback receives a separate
 `delete(keyId)`. Its summaries add only `ownerUserId`; they never expose owner
 profile data or bearer credential material. It has no issue or rotation method.
 The Privileged projection cannot issue, rotate, or receive bearer tokens.
-Every call is covered by the existing Privileged started/completed-or-errored/
-finished audit boundary.
+Every projection call emits its own runtime-owned terminal Privileged audit
+with the exact action and runtime-resolved owner/key target, in addition to the
+surrounding run boundary. Capsule-supplied operation metadata cannot replace
+that action audit.
 
 Operators use the same projection through a running Capsule:
 
@@ -395,6 +397,9 @@ sporades access-keys delete <key-id> --session dev --yes
 
 Dev, Container, and Hosted commands all invoke the generated Bundle action;
 the CLI and Host helper do not open Auth tables or duplicate lifecycle SQL.
+Action inputs and responses use per-action allowlisted schemas, bind returned
+owner/key IDs to the request, and reject unknown fields. Execution source comes
+from the running Capsule's trusted runtime session, not from action input.
 Stopped Capsules are rejected. List and inspect need no confirmation. Revoke
 and delete prompt unless `--yes` is present; bulk revocation requires the exact
 owner ID at the prompt or `--yes`. `--json` never implies consent.

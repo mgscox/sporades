@@ -29,6 +29,7 @@ import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
 import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
+import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -741,8 +742,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 // releases recovery plus one normal pass to rediscover durable work.
                 activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
             }
-            database.__runtimeInitialized = true;
             await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
+            // The operator action runtime reads the last successfully published
+            // vocabulary. Candidate construction and failed init must not replace it.
+            await database.adapter.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
+            database.__runtimeInitialized = true;
         }
         catch (error) {
             database.__scheduleStopped = true;
@@ -847,7 +851,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         await recoverExpiredJobLeases(database);
         assertValidReferenceTargets(schema);
         await sqlite.migrateAppSchema(schema);
-        await sqlite.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
     }
     return database;
 }
@@ -1905,6 +1908,12 @@ function createPrivilegedHandlerContext(database, context, signal) {
             provider: "privileged-server-role",
         }),
     };
+    if (context.__accessKeyOperatorExecutionSource) {
+        Object.defineProperty(privilegedContext, "__accessKeyOperatorExecutionSource", {
+            value: context.__accessKeyOperatorExecutionSource,
+            enumerable: false,
+        });
+    }
     // User-scoped and mutating Team operations remain unavailable. This is the
     // separate userless inspection projection, not inherited Team authority.
     delete privilegedContext.teams;
@@ -1928,31 +1937,39 @@ function createPrivilegedHandlerContext(database, context, signal) {
     return privilegedContext;
 }
 export async function runRuntimeAccessKeyOperatorAction(database, action, input = {}, executionSource = "runtime-action") {
+    const boundedInput = validateAccessKeyOperatorActionInput(action, input, () => {
+        throw commandError("Invalid Access-key operator action input.", "Upgrade the Sporades CLI and generated Bundle together.", "INVALID_ACCESS_KEY_ACTION_INPUT");
+    });
     const boundedExecutionSource = ["operator-cli-dev", "operator-cli-container", "operator-cli-hosted"].includes(executionSource)
         ? executionSource
         : "runtime-action";
+    const keyTarget = typeof boundedInput.keyId === "string"
+        ? await database.adapter.findAccessKeyRecordById(boundedInput.keyId)
+        : null;
     const context = createMutationContext(database, {
         userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
         isAuthenticated: false, isGuest: false, provider: "operator",
     }, { ordinaryCredential: false });
+    Object.defineProperty(context, "__accessKeyOperatorExecutionSource", { value: boundedExecutionSource, enumerable: false });
     const metadata = {
         executionSource: boundedExecutionSource,
-        ...(typeof input.userId === "string" ? { ownerUserId: input.userId } : {}),
-        ...(typeof input.keyId === "string" ? { accessKeyId: input.keyId } : {}),
+        ...(typeof boundedInput.userId === "string" ? { ownerUserId: boundedInput.userId } : {}),
+        ...(keyTarget?.ownerUserId ? { ownerUserId: keyTarget.ownerUserId } : {}),
+        ...(typeof boundedInput.keyId === "string" ? { accessKeyId: boundedInput.keyId } : {}),
     };
     try {
         return await context.privileged.run({
-            operation: action,
+            operation: "access-keys.operator-dispatch",
             surface: boundedExecutionSource,
             targetResourceKind: "access-key",
-            metadata,
+            metadata: { ...metadata, requestedAction: action },
         }, async (privilegedContext) => {
             switch (action) {
-                case "access-keys.list": return await privilegedContext.accessKeys.list(input.userId, input.options ?? {});
-                case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(input.keyId);
-                case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(input.keyId);
-                case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(input.userId);
-                case "access-keys.delete": return await privilegedContext.accessKeys.delete(input.keyId);
+                case "access-keys.list": return await privilegedContext.accessKeys.list(boundedInput.userId, boundedInput.options);
+                case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(boundedInput.keyId);
+                case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(boundedInput.keyId);
+                case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(boundedInput.userId);
+                case "access-keys.delete": return await privilegedContext.accessKeys.delete(boundedInput.keyId);
                 default: throw commandError("Unsupported Access-key operator action.", "Upgrade the Sporades CLI and generated Bundle together.", "ACCESS_KEY_ACTION_UNSUPPORTED");
             }
         });

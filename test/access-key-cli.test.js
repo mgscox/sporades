@@ -4,7 +4,10 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
+
+import { confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "../dist/cli/access-key-operator-envelope.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "sporades.js");
@@ -21,9 +24,25 @@ const envelope = {
   },
   error: null,
 };
+const revokedEnvelope = {
+  ok: true,
+  data: {
+    capsule: { name: "keys" },
+    accessKey: { ...envelope.data.accessKeys[0], status: "revoked", revokedAt: "2026-08-20T12:05:00.000Z", revocationCause: "operator" },
+  },
+  error: null,
+};
+const inspectedEnvelope = { ok: true, data: { capsule: { name: "keys" }, accessKey: envelope.data.accessKeys[0] }, error: null };
 const run = (args, cwd, env = {}) => spawnSync(process.execPath, [cli, ...args], {
   cwd, env: { ...process.env, ...env }, encoding: "utf8",
 });
+const confirmationIo = (answer) => {
+  const input = new PassThrough(), output = new PassThrough();
+  Object.defineProperty(input, "isTTY", { value: true });
+  Object.defineProperty(output, "isTTY", { value: true });
+  input.end(`${answer}\n`);
+  return { input, output };
+};
 
 test("Access-key CLI exposes only the five operator commands and JSON does not imply consent", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-cli-contract-"));
@@ -54,12 +73,32 @@ test("Access-key CLI invokes the generated Bundle for a running Dev session", as
     await writeFile(path.join(dir, ".sporades", "dev-session.json"), JSON.stringify({ pid: process.pid }));
     await writeFile(path.join(dir, ".sporades", "build", "server.mjs"), `
 const args=process.argv.slice(2);if(args[0]!=="--sporades-action"||args[1]!=="access-keys.list"||args[2]!=="--sporades-action-input")process.exit(8);
-const input=JSON.parse(Buffer.from(args[3],"base64url"));if(input.userId!=="user-1"||input.executionSource!=="operator-cli-dev"||input.options.status!=="active")process.exit(9);
+const input=JSON.parse(Buffer.from(args[3],"base64url"));if(input.userId!=="user-1"||"executionSource" in input||input.options.status!=="active")process.exit(9);
 console.log(${JSON.stringify(JSON.stringify(envelope))});`);
     const result = run(["access-keys", "list", "--user-id", "user-1", "--status", "active", "--json"], dir);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.deepEqual(JSON.parse(result.stdout), envelope);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Access-key CLI interactive confirmation accepts exact consent and cancels every other answer", async () => {
+  await confirmAccessKeyOperatorAction({ subcommand: "revoke", keyId: "key-1" }, confirmationIo("yes"));
+  await assert.rejects(confirmAccessKeyOperatorAction({ subcommand: "delete", keyId: "key-1" }, confirmationIo("no")), /operation cancelled/i);
+  await assert.rejects(confirmAccessKeyOperatorAction({ subcommand: "revoke-all", userId: "user-1" }, confirmationIo("yes")), /operation cancelled/i);
+  await confirmAccessKeyOperatorAction({ subcommand: "revoke-all", userId: "user-1" }, confirmationIo("user-1"));
+});
+
+test("Access-key operator schemas reject aliases, nesting, error extras, and mismatched selectors", () => {
+  const invalid = () => { throw new Error("invalid envelope"); };
+  const input = { userId: "user-1", options: {} };
+  for (const hostile of [
+    { ...envelope, data: { ...envelope.data, accessToken: "spk_1_secret" } },
+    { ...envelope, data: { ...envelope.data, owner: { email: "private@example.com" } } },
+    { ok: false, data: { retained: true }, error: { message: "failed", hint: "retry" } },
+    { ok: false, data: null, error: { message: "failed", hint: "retry", detail: "adapter secret" } },
+    { ...envelope, data: { ...envelope.data, accessKeys: [{ ...envelope.data.accessKeys[0], ownerUserId: "other-user" }] } },
+  ]) assert.throws(() => sanitizeAccessKeyOperatorEnvelope(hostile, "access-keys.list", input, invalid), /invalid envelope/);
+  assert.throws(() => validateAccessKeyOperatorActionInput("access-keys.list", { ...input, authorization: "Bearer secret" }, invalid), /invalid envelope/);
 });
 
 test("Access-key CLI routes Container and Hosted actions through existing runtime seams", async () => {
@@ -70,7 +109,7 @@ test("Access-key CLI routes Container and Hosted actions through existing runtim
     await writeFile(path.join(dir, ".sporades", "binding.json"), JSON.stringify({ containerId: "capsule-1" }));
     await writeFile(path.join(config, "hosts.json"), JSON.stringify({ profiles: { live: { server: "host", domain: "example.test", scheme: "https", remoteRoot: "/srv/sporades" } } }));
     const docker = path.join(bin, "docker");
-    await writeFile(docker, `#!/bin/sh\necho "$*" >> ${JSON.stringify(dockerLog)}\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ]; then echo '${JSON.stringify(envelope)}'; exit 0; fi\nexit 9\n`); await chmod(docker, 0o755);
+    await writeFile(docker, `#!/bin/sh\necho "$*" >> ${JSON.stringify(dockerLog)}\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ]; then\n  case "$*" in *access-keys.revoke*) echo '${JSON.stringify(revokedEnvelope)}' ;; *) echo '${JSON.stringify(inspectedEnvelope)}' ;; esac\n  exit 0\nfi\nexit 9\n`); await chmod(docker, 0o755);
     const container = run(["access-keys", "revoke", "key-1", "--session", "container", "--yes", "--json"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}` });
     assert.equal(container.status, 0, container.stderr || container.stdout);
     assert.match(await readFile(dockerLog, "utf8"), /--sporades-action access-keys\.revoke --sporades-action-input/);
@@ -84,7 +123,7 @@ test("Access-key CLI routes Container and Hosted actions through existing runtim
     const request = JSON.parse(await readFile(requestLog, "utf8"));
     assert.equal(request.action, "access-keys.inspect");
     assert.equal(request.accessKeys.keyId, "key-1");
-    assert.equal(request.accessKeys.executionSource, "operator-cli-hosted");
+    assert.equal("executionSource" in request.accessKeys, false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -98,9 +137,31 @@ test("Access-key CLI rejects stopped targets and hostile runtime envelopes", asy
     await mkdir(path.join(dir, ".sporades", "build"), { recursive: true });
     await writeFile(path.join(dir, "sporades.json"), JSON.stringify({ name: "keys" }));
     await writeFile(path.join(dir, ".sporades", "dev-session.json"), JSON.stringify({ pid: process.pid }));
-    await writeFile(path.join(dir, ".sporades", "build", "server.mjs"), `console.log(JSON.stringify({ok:true,data:{token:"spk_1_secret"},error:null}))`);
+    await writeFile(path.join(dir, ".sporades", "build", "server.mjs"), `console.log(JSON.stringify({ok:true,data:{capsule:{name:"keys"},accessKeys:[],declaredScopes:[],nextCursor:null,totalCount:0,secret:"spk_1_secret"},error:null}))`);
     const hostile = run(["access-keys", "list", "--user-id", "user-1", "--json"], dir);
     assert.equal(hostile.status, 1);
     assert.match(JSON.parse(hostile.stdout).error.message, /invalid response/);
+
+    const bin = path.join(dir, "bin"), config = path.join(dir, "config");
+    await mkdir(bin); await mkdir(config);
+    await writeFile(path.join(dir, ".sporades", "binding.json"), JSON.stringify({ containerId: "stopped-capsule" }));
+    const docker = path.join(bin, "docker");
+    await writeFile(docker, "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo false; exit 0; fi\nexit 9\n");
+    await chmod(docker, 0o755);
+    const stoppedContainer = run(["access-keys", "list", "--user-id", "user-1", "--session", "container", "--json"], dir, {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    });
+    assert.equal(stoppedContainer.status, 1);
+    assert.match(JSON.parse(stoppedContainer.stdout).error.hint, /deploy restart/);
+
+    await writeFile(path.join(config, "hosts.json"), JSON.stringify({ profiles: { live: { server: "host", domain: "example.test", scheme: "https", remoteRoot: "/srv/sporades" } } }));
+    const ssh = path.join(bin, "ssh");
+    await writeFile(ssh, `#!/bin/sh\nread input\nprintf '%s\\n' "$input" | ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(root, "bin", "sporades-host-helper.js"))}\n`);
+    await chmod(ssh, 0o755);
+    const stoppedHosted = run(["access-keys", "list", "--user-id", "user-1", "--session", "hosted", "--host", "live", "--subname", "team-notes", "--json"], dir, {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config,
+    });
+    assert.equal(stoppedHosted.status, 1);
+    assert.match(JSON.parse(stoppedHosted.stdout).error.hint, /host start/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

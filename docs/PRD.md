@@ -544,6 +544,9 @@ cannot issue, rotate, or receive bearer material. Operator actions use a
 running Dev, Container, or Hosted Capsule and its generated-Bundle action seam;
 there is no stopped-Capsule database mode. Destructive CLI operations require
 interactive confirmation or `--yes`, and `--json` never implies consent.
+Per-action allowlisted input/output schemas bind immutable target IDs, runtime
+session determines execution-source attribution, and each Privileged
+projection call emits its own exact-action, runtime-resolved target audit.
 Facebook sign-in follows the same Session-linking contract. Its App Secret and
 access token remain server-only; the runtime persists only the stable Facebook
 ID and optional selected email, name, and picture profile fields.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, runMutation, runRuntimeAccessKeyOperatorAction } from "../dist/server-runtime-source.js";
+import { openDevDatabase, replaceRuntimeDatabase, runMutation, runRuntimeAccessKeyOperatorAction } from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
 
 const owner = {
@@ -26,6 +26,9 @@ test("Privileged Access-key controls expose only metadata and retirement", async
       privilegedSurface: mutation((ctx) => ctx.privileged.run({
         operation: "access-keys.surface-probe", targetResourceKind: "access-key",
       }, (privilegedCtx) => Object.keys(privilegedCtx.accessKeys).sort())),
+      privilegedList: mutation((ctx, ownerUserId) => ctx.privileged.run({
+        operation: "maintenance", targetResourceKind: "capsule",
+      }, (privilegedCtx) => privilegedCtx.accessKeys.list(ownerUserId))),
     },
   });
   await database.init();
@@ -41,6 +44,14 @@ test("Privileged Access-key controls expose only metadata and retirement", async
 
     const surface = await runMutation(database, owner, "privilegedSurface", []);
     assert.deepEqual(surface.data, ["delete", "inspect", "list", "revoke", "revokeAll"]);
+    const directList = await runMutation(database, owner, "privilegedList", [owner.userId]);
+    assert.equal(directList.ok, true, JSON.stringify(directList));
+    const auditBeforeInvalidInput = await database.adapter.readRecentLogEvents(100);
+    await assert.rejects(runRuntimeAccessKeyOperatorAction(database, "access-keys.inspect", {
+      keyId: first.data.accessKey.id, authorization: "Bearer secret-shaped-input",
+    }, "operator-cli-dev"), (error) => error.code === "INVALID_ACCESS_KEY_ACTION_INPUT");
+    assert.equal((await database.adapter.readRecentLogEvents(100)).length, auditBeforeInvalidInput.length,
+      "invalid operator input must fail before audit creation");
 
     const listed = await runRuntimeAccessKeyOperatorAction(database, "access-keys.list", {
       userId: owner.userId,
@@ -86,8 +97,32 @@ test("Privileged Access-key controls expose only metadata and retirement", async
     const auditJson = JSON.stringify(operatorEvents);
     assert.equal(auditJson.includes(first.data.token), false);
     assert.equal(/selector|verifier|digest/i.test(auditJson), false);
+    const actionOwnedList = audit.find((event) => event.data?.operation === "access-keys.list"
+      && event.data?.metadata?.actionOwned === true && event.data?.metadata?.ownerUserId === owner.userId);
+    assert.ok(actionOwnedList, "direct Privileged projection use must emit its runtime-owned exact-target audit");
   } finally {
     await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed runtime initialization does not publish its Access-key scope vocabulary", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-scope-publication-"));
+  const databasePath = path.join(dir, "data.db");
+  const current = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, {
+    accessKeys: { scopes: ["requests:read"] },
+  });
+  await current.init();
+  const candidate = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, {
+    accessKeys: { scopes: ["failed:scope"] }, hooks: { init: () => { throw new Error("candidate init failed"); } },
+  });
+  try {
+    await assert.rejects(replaceRuntimeDatabase(current, candidate), /candidate init failed/);
+    const actionDatabase = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, null, { runtimeActionOnly: true });
+    try { assert.deepEqual(actionDatabase.accessKeyScopes, ["requests:read"]); }
+    finally { await actionDatabase.close(); }
+  } finally {
+    await current.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

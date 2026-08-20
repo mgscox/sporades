@@ -8,7 +8,6 @@ import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "nod
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
 import path11 from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/bundle-pipeline.ts
@@ -6420,65 +6419,109 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
   return {
     async list(ownerUserId, options = {}) {
       const owner = requireId(ownerUserId);
-      const normalized = normalizeAccessKeyListOptions(options);
-      const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
-      const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
-      return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.list", { ownerUserId: owner }, async () => {
+        const normalized = normalizeAccessKeyListOptions(options);
+        const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
+        const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+        return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+      });
     },
     async inspect(id) {
+      const context = requireContext();
       requireId(id);
       const row = await database.adapter.findAccessKeyRecordById(id);
-      if (!row) throw accessKeyNotFoundError();
-      return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", {
+        accessKeyId: id,
+        ...row?.ownerUserId ? { ownerUserId: row.ownerUserId } : {}
+      }, async () => {
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+      });
     },
     async revoke(id) {
+      const context = requireContext();
       requireId(id);
       const existing = await database.adapter.findAccessKeyRecordById(id);
-      if (!existing) throw accessKeyNotFoundError();
-      const revokedAt = database.clock.now().toISOString();
-      const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
-        ownerUserId: existing.ownerUserId,
-        id,
-        revokedAt,
-        revocationCause: "operator"
-      }));
-      if (!row) throw accessKeyNotFoundError();
-      return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", {
+        accessKeyId: id,
+        ...existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}
+      }, async () => {
+        if (!existing) throw accessKeyNotFoundError();
+        const revokedAt = database.clock.now().toISOString();
+        const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
+          ownerUserId: existing.ownerUserId,
+          id,
+          revokedAt,
+          revocationCause: "operator"
+        }));
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+      });
     },
     async revokeAll(ownerUserId) {
       const owner = requireId(ownerUserId);
-      const revokedAt = database.clock.now().toISOString();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
-        ownerUserId: owner,
-        revokedAt,
-        revocationCause: "operator"
-      }));
-      return {
-        ownerUserId: owner,
-        revokedCount: outcome.revokedCount,
-        accessKeys: outcome.records.map((row) => privilegedAccessKeySummary({
-          ...row,
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
+        const revokedAt = database.clock.now().toISOString();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: owner,
           revokedAt,
-          revocationCause: "operator",
-          lifecycleRevision: Number(row.lifecycleRevision) + 1
-        }, database.accessKeyScopes ?? [], revokedAt))
-      };
+          revocationCause: "operator"
+        }));
+        return {
+          ownerUserId: owner,
+          revokedCount: outcome.revokedCount,
+          accessKeys: outcome.records.map((row) => privilegedAccessKeySummary({
+            ...row,
+            revokedAt,
+            revocationCause: "operator",
+            lifecycleRevision: Number(row.lifecycleRevision) + 1
+          }, database.accessKeyScopes ?? [], revokedAt))
+        };
+      });
     },
     async delete(id) {
+      const context = requireContext();
       requireId(id);
       const existing = await database.adapter.findAccessKeyRecordById(id);
-      if (!existing) throw accessKeyNotFoundError();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
-        ownerUserId: existing.ownerUserId,
-        id
-      }));
-      if (outcome.status === "not-found") throw accessKeyNotFoundError();
-      if (outcome.status === "requires-revoked") {
-        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
-      }
-      return { id, ownerUserId: existing.ownerUserId, deleted: true };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", {
+        accessKeyId: id,
+        ...existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}
+      }, async () => {
+        if (!existing) throw accessKeyNotFoundError();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+          ownerUserId: existing.ownerUserId,
+          id
+        }));
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "requires-revoked") {
+          throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+        }
+        return { id, ownerUserId: existing.ownerUserId, deleted: true };
+      });
     }
   };
+}
+async function runPrivilegedAccessKeyOperation(database, context, operation, target, callback) {
+  const details = {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: context.__accessKeyOperatorExecutionSource ?? context.kind ?? "server-handler",
+    targetResourceKind: "access-key",
+    source: "runtime",
+    metadata: { ...target, actionOwned: true }
+  };
+  let result;
+  try {
+    result = await callback();
+  } catch (error) {
+    const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
+    await database.audit.emit({ ...details, outcome: "errored", safeErrorCode: explicitCode });
+    throw error;
+  }
+  await database.audit.emit({ ...details, outcome: "completed" });
+  return result;
 }
 function readAccessKeyAuthorization(request) {
   const values = [];
@@ -13861,6 +13904,149 @@ function ensureSessionProvenanceColumn(sqlite) {
   ]);
 }
 
+// src/cli/access-key-operator-envelope.ts
+import { createInterface } from "node:readline/promises";
+var ACCESS_KEY_OPERATOR_ACTIONS = [
+  "access-keys.list",
+  "access-keys.inspect",
+  "access-keys.revoke",
+  "access-keys.revoke-all",
+  "access-keys.delete"
+];
+var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
+var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+async function confirmAccessKeyOperatorAction(options, io = { input: process.stdin, output: process.stdout }) {
+  if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
+  if (!io.input?.isTTY || !io.output?.isTTY) {
+    throw Object.assign(new Error("Destructive Access-key operation requires confirmation."), {
+      hint: "Retry with `--yes` in non-interactive use."
+    });
+  }
+  const expected = options.subcommand === "revoke-all" ? options.userId : "yes";
+  const prompt = options.subcommand === "revoke-all" ? `Type the owner ID ${options.userId} to revoke all current Access keys: ` : `Type yes to ${options.subcommand} Access key ${options.keyId}: `;
+  const readline = createInterface({ input: io.input, output: io.output });
+  try {
+    const answer = await readline.question(prompt);
+    if (answer !== expected) throw Object.assign(new Error("Access-key operation cancelled."), {
+      hint: "No Access-key state was changed."
+    });
+  } finally {
+    readline.close();
+  }
+}
+function plain(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function exactKeys(value, required, optional = []) {
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key)) && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+function boundedString(value, maximum = 256) {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum;
+}
+function optionalString(value, maximum = 512) {
+  return value === null || boundedString(value, maximum);
+}
+function stringList(value) {
+  return Array.isArray(value) && value.length <= 100 && value.every((item) => boundedString(item, 256));
+}
+function encodedWithinLimit(value, maximum) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8") <= maximum;
+  } catch {
+    return false;
+  }
+}
+function validateAccessKeyOperatorActionInput(action, value, invalid) {
+  if (typeof action !== "string" || !ACTIONS.has(action) || !plain(value) || !encodedWithinLimit(value, 16 * 1024)) return invalid();
+  if (action === "access-keys.list") {
+    if (!exactKeys(value, ["userId", "options"]) || !boundedString(value.userId) || !plain(value.options) || !exactKeys(value.options, [], ["cursor", "limit", "status"])) return invalid();
+    const options = {};
+    if (value.options.cursor !== void 0) {
+      if (!boundedString(value.options.cursor, 512)) return invalid();
+      options.cursor = value.options.cursor;
+    }
+    if (value.options.limit !== void 0) {
+      if (!Number.isInteger(value.options.limit) || value.options.limit < 1 || value.options.limit > 100) return invalid();
+      options.limit = value.options.limit;
+    }
+    if (value.options.status !== void 0) {
+      if (typeof value.options.status !== "string" || !STATUSES.has(value.options.status)) return invalid();
+      options.status = value.options.status;
+    }
+    return { userId: value.userId, options };
+  }
+  if (action === "access-keys.revoke-all") {
+    if (!exactKeys(value, ["userId"]) || !boundedString(value.userId)) return invalid();
+    return { userId: value.userId };
+  }
+  if (!exactKeys(value, ["keyId"]) || !boundedString(value.keyId)) return invalid();
+  return { keyId: value.keyId };
+}
+function canonicalCapsule(value, invalid) {
+  if (!plain(value) || !exactKeys(value, ["name"]) || !boundedString(value.name)) return invalid();
+  return { name: value.name };
+}
+function canonicalSummary(value, invalid) {
+  const fields = [
+    "id",
+    "ownerUserId",
+    "name",
+    "grants",
+    "effectiveScopes",
+    "status",
+    "createdAt",
+    "expiresAt",
+    "rotatedAt",
+    "revokedAt",
+    "revocationCause",
+    "lastUsedAt",
+    "lifecycleRevision"
+  ];
+  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants) || !stringList(value.effectiveScopes) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalString(value.revocationCause, 80) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
+  return Object.fromEntries(fields.map((field) => [field, value[field]]));
+}
+function canonicalSuccessData(action, value, input, invalid) {
+  if (!plain(value)) return invalid();
+  const capsule = canonicalCapsule(value.capsule, invalid);
+  if (action === "access-keys.list") {
+    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid();
+    return { capsule, accessKeys, declaredScopes: [...value.declaredScopes], nextCursor: value.nextCursor, totalCount: value.totalCount };
+  }
+  if (["access-keys.inspect", "access-keys.revoke"].includes(action)) {
+    if (!exactKeys(value, ["capsule", "accessKey"])) return invalid();
+    const accessKey = canonicalSummary(value.accessKey, invalid);
+    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && (accessKey.status !== "revoked" || accessKey.revocationCause !== "operator")) return invalid();
+    return { capsule, accessKey };
+  }
+  if (action === "access-keys.revoke-all") {
+    if (!exactKeys(value, ["capsule", "ownerUserId", "revokedCount", "accessKeys"]) || value.ownerUserId !== input.userId || !Number.isSafeInteger(value.revokedCount) || value.revokedCount < 0 || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100) return invalid();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId || item.status !== "revoked" || item.revocationCause !== "operator") || accessKeys.length !== value.revokedCount) return invalid();
+    return { capsule, ownerUserId: value.ownerUserId, revokedCount: value.revokedCount, accessKeys };
+  }
+  if (!exactKeys(value, ["capsule", "id", "ownerUserId", "deleted"]) || value.id !== input.keyId || !boundedString(value.ownerUserId) || value.deleted !== true) return invalid();
+  return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
+}
+function canonicalError(value, invalid) {
+  if (!plain(value) || !exactKeys(value, ["message", "hint"], ["code"]) || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024) || value.code !== void 0 && !boundedString(value.code, 80)) return invalid();
+  return { ...value.code === void 0 ? {} : { code: value.code }, message: value.message, hint: value.hint };
+}
+function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
+  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
+  const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
+  if (value.ok) {
+    if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
+    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+  }
+  if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid();
+  return { ok: false, data: null, error: canonicalError(value.error, invalid) };
+}
+
 // src/database-runtime.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 
@@ -17034,8 +17220,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (!database.__jobActivationDeferred) {
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
-      database.__runtimeInitialized = true;
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
+      await database.adapter.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
+      database.__runtimeInitialized = true;
     } catch (error) {
       database.__scheduleStopped = true;
       abortSchedulePayloadFactories(database);
@@ -17126,7 +17313,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     await recoverExpiredJobLeases(database);
     assertValidReferenceTargets(schema);
     await sqlite.migrateAppSchema(schema);
-    await sqlite.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
   }
   return database;
 }
@@ -18046,6 +18232,12 @@ function createPrivilegedHandlerContext(database, context, signal) {
       provider: "privileged-server-role"
     })
   };
+  if (context.__accessKeyOperatorExecutionSource) {
+    Object.defineProperty(privilegedContext, "__accessKeyOperatorExecutionSource", {
+      value: context.__accessKeyOperatorExecutionSource,
+      enumerable: false
+    });
+  }
   delete privilegedContext.teams;
   delete privilegedContext.accessKeys;
   delete privilegedContext.credential;
@@ -25441,32 +25633,6 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
   return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
 }
 
-// src/cli/access-key-operator-envelope.ts
-var FORBIDDEN_KEYS = /* @__PURE__ */ new Set(["selector", "verifier", "verifierDigest", "token", "tokenFragment", "ownerEmail", "ownerDisplayName"]);
-function sanitizeAccessKeyOperatorEnvelope(value, invalid) {
-  let encoded;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    return invalid();
-  }
-  if (Buffer.byteLength(encoded, "utf8") > 256 * 1024) return invalid();
-  const visit = (candidate) => {
-    if (candidate === null || ["string", "number", "boolean"].includes(typeof candidate)) return true;
-    if (Array.isArray(candidate)) return candidate.length <= 100 && candidate.every(visit);
-    if (!candidate || typeof candidate !== "object") return false;
-    return Object.entries(candidate).every(([key, child]) => !FORBIDDEN_KEYS.has(key) && visit(child));
-  };
-  if (!visit(value) || !value || typeof value !== "object" || typeof value.ok !== "boolean") return invalid();
-  const envelope = value;
-  if (envelope.ok) {
-    if (!envelope.data || typeof envelope.data !== "object" || envelope.error !== null) return invalid();
-  } else if (!envelope.error || typeof envelope.error.message !== "string" || typeof envelope.error.hint !== "string") {
-    return invalid();
-  }
-  return envelope;
-}
-
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
 import { lstat as lstat6, readFile as readFile8, realpath as realpath2 } from "node:fs/promises";
@@ -27921,29 +28087,14 @@ function parseAccessKeyOperatorArgs(args) {
     projectDir: process.cwd()
   };
 }
-async function confirmOperatorAccessKeyAction(options) {
-  if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw commandError4("Destructive Access-key operation requires confirmation.", "Retry with `--yes` in non-interactive use.");
-  }
-  const expected = options.subcommand === "revoke-all" ? options.userId : "yes";
-  const prompt = options.subcommand === "revoke-all" ? `Type the owner ID ${options.userId} to revoke all current Access keys: ` : `Type yes to ${options.subcommand} Access key ${options.keyId}: `;
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await readline.question(prompt);
-    if (answer !== expected) throw commandError4("Access-key operation cancelled.", "No Access-key state was changed.");
-  } finally {
-    readline.close();
-  }
-}
-function parseAccessKeyOperatorProcess(result, hint) {
+function parseAccessKeyOperatorProcess(result, options, hint) {
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());
   } catch {
     throw commandError4("Runtime Access-key action returned invalid JSON.", hint);
   }
-  return sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+  return sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
     throw commandError4("Runtime Access-key action returned an invalid response.", hint);
   });
 }
@@ -27955,8 +28106,7 @@ function accessKeyActionInput(options) {
       ...options.cursor ? { cursor: options.cursor } : {},
       ...options.limit ? { limit: options.limit } : {},
       ...options.status ? { status: options.status } : {}
-    } } : {},
-    executionSource: `operator-cli-${options.session}`
+    } } : {}
   };
 }
 function accessKeyActionArgs(options) {
@@ -27968,7 +28118,7 @@ function accessKeyActionArgs(options) {
   ];
 }
 async function manageOperatorAccessKeys(options) {
-  await confirmOperatorAccessKeyAction(options);
+  await confirmAccessKeyOperatorAction(options);
   let envelope;
   if (options.session === "dev") {
     const session = await readDevSession(options.projectDir);
@@ -27984,7 +28134,7 @@ async function manageOperatorAccessKeys(options) {
       encoding: "utf8",
       env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
     });
-    envelope = parseAccessKeyOperatorProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
+    envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
   } else if (options.session === "container") {
     const { binding } = await requireLocalContainerBinding(options, "access-keys");
     const running = runDocker(
@@ -27995,7 +28145,7 @@ async function manageOperatorAccessKeys(options) {
     );
     if (running !== "true") throw commandError4("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
     const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], { cwd: options.projectDir, encoding: "utf8" });
-    envelope = parseAccessKeyOperatorProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
+    envelope = parseAccessKeyOperatorProcess(result, options, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
   } else {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -28014,7 +28164,7 @@ async function manageOperatorAccessKeys(options) {
         hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, redeploy the Capsule, and retry the command.`
       } };
     }
-    envelope = sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+    envelope = sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
       throw commandError4("Hosted Access-key action returned an invalid response.", "Upgrade the Host helper and redeploy the Capsule.");
     });
   }

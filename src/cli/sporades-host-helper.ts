@@ -49,7 +49,7 @@ import {
 } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
+import { sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import {
@@ -212,14 +212,23 @@ function inspectCapsuleSchedules(request: HostHelperRequest) {
 }
 
 function runCapsuleAccessKeyAction(request: HostHelperRequest) {
-  if (!request.accessKeys || typeof request.accessKeys !== "object" || Array.isArray(request.accessKeys)) {
+  const exactKeys = (value: LooseRecord, keys: string[]) => Object.keys(value).length === keys.length
+    && Object.keys(value).every((key) => keys.includes(key));
+  if (!exactKeys(request, ["action", "host", "capsule", "accessKeys"])
+    || !request.host || typeof request.host !== "object" || Array.isArray(request.host)
+    || !exactKeys(request.host, ["alias", "domain", "scheme", "remoteRoot"])
+    || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule)
+    || !exactKeys(request.capsule, ["subname"])) {
     throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
   }
-  inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+  const accessKeys = validateAccessKeyOperatorActionInput(request.action, request.accessKeys, () => {
+    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+  });
+  inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, request.action, accessKeys, () => {
     throw helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
   }), [
     "--sporades-action-input",
-    Buffer.from(JSON.stringify(request.accessKeys), "utf8").toString("base64url"),
+    Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url"),
   ]);
 }
 

@@ -198,59 +198,107 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
   return {
     async list(ownerUserId: unknown, options: unknown = {}) {
       const owner = requireId(ownerUserId);
-      const normalized = normalizeAccessKeyListOptions(options);
-      const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
-      const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
-      return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.list", { ownerUserId: owner }, async () => {
+        const normalized = normalizeAccessKeyListOptions(options);
+        const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
+        const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+        return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+      });
     },
     async inspect(id: unknown) {
+      const context = requireContext();
       requireId(id);
       const row = await database.adapter.findAccessKeyRecordById(id);
-      if (!row) throw accessKeyNotFoundError();
-      return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", {
+        accessKeyId: id, ...(row?.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
+      }, async () => {
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+      });
     },
     async revoke(id: unknown) {
+      const context = requireContext();
       requireId(id);
       const existing = await database.adapter.findAccessKeyRecordById(id);
-      if (!existing) throw accessKeyNotFoundError();
-      const revokedAt = database.clock.now().toISOString();
-      const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
-        ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
-      }));
-      if (!row) throw accessKeyNotFoundError();
-      return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", {
+        accessKeyId: id, ...(existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}),
+      }, async () => {
+        if (!existing) throw accessKeyNotFoundError();
+        const revokedAt = database.clock.now().toISOString();
+        const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
+          ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
+        }));
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+      });
     },
     async revokeAll(ownerUserId: unknown) {
       const owner = requireId(ownerUserId);
-      const revokedAt = database.clock.now().toISOString();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
-        ownerUserId: owner, revokedAt, revocationCause: "operator",
-      }));
-      return {
-        ownerUserId: owner,
-        revokedCount: outcome.revokedCount,
-        accessKeys: outcome.records.map((row: LooseRecord) => privilegedAccessKeySummary({
-          ...row,
-          revokedAt,
-          revocationCause: "operator",
-          lifecycleRevision: Number(row.lifecycleRevision) + 1,
-        }, database.accessKeyScopes ?? [], revokedAt)),
-      };
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
+        const revokedAt = database.clock.now().toISOString();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
+          ownerUserId: owner, revokedAt, revocationCause: "operator",
+        }));
+        return {
+          ownerUserId: owner,
+          revokedCount: outcome.revokedCount,
+          accessKeys: outcome.records.map((row: LooseRecord) => privilegedAccessKeySummary({
+            ...row,
+            revokedAt,
+            revocationCause: "operator",
+            lifecycleRevision: Number(row.lifecycleRevision) + 1,
+          }, database.accessKeyScopes ?? [], revokedAt)),
+        };
+      });
     },
     async delete(id: unknown) {
+      const context = requireContext();
       requireId(id);
       const existing = await database.adapter.findAccessKeyRecordById(id);
-      if (!existing) throw accessKeyNotFoundError();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
-        ownerUserId: existing.ownerUserId, id,
-      }));
-      if (outcome.status === "not-found") throw accessKeyNotFoundError();
-      if (outcome.status === "requires-revoked") {
-        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
-      }
-      return { id, ownerUserId: existing.ownerUserId, deleted: true };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", {
+        accessKeyId: id, ...(existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}),
+      }, async () => {
+        if (!existing) throw accessKeyNotFoundError();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+          ownerUserId: existing.ownerUserId, id,
+        }));
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "requires-revoked") {
+          throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+        }
+        return { id, ownerUserId: existing.ownerUserId, deleted: true };
+      });
     },
   };
+}
+
+async function runPrivilegedAccessKeyOperation<Result>(
+  database: LooseRecord,
+  context: LooseRecord,
+  operation: string,
+  target: LooseRecord,
+  callback: () => Promise<Result>,
+): Promise<Result> {
+  const details = {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: context.__accessKeyOperatorExecutionSource ?? context.kind ?? "server-handler",
+    targetResourceKind: "access-key",
+    source: "runtime",
+    metadata: { ...target, actionOwned: true },
+  };
+  let result: Result;
+  try {
+    result = await callback();
+  } catch (error: any) {
+    const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
+    await database.audit.emit({ ...details, outcome: "errored", safeErrorCode: explicitCode });
+    throw error;
+  }
+  await database.audit.emit({ ...details, outcome: "completed" });
+  return result;
 }
 
 export function readAccessKeyAuthorization(request: LooseRecord) {
