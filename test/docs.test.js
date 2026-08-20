@@ -1194,8 +1194,8 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
   }
 });
 
-test("public docs agree on one Checkout interface for one-time and subscription modes", async () => {
-  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput] = await Promise.all([
+test("public docs agree on narrow Checkout and Customer Portal interfaces", async () => {
+  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("README.md"),
@@ -1204,6 +1204,7 @@ test("public docs agree on one Checkout interface for one-time and subscription 
     readProjectFile("docs/guide/projects.md"),
     readProjectFile("docs/api/modules/stripe.html"),
     readProjectFile("docs/api/types/stripe.StripeCheckoutSessionInput.html"),
+    readProjectFile("docs/api/types/stripe.StripeCustomerPortalSessionInput.html"),
   ]);
 
   for (const contents of [context, prd, readme, projects, server, blankGuide]) {
@@ -1217,15 +1218,26 @@ test("public docs agree on one Checkout interface for one-time and subscription 
   assert.match(projects, /(?:one-time|`payment`)/i);
   assert.match(projects, /subscription/i);
   assert.match(projects, /verified events[\s\S]{0,120}Capsule policy/i);
+  assert.match(projects, /authorizeStripeCustomerPortal/);
+  assert.match(projects, /resolveStripeCustomerForPortal/);
+  assert.match(projects, /payment\s+methods[\s\S]{0,120}invoices[\s\S]{0,120}cancellations/i);
+  assert.match(context, /Customer Portal Session/);
+  assert.match(context, /Capsule-owned Customer resolver/);
+  assert.match(projects, /Job repeats policy admission[\s\S]{0,160}Customer resolution/);
   assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
   assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
   assert.match(server, /checkout\.stripe\.com/);
   assert.match(server, /payment[\s\S]{0,80}subscription[\s\S]{0,80}mode/i);
   assert.match(server, /non-retryable/i);
+  assert.match(server, /billing\.stripe\.com/);
   assert.match(apiModule, /createStripePaymentIntegration/);
   assert.match(apiModule, /StripePaymentsDisabledResult/);
   assert.match(apiModule, /StripeCheckoutSessionInput/);
+  assert.match(apiModule, /StripeCustomerPortalSessionInput/);
   assert.match(apiCheckoutInput, /mode/);
   assert.match(apiCheckoutInput, /payment/);
   assert.match(apiCheckoutInput, /subscription/);
+  assert.match(apiPortalInput, /customerId/);
+  assert.match(apiPortalInput, /returnPath/);
+  assert.match(apiPortalInput, /idempotencyKey/);
 });

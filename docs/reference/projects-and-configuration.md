@@ -230,10 +230,12 @@ credentials, malformed origins, and unsupported compatibility versions fail as
 `INVALID_STRIPE_PAYMENTS_CONFIG`.
 
 The generated `server/payments.ts` contains an empty server-owned Price
-catalogue, a deny-by-default `authorizeStripeCheckout` policy seam, named
+catalogue, deny-by-default `authorizeStripeCheckout` and
+`authorizeStripeCustomerPortal` policy seams, a Capsule-owned
+`resolveStripeCustomerForPortal` seam, named
 Checkout and Customer Portal Jobs, and a query that exposes only bounded state
 for a known payment Job owned by the current actor. `shared/payments.ts`
-contains the serializable Job-state shape. `client/payments.ts` starts Checkout,
+contains the serializable Job-state shape. `client/payments.ts` starts Checkout or Customer Portal,
 reports pending, succeeded, or safely failed progress, validates the returned
 Stripe-hosted URL, and redirects only after success. It is not imported into the
 blank UI automatically.
@@ -252,12 +254,27 @@ key, so retries and repeated mutation calls converge on the same work. Transient
 provider failures retry within the declared Job policy; permanent rejection is
 retained as bounded redacted failure metadata.
 
+Customer Portal is the preferred surface for ordinary customer-managed payment
+methods, invoices, cancellations, and supported subscription changes. Capsule
+policy still decides who may enter it. The linked-user Portal mutation first
+checks `authorizeStripeCustomerPortal`, then asks Capsule code to resolve the
+opaque billing-holder key to one existing Stripe Customer. Unknown Customers,
+unauthorized holders, deleted Teams, and missing billing authority all fail
+with the same unavailable result before enqueue and provider access. Sporades
+does not create, enumerate, infer, or persist Customer ownership; the durable
+Job payload carries the opaque Capsule billing-holder key rather than a Customer
+identity. Immediately before provider access, the Job repeats policy admission
+and Customer resolution under its captured linked actor, so Team deletion and
+billing-authority revocation fail safely. The return path and idempotency namespace remain server-owned, and only
+the initiating actor can observe the known Job and its validated short-lived
+`billing.stripe.com` redirect.
+
 Anonymous Checkout remains off by default. A Capsule may opt in only by
 deliberately relaxing the linked-user guard, authorizing the guest in the policy
 seam, and deriving the business reference in server code. That opt-in grants no
-Customer Portal or Team billing authority. The callback path is configuration
-only until webhook admission is implemented; it is not registered by this
-Checkout slice.
+Customer Portal or Team billing authority. Portal always retains its linked
+guard and independent Capsule billing-holder policy. The callback path is
+configuration only until webhook admission is implemented; it is not registered.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

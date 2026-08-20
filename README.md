@@ -147,11 +147,17 @@ Sporades currently includes:
   lifecycle and classic Inferno JSX without React compatibility packages. esbuild
   remains the default; Vite is available explicitly with full-page Dev refresh.
 - Every new blank Capsule includes a built-in but disabled Stripe payment
-  foundation: server-owned wiring, named payment Jobs, shared Job state, an
+  foundation: server-owned wiring, named Checkout and Customer Portal Jobs, shared Job state, an
   empty Price catalogue, and no credentials, payment UI, callback route, or
   browser Stripe SDK. Complete activation supports an authorized, idempotent
   one-time or recurring subscription Checkout through the same durable Job,
-  actor-scoped progress, safe retries, and a validated Stripe-hosted redirect.
+  actor-scoped progress, safe retries, and validated Stripe-hosted redirects.
+  Portal remains linked-user-only: Capsule policy authorizes an opaque billing
+  holder and resolves its existing Customer before enqueue, then the Job repeats
+  both checks before provider access so revocation fails safely. No Customer
+  identity is stored in the Capsule intent or Job payload. It is the preferred
+  surface for ordinary customer-managed payment methods, invoices,
+  cancellations, and supported subscription changes.
   The catalogue owns each Price mode; browser input owns neither mode nor Stripe
   identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,

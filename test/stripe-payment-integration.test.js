@@ -32,6 +32,14 @@ function checkoutInput(intent = "intent-protocol-1") {
   };
 }
 
+function portalInput(intent = "intent-portal-1") {
+  return {
+    customerId: "cus_server_owned",
+    returnPath: "/account/billing",
+    idempotencyKey: `capsule:portal:user-1:${intent}`,
+  };
+}
+
 async function withStripeFake(handler, run) {
   const server = createServer(handler);
   await new Promise((resolve, reject) => {
@@ -189,6 +197,145 @@ test("subscription Checkout uses the same narrow operation with explicit server-
   assert.equal(providerRequest.body.get("line_items[0][quantity]"), "3");
   assert.equal(providerRequest.body.get("customer"), null);
   assert.equal(providerRequest.body.get("metadata"), null);
+});
+
+test("Customer Portal sends one server-resolved Customer and returns a narrow validated redirect", async () => {
+  let providerRequest;
+  await withStripeFake(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    providerRequest = { method: request.method, url: request.url, headers: request.headers, body: new URLSearchParams(body) };
+    response.writeHead(200, { "content-type": "application/json", "request-id": "req_portal" });
+    response.end(JSON.stringify({
+      id: "bps_test_portal_123",
+      object: "billing_portal.session",
+      customer: "cus_server_owned",
+      livemode: false,
+      return_url: "https://payments.example.test/account/billing",
+      url: "https://billing.stripe.com/p/session/test_portal_token_123",
+    }));
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+    });
+    assert.deepEqual(await integration.createCustomerPortalSession(portalInput()), {
+      ok: true,
+      sessionId: "bps_test_portal_123",
+      url: "https://billing.stripe.com/p/session/test_portal_token_123",
+    });
+  });
+
+  assert.equal(providerRequest.method, "POST");
+  assert.equal(providerRequest.url, "/v1/billing_portal/sessions");
+  assert.equal(providerRequest.headers["idempotency-key"], "capsule:portal:user-1:intent-portal-1");
+  assert.equal(providerRequest.body.get("customer"), "cus_server_owned");
+  assert.equal(providerRequest.body.get("return_url"), "https://payments.example.test/account/billing");
+  assert.equal(providerRequest.body.get("configuration"), null);
+  assert.equal(providerRequest.body.get("flow_data"), null);
+  assert.equal(providerRequest.body.get("on_behalf_of"), null);
+});
+
+test("Customer Portal rejects browser-shaped authority and untrusted return locations before provider access", async () => {
+  let requests = 0;
+  await withStripeFake((_request, response) => {
+    requests += 1;
+    response.writeHead(500).end();
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+    });
+    for (const input of [
+      { ...portalInput(), customerId: "attacker-selected" },
+      { ...portalInput(), returnPath: "https://attacker.example/billing" },
+      { ...portalInput(), returnPath: "//attacker.example/billing" },
+      { ...portalInput(), idempotencyKey: "short" },
+      { ...portalInput(), configuration: "bpc_attacker" },
+    ]) {
+      await assert.rejects(integration.createCustomerPortalSession(input), (error) => {
+        assert.match(error.code, /^STRIPE_PORTAL_(?:INPUT|RETURN_PATH)_INVALID$/);
+        assert.equal(error.retryable, false);
+        assert.doesNotMatch(`${error.message}\n${error.hint}`, /attacker|bpc_/i);
+        return true;
+      });
+    }
+  });
+  assert.equal(requests, 0);
+});
+
+test("Customer Portal redacts permanent and transient provider failures", async () => {
+  for (const [fixture, code, retryable] of [["rejected", "STRIPE_PORTAL_REJECTED", false], ["provider-500", "STRIPE_PORTAL_UNAVAILABLE", true], ["timeout", "STRIPE_PORTAL_UNAVAILABLE", true]]) {
+    await withStripeFake(async (_request, response) => {
+      if (fixture === "timeout") await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const status = fixture === "rejected" ? 400 : fixture === "provider-500" ? 500 : 200;
+      response.writeHead(status, { "content-type": "application/json", "request-id": "req_portal_secret" });
+      response.end(JSON.stringify({ error: { message: "cus_secret_fixture sk_test_protocol_fixture" } }));
+    }, async (apiBaseUrl) => {
+      const integration = createStripePaymentIntegration({
+        enabled: true,
+        config: { ...enabledConfig, requestTimeoutMs: fixture === "timeout" ? 1_000 : enabledConfig.requestTimeoutMs },
+        env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+        apiBaseUrl,
+      });
+      await assert.rejects(integration.createCustomerPortalSession(portalInput(`intent-${fixture}`)), (error) => {
+        assert.equal(error.code, code);
+        assert.equal(error.retryable, retryable);
+        assert.doesNotMatch(`${error.message}\n${error.hint}`, /cus_secret|sk_test_|req_portal_secret/);
+        return true;
+      });
+    });
+  }
+});
+
+test("Customer Portal cancellation and malformed provider authority fail safely", async () => {
+  await withStripeFake(async (_request, response) => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ id: "bps_cancelled", customer: "cus_server_owned", livemode: false, return_url: "https://payments.example.test/account/billing", url: "https://billing.stripe.com/p/session/test_cancelled" }));
+  }, async (apiBaseUrl) => {
+    const controller = new AbortController();
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+      signal: controller.signal,
+    });
+    const pending = integration.createCustomerPortalSession(portalInput("intent-cancelled"));
+    setTimeout(() => controller.abort(), 20);
+    await assert.rejects(pending, (error) => error.name === "AbortError" && error.code === "ABORT_ERR");
+  });
+
+  for (const responseFixture of [
+    { id: "bps_wrong_customer", customer: "cus_other", livemode: false, return_url: "https://payments.example.test/account/billing", url: "https://billing.stripe.com/p/session/test_wrong_customer" },
+    { id: "bps_wrong_mode", customer: "cus_server_owned", livemode: true, return_url: "https://payments.example.test/account/billing", url: "https://billing.stripe.com/p/session/test_wrong_mode" },
+    { id: "bps_wrong_return", customer: "cus_server_owned", livemode: false, return_url: "https://attacker.example/", url: "https://billing.stripe.com/p/session/test_wrong_return" },
+    { id: "bps_wrong_host", customer: "cus_server_owned", livemode: false, return_url: "https://payments.example.test/account/billing", url: "https://billing.stripe.example/p/session/test_wrong_host" },
+    { id: "bps_wrong_path", customer: "cus_server_owned", livemode: false, return_url: "https://payments.example.test/account/billing", url: "https://billing.stripe.com/account/test_wrong_path" },
+  ]) {
+    await withStripeFake(async (_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(responseFixture));
+    }, async (apiBaseUrl) => {
+      const integration = createStripePaymentIntegration({
+        enabled: true,
+        config: enabledConfig,
+        env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+        apiBaseUrl,
+      });
+      await assert.rejects(integration.createCustomerPortalSession(portalInput(responseFixture.id)), (error) => {
+        assert.equal(error.code, "STRIPE_PORTAL_RESPONSE_INVALID");
+        assert.equal(error.retryable, false);
+        assert.doesNotMatch(`${error.message}\n${error.hint}`, /cus_other|attacker|wrong_/);
+        return true;
+      });
+    });
+  }
 });
 
 test("mismatched recurring Price mode is a safe permanent rejection", async () => {

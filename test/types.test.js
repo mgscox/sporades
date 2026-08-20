@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
-import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripePaymentsDisabledResult } from "sporades/server/stripe";
+import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult } from "sporades/server/stripe";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const dormantStripe = createStripePaymentIntegration({ enabled: false });
@@ -79,12 +79,16 @@ createStripePaymentIntegration({ enabled: true });
 const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/__sporades/stripe/webhook", apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
 const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 const subscriptionCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:subscription", businessReference: "subscription-123" });
+const customerPortal: Promise<StripeCustomerPortalSessionResult> = enabledStripe.createCustomerPortalSession({ customerId: "cus_server_owned", returnPath: "/account/billing", idempotencyKey: "capsule:portal:user:intent" });
 void checkout;
 void subscriptionCheckout;
+void customerPortal;
 // @ts-expect-error Checkout mode must be explicit; recurring Prices cannot silently use the one-time default.
 enabledStripe.createCheckoutSession({ priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 // @ts-expect-error Only Stripe Checkout payment and subscription modes are admitted.
 enabledStripe.createCheckoutSession({ mode: "setup", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
+// @ts-expect-error Portal callers may not select Stripe configuration or flow authority.
+enabledStripe.createCustomerPortalSession({ customerId: "cus_server_owned", returnPath: "/account/billing", idempotencyKey: "capsule:portal:user:intent", configuration: "bpc_browser_owned" });
 // @ts-expect-error The narrow payment boundary does not expose Stripe's generic request surface.
 dormantStripe.request("GET", "/v1/customers");
 // @ts-expect-error The narrow payment boundary does not expose the underlying Stripe client.

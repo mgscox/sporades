@@ -1324,7 +1324,7 @@ export default capsule({
 }
 
 function blankPaymentReadme(name: string, introduction: string) {
-  return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
+  return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nCustomer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
 }
 
 function blankPaymentSupportFiles(capsuleName: string) {
@@ -1332,18 +1332,26 @@ function blankPaymentSupportFiles(capsuleName: string) {
     "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
 import type { CapsuleContext } from "sporades/server";
-import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
+import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripeCustomerPortalSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
 import type { PaymentJobState } from "../shared/payments.js";
 
 type CheckoutMode = "payment" | "subscription";
 type CheckoutProduct = Readonly<{ mode: CheckoutMode; priceId: string; maxQuantity: number }>;
 type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
+type PortalInput = Readonly<{ intentId: string; billingHolderKey: string }>;
+type PortalJobInput = Readonly<{ intentId: string; billingHolderKey: string; returnPath: string; idempotencyKey: string }>;
 
 // Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
 export const stripePrices: Readonly<Record<string, CheckoutProduct>> = Object.freeze({});
 
 export const paymentSchema = {
   paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), mode: Text(), quantity: Numeric(), status: Text() })
+    .unique("ownerId", "intentId")
+    .acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: ({ previous, next, ctx }) => (next ?? previous)?.ownerId === ctx.auth.userId,
+    }),
+  portalIntents: table({ ownerId: Text(), intentId: Text(), billingHolderKey: Text() })
     .unique("ownerId", "intentId")
     .acl({
       read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
@@ -1356,6 +1364,17 @@ export async function authorizeStripeCheckout(_ctx: CapsuleContext, _input: Chec
   return false;
 }
 
+// These are separate seams deliberately: policy must authorize the active billing holder
+// before the Capsule resolves its already-associated Stripe Customer. Return null for
+// unknown, deleted, or no-longer-authorized holders; do not create a Customer here.
+export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<boolean> {
+  return false;
+}
+
+export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {
+  return null;
+}
+
 function stripeForContext(ctx: CapsuleContext) {
   const config = ctx.payments?.stripe;
   return config?.enabled
@@ -1365,7 +1384,15 @@ function stripeForContext(ctx: CapsuleContext) {
 
 export const paymentJobs = {
   stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => stripeForContext(ctx).createCheckoutSession(input)),
-  stripeCustomerPortal: job((ctx, input) => stripeForContext(ctx).createCustomerPortalSession(input)),
+  stripeCustomerPortal: job<PortalJobInput, StripeCustomerPortalSessionResult | StripePaymentsDisabledResult>(async (ctx, input) => {
+    requireAuth(ctx, { linked: true });
+    const policyInput = { intentId: input.intentId, billingHolderKey: input.billingHolderKey };
+    validatePortalInput(policyInput);
+    if (!await authorizeStripeCustomerPortal(ctx, policyInput)) throw portalUnavailable();
+    const customerId = await resolveStripeCustomerForPortal(ctx, policyInput);
+    if (typeof customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(customerId)) throw portalUnavailable();
+    return stripeForContext(ctx).createCustomerPortalSession({ customerId, returnPath: input.returnPath, idempotencyKey: input.idempotencyKey });
+  }),
 };
 
 export const paymentMutations = {
@@ -1393,6 +1420,27 @@ export const paymentMutations = {
     }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
     return { intentId: input.intentId, jobId: queued.id };
   }),
+  startStripeCustomerPortal: mutation(async (ctx, input: PortalInput) => {
+    const actor = requireAuth(ctx, { linked: true });
+    validatePortalInput(input);
+    if (!await authorizeStripeCustomerPortal(ctx, input)) throw portalUnavailable();
+    const customerId = await resolveStripeCustomerForPortal(ctx, input);
+    if (typeof customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(customerId)) throw portalUnavailable();
+    if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before opening Customer Portal.");
+
+    const inserted = await ctx.db.portalIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, billingHolderKey: input.billingHolderKey }, "ownerId", "intentId");
+    const intent = inserted ?? await ctx.db.portalIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
+    if (!intent || intent.billingHolderKey !== input.billingHolderKey) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different billing holder.");
+
+    const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:portal:`)} + actor.userId + ":" + input.intentId;
+    const queued = await ctx.jobs.enqueue("stripeCustomerPortal", {
+      intentId: input.intentId,
+      billingHolderKey: input.billingHolderKey,
+      returnPath: "/account/billing",
+      idempotencyKey,
+    }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
+    return { intentId: input.intentId, jobId: queued.id };
+  }),
 };
 
 function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
@@ -1406,6 +1454,18 @@ function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
 
 function validPrice(product: CheckoutProduct) {
   return (product.mode === "payment" || product.mode === "subscription") && /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
+}
+
+function validatePortalInput(input: unknown): asserts input is PortalInput {
+  const keys = ["billingHolderKey", "intentId"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== keys.join("\0")) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid Customer Portal request.", "Pass only intentId and a Capsule-defined billingHolderKey.");
+  const candidate = input as Record<string, unknown>;
+  if (typeof candidate.intentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(candidate.intentId)) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid payment intent identity.", "Pass one stable opaque intentId from 8 through 128 characters.");
+  if (typeof candidate.billingHolderKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(candidate.billingHolderKey)) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid billing-holder reference.", "Pass one bounded opaque Capsule billing-holder key.");
+}
+
+function portalUnavailable() {
+  return Object.assign(checkoutError("PAYMENT_PORTAL_UNAVAILABLE", "Customer Portal is not available for this billing holder.", "Ask a Capsule billing administrator to review this payment action."), { retryable: false });
 }
 
 function checkoutError(code: string, message: string, hint: string) {
@@ -1430,19 +1490,39 @@ export const paymentQueries = {
 `,
     "client/payments.ts": `import { mutations, queries } from "sporades/client";
 import type { SporadesError, Subscription } from "sporades/client";
-import type { PaymentCheckoutResult, PaymentJobState } from "../shared/payments.js";
+import type { PaymentCheckoutResult, PaymentJobState, PaymentPortalResult } from "../shared/payments.js";
 
 export type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
-export type CheckoutProgress =
+type PaymentRedirectResult = PaymentCheckoutResult | PaymentPortalResult;
+type PaymentRedirectProgress =
   | Readonly<{ status: "pending"; intentId: string; jobId: string }>
   | Readonly<{ status: "succeeded"; intentId: string; jobId: string; sessionId: string; url: string }>
   | Readonly<{ status: "failed"; intentId: string; jobId: string | null; error: SporadesError }>;
+export type CheckoutProgress = PaymentRedirectProgress;
+export type PortalInput = Readonly<{ intentId: string; billingHolderKey: string }>;
+export type PortalProgress = PaymentRedirectProgress;
 
 // The caller owns the returned subscription and should unsubscribe when its UI is disposed.
 export async function startStripeCheckout(input: CheckoutInput, onProgress: (progress: CheckoutProgress) => void): Promise<Subscription> {
-  const started = await mutations.run<{ intentId: string; jobId: string }>("startStripeCheckout", input);
+  return startStripeRedirect(input, "startStripeCheckout", "Checkout", validCheckoutResult, onProgress);
+}
+
+// Portal remains linked-user-only. Capsule server policy resolves the opaque holder key
+// before enqueue and rechecks it in the Job; no Stripe identity crosses this seam.
+export async function startStripeCustomerPortal(input: PortalInput, onProgress: (progress: PortalProgress) => void): Promise<Subscription> {
+  return startStripeRedirect(input, "startStripeCustomerPortal", "Customer Portal", validPortalResult, onProgress);
+}
+
+async function startStripeRedirect<TInput extends Readonly<{ intentId: string }>, TResult extends PaymentRedirectResult>(
+  input: TInput,
+  mutationName: "startStripeCheckout" | "startStripeCustomerPortal",
+  operation: "Checkout" | "Customer Portal",
+  validateResult: (value: unknown) => TResult | null,
+  onProgress: (progress: PaymentRedirectProgress) => void,
+): Promise<Subscription> {
+  const started = await mutations.run<{ intentId: string; jobId: string }>(mutationName, input);
   if (started.error || !started.data) {
-    onProgress({ status: "failed", intentId: input.intentId, jobId: null, error: started.error ?? { message: "Checkout did not start." } });
+    onProgress({ status: "failed", intentId: input.intentId, jobId: null, error: started.error ?? { message: operation + " did not start." } });
     return { unsubscribe() {} };
   }
 
@@ -1453,11 +1533,11 @@ export async function startStripeCheckout(input: CheckoutInput, onProgress: (pro
     if (settled || state.loading) return;
     if (state.error) return fail(state.error);
     const job = state.data;
-    if (!job) return fail({ message: "Checkout progress is unavailable." });
-    if (job.status === "failed" || job.status === "cancelled") return fail(job.failure ?? { message: "Checkout did not complete." });
+    if (!job) return fail({ message: operation + " progress is unavailable." });
+    if (job.status === "failed" || job.status === "cancelled") return fail(job.failure ?? { message: operation + " did not complete." });
     if (job.status !== "succeeded") return;
-    const result = validCheckoutResult(job.result);
-    if (!result) return fail({ message: "Checkout returned an invalid redirect." });
+    const result = validateResult(job.result);
+    if (!result) return fail({ message: operation + " returned an invalid redirect." });
     settled = true;
     onProgress({ status: "succeeded", intentId, jobId, sessionId: result.sessionId, url: result.url });
     window.location.assign(result.url);
@@ -1470,19 +1550,32 @@ export async function startStripeCheckout(input: CheckoutInput, onProgress: (pro
 }
 
 function validCheckoutResult(value: unknown): PaymentCheckoutResult | null {
+  return validPaymentRedirectResult(value, /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/, (url, sessionId) => {
+    const validPath = url.pathname === \`/c/pay/\${sessionId}\` || url.pathname === \`/pay/\${sessionId}\`;
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && validPath && !url.username && !url.password && !url.port;
+  }) as PaymentCheckoutResult | null;
+}
+
+function validPortalResult(value: unknown): PaymentPortalResult | null {
+  return validPaymentRedirectResult(value, /^bps_[A-Za-z0-9_]{1,240}$/, (url) =>
+    url.protocol === "https:" && url.hostname === "billing.stripe.com" && /^\\/p\\/session\\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname) && !url.username && !url.password && !url.port,
+  ) as PaymentPortalResult | null;
+}
+
+function validPaymentRedirectResult(value: unknown, sessionIdPattern: RegExp, validUrl: (url: URL, sessionId: string) => boolean): PaymentRedirectResult | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const result = value as Record<string, unknown>;
   if (Object.keys(result).sort().join("\\0") !== ["ok", "sessionId", "url"].join("\\0")) return null;
-  if (result.ok !== true || typeof result.sessionId !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(result.sessionId) || typeof result.url !== "string") return null;
+  if (result.ok !== true || typeof result.sessionId !== "string" || !sessionIdPattern.test(result.sessionId) || typeof result.url !== "string") return null;
   try {
     const url = new URL(result.url);
-    const validPath = url.pathname === \`/c/pay/\${result.sessionId}\` || url.pathname === \`/pay/\${result.sessionId}\`;
-    if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || !validPath || url.username || url.password || url.port) return null;
+    if (!validUrl(url, result.sessionId)) return null;
   } catch { return null; }
-  return result as PaymentCheckoutResult;
+  return result as PaymentRedirectResult;
 }
 `,
     "shared/payments.ts": `export type PaymentCheckoutResult = { ok: true; sessionId: string; url: string };
+export type PaymentPortalResult = { ok: true; sessionId: string; url: string };
 
 export type PaymentJobState = {
   id: string;
@@ -2930,6 +3023,9 @@ ${template === "blank" ? `
 - Give every catalogue entry an explicit \`payment\` or \`subscription\` mode and matching Stripe Price; never infer or accept the mode from browser input.
 - Keep \`authorizeStripeCheckout\` deny-by-default until the Capsule makes an explicit linked-user or Team billing decision.
 - Start Checkout in the mutation, observe its actor-scoped durable Job, and redirect only through the validator in \`client/payments.ts\`.
+- Keep \`authorizeStripeCustomerPortal\` deny-by-default and resolve an existing Customer in \`resolveStripeCustomerForPortal\` only after checking the linked actor's active user or Team billing authority.
+- Recheck Portal authorization and Customer resolution in the durable Job; never persist or accept a browser-supplied Customer identity.
+- Prefer Customer Portal for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes; Capsule policy still decides who may enter it.
 - Checkout begins provider billing; verified events and Capsule policy determine local subscription, entitlement, and access consequences.
 - Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
 - Sporades owns Stripe transport, compatibility, redirect validation, retries, provider timeouts, and safe provider errors.
@@ -2950,7 +3046,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-${template === "blank" ? "- `server/payments.ts` - payment mutations and Jobs, known-Job query, policy seam, and server-owned Price catalogue\n- `client/payments.ts` - Checkout progress and validated redirect helper\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
+${template === "blank" ? "- `server/payments.ts` - payment mutations and Jobs, known-Job query, policy seams, Customer resolver, and server-owned Price catalogue\n- `client/payments.ts` - Checkout and Customer Portal progress with validated redirect helpers\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
 - \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}

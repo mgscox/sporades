@@ -1986,14 +1986,40 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
   });
 });
 
-test("a generated activated blank Capsule starts one-time and subscription Checkout through one durable Job", { timeout: 120_000 }, async () => {
+test("a generated activated blank Capsule starts Checkout and Customer Portal through actor-scoped durable Jobs", { timeout: 120_000 }, async () => {
   await withTempDir(async (dir) => {
     const providerRequests = [];
     const provider = createServer(async (request, response) => {
       let body = "";
       for await (const chunk of request) body += chunk;
       const params = new URLSearchParams(body);
-      providerRequests.push({ headers: request.headers, body: params });
+      providerRequests.push({ url: request.url, headers: request.headers, body: params });
+      if (request.url === "/v1/billing_portal/sessions") {
+        const customer = params.get("customer");
+        assert.match(customer, /^cus_server_(?:resolved|retry|rejected)$/);
+        assert.equal(params.get("return_url"), "https://payments.example.test/account/billing");
+        const matchingPortalRequests = providerRequests.filter((candidate) => candidate.url === request.url && candidate.body.get("customer") === customer);
+        if (customer === "cus_server_retry" && matchingPortalRequests.length === 1) {
+          response.writeHead(500, { "content-type": "application/json", "request-id": "req_portal_retry" });
+          response.end(JSON.stringify({ error: { message: "temporary portal failure" } }));
+          return;
+        }
+        if (customer === "cus_server_rejected") {
+          response.writeHead(400, { "content-type": "application/json", "request-id": "req_portal_rejected" });
+          response.end(JSON.stringify({ error: { message: "cus_server_rejected must not escape" } }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json", "request-id": "req_generated_portal" });
+        response.end(JSON.stringify({
+          id: customer === "cus_server_retry" ? "bps_generated_portal_retry" : "bps_generated_portal",
+          object: "billing_portal.session",
+          customer,
+          livemode: false,
+          return_url: "https://payments.example.test/account/billing",
+          url: customer === "cus_server_retry" ? "https://billing.stripe.com/p/session/test_generated_portal_retry" : "https://billing.stripe.com/p/session/test_generated_portal",
+        }));
+        return;
+      }
       const priceId = params.get("line_items[0][price]");
       const mode = params.get("mode");
       if ((priceId === "price_server_owned" && mode !== "payment") || (priceId === "price_recurring_server_owned" && mode !== "subscription")) {
@@ -2062,7 +2088,10 @@ test("a generated activated blank Capsule starts one-time and subscription Check
         paymentsPath,
         paymentSource
           .replace("Object.freeze({})", 'Object.freeze({ starter: { mode: "payment", priceId: "price_server_owned", maxQuantity: 3 }, pro: { mode: "subscription", priceId: "price_recurring_server_owned", maxQuantity: 5 } })')
+          .replace('export const paymentMutations = {', 'export const paymentMutations = {\n  testEnqueueAnonymousPortal: mutation((ctx) => ctx.jobs.enqueue("stripeCustomerPortal", { intentId: "intent-anonymous-direct", billingHolderKey: "personal", returnPath: "/account/billing", idempotencyKey: "test:anonymous:portal" }, { idempotencyKey: "test:anonymous:portal", retry: { maxAttempts: 1 } })),')
           .replace("  return false;", "  return true;")
+          .replace('export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<boolean> {\n  return false;\n}', 'export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, input: PortalInput): Promise<boolean> {\n  return input.billingHolderKey !== "forbidden";\n}')
+          .replace('export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {\n  return null;\n}', 'const portalResolutionCalls = new Map<string, number>();\nexport async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, input: PortalInput): Promise<string | null> {\n  const calls = (portalResolutionCalls.get(input.intentId) ?? 0) + 1;\n  portalResolutionCalls.set(input.intentId, calls);\n  if (input.billingHolderKey === "revoked") return calls === 1 ? "cus_server_revoked" : null;\n  return input.billingHolderKey === "personal" ? "cus_server_resolved" : input.billingHolderKey === "retry" ? "cus_server_retry" : input.billingHolderKey === "rejected" ? "cus_server_rejected" : null;\n}')
           .replaceAll("signal: ctx.signal })", `signal: ctx.signal, apiBaseUrl: ${JSON.stringify(apiBaseUrl)} })`),
       );
       await installFakeReact(projectDir);
@@ -2081,6 +2110,14 @@ test("a generated activated blank Capsule starts one-time and subscription Check
       const subscriptionInput = { intentId: "intent-subscription-1", productKey: "pro", quantity: 4 };
       const anonymous = await send(socket, { id: "anonymous-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
       assert.ok(anonymous.error);
+      const anonymousPortal = await send(socket, { id: "anonymous-portal", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-anonymous-portal", billingHolderKey: "personal" }] });
+      assert.ok(anonymousPortal.error);
+      const directAnonymousPortal = await send(socket, { id: "anonymous-portal-direct", type: "mutation.run", mutation: "testEnqueueAnonymousPortal", args: [] });
+      assert.equal(directAnonymousPortal.error, null, JSON.stringify(directAnonymousPortal));
+      const directAnonymousFailedPromise = waitForSocketMessage(socket, (message) => message.id === "anonymous-portal-direct-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "anonymous-portal-direct-state", type: "query.subscribe", query: "paymentJob", args: [directAnonymousPortal.data.id] }));
+      const directAnonymousFailed = await directAnonymousFailedPromise;
+      assert.equal(directAnonymousFailed.data.attempts, 1);
       assert.equal(providerRequests.length, 0);
 
       const signup = await send(socket, {
@@ -2091,6 +2128,14 @@ test("a generated activated blank Capsule starts one-time and subscription Check
       });
       assert.equal(signup.error, null);
       assert.equal(signup.data.auth.isGuest, false);
+
+      for (const billingHolderKey of ["forbidden", "unknown", "deleted-team"]) {
+        const denied = await send(socket, { id: `portal-${billingHolderKey}`, type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: `intent-${billingHolderKey}-1`, billingHolderKey }] });
+        assert.equal(denied.error?.code, "PAYMENT_PORTAL_UNAVAILABLE");
+      }
+      const portalInjection = await send(socket, { id: "portal-injected-customer", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-injected", billingHolderKey: "personal", customerId: "cus_browser_supplied" }] });
+      assert.ok(portalInjection.error);
+      assert.equal(providerRequests.length, 0);
 
       for (const [field, value] of Object.entries({
         priceId: "price_browser_supplied",
@@ -2167,16 +2212,70 @@ test("a generated activated blank Capsule starts one-time and subscription Check
       assert.equal(retryRequests[0].headers["idempotency-key"], retryRequests[1].headers["idempotency-key"]);
       assert.match(retryRequests[0].headers["idempotency-key"], /:intent-retry-1$/);
 
+      const portalInput = { intentId: "intent-portal-1", billingHolderKey: "personal" };
+      const portalStarted = await send(socket, { id: "portal", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [portalInput] });
+      assert.equal(portalStarted.error, null, JSON.stringify(portalStarted));
+      const portalSucceededPromise = waitForSocketMessage(socket, (message) => message.id === "portal-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "portal-state", type: "query.subscribe", query: "paymentJob", args: [portalStarted.data.jobId] }));
+      const portalSucceeded = await portalSucceededPromise;
+      assert.deepEqual(portalSucceeded.data.result, {
+        ok: true,
+        sessionId: "bps_generated_portal",
+        url: "https://billing.stripe.com/p/session/test_generated_portal",
+      });
+      const portalRequests = providerRequests.filter((candidate) => candidate.url === "/v1/billing_portal/sessions");
+      assert.equal(portalRequests.length, 1);
+      assert.equal(portalRequests[0].headers["idempotency-key"], `sporades:checkout-blank:stripe:portal:${signup.data.auth.userId}:intent-portal-1`);
+      assert.equal(portalRequests[0].body.get("customer"), "cus_server_resolved");
+
+      const repeatedPortal = await send(socket, { id: "portal-repeat", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [portalInput] });
+      assert.equal(repeatedPortal.error, null);
+      assert.equal(repeatedPortal.data.jobId, portalStarted.data.jobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.filter((candidate) => candidate.url === "/v1/billing_portal/sessions").length, 1);
+
+      const portalRetryStarted = await send(socket, { id: "portal-retry", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-retry", billingHolderKey: "retry" }] });
+      assert.equal(portalRetryStarted.error, null, JSON.stringify(portalRetryStarted));
+      const portalRetryPromise = waitForSocketMessage(socket, (message) => message.id === "portal-retry-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "portal-retry-state", type: "query.subscribe", query: "paymentJob", args: [portalRetryStarted.data.jobId] }));
+      const portalRetried = await portalRetryPromise;
+      assert.equal(portalRetried.data.attempts, 2);
+      const portalRetryRequests = providerRequests.filter((candidate) => candidate.body.get("customer") === "cus_server_retry");
+      assert.equal(portalRetryRequests.length, 2);
+      assert.equal(portalRetryRequests[0].headers["idempotency-key"], portalRetryRequests[1].headers["idempotency-key"]);
+
+      const portalRejected = await send(socket, { id: "portal-rejected", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-rejected", billingHolderKey: "rejected" }] });
+      assert.equal(portalRejected.error, null, JSON.stringify(portalRejected));
+      const portalRejectedPromise = waitForSocketMessage(socket, (message) => message.id === "portal-rejected-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "portal-rejected-state", type: "query.subscribe", query: "paymentJob", args: [portalRejected.data.jobId] }));
+      const portalFailed = await portalRejectedPromise;
+      assert.equal(portalFailed.data.attempts, 1);
+      assert.deepEqual(portalFailed.data.failure, { code: "STRIPE_PORTAL_REJECTED", message: "Stripe rejected the Customer Portal request." });
+      assert.doesNotMatch(JSON.stringify(portalFailed), /cus_server_rejected/);
+
+      const portalRevoked = await send(socket, { id: "portal-revoked", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-revoked", billingHolderKey: "revoked" }] });
+      assert.equal(portalRevoked.error, null, JSON.stringify(portalRevoked));
+      const portalRevokedPromise = waitForSocketMessage(socket, (message) => message.id === "portal-revoked-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "portal-revoked-state", type: "query.subscribe", query: "paymentJob", args: [portalRevoked.data.jobId] }));
+      const revokedState = await portalRevokedPromise;
+      assert.equal(revokedState.data.attempts, 1);
+      assert.deepEqual(revokedState.data.failure, { code: "PAYMENT_PORTAL_UNAVAILABLE", message: "Customer Portal is not available for this billing holder." });
+      assert.equal(providerRequests.some((candidate) => candidate.body.get("customer") === "cus_server_revoked"), false);
+
       foreignSocket = await openSocket(started.data.url);
       const foreign = await send(foreignSocket, { id: "foreign-state", type: "query.subscribe", query: "paymentJob", args: [subscriptionJobId] });
       assert.equal(foreign.data ?? null, null);
       assert.equal(foreign.error ?? null, null);
+      const foreignPortal = await send(foreignSocket, { id: "foreign-portal-state", type: "query.subscribe", query: "paymentJob", args: [portalStarted.data.jobId] });
+      assert.equal(foreignPortal.data ?? null, null);
+      assert.equal(foreignPortal.error ?? null, null);
 
       assert.equal((await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
       assert.doesNotMatch(serverBundle, /sk_test_generated_fixture|whsec_generated_fixture/);
       assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);
       assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_PORTAL_RESPONSE_INVALID/);
     } finally {
       await closeSocketGracefully(foreignSocket);
       await closeSocketGracefully(socket);

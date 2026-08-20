@@ -48,6 +48,21 @@ export type StripeCheckoutSessionResult = Readonly<{
   url: string;
 }>;
 
+export type StripeCustomerPortalSessionInput = Readonly<{
+  /** Existing Customer resolved and authorized by Capsule server code. */
+  customerId: string;
+  /** Same-origin absolute path selected by trusted Capsule server code. */
+  returnPath: string;
+  /** Stable business-derived key reused across durable Job attempts. */
+  idempotencyKey: string;
+}>;
+
+export type StripeCustomerPortalSessionResult = Readonly<{
+  ok: true;
+  sessionId: string;
+  url: string;
+}>;
+
 export type StripeDisabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: unknown): Promise<StripePaymentsDisabledResult>;
   createCustomerPortalSession(input: unknown): Promise<StripePaymentsDisabledResult>;
@@ -56,7 +71,7 @@ export type StripeDisabledPaymentIntegration = Readonly<{
 
 export type StripeEnabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: StripeCheckoutSessionInput): Promise<StripeCheckoutSessionResult>;
-  createCustomerPortalSession(input: unknown): Promise<never>;
+  createCustomerPortalSession(input: StripeCustomerPortalSessionInput): Promise<StripeCustomerPortalSessionResult>;
   verifyWebhookEvent(input: unknown): Promise<never>;
 }>;
 

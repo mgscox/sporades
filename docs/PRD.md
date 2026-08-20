@@ -47,10 +47,14 @@ The repository currently includes:
   the explicit server-owned one-time or recurring subscription mode after
   commit, exposes bounded actor-scoped progress, retries transient failure,
   redacts permanent failure, and returns only a validated Stripe-hosted redirect.
+  An independently authorized linked actor can also select an opaque Capsule
+  billing holder that Capsule policy resolves to an existing Stripe Customer;
+  a durable Customer Portal Job then returns only a validated short-lived
+  Stripe-hosted redirect. Unknown, deleted, unauthorized, and anonymous holders
+  receive no Portal authority.
   Checkout starts provider billing; verified events and Capsule policy determine
   local subscription, entitlement, and access consequences.
-  No callback route or Customer Portal authority is active yet, and existing and
-  non-blank Capsules remain unchanged.
+  No callback route is active yet, and existing and non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

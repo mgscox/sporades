@@ -482,7 +482,14 @@ no parallel subscription transport. It returns only
 account mode, Session identity, and exact `https://checkout.stripe.com` host.
 Transient failures are retryable by the durable Job; permanent rejection and
 invalid responses are bounded, redacted, and non-retryable. Customer Portal
-and callback admission remain unavailable in this slice.
+uses the same narrow pattern: enabled `createCustomerPortalSession` accepts only
+an existing Capsule-authorized Customer ID, a trusted same-origin return path,
+and a stable idempotency key. It calls only Stripe's Portal Session operation
+and returns `{ ok: true, sessionId, url }` after binding the response to the
+requested Customer, configured account mode and return URL, and validating the
+exact `https://billing.stripe.com/p/session/...` authority. Provider timeouts,
+cancellation, retries, permanent rejection, and malformed responses follow the
+same bounded and redacted Job policy. Callback admission remains unavailable.
 
 The official server Stripe SDK is a Sporades dependency and is not copied into
 generated projects or browser Bundles. The real server Bundle inlines it. Keep

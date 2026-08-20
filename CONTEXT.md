@@ -107,11 +107,11 @@ A runtime context, not just a set of exports. Internally manages the SQLite conn
 _Avoid_: server module, server library (it's a living context, not a static library)
 
 **Stripe payment integration**:
-The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. A dormant integration returns `STRIPE_PAYMENTS_DISABLED`; complete activation admits only validated Sealed Server credentials and lets a durable Job create a Stripe-hosted Checkout Session in an explicit server-owned one-time `payment` or recurring `subscription` mode with a stable business idempotency key and bounded safe result.
+The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. A dormant integration returns `STRIPE_PAYMENTS_DISABLED`; complete activation admits only validated Sealed Server credentials and lets a durable Job create either a Stripe-hosted Checkout Session in an explicit server-owned one-time `payment` or recurring `subscription` mode, or a short-lived Customer Portal Session for an existing Capsule-authorized Customer. Both use stable business idempotency and return bounded validated redirects.
 _Avoid_: Stripe client, payment proxy, browser Stripe SDK
 
 **Built-in payment foundation**:
-The ordinary payment scaffolding generated into every new blank Capsule. It starts dormant and includes `server/payments.ts`, `client/payments.ts`, shared payment Job state, named payment Jobs, a bounded known-Job query, an empty server-owned Price catalogue, a deny-by-default billing policy seam, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
+The ordinary payment scaffolding generated into every new blank Capsule. It starts dormant and includes `server/payments.ts`, `client/payments.ts`, shared payment Job state, named Checkout and Customer Portal Jobs, a bounded known-Job query, an empty server-owned Price catalogue, deny-by-default billing policy seams, a Capsule-owned Customer resolver, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
 _Avoid_: payment template, Stripe demo, billing feature
 
 **Price catalogue**:

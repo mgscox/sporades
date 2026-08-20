@@ -11,7 +11,8 @@ const DISABLED_RESULT = Object.freeze({
 /**
  * Creates the server-only Stripe integration used by generated Capsule wiring.
  * Dormant use receives no provider authority. Complete activation admits only
- * one narrow validated Checkout operation for one-time and recurring Prices.
+ * narrow validated Checkout and Customer Portal operations. Capsule code keeps
+ * product, Customer association, and billing-holder authority outside Sporades.
  */
 export function createStripePaymentIntegration(options) {
     if (options?.enabled !== false && options?.enabled !== true) {
@@ -51,15 +52,7 @@ export function createStripePaymentIntegration(options) {
                     }), options.signal);
                 }
                 catch (error) {
-                    if (error?.name === "AbortError" || error?.code === "ABORT_ERR")
-                        throw error;
-                    if (typeof error?.retryable === "boolean" && typeof error?.code === "string" && error.code.startsWith("STRIPE_"))
-                        throw error;
-                    const status = Number(error?.statusCode);
-                    const retryable = !Number.isInteger(status) || status >= 500 || [408, 409, 429].includes(status);
-                    throw retryable
-                        ? paymentError("STRIPE_CHECKOUT_UNAVAILABLE", "Stripe Checkout is temporarily unavailable.", "The durable payment Job will retry within its bounded policy.", true)
-                        : paymentError("STRIPE_CHECKOUT_REJECTED", "Stripe rejected the Checkout request.", "Check the server-owned Price, account mode, and Stripe configuration before retrying.", false);
+                    throw stripeOperationFailure(error, "checkout");
                 }
                 throwIfAborted(options.signal);
                 if (session.mode !== checkout.mode || session.livemode !== enabledConfig.livemode || !validCheckoutSessionId(session.id) || !validCheckoutUrl(session.url, session.id)) {
@@ -67,8 +60,26 @@ export function createStripePaymentIntegration(options) {
                 }
                 return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
             },
-            async createCustomerPortalSession(_input) {
-                throw paymentError("STRIPE_CUSTOMER_PORTAL_UNAVAILABLE", "Stripe Customer Portal is not available in this release.", "Use the Checkout operation implemented by the current payment ticket.", false);
+            async createCustomerPortalSession(input) {
+                const portal = validateCustomerPortalInput(input, enabledConfig.publicOrigin);
+                throwIfAborted(options.signal);
+                let session;
+                try {
+                    session = await waitForStripeRequest(stripe.billingPortal.sessions.create({
+                        customer: portal.customerId,
+                        return_url: portal.returnUrl,
+                    }, {
+                        idempotencyKey: portal.idempotencyKey,
+                    }), options.signal);
+                }
+                catch (error) {
+                    throw stripeOperationFailure(error, "portal");
+                }
+                throwIfAborted(options.signal);
+                if (session.customer !== portal.customerId || session.livemode !== enabledConfig.livemode || session.return_url !== portal.returnUrl || !validPortalSessionId(session.id) || !validPortalUrl(session.url)) {
+                    throw paymentError("STRIPE_PORTAL_RESPONSE_INVALID", "Stripe returned an invalid Customer Portal Session.", "Retry later or check the configured Stripe account mode.", false);
+                }
+                return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
             },
             async verifyWebhookEvent(_input) {
                 throw paymentError("STRIPE_WEBHOOKS_UNAVAILABLE", "Stripe callback admission is not available in this release.", "Keep the configured callback route unregistered until webhook support is implemented.", false);
@@ -86,6 +97,23 @@ export function createStripePaymentIntegration(options) {
             return DISABLED_RESULT;
         },
     });
+}
+function validateCustomerPortalInput(input, publicOrigin) {
+    const keys = ["customerId", "idempotencyKey", "returnPath"];
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== keys.join("\0")) {
+        throw paymentError("STRIPE_PORTAL_INPUT_INVALID", "Invalid Stripe Customer Portal input.", "Pass only a Capsule-authorized Customer, return path, and stable idempotency key.", false);
+    }
+    if (typeof input.customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId)) {
+        throw paymentError("STRIPE_PORTAL_INPUT_INVALID", "Invalid server-resolved Stripe Customer.", "Resolve an existing Customer only after Capsule billing-holder authorization.", false);
+    }
+    if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255 || /[\r\n\0]/.test(input.idempotencyKey)) {
+        throw paymentError("STRIPE_PORTAL_INPUT_INVALID", "Invalid Stripe Customer Portal idempotency key.", "Use a stable bounded business-derived idempotency key.", false);
+    }
+    return {
+        customerId: input.customerId,
+        idempotencyKey: input.idempotencyKey,
+        returnUrl: resolveReturnUrl(publicOrigin, input.returnPath, "return", "STRIPE_PORTAL_RETURN_PATH_INVALID", "Customer Portal"),
+    };
 }
 function validateCheckoutInput(input, publicOrigin) {
     const keys = ["businessReference", "cancelPath", "idempotencyKey", "mode", "priceId", "quantity", "successPath"];
@@ -113,15 +141,29 @@ function validateCheckoutInput(input, publicOrigin) {
         quantity: input.quantity,
         idempotencyKey: input.idempotencyKey,
         businessReference: input.businessReference,
-        successUrl: resolveReturnUrl(publicOrigin, input.successPath, "success"),
-        cancelUrl: resolveReturnUrl(publicOrigin, input.cancelPath, "cancellation"),
+        successUrl: resolveReturnUrl(publicOrigin, input.successPath, "success", "STRIPE_CHECKOUT_RETURN_PATH_INVALID", "Checkout"),
+        cancelUrl: resolveReturnUrl(publicOrigin, input.cancelPath, "cancellation", "STRIPE_CHECKOUT_RETURN_PATH_INVALID", "Checkout"),
     };
 }
-function resolveReturnUrl(publicOrigin, path, label) {
+function resolveReturnUrl(publicOrigin, path, label, code, operation) {
     if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\") || path.includes("?") || path.includes("#") || /\s/.test(path) || path.split("/").includes("..")) {
-        throw paymentError("STRIPE_CHECKOUT_RETURN_PATH_INVALID", `Invalid Checkout ${label} path.`, "Use a same-origin absolute path without a query or fragment.", false);
+        throw paymentError(code, `Invalid ${operation} ${label} path.`, "Use a same-origin absolute path without a query or fragment.", false);
     }
     return new URL(path, publicOrigin).toString();
+}
+function validPortalSessionId(value) {
+    return typeof value === "string" && /^bps_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+function validPortalUrl(value) {
+    if (typeof value !== "string")
+        return false;
+    try {
+        const url = new URL(value);
+        return url.protocol === "https:" && url.hostname === "billing.stripe.com" && /^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname) && !url.username && !url.password && !url.port;
+    }
+    catch {
+        return false;
+    }
 }
 function validCheckoutSessionId(value) {
     return typeof value === "string" && /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(value);
@@ -137,6 +179,26 @@ function validCheckoutUrl(value, sessionId) {
     catch {
         return false;
     }
+}
+const STRIPE_OPERATION_FAILURES = Object.freeze({
+    checkout: Object.freeze({
+        unavailable: Object.freeze(["STRIPE_CHECKOUT_UNAVAILABLE", "Stripe Checkout is temporarily unavailable.", "The durable payment Job will retry within its bounded policy."]),
+        rejected: Object.freeze(["STRIPE_CHECKOUT_REJECTED", "Stripe rejected the Checkout request.", "Check the server-owned Price, account mode, and Stripe configuration before retrying."]),
+    }),
+    portal: Object.freeze({
+        unavailable: Object.freeze(["STRIPE_PORTAL_UNAVAILABLE", "Stripe Customer Portal is temporarily unavailable.", "The durable payment Job will retry within its bounded policy."]),
+        rejected: Object.freeze(["STRIPE_PORTAL_REJECTED", "Stripe rejected the Customer Portal request.", "Check the Capsule-owned Customer association and Stripe account configuration before retrying."]),
+    }),
+});
+function stripeOperationFailure(error, operation) {
+    if (error?.name === "AbortError" || error?.code === "ABORT_ERR")
+        return error;
+    if (typeof error?.retryable === "boolean" && typeof error?.code === "string" && error.code.startsWith("STRIPE_"))
+        return error;
+    const status = Number(error?.statusCode);
+    const retryable = !Number.isInteger(status) || status >= 500 || [408, 409, 429].includes(status);
+    const [code, message, hint] = STRIPE_OPERATION_FAILURES[operation][retryable ? "unavailable" : "rejected"];
+    return paymentError(code, message, hint, retryable);
 }
 function stripeProviderAddress(apiBaseUrl) {
     if (apiBaseUrl === undefined)
@@ -157,7 +219,7 @@ function stripeProviderAddress(apiBaseUrl) {
 function throwIfAborted(signal) {
     if (!signal?.aborted)
         return;
-    const error = new Error("Stripe Checkout was cancelled.");
+    const error = new Error("Stripe payment operation was cancelled.");
     error.name = "AbortError";
     error.code = "ABORT_ERR";
     throw error;
