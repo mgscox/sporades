@@ -217,7 +217,13 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     });
     database.contextMiddleware = [`async (ctx) => {
       const issued = await ctx.accessKeys.issue({ name: "middleware-issued-key" });
-      return { auth: ctx.auth, credential: ctx.credential, issuedToken: issued.token };
+      return {
+        auth: ctx.auth,
+        credential: ctx.credential,
+        issuedToken: issued.token,
+        __accessKeyLifecycleAuditEvents: [],
+        __sporadesSecretDisclosed: false,
+      };
     }`];
     const middlewareIssued = await requestEndpoint(database, "/middleware-issue", {
       headers: { "x-sporades-session-token": "middleware-session" },

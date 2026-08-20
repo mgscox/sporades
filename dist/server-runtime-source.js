@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -2676,7 +2676,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                 }
                 const result = await handler(context);
-                if (context.__sporadesSecretDisclosed)
+                if (accessKeySecretWasDisclosed(context))
                     request.__sporadesSecretDisclosed = true;
                 return result;
             }
@@ -2953,12 +2953,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
             context.__pendingAclWrites = previousContext.__pendingAclWrites;
         }
-        if (previousContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
-            context.__accessKeyLifecycleAuditEvents = previousContext.__accessKeyLifecycleAuditEvents;
-        }
-        if (previousContext.__sporadesSecretDisclosed) {
-            context.__sporadesSecretDisclosed = true;
-        }
+        transferAccessKeyRuntimeState(previousContext, context);
     }
     return context;
 }

@@ -2,6 +2,8 @@ import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admissio
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+const accessKeyLifecycleAuditEventsByContext = new WeakMap();
+const accessKeySecretDisclosedContexts = new WeakSet();
 function accessKeyCrypto() {
     return process.getBuiltinModule("node:crypto");
 }
@@ -70,7 +72,7 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                 if (outcome.status !== "issued")
                     throwAccessKeyIssueError(outcome.status);
                 const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
-                context.__sporadesSecretDisclosed = true;
+                accessKeySecretDisclosedContexts.add(context);
                 await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
                 return { accessKey, token: secret.token };
             }
@@ -382,8 +384,10 @@ async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
         },
     };
     if (database.__transactionActive) {
-        context.__accessKeyLifecycleAuditEvents ??= [];
-        context.__accessKeyLifecycleAuditEvents.push(input);
+        const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
+        if (events.length === 0)
+            accessKeyLifecycleAuditEventsByContext.set(context, events);
+        events.push(input);
         return;
     }
     try {
@@ -392,10 +396,12 @@ async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     catch { }
 }
 export async function flushAccessKeyLifecycleAuditEvents(database, context) {
-    const events = context?.__accessKeyLifecycleAuditEvents;
+    if (!context)
+        return;
+    const events = accessKeyLifecycleAuditEventsByContext.get(context);
     if (!Array.isArray(events) || !context)
         return;
-    delete context.__accessKeyLifecycleAuditEvents;
+    accessKeyLifecycleAuditEventsByContext.delete(context);
     for (const event of events) {
         try {
             await database.log?.emit?.(event);
@@ -405,7 +411,21 @@ export async function flushAccessKeyLifecycleAuditEvents(database, context) {
 }
 export function dropAccessKeyLifecycleAuditEvents(context) {
     if (context)
-        delete context.__accessKeyLifecycleAuditEvents;
+        accessKeyLifecycleAuditEventsByContext.delete(context);
+}
+export function transferAccessKeyRuntimeState(previousContext, nextContext) {
+    const events = accessKeyLifecycleAuditEventsByContext.get(previousContext);
+    if (events) {
+        accessKeyLifecycleAuditEventsByContext.delete(previousContext);
+        accessKeyLifecycleAuditEventsByContext.set(nextContext, events);
+    }
+    if (accessKeySecretDisclosedContexts.has(previousContext)) {
+        accessKeySecretDisclosedContexts.delete(previousContext);
+        accessKeySecretDisclosedContexts.add(nextContext);
+    }
+}
+export function accessKeySecretWasDisclosed(context) {
+    return Boolean(context && accessKeySecretDisclosedContexts.has(context));
 }
 function protectAccessKeyValue(value) {
     const target = Object.freeze({ ...value });

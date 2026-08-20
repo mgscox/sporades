@@ -5,6 +5,8 @@ import { commandError } from "./runtime-errors.js";
 type LooseRecord = Record<string, any>;
 
 const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+const accessKeyLifecycleAuditEventsByContext = new WeakMap<object, LooseRecord[]>();
+const accessKeySecretDisclosedContexts = new WeakSet<object>();
 
 function accessKeyCrypto() {
   return process.getBuiltinModule("node:crypto");
@@ -85,7 +87,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
         const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
-        context.__sporadesSecretDisclosed = true;
+        accessKeySecretDisclosedContexts.add(context);
         await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
         return { accessKey, token: secret.token };
       }
@@ -408,8 +410,9 @@ async function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, con
     },
   };
   if (database.__transactionActive) {
-    context.__accessKeyLifecycleAuditEvents ??= [];
-    context.__accessKeyLifecycleAuditEvents.push(input);
+    const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
+    if (events.length === 0) accessKeyLifecycleAuditEventsByContext.set(context, events);
+    events.push(input);
     return;
   }
   try {
@@ -418,9 +421,10 @@ async function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, con
 }
 
 export async function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {
-  const events = context?.__accessKeyLifecycleAuditEvents;
+  if (!context) return;
+  const events = accessKeyLifecycleAuditEventsByContext.get(context);
   if (!Array.isArray(events) || !context) return;
-  delete context.__accessKeyLifecycleAuditEvents;
+  accessKeyLifecycleAuditEventsByContext.delete(context);
   for (const event of events) {
     try {
       await database.log?.emit?.(event);
@@ -429,7 +433,23 @@ export async function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, 
 }
 
 export function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined) {
-  if (context) delete context.__accessKeyLifecycleAuditEvents;
+  if (context) accessKeyLifecycleAuditEventsByContext.delete(context);
+}
+
+export function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord) {
+  const events = accessKeyLifecycleAuditEventsByContext.get(previousContext);
+  if (events) {
+    accessKeyLifecycleAuditEventsByContext.delete(previousContext);
+    accessKeyLifecycleAuditEventsByContext.set(nextContext, events);
+  }
+  if (accessKeySecretDisclosedContexts.has(previousContext)) {
+    accessKeySecretDisclosedContexts.delete(previousContext);
+    accessKeySecretDisclosedContexts.add(nextContext);
+  }
+}
+
+export function accessKeySecretWasDisclosed(context: LooseRecord | undefined) {
+  return Boolean(context && accessKeySecretDisclosedContexts.has(context));
 }
 
 function protectAccessKeyValue(value: LooseRecord) {

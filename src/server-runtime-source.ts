@@ -65,8 +65,9 @@ import {
 } from "./auth-admission.js";
 import {
   accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
+  accessKeySecretWasDisclosed,
   dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
-  recordAccessKeyUsage, resolveAccessKeyCredential,
+  recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
 } from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
@@ -2914,7 +2915,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
         const result = await handler(context);
-        if (context.__sporadesSecretDisclosed) (request as LooseRecord).__sporadesSecretDisclosed = true;
+        if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
         return result;
       } catch (error) {
         handlerFailed = true;
@@ -3204,12 +3205,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
       context.__pendingAclWrites = previousContext.__pendingAclWrites;
     }
-    if (previousContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
-      context.__accessKeyLifecycleAuditEvents = previousContext.__accessKeyLifecycleAuditEvents;
-    }
-    if (previousContext.__sporadesSecretDisclosed) {
-      context.__sporadesSecretDisclosed = true;
-    }
+    transferAccessKeyRuntimeState(previousContext, context);
   }
   return context;
 }
