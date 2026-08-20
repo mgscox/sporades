@@ -12,12 +12,16 @@ import { createLogEnvelope, createPrivilegedAuditLogInput, } from "../server-run
 import { delay, errorDetails, helperError, readStdin, writeEnvelope, } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
+import { sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
 let hostHelperConfig = defaultHostHelperConfig();
+const HOSTED_ACCESS_KEY_ACTIONS = new Set([
+    "access-keys.list", "access-keys.inspect", "access-keys.revoke", "access-keys.revoke-all", "access-keys.delete",
+]);
 main().catch((error) => {
     writeEnvelope({
         ok: false,
@@ -94,6 +98,10 @@ async function main() {
         inspectCapsuleSchedules(request);
         return;
     }
+    if (HOSTED_ACCESS_KEY_ACTIONS.has(request.action)) {
+        runCapsuleAccessKeyAction(request);
+        return;
+    }
     if (request.action === "host.stats") {
         await statsHost(request);
         return;
@@ -125,12 +133,23 @@ function inspectCapsuleSchedules(request) {
         throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
     }));
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
+function runCapsuleAccessKeyAction(request) {
+    if (!request.accessKeys || typeof request.accessKeys !== "object" || Array.isArray(request.accessKeys)) {
+        throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+    }
+    inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+        throw helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    }), [
+        "--sporades-action-input",
+        Buffer.from(JSON.stringify(request.accessKeys), "utf8").toString("base64url"),
+    ]);
+}
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = []) {
     const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
     if (!checkContainerRunning(containerName)) {
         throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
     }
-    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action]);
+    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
     let envelope;
     try {
         envelope = JSON.parse(result.stdout.trim());

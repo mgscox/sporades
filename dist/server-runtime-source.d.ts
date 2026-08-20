@@ -37,6 +37,7 @@ export declare function createRuntimeLogSink(options: {
     recent(limit?: number): any;
     tail(limit?: number): any[];
 };
+export declare function runRuntimeAccessKeyOperatorAction(database: LooseRecord, action: string, input?: LooseRecord, executionSource?: string): Promise<any>;
 export declare function createLogEnvelope(input: {
     config: LooseRecord;
     timestamp: any;

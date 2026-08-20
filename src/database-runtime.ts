@@ -889,6 +889,14 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ),
       ).all(ownerUserId);
     },
+    findAccessKeyRecordById(id: string) {
+      return this.prepare(
+        sql(
+          "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+          "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+        ),
+      ).get(id) ?? null;
+    },
     findAccessKeyAuthenticationRecord(selector: string) {
       return this.prepare(
         sql(

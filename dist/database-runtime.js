@@ -688,6 +688,10 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
                 "WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC")).all(ownerUserId);
         },
+        findAccessKeyRecordById(id) {
+            return this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+                "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(id) ?? null;
+        },
         findAccessKeyAuthenticationRecord(selector) {
             return this.prepare(sql("SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], " +
                 "[u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], " +

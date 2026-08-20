@@ -347,6 +347,21 @@ export type CurrentUserAccessKeysApi = {
   delete(id: string): Promise<{ id: string; deleted: true }>;
 };
 
+export type PrivilegedAccessKeySummary = AccessKeySummary & { ownerUserId: string };
+
+export type PrivilegedAccessKeysApi = {
+  list(ownerUserId: string, options?: ListAccessKeysOptions): Promise<{
+    accessKeys: PrivilegedAccessKeySummary[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+  }>;
+  inspect(id: string): Promise<{ accessKey: PrivilegedAccessKeySummary }>;
+  revoke(id: string): Promise<{ accessKey: PrivilegedAccessKeySummary }>;
+  revokeAll(ownerUserId: string): Promise<{ ownerUserId: string; revokedCount: number; accessKeys: PrivilegedAccessKeySummary[] }>;
+  delete(id: string): Promise<{ id: string; ownerUserId: string; deleted: true }>;
+};
+
 export type RequireAuthOptions = {
   /** Require a linked account instead of allowing an Anonymous session. */
   linked?: boolean;
@@ -640,6 +655,8 @@ export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition
   jobs: JobApi;
   schedules: ScheduleInspectionApi;
   teams: PrivilegedTeamsApi;
+  /** Operator-only Access-key metadata and retirement. Never exposes issuance, rotation, or bearer secrets. */
+  accessKeys: PrivilegedAccessKeysApi;
 };
 
 /**

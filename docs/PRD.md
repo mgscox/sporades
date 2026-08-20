@@ -534,6 +534,16 @@ and sign-in rotate the current session token when the linked identity changes.
 Google, Microsoft, Apple, and Facebook sign-in refresh the current Session during the server-owned OAuth
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
+
+Linked users may create immutable, named, scoped Access keys for programmatic
+access without inventing a Bot user or email/OAuth login. Owner management is
+Session-only and exposes plaintext only on issuance or rotation. Explicit
+Privileged work and the `sporades access-keys` operator family may inspect
+bounded metadata and retire exact keys or one exact owner's current keys, but
+cannot issue, rotate, or receive bearer material. Operator actions use a
+running Dev, Container, or Hosted Capsule and its generated-Bundle action seam;
+there is no stopped-Capsule database mode. Destructive CLI operations require
+interactive confirmation or `--yes`, and `--json` never implies consent.
 Facebook sign-in follows the same Session-linking contract. Its App Secret and
 access token remain server-only; the runtime persists only the stable Facebook
 ID and optional selected email, name, and picture profile fields.

@@ -754,9 +754,11 @@ const SCHEDULES_DDL =
 const SCHEDULES_INSERT = "INSERT INTO [sporades_schedules] VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 const schedulesRow = (name) => [name, "fingerprint-1", "*/5 * * * *", "UTC", "skip", 1, "2026-01-01T00:00:00.000Z", null, null, null, null];
 
-function runBundleAction(bundlePath, action, { cwd, env = {} }) {
+function runBundleAction(bundlePath, action, { cwd, env = {}, input = null }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bundlePath, "--sporades-action", action], {
+    const args = [bundlePath, "--sporades-action", action];
+    if (input !== null) args.push("--sporades-action-input", Buffer.from(JSON.stringify(input), "utf8").toString("base64url"));
+    const child = spawn(process.execPath, args, {
       cwd,
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1158,6 +1160,79 @@ test("the bundle unseals a sealed Server env", async () => {
 
     assert.equal(observed.body.sealedValue, "sealed-env-value", "sealed Server env did not reach the Capsule");
     assert.equal(observed.status, 202);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the generated Bundle runs audited Access-key operator actions without credential material", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-action-"));
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const booted = await bootBundle({ source, dir });
+    try { /* bootstraps runtime-owned storage */ } finally { await booted.stop(); }
+
+    const databasePath = path.join(dir, "data", "data.db");
+    const adapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      await adapter.insertAuthUser({
+        id: "bundle-owner", createdAt: "2026-08-20T12:00:00.000Z", displayName: "Private name",
+        email: "private@example.com", picture: null, isAuthenticated: 1, isGuest: 0, provider: "email",
+      });
+      await adapter.issueAccessKeyRecord({
+        id: "bundle-key", ownerUserId: "bundle-owner", name: "bundle automation", reservedName: "bundle automation",
+        grantsJson: JSON.stringify(["files:read"]), secretVersion: 1, selector: "not-a-real-selector",
+        verifierDigest: "0".repeat(64), lifecycleRevision: 1, createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null,
+      });
+    } finally { adapter.close(); }
+
+    const bundlePath = path.join(dir, "server.mjs");
+    const listed = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", executionSource: "operator-cli-container" },
+    })).stdout);
+    assert.equal(listed.ok, true, JSON.stringify(listed));
+    assert.equal(listed.data.accessKeys[0].id, "bundle-key");
+    assert.equal(listed.data.accessKeys[0].ownerUserId, "bundle-owner");
+    assert.deepEqual(listed.data.accessKeys[0].effectiveScopes, ["files:read"]);
+    assert.equal(/selector|verifier|digest|token|private@example/i.test(JSON.stringify(listed)), false);
+
+    const revoked = JSON.parse((await runBundleAction(bundlePath, "access-keys.revoke", {
+      cwd: dir, input: { keyId: "bundle-key", executionSource: "operator-cli-container" },
+    })).stdout);
+    assert.equal(revoked.ok, true, JSON.stringify(revoked));
+    assert.equal(revoked.data.accessKey.status, "revoked");
+    assert.equal(revoked.data.accessKey.revocationCause, "operator");
+
+    const corruptAdapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      corruptAdapter.prepare("UPDATE sporades_auth_access_keys SET grantsJson = ? WHERE id = ?")
+        .run("secret-adapter-detail", "bundle-key");
+    } finally { corruptAdapter.close(); }
+    const redacted = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", executionSource: "operator-cli-container" },
+    })).stdout);
+    assert.deepEqual(redacted, {
+      ok: false,
+      data: null,
+      error: {
+        code: "ACCESS_KEY_ACTION_FAILED",
+        message: "Access-key operator action failed.",
+        hint: "Check the Privileged audit events and retry the operation.",
+      },
+    });
+    assert.equal(JSON.stringify(redacted).includes("secret-adapter-detail"), false);
+
+    const auditAdapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      const events = await auditAdapter.readRecentLogEvents(50);
+      const operatorEvents = events.filter((event) => String(event.data?.operation).startsWith("access-keys."));
+      assert.ok(operatorEvents.length >= 6);
+      assert.equal(operatorEvents.every((event) => event.data.surface === "operator-cli-container"), true);
+      assert.equal(/selector|verifier|digest|token|private@example/i.test(JSON.stringify(operatorEvents)), false, JSON.stringify(operatorEvents));
+    } finally { auditAdapter.close(); }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

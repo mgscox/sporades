@@ -227,7 +227,7 @@ function privilegedAuditLevelForOutcome(outcome) {
   return "info";
 }
 function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
   if (source === null || source === void 0 || source === "") {
     if (outcome === "errored") {
       return "UNKNOWN_ERROR";
@@ -460,6 +460,32 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
     return { name: value.name, expression: value.expression, timezone: value.timezone, missedRun: value.missedRun, enabled: value.enabled, nextOccurrence: value.nextOccurrence, latestOccurrence };
   });
   return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
+}
+
+// src/cli/access-key-operator-envelope.ts
+var FORBIDDEN_KEYS = /* @__PURE__ */ new Set(["selector", "verifier", "verifierDigest", "token", "tokenFragment", "ownerEmail", "ownerDisplayName"]);
+function sanitizeAccessKeyOperatorEnvelope(value, invalid) {
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return invalid();
+  }
+  if (Buffer.byteLength(encoded, "utf8") > 256 * 1024) return invalid();
+  const visit = (candidate) => {
+    if (candidate === null || ["string", "number", "boolean"].includes(typeof candidate)) return true;
+    if (Array.isArray(candidate)) return candidate.length <= 100 && candidate.every(visit);
+    if (!candidate || typeof candidate !== "object") return false;
+    return Object.entries(candidate).every(([key, child]) => !FORBIDDEN_KEYS.has(key) && visit(child));
+  };
+  if (!visit(value) || !value || typeof value !== "object" || typeof value.ok !== "boolean") return invalid();
+  const envelope = value;
+  if (envelope.ok) {
+    if (!envelope.data || typeof envelope.data !== "object" || envelope.error !== null) return invalid();
+  } else if (!envelope.error || typeof envelope.error.message !== "string" || typeof envelope.error.hint !== "string") {
+    return invalid();
+  }
+  return envelope;
 }
 
 // src/cli/host-helper-archive.ts
@@ -1056,6 +1082,13 @@ function validateClaimedReleaseFiles(files) {
 var CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 var RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
 var hostHelperConfig = defaultHostHelperConfig();
+var HOSTED_ACCESS_KEY_ACTIONS = /* @__PURE__ */ new Set([
+  "access-keys.list",
+  "access-keys.inspect",
+  "access-keys.revoke",
+  "access-keys.revoke-all",
+  "access-keys.delete"
+]);
 main().catch((error) => {
   writeEnvelope(
     {
@@ -1134,6 +1167,10 @@ async function main() {
     inspectCapsuleSchedules(request);
     return;
   }
+  if (HOSTED_ACCESS_KEY_ACTIONS.has(request.action)) {
+    runCapsuleAccessKeyAction(request);
+    return;
+  }
   if (request.action === "host.stats") {
     await statsHost(request);
     return;
@@ -1165,12 +1202,23 @@ function inspectCapsuleSchedules(request) {
     throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
   }));
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
+function runCapsuleAccessKeyAction(request) {
+  if (!request.accessKeys || typeof request.accessKeys !== "object" || Array.isArray(request.accessKeys)) {
+    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+  }
+  inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+    throw helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+  }), [
+    "--sporades-action-input",
+    Buffer.from(JSON.stringify(request.accessKeys), "utf8").toString("base64url")
+  ]);
+}
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = []) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
     throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
   }
-  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action]);
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());

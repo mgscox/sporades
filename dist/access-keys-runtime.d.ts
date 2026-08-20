@@ -85,6 +85,72 @@ export declare function createCurrentUserAccessKeysApi(database: LooseRecord, co
         deleted: boolean;
     }>;
 };
+export declare function createPrivilegedAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord): {
+    list(ownerUserId: unknown, options?: unknown): Promise<{
+        accessKeys: {
+            ownerUserId: string;
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        }[];
+        declaredScopes: string[];
+        nextCursor: string | null;
+        totalCount: number;
+    }>;
+    inspect(id: unknown): Promise<{
+        accessKey: {
+            ownerUserId: any;
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        };
+    }>;
+    revoke(id: unknown): Promise<{
+        accessKey: {
+            ownerUserId: any;
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        };
+    }>;
+    revokeAll(ownerUserId: unknown): Promise<{
+        ownerUserId: string;
+        revokedCount: any;
+        accessKeys: any;
+    }>;
+    delete(id: unknown): Promise<{
+        id: unknown;
+        ownerUserId: any;
+        deleted: boolean;
+    }>;
+};
 export declare function readAccessKeyAuthorization(request: LooseRecord): {
     token: string;
     selector: string;

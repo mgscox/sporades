@@ -165,6 +165,82 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
         },
     };
 }
+export function createPrivilegedAccessKeysApi(database, contextGetter) {
+    const requireContext = () => {
+        const current = contextGetter();
+        if (!current?.__privilegedRunActive) {
+            throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
+        }
+        return current;
+    };
+    const requireId = (value) => {
+        requireContext();
+        if (typeof value !== "string" || !value || Buffer.byteLength(value, "utf8") > 256)
+            throw accessKeyNotFoundError();
+        return value;
+    };
+    return {
+        async list(ownerUserId, options = {}) {
+            const owner = requireId(ownerUserId);
+            const normalized = normalizeAccessKeyListOptions(options);
+            const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
+            const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+            return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+        },
+        async inspect(id) {
+            requireId(id);
+            const row = await database.adapter.findAccessKeyRecordById(id);
+            if (!row)
+                throw accessKeyNotFoundError();
+            return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+        },
+        async revoke(id) {
+            requireId(id);
+            const existing = await database.adapter.findAccessKeyRecordById(id);
+            if (!existing)
+                throw accessKeyNotFoundError();
+            const revokedAt = database.clock.now().toISOString();
+            const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
+                ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
+            }));
+            if (!row)
+                throw accessKeyNotFoundError();
+            return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+        },
+        async revokeAll(ownerUserId) {
+            const owner = requireId(ownerUserId);
+            const revokedAt = database.clock.now().toISOString();
+            const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
+                ownerUserId: owner, revokedAt, revocationCause: "operator",
+            }));
+            return {
+                ownerUserId: owner,
+                revokedCount: outcome.revokedCount,
+                accessKeys: outcome.records.map((row) => privilegedAccessKeySummary({
+                    ...row,
+                    revokedAt,
+                    revocationCause: "operator",
+                    lifecycleRevision: Number(row.lifecycleRevision) + 1,
+                }, database.accessKeyScopes ?? [], revokedAt)),
+            };
+        },
+        async delete(id) {
+            requireId(id);
+            const existing = await database.adapter.findAccessKeyRecordById(id);
+            if (!existing)
+                throw accessKeyNotFoundError();
+            const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+                ownerUserId: existing.ownerUserId, id,
+            }));
+            if (outcome.status === "not-found")
+                throw accessKeyNotFoundError();
+            if (outcome.status === "requires-revoked") {
+                throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+            }
+            return { id, ownerUserId: existing.ownerUserId, deleted: true };
+        },
+    };
+}
 export function readAccessKeyAuthorization(request) {
     const values = [];
     if (Array.isArray(request?.rawHeaders)) {
@@ -424,6 +500,9 @@ function accessKeySummary(row, declaredScopes, now) {
         lastUsedAt: row.lastUsedAt ?? null,
         lifecycleRevision: Number(row.lifecycleRevision),
     };
+}
+function privilegedAccessKeySummary(row, declaredScopes, now) {
+    return { ...accessKeySummary(row, declaredScopes, now), ownerUserId: row.ownerUserId };
 }
 function withAccessKeyTransaction(database, operation) {
     return database.__transactionActive

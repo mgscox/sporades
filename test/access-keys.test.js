@@ -179,7 +179,7 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       }),
       inspectPrivilegedProjection: mutation((ctx) => ctx.privileged.run(
         { operation: "access-keys.inspect-projection", targetResourceKind: "access-key" },
-        (privilegedCtx) => ({ hasAccessKeys: "accessKeys" in privilegedCtx }),
+        (privilegedCtx) => ({ methods: Object.keys(privilegedCtx.accessKeys).sort() }),
       )),
     },
     endpoints: {
@@ -247,7 +247,7 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
 
     const privilegedProjection = await runMutation(database, auth, "inspectPrivilegedProjection", []);
     assert.equal(privilegedProjection.error, null, JSON.stringify(privilegedProjection.error));
-    assert.deepEqual(privilegedProjection.data, { hasAccessKeys: false });
+    assert.deepEqual(privilegedProjection.data, { methods: ["delete", "inspect", "list", "revoke", "revokeAll"] });
 
     const lifecycleEvents = await database.log.tail(50);
     assert.equal(lifecycleEvents.some((event) => event.data?.accessKey?.name === "rolled-back-key"), false);

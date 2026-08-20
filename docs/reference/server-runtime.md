@@ -370,10 +370,34 @@ password changes do not retire keys. Losing linked status or deleting the
 owner retires every current key in the same owner-security transaction with a
 distinct cause, and a later relink cannot revive a retired credential.
 
-Access keys cannot issue, inspect, or revoke keys. Neither can Anonymous or
-guest Sessions, Jobs, Schedules, lifecycle hooks, or Privileged work. A key
-authenticates its linked owner; it is not a synthetic user and grants never add
-authority the owner lacks.
+Access keys cannot manage Access keys. Neither can Anonymous or guest Sessions,
+Jobs, Schedules, or lifecycle hooks. A key authenticates its linked owner; it is
+not a synthetic user and grants never add authority the owner lacks.
+
+An explicit `ctx.privileged.run(...)` callback receives a separate
+`ctx.accessKeys` projection with only `list(ownerUserId, options?)`,
+`inspect(keyId)`, `revoke(keyId)`, `revokeAll(ownerUserId)`, and
+`delete(keyId)`. Its summaries add only `ownerUserId`; they never expose owner
+profile data or bearer credential material. It has no issue or rotation method.
+The Privileged projection cannot issue, rotate, or receive bearer tokens.
+Every call is covered by the existing Privileged started/completed-or-errored/
+finished audit boundary.
+
+Operators use the same projection through a running Capsule:
+
+```text
+sporades access-keys list --user-id <user-id> --session dev
+sporades access-keys inspect <key-id> --session container
+sporades access-keys revoke <key-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys revoke-all --user-id <user-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys delete <key-id> --session dev --yes
+```
+
+Dev, Container, and Hosted commands all invoke the generated Bundle action;
+the CLI and Host helper do not open Auth tables or duplicate lifecycle SQL.
+Stopped Capsules are rejected. List and inspect need no confirmation. Revoke
+and delete prompt unless `--yes` is present; bulk revocation requires the exact
+owner ID at the prompt or `--yes`. `--json` never implies consent.
 
 Bearer parsing is strict and applies only to guarded Custom endpoints. Invalid,
 malformed, expired, revoked, dual Session-plus-Bearer, or owner-ineligible

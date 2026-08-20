@@ -1180,3 +1180,23 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
     assert(importIndex < pushIndex);
   }
 });
+
+test("canonical docs publish the bounded Access-key operator surface", async () => {
+  const [context, prd, serverReference, api] = await Promise.all([
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/api/types/server.PrivilegedAccessKeysApi.html"),
+  ]);
+  for (const contents of [context, prd, serverReference]) {
+    assert.match(contents, /running (?:Dev, Container, or Hosted )?Capsule/i);
+    assert.match(contents, /cannot issue, rotate, or receive bearer/i);
+    assert.match(contents, /--yes/);
+    assert.match(contents, /--json.*(?:never|does not).*consent/is);
+  }
+  assert.match(serverReference, /sporades access-keys revoke-all --user-id/);
+  assert.match(serverReference, /Stopped Capsules are rejected/);
+  assert.match(api, /revokeAll/);
+  assert.doesNotMatch(api, />issue</);
+  assert.doesNotMatch(api, />rotate</);
+});

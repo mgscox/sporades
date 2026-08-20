@@ -385,7 +385,7 @@ function privilegedAuditLevelForOutcome(outcome) {
     return "info";
 }
 export function safePrivilegedAuditErrorCode(value, outcome = "started") {
-    const source = value && typeof value === "object" && "code" in value ? value.code : value;
+    const source = value && typeof value === "object" ? ("code" in value ? value.code : null) : value;
     if (source === null || source === undefined || source === "") {
         if (outcome === "errored") {
             return "UNKNOWN_ERROR";

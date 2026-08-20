@@ -64,7 +64,7 @@ import {
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
 import {
-  accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
+  accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
   accessKeySecretWasDisclosed,
   dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
   publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
@@ -878,6 +878,13 @@ export async function openDevDatabase(
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
+  if (options?.runtimeActionOnly) {
+    const retainedScopes = await sqlite.readSystemMetadata("accessKeyScopes");
+    try {
+      const parsed = retainedScopes ? JSON.parse(retainedScopes.value) : [];
+      database.accessKeyScopes = Array.isArray(parsed) && parsed.every((scope) => typeof scope === "string") ? parsed : [];
+    } catch { database.accessKeyScopes = []; }
+  }
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
@@ -885,10 +892,13 @@ export async function openDevDatabase(
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
-  await recoverInvalidRetainedJobState(database);
-  await recoverExpiredJobLeases(database);
-  assertValidReferenceTargets(schema);
-  await sqlite.migrateAppSchema(schema);
+  if (!options?.runtimeActionOnly) {
+    await recoverInvalidRetainedJobState(database);
+    await recoverExpiredJobLeases(database);
+    assertValidReferenceTargets(schema);
+    await sqlite.migrateAppSchema(schema);
+    await sqlite.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
+  }
 
   return database;
 }
@@ -2004,8 +2014,44 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;
+}
+
+export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, action: string, input: LooseRecord = {}, executionSource = "runtime-action") {
+  const boundedExecutionSource = ["operator-cli-dev", "operator-cli-container", "operator-cli-hosted"].includes(executionSource)
+    ? executionSource
+    : "runtime-action";
+  const context = createMutationContext(database, {
+    userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
+    isAuthenticated: false, isGuest: false, provider: "operator",
+  }, { ordinaryCredential: false });
+  const metadata = {
+    executionSource: boundedExecutionSource,
+    ...(typeof input.userId === "string" ? { ownerUserId: input.userId } : {}),
+    ...(typeof input.keyId === "string" ? { accessKeyId: input.keyId } : {}),
+  };
+  try {
+    return await context.privileged.run({
+      operation: action,
+      surface: boundedExecutionSource,
+      targetResourceKind: "access-key",
+      metadata,
+    }, async (privilegedContext: LooseRecord) => {
+      switch (action) {
+        case "access-keys.list": return await privilegedContext.accessKeys.list(input.userId, input.options ?? {});
+        case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(input.keyId);
+        case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(input.keyId);
+        case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(input.userId);
+        case "access-keys.delete": return await privilegedContext.accessKeys.delete(input.keyId);
+        default: throw commandError("Unsupported Access-key operator action.", "Upgrade the Sporades CLI and generated Bundle together.", "ACCESS_KEY_ACTION_UNSUPPORTED");
+      }
+    });
+  } catch (error: any) {
+    if (error?.code === "PRIVILEGED_RUN_FAILED" && publicAccessKeyManagementError(error.cause)) throw error.cause;
+    throw error;
+  }
 }
 export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();

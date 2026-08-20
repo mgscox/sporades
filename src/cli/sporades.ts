@@ -5,6 +5,7 @@ import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -90,6 +91,7 @@ import {
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
+import { sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import {
   DOCTOR_SESSIONS,
   createDoctorEnvelope,
@@ -217,6 +219,14 @@ async function main() {
         return;
       }
       await manageAuth(parseAuthArgs(args));
+      return;
+
+    case "access-keys":
+      if (isHelp) {
+        printHelp("access-keys");
+        return;
+      }
+      await manageOperatorAccessKeys(parseAccessKeyOperatorArgs(args));
       return;
 
     case "security":
@@ -565,6 +575,165 @@ function parseSecurityArgs(args: string[]): LooseRecord {
     json,
     projectDir: process.cwd(),
   };
+}
+
+function parseAccessKeyOperatorArgs(args: string[]): LooseRecord {
+  const [subcommand, ...rest] = args;
+  if (!["list", "inspect", "revoke", "revoke-all", "delete"].includes(subcommand)) {
+    throw commandError("Unknown Access-key operator command.", "Use `sporades access-keys list|inspect|revoke|revoke-all|delete`.");
+  }
+  let session = "dev";
+  let userId = null;
+  let hostAlias = null;
+  let subname = null;
+  let cursor = null;
+  let limit = null;
+  let status = null;
+  let json = false;
+  let yes = false;
+  const positional: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    switch (arg) {
+      case "--session": session = readFlagValue(rest, ++index, arg); break;
+      case "--user-id": userId = readFlagValue(rest, ++index, arg); break;
+      case "--host": hostAlias = readFlagValue(rest, ++index, arg); break;
+      case "--subname": subname = readFlagValue(rest, ++index, arg); break;
+      case "--cursor": cursor = readFlagValue(rest, ++index, arg); break;
+      case "--limit": {
+        limit = Number(readFlagValue(rest, ++index, arg));
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw commandError("Invalid Access-key list limit.", "Use `--limit` from 1 through 100.");
+        break;
+      }
+      case "--status":
+        status = readFlagValue(rest, ++index, arg);
+        if (!["active", "expired", "revoked"].includes(status)) throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.");
+        break;
+      case "--json": json = true; break;
+      case "--yes": yes = true; break;
+      default:
+        if (arg.startsWith("--")) throw commandError(`Unknown flag: ${arg}`, "Use `sporades access-keys --help`.");
+        positional.push(arg);
+    }
+  }
+  if (!["dev", "container", "hosted"].includes(session)) {
+    throw commandError("Invalid Access-key operator session.", "Use `--session dev`, `--session container`, or `--session hosted`.");
+  }
+  if (session === "hosted") {
+    if (!hostAlias || !subname) throw commandError("Hosted Access-key operation requires a Host and Capsule.", "Pass `--host <alias> --subname <name>`.");
+    validateHostAlias(hostAlias);
+    validateCapsuleSubname(subname);
+  } else if (hostAlias || subname) {
+    throw commandError("Host selection is only valid for Hosted Access-key operations.", "Remove `--host` and `--subname`, or use `--session hosted`.");
+  }
+  const ownerCommand = subcommand === "list" || subcommand === "revoke-all";
+  if (ownerCommand) {
+    if (!userId || positional.length) throw commandError("Access-key owner ID is required.", `Use \`sporades access-keys ${subcommand} --user-id <user-id>\`.`);
+  } else if (positional.length !== 1 || userId) {
+    throw commandError("Exact Access-key ID is required.", `Use \`sporades access-keys ${subcommand} <key-id>\`.`);
+  }
+  const selectedId = ownerCommand ? userId : positional[0];
+  if (Buffer.byteLength(String(selectedId), "utf8") > 256) {
+    throw commandError("Access-key operator identifier is too long.", "Pass the exact immutable user or Access-key ID.");
+  }
+  if (subcommand !== "list" && (cursor || limit || status)) {
+    throw commandError("List filters are only valid for Access-key listing.", "Remove `--cursor`, `--limit`, and `--status`.");
+  }
+  return {
+    subcommand, session, userId, keyId: ownerCommand ? null : positional[0], hostAlias, subname,
+    cursor, limit, status, json, yes, projectDir: process.cwd(),
+  };
+}
+
+async function confirmOperatorAccessKeyAction(options: LooseRecord) {
+  if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw commandError("Destructive Access-key operation requires confirmation.", "Retry with `--yes` in non-interactive use.");
+  }
+  const expected = options.subcommand === "revoke-all" ? options.userId : "yes";
+  const prompt = options.subcommand === "revoke-all"
+    ? `Type the owner ID ${options.userId} to revoke all current Access keys: `
+    : `Type yes to ${options.subcommand} Access key ${options.keyId}: `;
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await readline.question(prompt);
+    if (answer !== expected) throw commandError("Access-key operation cancelled.", "No Access-key state was changed.");
+  } finally {
+    readline.close();
+  }
+}
+
+function parseAccessKeyOperatorProcess(result: SpawnSyncReturns<string>, hint: string) {
+  let envelope;
+  try { envelope = JSON.parse(result.stdout.trim()); }
+  catch { throw commandError("Runtime Access-key action returned invalid JSON.", hint); }
+  return sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+    throw commandError("Runtime Access-key action returned an invalid response.", hint);
+  });
+}
+
+function accessKeyActionInput(options: LooseRecord) {
+  return {
+    ...(options.userId ? { userId: options.userId } : {}),
+    ...(options.keyId ? { keyId: options.keyId } : {}),
+    ...(options.subcommand === "list" ? { options: {
+      ...(options.cursor ? { cursor: options.cursor } : {}),
+      ...(options.limit ? { limit: options.limit } : {}),
+      ...(options.status ? { status: options.status } : {}),
+    } } : {}),
+    executionSource: `operator-cli-${options.session}`,
+  };
+}
+
+function accessKeyActionArgs(options: LooseRecord) {
+  return [
+    "--sporades-action", `access-keys.${options.subcommand}`,
+    "--sporades-action-input", Buffer.from(JSON.stringify(accessKeyActionInput(options)), "utf8").toString("base64url"),
+  ];
+}
+
+async function manageOperatorAccessKeys(options: LooseRecord) {
+  await confirmOperatorAccessKeyAction(options);
+  let envelope;
+  if (options.session === "dev") {
+    const session = await readDevSession(options.projectDir);
+    try { process.kill(Number(session.pid), 0); }
+    catch { throw commandError("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation."); }
+    const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "access-keys");
+    const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+    const result = spawnSync(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
+      cwd: options.projectDir, encoding: "utf8",
+      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
+    });
+    envelope = parseAccessKeyOperatorProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
+  } else if (options.session === "container") {
+    const { binding } = await requireLocalContainerBinding(options, "access-keys");
+    const running = runDocker(["inspect", "--format", "{{.State.Running}}", binding.containerId], options.projectDir,
+      "Unable to inspect the local Container session.", "Check Docker and retry the Access-key operation.");
+    if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
+    const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], { cwd: options.projectDir, encoding: "utf8" });
+    envelope = parseAccessKeyOperatorProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
+  } else {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    envelope = invokeRemoteHostHelper({
+      alias: resolved.alias, profile: resolved.profile, action: `access-keys.${options.subcommand}`,
+      subname: options.subname, accessKeys: accessKeyActionInput(options), projectDir: options.projectDir,
+    });
+    if (!envelope.ok && /Unsupported Host helper action/i.test(envelope.error.message)) {
+      envelope = { ok: false, data: null, error: {
+        code: "HOST_HELPER_UPGRADE_REQUIRED",
+        message: "The Host server CLI does not support Access-key operator actions.",
+        hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, redeploy the Capsule, and retry the command.`,
+      } };
+    }
+    envelope = sanitizeAccessKeyOperatorEnvelope(envelope, () => {
+      throw commandError("Hosted Access-key action returned an invalid response.", "Upgrade the Host helper and redeploy the Capsule.");
+    });
+  }
+  if (options.json) writeResult(envelope, !envelope.ok);
+  else if (!envelope.ok) throw commandError(envelope.error.message, envelope.error.hint, envelope.error);
+  else process.stdout.write(`${JSON.stringify(envelope.data, null, 2)}\n`);
 }
 
 function parseDoctorArgs(args: string[]): LooseRecord {
@@ -4893,6 +5062,9 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
   }
   if (options.rollback) {
     request.rollback = options.rollback;
+  }
+  if (options.accessKeys) {
+    request.accessKeys = options.accessKeys;
   }
   if (options.verification) {
     request.verification = options.verification;

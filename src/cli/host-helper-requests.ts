@@ -24,6 +24,11 @@ export type HostHelperAction =
   | "capsule.health"
   | "jobs.inspect"
   | "schedules.inspect"
+  | "access-keys.list"
+  | "access-keys.inspect"
+  | "access-keys.revoke"
+  | "access-keys.revoke-all"
+  | "access-keys.delete"
   | "capsule.list"
   | "host.stats"
   | "host.logs"
@@ -77,6 +82,7 @@ export type HostHelperRequestBase = JsonObject & {
   source?: "http" | "stdout" | "stderr";
   lines?: number;
   verification?: HostHelperVerification;
+  accessKeys?: JsonObject;
 };
 
 export type HostRegistrationOptions = JsonObject & {
@@ -173,6 +179,11 @@ export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
+export type HostAccessKeyRequest = HostHelperRequestBase & {
+  action: "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete";
+  capsule: HostHelperCapsuleTarget;
+  accessKeys: JsonObject;
+};
 
 export type HostHelperRequest =
   | HostBootstrapRequest
@@ -191,7 +202,8 @@ export type HostHelperRequest =
   | HostCapsuleListRequest
   | HostVersionRequest
   | HostJobsInspectRequest
-  | HostSchedulesInspectRequest;
+  | HostSchedulesInspectRequest
+  | HostAccessKeyRequest;
 
 export type HostHelperErrorBody = JsonObject & {
   message: string;
