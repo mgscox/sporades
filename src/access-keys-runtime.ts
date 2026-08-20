@@ -216,6 +216,24 @@ export function emitAccessKeyAdmittedAudit(database: LooseRecord, context: Loose
   });
 }
 
+export async function recordAccessKeyUsage(database: LooseRecord, admission: LooseRecord) {
+  const root = database.__rootDatabase ?? database;
+  const touches: Map<string, number> = root.__accessKeyUsageTouches ??= new Map();
+  const admittedAtMs = Date.parse(admission.admittedAt);
+  const previous = touches.get(admission.record.id);
+  if (previous !== undefined && admittedAtMs - previous < 60 * 60_000) return;
+  touches.delete(admission.record.id);
+  touches.set(admission.record.id, admittedAtMs);
+  for (const [id, touchedAt] of touches) {
+    if (admittedAtMs - touchedAt >= 60 * 60_000 || touches.size > 10_000) touches.delete(id);
+    else break;
+  }
+  try {
+    const coalesceBefore = new Date(admittedAtMs - 60 * 60_000).toISOString();
+    await database.adapter.touchAccessKeyLastUsed(admission.record.id, admission.admittedAt, coalesceBefore);
+  } catch { }
+}
+
 export function createAccessKeySecret() {
   const selector = accessKeyCrypto().randomBytes(16).toString("base64url");
   const verifier = accessKeyCrypto().randomBytes(32).toString("base64url");

@@ -698,6 +698,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             let existing = null;
             let revoked = false;
             const sequence = chainMaybePromise([
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 " +
+                    "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
                 () => thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
                 () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, " +
                     "[verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, " +
@@ -705,9 +707,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                     "WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL")).run(input.revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
                     revoked = result.changes !== 0;
                 }),
-                () => !revoked ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, " +
-                    "[operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
-                () => !revoked ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
+                () => !revoked ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1 " +
+                    "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => !existing ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
             ]);
             return thenIfPromise(sequence, () => existing);
         },

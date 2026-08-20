@@ -608,7 +608,7 @@ export function writeEndpointResult(response: any, result: any) {
 
 export function writeEndpointError(response: any, error: any) {
   const headers: LooseRecord = { "content-type": "application/json; charset=utf-8" };
-  if (error?.code === "UNAUTHENTICATED") {
+  if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
     headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid"
       ? 'Bearer realm="sporades", error="invalid_token"'
       : 'Bearer realm="sporades"';

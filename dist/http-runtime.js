@@ -534,7 +534,7 @@ export function writeEndpointResult(response, result) {
 }
 export function writeEndpointError(response, error) {
     const headers = { "content-type": "application/json; charset=utf-8" };
-    if (error?.code === "UNAUTHENTICATED") {
+    if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
         headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid"
             ? 'Bearer realm="sporades", error="invalid_token"'
             : 'Bearer realm="sporades"';

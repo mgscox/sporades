@@ -77,6 +77,7 @@ export declare function resolveAccessKeyCredential(database: LooseRecord, reques
 } | null>;
 export declare function accessKeyAuthenticationError(reason: string, limited?: boolean): LooseRecord;
 export declare function emitAccessKeyAdmittedAudit(database: LooseRecord, context: LooseRecord, record: LooseRecord): void;
+export declare function recordAccessKeyUsage(database: LooseRecord, admission: LooseRecord): Promise<void>;
 export declare function createAccessKeySecret(): {
     selector: string;
     verifier: string;

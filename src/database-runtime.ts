@@ -905,6 +905,12 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       let existing: LooseRecord | null = null;
       let revoked = false;
       const sequence = chainMaybePromise([
+        () => this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 " +
+            "WHERE [ownerUserId] = ?",
+          ),
+        ).run(input.ownerUserId),
         () => thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => { existing = row ?? null; }),
@@ -920,11 +926,11 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         }),
         () => !revoked ? undefined : this.prepare(
           sql(
-            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, " +
-            "[operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1 " +
+            "WHERE [ownerUserId] = ?",
           ),
         ).run(input.ownerUserId),
-        () => !revoked ? undefined : thenIfPromise(this.prepare(
+        () => !existing ? undefined : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => { existing = row ?? null; }),
       ]);

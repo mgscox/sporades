@@ -65,7 +65,7 @@ import {
 } from "./auth-admission.js";
 import {
   createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
-  resolveAccessKeyCredential,
+  recordAccessKeyUsage, resolveAccessKeyCredential,
 } from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
@@ -1824,12 +1824,20 @@ function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; ev
         : rest.length > 0
           ? { data, args: rest }
           : null;
+    const attributedData = context.attribution
+      ? {
+          ...(structuredData && typeof structuredData === "object" && !Array.isArray(structuredData)
+            ? structuredData
+            : structuredData === null ? {} : { value: structuredData }),
+          ...context.attribution,
+        }
+      : structuredData;
     database.log.emit({
       category: context.category ?? "app",
       event: context.event ?? "ctx.log",
       level,
       message: String(message ?? ""),
-      data: structuredData,
+      data: attributedData,
       request: context.request ?? null,
       release: context.release ?? null,
       correlation: context.correlation ?? null,
@@ -1953,7 +1961,9 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   // User-scoped and mutating Team operations remain unavailable. This is the
   // separate userless inspection projection, not inherited Team authority.
   delete privilegedContext.teams;
+  delete privilegedContext.accessKeys;
   delete privilegedContext.credential;
+  delete privilegedContext.__sporadesAccessKeyGrants;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -2863,19 +2873,31 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     : hasAuthorization
       ? null
       : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  const accessKeyAdmission = hasAuthorization
+    ? await resolveAccessKeyCredential(
+      database,
+      request,
+      readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
+    )
+    : null;
+  if (accessKeyAdmission) {
+    const admissionContext = {
+      auth: accessKeyAdmission.auth,
+      credential: accessKeyAdmission.credential,
+      __sporadesAccessKeyGrants: accessKeyAdmission.grants,
+      request: { path: endpointRequest.path },
+    };
+    admitCredentialHandler(handler, admissionContext, "endpoint");
+    (request as LooseRecord).__sporadesAccessKeyAdmitted = true;
+    emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
+    await recordAccessKeyUsage(database, accessKeyAdmission);
+  }
   let context: LooseRecord | undefined;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        const accessKeyAdmission = hasAuthorization
-          ? await resolveAccessKeyCredential(
-            transactionDatabase,
-            request,
-            readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
-          )
-          : null;
         const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
         context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
           ordinaryCredential: !(endpoint as LooseRecord).runtimeOwnedEmailEvent,
@@ -2883,19 +2905,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
           accessKeyGrants: accessKeyAdmission?.grants,
         });
         if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
-          admitCredentialHandler(handler, context, "endpoint");
-          if (accessKeyAdmission) {
-            (request as LooseRecord).__sporadesAccessKeyAdmitted = true;
-            emitAccessKeyAdmittedAudit(transactionDatabase, { ...context, kind: "endpoint" }, accessKeyAdmission.record);
-            try {
-              const coalesceBefore = new Date(Date.parse(accessKeyAdmission.admittedAt) - 60 * 60_000).toISOString();
-              await transactionDatabase.adapter.touchAccessKeyLastUsed(
-                accessKeyAdmission.record.id,
-                accessKeyAdmission.admittedAt,
-                coalesceBefore,
-              );
-            } catch { }
-          }
+          if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
         const result = await handler(context);
@@ -2998,17 +3008,24 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
 
 function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord, options: LooseRecord = {}) {
   const auth = protectContextIdentity(session.auth);
+  const credential = options.ordinaryCredential === false
+    ? null
+    : protectContextIdentity(options.credential ?? { kind: "session" });
   const context: LooseRecord = {
     auth,
-    ...(options.ordinaryCredential === false ? {} : {
-      credential: protectContextIdentity(options.credential ?? { kind: "session" }),
-    }),
+    ...(credential ? { credential } : {}),
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
         method: endpointRequest.method,
         path: endpointRequest.path,
       },
+      ...(credential?.kind === "access-key" ? {
+        attribution: {
+          actor: { userId: auth.userId },
+          credential: { kind: credential.kind, id: credential.id, name: credential.name },
+        },
+      } : {}),
     }),
     request: {
       method: endpointRequest.method,

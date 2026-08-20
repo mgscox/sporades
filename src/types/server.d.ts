@@ -301,6 +301,7 @@ export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCreden
 export type CredentialKind = CredentialProvenance["kind"];
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted";
 
 export type AccessKeySummary = {
   id: string;
@@ -312,7 +313,7 @@ export type AccessKeySummary = {
   expiresAt: string | null;
   rotatedAt: string | null;
   revokedAt: string | null;
-  revocationCause: string | null;
+  revocationCause: AccessKeyRevocationCause | null;
   lastUsedAt: string | null;
   lifecycleRevision: number;
 };

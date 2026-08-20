@@ -75,6 +75,10 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
       revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+      inspectPrivilegedProjection: mutation((ctx) => ctx.privileged.run(
+        { operation: "access-keys.inspect-projection", targetResourceKind: "access-key" },
+        (privilegedCtx) => ({ hasAccessKeys: "accessKeys" in privilegedCtx }),
+      )),
     },
   });
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
@@ -124,6 +128,10 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     const after = await runQuery(database, auth, "listKeys");
     assert.equal(after.data.accessKeys[0].status, "revoked");
     assert.equal("token" in after.data.accessKeys[0], false);
+
+    const privilegedProjection = await runMutation(database, auth, "inspectPrivilegedProjection", []);
+    assert.equal(privilegedProjection.error, null, JSON.stringify(privilegedProjection.error));
+    assert.deepEqual(privilegedProjection.data, { hasAccessKeys: false });
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });
@@ -158,11 +166,25 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
       unwrapped: endpoint({ method: "GET", path: "/webhook" }, (ctx) => ({
         body: { provider: ctx.auth.provider, authorization: ctx.request.headers.authorization },
       })),
+      sessionOnlyInline: endpoint({ method: "GET", path: "/session-only-inline" }, (ctx) => ({
+        body: requireAuth(ctx),
+      })),
       ownerApiDenied: endpoint(
         { method: "GET", path: "/owner-keys" },
         requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, async (ctx) => ({
           body: await ctx.accessKeys.list(),
         })),
+      ),
+      attributedLog: endpoint(
+        { method: "GET", path: "/attributed-log" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => {
+          ctx.log.info("access-key Capsule work", {
+            actor: { userId: "forged-user" },
+            credential: { kind: "session" },
+            detail: "retained",
+          });
+          return { body: { ok: true } };
+        }),
       ),
     },
   });
@@ -209,6 +231,17 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     )).get(issued.data.accessKey.id);
     assert.match(usedRow.lastUsedAt, /^\d{4}-\d{2}-\d{2}T/);
 
+    const attributed = await requestEndpoint(database, "/attributed-log", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(attributed.status, 200);
+    const attributedEvent = (await database.log.tail(50)).find((event) => event.message === "access-key Capsule work");
+    assert.deepEqual(attributedEvent.data, {
+      actor: { userId: auth.userId },
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: "reader" },
+      detail: "retained",
+    });
+
     const ownerApiDenied = await requestEndpoint(database, "/owner-keys", {
       headers: { authorization: `Bearer ${issued.data.token}` },
     });
@@ -226,6 +259,10 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     const missing = await requestEndpoint(database, "/requests");
     assert.equal(missing.status, 401);
     assert.equal(missing.headers.get("www-authenticate"), 'Bearer realm="sporades"');
+
+    const unrelatedSessionDenial = await requestEndpoint(database, "/session-only-inline");
+    assert.equal(unrelatedSessionDenial.status, 401);
+    assert.equal(unrelatedSessionDenial.headers.get("www-authenticate"), null);
 
     const malformed = await requestEndpoint(database, "/requests", {
       headers: { authorization: "Bearer definitely-not-a-sporades-key" },
@@ -304,6 +341,64 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     assert.equal((await denied.json()).error.code, "UNAUTHENTICATED");
   } finally {
     delete globalThis.__accessKeyMiddlewareObserved;
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Access-key admission and coalesced best-effort usage telemetry stay outside Capsule work transactions", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-admission-boundary-"));
+  const definition = capsule({
+    name: "access-key-admission-boundary",
+    accessKeys: { scopes: ["requests:read"] },
+    mutations: { issueKey: mutation((ctx) => ctx.accessKeys.issue({ name: "reader" })) },
+    endpoints: {
+      read: endpoint(
+        { method: "GET", path: "/requests" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, () => ({ body: { ok: true } })),
+      ),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  try {
+    const auth = await seedLinkedUser(database);
+    const issued = await runMutation(database, auth, "issueKey", []);
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+
+    let transactionDepth = 0;
+    let lookupCount = 0;
+    let touchCount = 0;
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    const originalLookup = database.adapter.findAccessKeyAuthenticationRecord.bind(database.adapter);
+    database.adapter.withTransaction = (callback) => originalWithTransaction(async (adapter) => {
+      transactionDepth += 1;
+      try {
+        return await callback(adapter);
+      } finally {
+        transactionDepth -= 1;
+      }
+    });
+    database.adapter.findAccessKeyAuthenticationRecord = async (...args) => {
+      assert.equal(transactionDepth, 0, "credential lookup must precede the Capsule work transaction");
+      lookupCount += 1;
+      return originalLookup(...args);
+    };
+    database.adapter.touchAccessKeyLastUsed = async () => {
+      assert.equal(transactionDepth, 0, "usage telemetry must not share the Capsule work transaction");
+      touchCount += 1;
+      throw new Error("simulated telemetry failure");
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await requestEndpoint(database, "/requests", {
+        headers: { authorization: `Bearer ${issued.data.token}` },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true });
+    }
+    assert.equal(lookupCount, 2);
+    assert.equal(touchCount, 1, "one process attempts at most one usage write per key per hour");
+  } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }

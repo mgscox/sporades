@@ -308,6 +308,7 @@ const app = capsule({
       listed.nextCursor?.toUpperCase();
       const revoked = await ctx.accessKeys.revoke(issued.accessKey.id);
       revoked.accessKey.lifecycleRevision.valueOf();
+      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | null;
       // @ts-expect-error Access-key grants are immutable after issuance.
       ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
       // @ts-expect-error Access-key status filters are a closed vocabulary.

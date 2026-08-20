@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
+import { createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -1739,12 +1739,20 @@ function createRuntimeLogger(database, context = {}) {
             : rest.length > 0
                 ? { data, args: rest }
                 : null;
+        const attributedData = context.attribution
+            ? {
+                ...(structuredData && typeof structuredData === "object" && !Array.isArray(structuredData)
+                    ? structuredData
+                    : structuredData === null ? {} : { value: structuredData }),
+                ...context.attribution,
+            }
+            : structuredData;
         database.log.emit({
             category: context.category ?? "app",
             event: context.event ?? "ctx.log",
             level,
             message: String(message ?? ""),
-            data: structuredData,
+            data: attributedData,
             request: context.request ?? null,
             release: context.release ?? null,
             correlation: context.correlation ?? null,
@@ -1862,7 +1870,9 @@ function createPrivilegedHandlerContext(database, context, signal) {
     // User-scoped and mutating Team operations remain unavailable. This is the
     // separate userless inspection projection, not inherited Team authority.
     delete privilegedContext.teams;
+    delete privilegedContext.accessKeys;
     delete privilegedContext.credential;
+    delete privilegedContext.__sporadesAccessKeyGrants;
     const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
     const scheduleProvenance = provenanceStore?.get(context);
     if (scheduleProvenance)
@@ -2629,15 +2639,27 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         : hasAuthorization
             ? null
             : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+    const accessKeyAdmission = hasAuthorization
+        ? await resolveAccessKeyCredential(database, request, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query))
+        : null;
+    if (accessKeyAdmission) {
+        const admissionContext = {
+            auth: accessKeyAdmission.auth,
+            credential: accessKeyAdmission.credential,
+            __sporadesAccessKeyGrants: accessKeyAdmission.grants,
+            request: { path: endpointRequest.path },
+        };
+        admitCredentialHandler(handler, admissionContext, "endpoint");
+        request.__sporadesAccessKeyAdmitted = true;
+        emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
+        await recordAccessKeyUsage(database, accessKeyAdmission);
+    }
     let context;
     try {
         const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
             try {
-                const accessKeyAdmission = hasAuthorization
-                    ? await resolveAccessKeyCredential(transactionDatabase, request, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query))
-                    : null;
                 const resolvedSession = (accessKeyAdmission ?? session);
                 context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
                     ordinaryCredential: !endpoint.runtimeOwnedEmailEvent,
@@ -2645,16 +2667,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                     accessKeyGrants: accessKeyAdmission?.grants,
                 });
                 if (!endpoint.runtimeOwnedEmailEvent) {
-                    admitCredentialHandler(handler, context, "endpoint");
-                    if (accessKeyAdmission) {
-                        request.__sporadesAccessKeyAdmitted = true;
-                        emitAccessKeyAdmittedAudit(transactionDatabase, { ...context, kind: "endpoint" }, accessKeyAdmission.record);
-                        try {
-                            const coalesceBefore = new Date(Date.parse(accessKeyAdmission.admittedAt) - 60 * 60_000).toISOString();
-                            await transactionDatabase.adapter.touchAccessKeyLastUsed(accessKeyAdmission.record.id, accessKeyAdmission.admittedAt, coalesceBefore);
-                        }
-                        catch { }
-                    }
+                    if (!accessKeyAdmission)
+                        admitCredentialHandler(handler, context, "endpoint");
                     context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                 }
                 const result = await handler(context);
@@ -2751,17 +2765,24 @@ async function readEndpointRequest(database, requestUrl, request) {
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
     const auth = protectContextIdentity(session.auth);
+    const credential = options.ordinaryCredential === false
+        ? null
+        : protectContextIdentity(options.credential ?? { kind: "session" });
     const context = {
         auth,
-        ...(options.ordinaryCredential === false ? {} : {
-            credential: protectContextIdentity(options.credential ?? { kind: "session" }),
-        }),
+        ...(credential ? { credential } : {}),
         env: database.serverEnv,
         log: createEndpointLogger(database, {
             request: {
                 method: endpointRequest.method,
                 path: endpointRequest.path,
             },
+            ...(credential?.kind === "access-key" ? {
+                attribution: {
+                    actor: { userId: auth.userId },
+                    credential: { kind: credential.kind, id: credential.id, name: credential.name },
+                },
+            } : {}),
         }),
         request: {
             method: endpointRequest.method,
