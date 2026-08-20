@@ -158,6 +158,8 @@ export declare function verifyPasswordResetCode(database: LooseRecord, _session:
     error?: undefined;
 }>;
 export declare function confirmPasswordReset(database: LooseRecord, _session: LooseRecord, code: any, newPassword: string): Promise<any>;
+export declare function unlinkCurrentAuthUser(database: LooseRecord, context: LooseRecord): Promise<any>;
+export declare function deleteCurrentAuthUser(database: LooseRecord, context: LooseRecord): Promise<any>;
 export declare function passwordResetMailBody(link: string): {
     textBody: string;
     htmlBody: string;

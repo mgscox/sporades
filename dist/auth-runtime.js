@@ -83,7 +83,7 @@ import { chainMaybePromise } from "./maybe-promise.js";
 // module initialization. See `http-runtime.ts`'s header.
 import { normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
 import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, createAccessKeyTables, emitAccessKeyOwnerTransitionAudits } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createAccessKeyTables, emitAccessKeyOwnerTransitionAudits, runAccessKeyOwnerSecurityTransition } from "./access-keys-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
 // the emitted-list bundle splices into a deployed Capsule.
@@ -1978,6 +1978,41 @@ export async function confirmPasswordReset(database, _session, code, newPassword
         records: outcome.revokedAccessKeys.records,
     });
     return { ok: true };
+}
+export async function unlinkCurrentAuthUser(database, context) {
+    const auth = requireUserAuth(context, { linked: true });
+    return runAccessKeyOwnerSecurityTransition(database, {
+        operation: "auth.unlinkCurrentUser",
+        ownerUserId: auth.userId,
+        actor: { userId: auth.userId },
+        credential: { kind: "session" },
+        revocationCause: "owner-unlinked",
+    }, async (tx) => {
+        if (database.authConfig.providers.email.enabled) {
+            await tx.deletePasswordResetCodesForUser(auth.userId);
+            await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(auth.userId);
+        }
+        await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(auth.userId);
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades_auth_users] SET [email] = NULL, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?")).run(0, 1, "guest", auth.userId);
+    });
+}
+export async function deleteCurrentAuthUser(database, context) {
+    const auth = requireUserAuth(context, { linked: true });
+    return runAccessKeyOwnerSecurityTransition(database, {
+        operation: "auth.deleteCurrentUser",
+        ownerUserId: auth.userId,
+        actor: { userId: auth.userId },
+        credential: { kind: "session" },
+        revocationCause: "owner-deleted",
+    }, async (tx) => {
+        if (database.authConfig.providers.email.enabled) {
+            await tx.deletePasswordResetCodesForUser(auth.userId);
+            await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(auth.userId);
+        }
+        await tx.deleteAuthSessionsForUser(auth.userId);
+        await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(auth.userId);
+        await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_users] WHERE [id] = ?")).run(auth.userId);
+    });
 }
 export function passwordResetMailBody(link) {
     return {

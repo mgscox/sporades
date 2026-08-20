@@ -7355,6 +7355,7 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
           outcome: "succeeded",
           actor: input.actor,
           target: { ownerUserId: input.ownerUserId },
+          ...input.credential ? { credential: input.credential } : {},
           accessKey: { id: record.id, name: record.name },
           revocationCause: input.revocationCause
         }
@@ -14717,6 +14718,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let revokedCount = 0;
       let records = [];
       const sequence = chainMaybePromise([
+        () => this.prepare(sql(
+          "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
+        )).run(input.ownerUserId, 0, 0, 0),
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),

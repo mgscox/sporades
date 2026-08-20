@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
-import { createAccessKeySecret, readAccessKeyAuthorization, runAccessKeyOwnerSecurityTransition } from "../dist/access-keys-runtime.js";
+import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
+import { deleteCurrentAuthUser, unlinkCurrentAuthUser } from "../dist/auth-runtime.js";
 import { openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 
 function linkedAuth(userId = "access-key-owner") {
@@ -91,18 +92,8 @@ test("owner unlink and deletion retire keys atomically and relinking never reviv
     const first = storedAccessKey(auth.userId, "transition-key-unlinked", "unlink-key", "unlinkselector000000000");
     assert.deepEqual(await database.adapter.withTransaction((tx) => tx.issueAccessKeyRecord(first)), { status: "issued" });
 
-    await runAccessKeyOwnerSecurityTransition(database, {
-      operation: "auth.unlinkOwner",
-      ownerUserId: auth.userId,
-      actor: { kind: "runtime" },
-      revocationCause: "owner-unlinked",
-    }, (tx) => tx.updateAuthUserProfile({
-      id: auth.userId,
-      displayName: auth.displayName,
-      picture: null,
-      isAuthenticated: 0,
-      isGuest: 1,
-    }));
+    const ownerContext = { auth, credential: { kind: "session" } };
+    await unlinkCurrentAuthUser(database, ownerContext);
     const unlinked = (await database.adapter.listAccessKeyRecordsForOwner(auth.userId))[0];
     assert.equal(unlinked.revocationCause, "owner-unlinked");
     assert.equal(await database.adapter.findAccessKeyAuthenticationRecord(first.selector), null);
@@ -114,12 +105,7 @@ test("owner unlink and deletion retire keys atomically and relinking never reviv
 
     const second = storedAccessKey(auth.userId, "transition-key-deleted", "delete-key", "deleteselector000000000");
     assert.deepEqual(await database.adapter.withTransaction((tx) => tx.issueAccessKeyRecord(second)), { status: "issued" });
-    await runAccessKeyOwnerSecurityTransition(database, {
-      operation: "auth.deleteOwner",
-      ownerUserId: auth.userId,
-      actor: { kind: "runtime" },
-      revocationCause: "owner-deleted",
-    }, (tx) => tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_users] WHERE [id] = ?")).run(auth.userId));
+    await deleteCurrentAuthUser(database, ownerContext);
 
     const history = await database.adapter.listAccessKeyRecordsForOwner(auth.userId);
     assert.equal(history.find((row) => row.id === first.id).revocationCause, "owner-unlinked");
@@ -127,9 +113,11 @@ test("owner unlink and deletion retire keys atomically and relinking never reviv
     assert.equal(await database.adapter.findAccessKeyAuthenticationRecord(second.selector), null);
     const events = (await database.log.tail(50)).filter((event) => event.event === "access-key.revoked");
     assert.deepEqual(events.map((event) => ({ actor: event.data.actor, target: event.data.target, cause: event.data.revocationCause })), [
-      { actor: { kind: "runtime" }, target: { ownerUserId: auth.userId }, cause: "owner-unlinked" },
-      { actor: { kind: "runtime" }, target: { ownerUserId: auth.userId }, cause: "owner-deleted" },
+      { actor: { userId: auth.userId }, target: { ownerUserId: auth.userId }, cause: "owner-unlinked" },
+      { actor: { userId: auth.userId }, target: { ownerUserId: auth.userId }, cause: "owner-deleted" },
     ]);
+    assert.equal(events.every((event) => event.data.credential?.kind === "session"), true);
+    assert.deepEqual(events.map((event) => event.data.operation), ["auth.unlinkCurrentUser", "auth.deleteCurrentUser"]);
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

@@ -495,6 +495,7 @@ export async function emitAccessKeyOwnerTransitionAudits(database, input) {
                     outcome: "succeeded",
                     actor: input.actor,
                     target: { ownerUserId: input.ownerUserId },
+                    ...(input.credential ? { credential: input.credential } : {}),
                     accessKey: { id: record.id, name: record.name },
                     revocationCause: input.revocationCause,
                 },
@@ -520,6 +521,7 @@ export async function runAccessKeyOwnerSecurityTransition(database, input, trans
         operation: input.operation,
         ownerUserId: input.ownerUserId,
         actor: input.actor,
+        credential: input.credential,
         revocationCause: input.revocationCause,
         records: outcome.revokedAccessKeys.records,
     });

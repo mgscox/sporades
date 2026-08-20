@@ -1075,12 +1075,12 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         createdAt: NOW,
         expiresAt: NEXT_MONTH,
       };
-      assert.deepEqual(await adapter.issueAccessKeyRecord(record), { status: "issued" });
-      assert.equal((await adapter.issueAccessKeyRecord({
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      assert.equal((await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
         ...record,
         id: "access-key-name-collision",
         selector: "bcdefghijklmnopqrstuvw",
-      })).status, "name-conflict");
+      }))).status, "name-conflict");
 
       const listed = await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id);
       assert.equal(listed.length, 1);
@@ -1096,30 +1096,30 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal((await adapter.touchAccessKeyLastUsed(record.id, LATER, NOW)).changes, 1);
       assert.equal((await adapter.touchAccessKeyLastUsed(record.id, NEXT_MONTH, LATER)).changes, 0);
 
-      const revoked = await adapter.revokeAccessKeyRecord({
+      const revoked = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
         ownerUserId: SIGNED_IN_USER.id,
         id: record.id,
         revokedAt: LATER,
         revocationCause: "owner",
-      });
+      }));
       assert.equal(revoked.revokedAt, LATER);
       assert.equal(revoked.revocationCause, "owner");
       assert.equal(Number(revoked.lifecycleRevision), 2);
       assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
-      const idempotent = await adapter.revokeAccessKeyRecord({
+      const idempotent = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
         ownerUserId: SIGNED_IN_USER.id,
         id: record.id,
         revokedAt: NEXT_MONTH,
         revocationCause: "owner",
-      });
+      }));
       assert.equal(idempotent.revokedAt, LATER);
       assert.equal(Number(idempotent.lifecycleRevision), 2);
-      assert.equal(await adapter.revokeAccessKeyRecord({
+      assert.equal(await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
         ownerUserId: BYSTANDER_USER.id,
         id: record.id,
         revokedAt: NEXT_MONTH,
         revocationCause: "owner",
-      }), null);
+      })), null);
 
       const ledger = await adapter.prepare(adapter.dialect.sql(
         "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
@@ -1128,14 +1128,14 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal(Number(ledger.totalCount), 1);
 
       const reused = { ...record, id: "access-key-name-reused", selector: "cdefghijklmnopqrstuvwx" };
-      assert.deepEqual(await adapter.issueAccessKeyRecord(reused), { status: "issued" });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(reused)), { status: "issued" });
       assert.equal((await adapter.findAccessKeyAuthenticationRecord(reused.selector)).id, reused.id);
-      await adapter.revokeAccessKeyRecord({
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
         ownerUserId: SIGNED_IN_USER.id,
         id: reused.id,
         revokedAt: NEXT_MONTH,
         revocationCause: "owner",
-      });
+      }));
     },
   },
   {
@@ -1354,14 +1354,18 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         createdAt: NOW,
         expiresAt: NEXT_MONTH,
       };
-      const [issueOutcome] = await Promise.all([
-        adapter.withTransaction((tx) => tx.issueAccessKeyRecord(raced)),
-        adapter.withTransaction(async (tx) => {
+      let releaseTransition;
+      let transitionLocked;
+      const locked = new Promise((resolve) => { transitionLocked = resolve; });
+      const release = new Promise((resolve) => { releaseTransition = resolve; });
+      const transition = adapter.withTransaction(async (tx) => {
           await tx.bulkRevokeAccessKeysForOwner({
             ownerUserId: raced.ownerUserId,
             revokedAt: LATER,
             revocationCause: "owner-unlinked",
           });
+          transitionLocked();
+          await release;
           await tx.updateAuthUserProfile({
             id: raced.ownerUserId,
             displayName: ACCESS_KEY_TRANSITION_USER.displayName,
@@ -1369,9 +1373,19 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
             isAuthenticated: 0,
             isGuest: 1,
           });
-        }),
-      ]);
-      assert.ok(["issued", "owner-ineligible"].includes(issueOutcome.status));
+      });
+      await locked;
+      const issue = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(raced));
+      releaseTransition();
+      const [, issueOutcome] = await Promise.all([transition, issue]);
+      assert.equal(issueOutcome.status, "owner-ineligible");
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(raced.ownerUserId);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 0,
+        totalCount: 0,
+      });
       assert.equal(await adapter.findAccessKeyAuthenticationRecord(raced.selector), null);
       assert.equal((await adapter.listAccessKeyRecordsForOwner(raced.ownerUserId)).every((row) => row.revokedAt !== null), true);
 
@@ -1381,14 +1395,32 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
 
       const deletedOwnerKey = { ...raced, id: "access-key-owner-deleted", name: "owner-deleted", reservedName: "owner-deleted", selector: "ownerdeletedselector000" };
       assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(deletedOwnerKey)), { status: "issued" });
-      await adapter.withTransaction(async (tx) => {
+      const deletionContender = {
+        ...raced,
+        id: "access-key-owner-delete-contender",
+        name: "owner-delete-contender",
+        reservedName: "owner-delete-contender",
+        selector: "ownerdeletecontender00",
+      };
+      let releaseDeletion;
+      let deletionLocked;
+      const deletionReady = new Promise((resolve) => { deletionLocked = resolve; });
+      const deletionRelease = new Promise((resolve) => { releaseDeletion = resolve; });
+      const deletion = adapter.withTransaction(async (tx) => {
         await tx.bulkRevokeAccessKeysForOwner({
           ownerUserId: raced.ownerUserId,
           revokedAt: NEXT_MONTH,
           revocationCause: "owner-deleted",
         });
+        deletionLocked();
+        await deletionRelease;
         await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_users] WHERE [id] = ?")).run(raced.ownerUserId);
       });
+      await deletionReady;
+      const issueDuringDeletion = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(deletionContender));
+      releaseDeletion();
+      const [, deletionIssueOutcome] = await Promise.all([deletion, issueDuringDeletion]);
+      assert.equal(deletionIssueOutcome.status, "owner-ineligible");
       const deletedHistory = (await adapter.listAccessKeyRecordsForOwner(raced.ownerUserId)).find((row) => row.id === deletedOwnerKey.id);
       assert.equal(deletedHistory.revocationCause, "owner-deleted");
       assert.equal(await adapter.findAccessKeyAuthenticationRecord(deletedOwnerKey.selector), null);
@@ -1410,21 +1442,50 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         createdAt: NOW,
         expiresAt: NEXT_MONTH,
       };
+      await adapter.insertEmailCredential({
+        email: ACCESS_KEY_RESET_USER.email,
+        userId: ACCESS_KEY_RESET_USER.id,
+        passwordHash: "old-reset-hash",
+        passwordSalt: "old-reset-salt",
+        createdAt: NOW,
+      });
+      for (const selector of ["reset-atomicity-primary", "reset-atomicity-sibling"]) {
+        await adapter.insertPasswordResetCode({
+          selector,
+          verifierHash: `${selector}-hash`,
+          email: ACCESS_KEY_RESET_USER.email,
+          userId: ACCESS_KEY_RESET_USER.id,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        });
+      }
       await adapter.insertAuthSession({ token: "session-reset-atomicity", userId: record.ownerUserId, provider: "email", createdAt: NOW, expiresAt: NEXT_MONTH });
       assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
       const rollback = new Error("rollback reset retirement");
       await assert.rejects(adapter.withTransaction(async (tx) => {
+        await tx.deletePasswordResetCode("reset-atomicity-primary");
+        await tx.updateEmailCredentialPassword(ACCESS_KEY_RESET_USER.email, "new-reset-hash", "new-reset-salt");
+        await tx.deletePasswordResetCodesForUser(record.ownerUserId);
         await tx.deleteAuthSessionsForUser(record.ownerUserId);
         await tx.bulkRevokeAccessKeysForOwner({ ownerUserId: record.ownerUserId, revokedAt: LATER, revocationCause: "password-reset" });
         throw rollback;
       }), rollback);
+      assert.equal((await adapter.findPasswordResetCode("reset-atomicity-primary")).userId, record.ownerUserId);
+      assert.equal((await adapter.findPasswordResetCode("reset-atomicity-sibling")).userId, record.ownerUserId);
+      assert.equal((await adapter.findEmailCredentialWithUser(ACCESS_KEY_RESET_USER.email)).passwordHash, "old-reset-hash");
       assert.equal((await adapter.readAuthSessionWithUser("session-reset-atomicity")).userId, record.ownerUserId);
       assert.equal((await adapter.findAccessKeyAuthenticationRecord(record.selector)).id, record.id);
 
       await adapter.withTransaction(async (tx) => {
+        await tx.deletePasswordResetCode("reset-atomicity-primary");
+        await tx.updateEmailCredentialPassword(ACCESS_KEY_RESET_USER.email, "new-reset-hash", "new-reset-salt");
+        await tx.deletePasswordResetCodesForUser(record.ownerUserId);
         await tx.deleteAuthSessionsForUser(record.ownerUserId);
         await tx.bulkRevokeAccessKeysForOwner({ ownerUserId: record.ownerUserId, revokedAt: NEXT_MONTH, revocationCause: "password-reset" });
       });
+      assert.equal(await adapter.findPasswordResetCode("reset-atomicity-primary"), null);
+      assert.equal(await adapter.findPasswordResetCode("reset-atomicity-sibling"), null);
+      assert.equal((await adapter.findEmailCredentialWithUser(ACCESS_KEY_RESET_USER.email)).passwordHash, "new-reset-hash");
       assert.equal(await adapter.readAuthSessionWithUser("session-reset-atomicity"), null);
       const retired = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))[0];
       assert.equal(retired.revocationCause, "password-reset");

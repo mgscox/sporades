@@ -1008,6 +1008,11 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
       let records: LooseRecord[] = [];
       const sequence = chainMaybePromise([
         () => this.prepare(sql(
+          "INSERT INTO [sporades_auth_access_key_owners] " +
+          "([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT ([ownerUserId]) DO NOTHING",
+        )).run(input.ownerUserId, 0, 0, 0),
+        () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
         )).run(input.ownerUserId),
         () => thenIfPromise(this.prepare(sql(

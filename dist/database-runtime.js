@@ -764,6 +764,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             let revokedCount = 0;
             let records = [];
             const sequence = chainMaybePromise([
+                () => this.prepare(sql("INSERT INTO [sporades_auth_access_key_owners] " +
+                    "([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) " +
+                    "ON CONFLICT ([ownerUserId]) DO NOTHING")).run(input.ownerUserId, 0, 0, 0),
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
                 () => thenIfPromise(this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
                     "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
