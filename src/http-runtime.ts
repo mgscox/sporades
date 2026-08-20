@@ -215,6 +215,7 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
       message: error?.message ?? String(error),
       hint: error?.hint ?? null,
       stack: error?.stack ?? null,
+      ...(context.attribution ?? (request as LooseRecord).__sporadesAccessKeyAttribution ?? {}),
     },
   });
 }

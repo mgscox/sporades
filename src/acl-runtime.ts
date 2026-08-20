@@ -89,6 +89,7 @@ import { isPromiseLike } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
+import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 
 // The monolith's own alias, redeclared rather than imported: it is a type, so it is erased before
 // either bundle is built and there is no binding to collide with.
@@ -983,6 +984,7 @@ function emitFileAclDeniedLog(database: LooseRecord, { context, operation, row }
         isAuthenticated: context?.auth?.isAuthenticated ?? null,
         isGuest: context?.auth?.isGuest ?? null,
       },
+      ...accessKeyCredentialLogAttribution(context),
     },
   });
 }
@@ -1004,6 +1006,7 @@ function createAclDenialLogData({ context, table, operation, row = null, previou
       isAuthenticated: context?.auth?.isAuthenticated ?? null,
       isGuest: context?.auth?.isGuest ?? null,
     },
+    ...accessKeyCredentialLogAttribution(context),
     row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
   };
 }

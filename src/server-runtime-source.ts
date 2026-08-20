@@ -64,7 +64,7 @@ import {
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
 import {
-  createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
+  accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
   recordAccessKeyUsage, resolveAccessKeyCredential,
 } from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
@@ -2889,6 +2889,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     };
     admitCredentialHandler(handler, admissionContext, "endpoint");
     (request as LooseRecord).__sporadesAccessKeyAdmitted = true;
+    (request as LooseRecord).__sporadesAccessKeyAttribution = {
+      actor: { userId: admissionContext.auth.userId },
+      ...accessKeyCredentialLogAttribution(admissionContext),
+    };
     emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
     await recordAccessKeyUsage(database, accessKeyAdmission);
   }
@@ -3209,7 +3213,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
   const credentialKind = context?.credential?.kind ?? "session";
   if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
     const error: LooseRecord = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, requirements.linked ? "linked" : "authenticated");
     if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
     throw error;
   }
@@ -3219,7 +3223,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN",
     );
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "credential");
     if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
       error.sporadesAccessKeyFailure = "forbidden";
     }
@@ -3230,7 +3234,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
     && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)
   ) {
     const error: LooseRecord = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "scope");
     error.sporadesAccessKeyFailure = "forbidden";
     throw error;
   }

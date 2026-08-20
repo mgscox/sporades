@@ -216,6 +216,17 @@ export function emitAccessKeyAdmittedAudit(database: LooseRecord, context: Loose
   });
 }
 
+export function accessKeyCredentialLogAttribution(context: LooseRecord | null | undefined) {
+  if (context?.credential?.kind !== "access-key") return {};
+  return {
+    credential: {
+      kind: "access-key",
+      id: context.credential.id,
+      name: context.credential.name,
+    },
+  };
+}
+
 export async function recordAccessKeyUsage(database: LooseRecord, admission: LooseRecord) {
   const root = database.__rootDatabase ?? database;
   const touches: Map<string, number> = root.__accessKeyUsageTouches ??= new Map();
@@ -377,15 +388,23 @@ function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: Lo
 }
 
 function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: LooseRecord, accessKey: LooseRecord) {
+  const issued = event === "access-key.issued";
   database.log?.emit?.({
     category: "platform",
     event,
     level: "info",
-    message: event === "access-key.issued" ? "Access key issued by its owner." : "Access key revoked by its owner.",
+    message: issued ? "Access key issued by its owner." : "Access key revoked by its owner.",
     data: {
+      operation: issued ? "accessKeys.issue" : "accessKeys.revoke",
+      executionSource: "server-context",
+      outcome: "succeeded",
       actor: { userId: context.auth.userId },
       credential: { kind: "session" },
-      accessKey: { id: accessKey.id, name: accessKey.name },
+      accessKey: {
+        id: accessKey.id,
+        name: accessKey.name,
+        ...(issued ? { grants: [...accessKey.grants] } : {}),
+      },
     },
   });
 }

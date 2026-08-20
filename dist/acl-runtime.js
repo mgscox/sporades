@@ -88,6 +88,7 @@ import { isPromiseLike } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
+import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in
@@ -875,6 +876,7 @@ function emitFileAclDeniedLog(database, { context, operation, row }) {
                 isAuthenticated: context?.auth?.isAuthenticated ?? null,
                 isGuest: context?.auth?.isGuest ?? null,
             },
+            ...accessKeyCredentialLogAttribution(context),
         },
     });
 }
@@ -895,6 +897,7 @@ function createAclDenialLogData({ context, table, operation, row = null, previou
             isAuthenticated: context?.auth?.isAuthenticated ?? null,
             isGuest: context?.auth?.isGuest ?? null,
         },
+        ...accessKeyCredentialLogAttribution(context),
         row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
     };
 }

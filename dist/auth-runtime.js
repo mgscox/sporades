@@ -83,7 +83,7 @@ import { chainMaybePromise } from "./maybe-promise.js";
 // module initialization. See `http-runtime.ts`'s header.
 import { normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
 import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
-import { createAccessKeyTables } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createAccessKeyTables } from "./access-keys-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
 // the emitted-list bundle splices into a deployed Capsule.
@@ -186,6 +186,7 @@ export function createAuthDenialLogData(context, requirement) {
             isAuthenticated: context?.auth?.isAuthenticated ?? null,
             isGuest: context?.auth?.isGuest ?? null,
         },
+        ...accessKeyCredentialLogAttribution(context),
     };
 }
 export function emitAuthDeniedLog(database, details) {

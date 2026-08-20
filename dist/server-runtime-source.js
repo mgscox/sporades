@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -2651,6 +2651,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         };
         admitCredentialHandler(handler, admissionContext, "endpoint");
         request.__sporadesAccessKeyAdmitted = true;
+        request.__sporadesAccessKeyAttribution = {
+            actor: { userId: admissionContext.auth.userId },
+            ...accessKeyCredentialLogAttribution(admissionContext),
+        };
         emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
         await recordAccessKeyUsage(database, accessKeyAdmission);
     }
@@ -2958,14 +2962,14 @@ function admitCredentialHandler(handler, context, kind) {
     const credentialKind = context?.credential?.kind ?? "session";
     if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
         const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, requirements.linked ? "linked" : "authenticated");
         if (requirements.credentials.includes("access-key"))
             error.sporadesAccessKeyFailure = "missing";
         throw error;
     }
     if (!requirements.credentials.includes(credentialKind)) {
         const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "credential");
         if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
             error.sporadesAccessKeyFailure = "forbidden";
         }
@@ -2974,7 +2978,7 @@ function admitCredentialHandler(handler, context, kind) {
     if (credentialKind === "access-key"
         && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)) {
         const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "scope");
         error.sporadesAccessKeyFailure = "forbidden";
         throw error;
     }

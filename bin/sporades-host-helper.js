@@ -173,6 +173,13 @@ function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
+// src/auth-admission.ts
+var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
@@ -254,13 +261,6 @@ var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
 var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
 var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
 var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-
-// src/auth-admission.ts
-var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
-
-// src/access-keys-runtime.ts
-var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
 
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");

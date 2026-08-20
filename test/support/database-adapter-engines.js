@@ -67,9 +67,16 @@ async function withTempDir(prefix, fn) {
 
 export async function withSqliteAdapter(fn, options = {}) {
   return await withTempDir("sporades-adapter-sqlite-", async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, options.fileName ?? "adapter.db"));
+    const filePath = path.join(dir, options.fileName ?? "adapter.db");
+    let adapter = await createSqliteDatabaseAdapter(filePath);
     try {
-      return await fn(adapter);
+      return await fn(adapter, {
+        async restart() {
+          adapter.close();
+          adapter = await createSqliteDatabaseAdapter(filePath);
+          return adapter;
+        },
+      });
     } finally {
       adapter.close();
     }
@@ -82,9 +89,16 @@ export async function withLibsqlAdapter(fn, options = {}) {
       ...(options.service ?? {}),
       ...(options.isolateProcess ? { isolateProcess: true } : {}),
     }, async (service) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url: service.url });
+      let adapter = await createLibsqlDatabaseAdapter({ url: service.url });
       try {
-        return await fn(adapter, service);
+        return await fn(adapter, {
+          service,
+          async restart() {
+            await adapter.close();
+            adapter = await createLibsqlDatabaseAdapter({ url: service.url });
+            return adapter;
+          },
+        });
       } finally {
         await adapter.close();
       }
@@ -99,10 +113,16 @@ export async function withPostgresAdapter(fn, options = {}) {
   if (!url) {
     throw new Error(`${POSTGRES_TEST_URL_VARIABLE} is not set.`);
   }
-  const adapter = await createPostgresDatabaseAdapter({ url });
+  let adapter = await createPostgresDatabaseAdapter({ url });
   try {
     await resetPostgresSchema(adapter, options.appTableNames ?? []);
-    return await fn(adapter);
+    return await fn(adapter, {
+      async restart() {
+        await adapter.close();
+        adapter = await createPostgresDatabaseAdapter({ url });
+        return adapter;
+      },
+    });
   } finally {
     await adapter.close();
   }

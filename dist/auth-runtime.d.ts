@@ -31,6 +31,23 @@ export declare function requireUserAuth(context: LooseRecord, options?: LooseRec
 /** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: LooseRecord, options?: LooseRecord): any;
 export declare function createAuthDenialLogData(context: LooseRecord, requirement: string): {
+    credential?: undefined;
+    requirement: string;
+    handler: {
+        kind: any;
+    };
+    actor: {
+        userId: any;
+        provider: any;
+        isAuthenticated: any;
+        isGuest: any;
+    };
+} | {
+    credential: {
+        kind: string;
+        id: any;
+        name: any;
+    };
     requirement: string;
     handler: {
         kind: any;

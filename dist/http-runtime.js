@@ -171,6 +171,7 @@ export function emitHttpFailureLog(database, request, error, context = {}) {
             message: error?.message ?? String(error),
             hint: error?.hint ?? null,
             stack: error?.stack ?? null,
+            ...(context.attribution ?? request.__sporadesAccessKeyAttribution ?? {}),
         },
     });
 }

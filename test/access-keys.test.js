@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { capsule, endpoint, mutation, query, requireAuth } from "../dist/server.js";
+import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
 import { openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 
@@ -132,6 +132,26 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     const privilegedProjection = await runMutation(database, auth, "inspectPrivilegedProjection", []);
     assert.equal(privilegedProjection.error, null, JSON.stringify(privilegedProjection.error));
     assert.deepEqual(privilegedProjection.data, { hasAccessKeys: false });
+
+    const lifecycleEvents = await database.log.tail(50);
+    const issuedEvent = lifecycleEvents.find((event) => event.event === "access-key.issued");
+    assert.deepEqual(issuedEvent.data, {
+      operation: "accessKeys.issue",
+      executionSource: "server-context",
+      outcome: "succeeded",
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      accessKey: { id: issued.data.accessKey.id, name: "request-bot", grants: ["profile:read", "requests:*"] },
+    });
+    const revokedEvent = lifecycleEvents.find((event) => event.event === "access-key.revoked");
+    assert.deepEqual(revokedEvent.data, {
+      operation: "accessKeys.revoke",
+      executionSource: "server-context",
+      outcome: "succeeded",
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      accessKey: { id: issued.data.accessKey.id, name: "request-bot" },
+    });
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });
@@ -143,6 +163,9 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
   const definition = capsule({
     name: "access-key-http",
     accessKeys: { scopes: ["requests:read", "requests:write"] },
+    schema: {
+      protectedRecords: table({ text: StringField() }).acl({ insert: () => false }),
+    },
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
       revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
@@ -184,6 +207,19 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
             detail: "retained",
           });
           return { body: { ok: true } };
+        }),
+      ),
+      aclDenied: endpoint(
+        { method: "POST", path: "/acl-denied" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => {
+          ctx.db.protectedRecords.insert({ text: "blocked" });
+          return { body: { ok: true } };
+        }),
+      ),
+      handlerFailure: endpoint(
+        { method: "GET", path: "/handler-failure" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, () => {
+          throw new Error("simulated admitted handler failure");
         }),
       ),
     },
@@ -255,6 +291,25 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     assert.equal(insufficient.status, 403);
     assert.equal(insufficient.headers.get("cache-control"), "no-store");
     assert.equal((await insufficient.json()).error.code, "FORBIDDEN");
+
+    const aclDenied = await requestEndpoint(database, "/acl-denied", {
+      method: "POST",
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(aclDenied.status, 500);
+    const handlerFailure = await requestEndpoint(database, "/handler-failure", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(handlerFailure.status, 500);
+    const denialEvents = await database.log.tail(100);
+    for (const event of [
+      denialEvents.find((candidate) => candidate.event === "auth.denied" && candidate.data?.requirement === "scope"),
+      denialEvents.find((candidate) => candidate.event === "acl.denied" && candidate.data?.resource?.name === "protectedRecords"),
+      denialEvents.find((candidate) => candidate.event === "http.request.failed" && candidate.request?.path === "/handler-failure"),
+    ]) {
+      assert.ok(event, JSON.stringify(denialEvents));
+      assert.deepEqual(event.data.credential, { kind: "access-key", id: issued.data.accessKey.id, name: "reader" });
+    }
 
     const missing = await requestEndpoint(database, "/requests");
     assert.equal(missing.status, 401);

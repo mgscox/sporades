@@ -202,6 +202,17 @@ export function emitAccessKeyAdmittedAudit(database, context, record) {
         },
     });
 }
+export function accessKeyCredentialLogAttribution(context) {
+    if (context?.credential?.kind !== "access-key")
+        return {};
+    return {
+        credential: {
+            kind: "access-key",
+            id: context.credential.id,
+            name: context.credential.name,
+        },
+    };
+}
 export async function recordAccessKeyUsage(database, admission) {
     const root = database.__rootDatabase ?? database;
     const touches = root.__accessKeyUsageTouches ??= new Map();
@@ -351,15 +362,23 @@ function withAccessKeyTransaction(database, operation) {
         : database.adapter.withTransaction(operation);
 }
 function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
+    const issued = event === "access-key.issued";
     database.log?.emit?.({
         category: "platform",
         event,
         level: "info",
-        message: event === "access-key.issued" ? "Access key issued by its owner." : "Access key revoked by its owner.",
+        message: issued ? "Access key issued by its owner." : "Access key revoked by its owner.",
         data: {
+            operation: issued ? "accessKeys.issue" : "accessKeys.revoke",
+            executionSource: "server-context",
+            outcome: "succeeded",
             actor: { userId: context.auth.userId },
             credential: { kind: "session" },
-            accessKey: { id: accessKey.id, name: accessKey.name },
+            accessKey: {
+                id: accessKey.id,
+                name: accessKey.name,
+                ...(issued ? { grants: [...accessKey.grants] } : {}),
+            },
         },
     });
 }

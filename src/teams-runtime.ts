@@ -6,6 +6,7 @@ import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { normalizeOrigin } from "./http-runtime.js";
+import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 
 type LooseRecord = Record<string, any>;
 type TeamJoinLinkInspection = {
@@ -1340,7 +1341,15 @@ function emitTeamSecurityEvent(database: LooseRecord, eventContext: LooseRecord 
     event,
     level: "info",
     message: teamSecurityMessage(event, outcome),
-    data: { operation: teamSecurityOperation(event), outcome, code: code.slice(0, 80), actorUserId: String(actorUserId).slice(0, 128), teamId: teamId === null ? null : String(teamId).slice(0, 64), ...extra },
+    data: {
+      operation: teamSecurityOperation(event),
+      outcome,
+      code: code.slice(0, 80),
+      actorUserId: String(actorUserId).slice(0, 128),
+      teamId: teamId === null ? null : String(teamId).slice(0, 64),
+      ...extra,
+      ...accessKeyCredentialLogAttribution(eventContext),
+    },
     request: null,
     release: null,
     correlation: null,

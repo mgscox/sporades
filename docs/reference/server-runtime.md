@@ -364,6 +364,17 @@ credentials fail as opaque HTTP `401` responses without fallback. A valid key
 with a disallowed credential kind or insufficient scope fails as opaque `403`.
 Access-key failures carry a Bearer challenge where applicable and `no-store`;
 successful key-authenticated responses default to `private, no-store`.
+Credential lookup and scope admission finish before Capsule work opens its
+database transaction. The admitted Auth and Credential snapshot then remains
+stable for that work. Approximate `lastUsedAt` telemetry is attempted outside
+the work transaction at most once per key per runtime process per hour, and a
+telemetry failure cannot fail admitted Capsule work.
+
+Runtime denial/failure events and `ctx.log` entries produced after successful
+Access-key admission carry reserved actor and Credential attribution. Capsule
+log data cannot replace the admitted key ID or name. Lifecycle audit events
+record the operation, execution source, outcome, stable owner/key IDs, and
+issuance grants without recording token material.
 
 On success `requireUserAuth(ctx)` returns the context's `AuthContext`, so
 `userId` and profile fields remain available without copying `ctx.auth`. On

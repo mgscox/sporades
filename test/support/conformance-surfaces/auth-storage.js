@@ -1078,6 +1078,112 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       )).get(SIGNED_IN_USER.id);
       assert.equal(Number(ledger.currentCount), 0);
       assert.equal(Number(ledger.totalCount), 1);
+
+      const reused = { ...record, id: "access-key-name-reused", selector: "cdefghijklmnopqrstuvwx" };
+      assert.deepEqual(await adapter.issueAccessKeyRecord(reused), { status: "issued" });
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(reused.selector)).id, reused.id);
+      await adapter.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: reused.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      });
+    },
+  },
+  {
+    name: "Access-key issuance serializes same-name contenders and rolls back quota reservations",
+    async run(adapter) {
+      const contender = (suffix) => ({
+        id: `access-key-contender-${suffix}`,
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "concurrent-reader",
+        reservedName: "concurrent-reader",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: suffix === "a" ? "defghijklmnopqrstuvwxy" : "efghijklmnopqrstuvwxyz",
+        verifierDigest: (suffix === "a" ? "cd" : "de").repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      const outcomes = await Promise.all([
+        adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender("a"))),
+        adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender("b"))),
+      ]);
+      assert.deepEqual(outcomes.map((outcome) => outcome.status).sort(), ["issued", "name-conflict"]);
+      const winner = (await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id))
+        .find((row) => row.name === "concurrent-reader");
+      assert.ok(winner);
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: winner.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+
+      const rollbackMarker = new Error("rollback Access-key issuance");
+      await assert.rejects(
+        adapter.withTransaction(async (tx) => {
+          assert.deepEqual(await tx.issueAccessKeyRecord({
+            ...contender("a"),
+            id: "access-key-rolled-back",
+            name: "rolled-back-reader",
+            reservedName: "rolled-back-reader",
+            selector: "fghijklmnopqrstuvwxyza",
+          }), { status: "issued" });
+          throw rollbackMarker;
+        }),
+        rollbackMarker,
+      );
+      assert.equal(
+        (await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id)).some((row) => row.id === "access-key-rolled-back"),
+        false,
+      );
+    },
+  },
+  {
+    name: "Access-key current quota rejects the next issue without corrupting owner counters",
+    async run(adapter) {
+      for (let index = 0; index < 100; index += 1) {
+        const suffix = String(index).padStart(3, "0");
+        const selector = Buffer.from(`quota-${suffix}`).toString("base64url").padEnd(22, "x").slice(0, 22);
+        const outcome = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+          id: `access-key-quota-${suffix}`,
+          ownerUserId: BYSTANDER_USER.id,
+          name: `quota-${suffix}`,
+          reservedName: `quota-${suffix}`,
+          grantsJson: JSON.stringify(["requests:read"]),
+          secretVersion: 1,
+          selector,
+          verifierDigest: "ef".repeat(32),
+          lifecycleRevision: 1,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        }));
+        assert.deepEqual(outcome, { status: "issued" });
+      }
+      const rejected = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        id: "access-key-quota-overflow",
+        ownerUserId: BYSTANDER_USER.id,
+        name: "quota-overflow",
+        reservedName: "quota-overflow",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "ghijklmnopqrstuvwxyzab",
+        verifierDigest: "fa".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      }));
+      assert.deepEqual(rejected, { status: "limit" });
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(BYSTANDER_USER.id);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 100,
+        totalCount: 100,
+      });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 100);
     },
   },
   {
@@ -1130,6 +1236,19 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal((await adapter.readAuthSessionWithUser("session-after-ensure"))?.userId, REGISTERED_USER.id);
       assert.equal((await adapter.insertOAuthState({ state: "oauth-state-after-ensure", sessionToken: "session-oauth", returnTo: "/", redirectUri: "https://example.com/auth/callback", createdAt: NOW })).changes, 1);
       assert.equal((await adapter.consumeOAuthState("oauth-state-after-ensure")).provider, "google");
+    },
+  },
+  {
+    name: "Access-key owner rows and indexed credentials survive an adapter restart",
+    async run(adapter, engineContext) {
+      if (!engineContext?.restart) return;
+      const restarted = await engineContext.restart();
+      assert.equal((await restarted.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 100);
+      const persisted = await restarted.findAccessKeyAuthenticationRecord(
+        Buffer.from("quota-000").toString("base64url").padEnd(22, "x").slice(0, 22),
+      );
+      assert.equal(persisted.id, "access-key-quota-000");
+      assert.equal(persisted.ownerUserId, BYSTANDER_USER.id);
     },
   },
 ];
