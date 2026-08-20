@@ -917,8 +917,12 @@ export type DeclarativeRequireAuthOptions = {
   credentials?: readonly CredentialKind[];
   scopes?: readonly string[];
 };
+/** @internal */
+declare const authGuardedHandlerBrand: unique symbol;
 /** Type-preserving result of a declarative Auth guard. Runtime admission metadata is private. */
-export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler;
+export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler & {
+  readonly [authGuardedHandlerBrand]: true;
+};
 /** Declaratively require an admitted credential before middleware and handler execution. */
 export function requireAuth<Handler extends (...args: any[]) => any>(handler: Handler): AuthGuardedHandler<Handler>;
 /** A single literal credential kind narrows ctx.credential in the guarded handler. */

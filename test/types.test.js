@@ -425,6 +425,10 @@ const app = capsule({
 const guarded = requireAuth((ctx) => ctx.credential.kind);
 // @ts-expect-error Auth guard branding is type-only and not a public runtime property.
 guarded.__sporadesAuthGuardedHandler;
+// @ts-expect-error Unguarded handlers cannot use an incompatible query context.
+query((ctx: { nope: number }) => ctx.nope);
+// @ts-expect-error Unguarded handlers cannot use an incompatible Custom-endpoint context.
+endpoint({ method: "GET", path: "/invalid-context" }, (ctx: { nope: number }) => ctx.nope);
 
 const hooks = createHooks({
   useState<State>(initial: State | (() => State)): [State, (nextState: State) => void] {
