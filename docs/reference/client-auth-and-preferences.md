@@ -582,6 +582,11 @@ the original plaintext cannot be recovered. Refresh `list()` after each
 mutation, and clear the disclosure when it is copied, dismissed, or the page
 unmounts.
 
+A one-shot operation whose connection closes before its reply returns
+`error.code === "TRANSPORT_CLOSED"`. Sporades does not replay it: reconnect,
+call `list()` to inspect the committed lifecycle revision, then rotate an issued
+or rotated key to obtain fresh plaintext.
+
 Anonymous and guest Sessions are denied. Access-key-authenticated Custom
 endpoints also cannot reach this projection: owner management always requires
 the browser's live linked Session, never a client-supplied owner ID or

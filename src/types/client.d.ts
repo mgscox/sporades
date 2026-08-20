@@ -538,7 +538,7 @@ export type AccessKeyErrorCode =
   | "INVALID_ACCESS_KEY_EXPIRY"
   | "INVALID_ACCESS_KEY_GRANTS"
   | "INVALID_ACCESS_KEY_LIST_OPTIONS"
-  | "INVALID_ACCESS_KEY_NAME";
+  | "INVALID_ACCESS_KEY_NAME" | "TRANSPORT_CLOSED";
 export type AccessKeyError = SporadesError & { code: AccessKeyErrorCode };
 export type AccessKeySummary = {
   id: string;

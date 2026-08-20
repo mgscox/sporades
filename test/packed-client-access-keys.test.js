@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +22,8 @@ test("the packed package imports the framework-neutral Access-key client surface
     await mkdir(modules, { recursive: true });
     await run("tar", ["-xzf", path.join(dir, filename), "-C", modules]);
     await rename(path.join(modules, "package"), path.join(modules, "sporades"));
+    const packedClientTypes = await readFile(path.join(modules, "sporades", "src", "types", "client.d.ts"), "utf8");
+    assert.match(packedClientTypes, /AccessKeyErrorCode[\s\S]*"TRANSPORT_CLOSED"/);
     const probe = path.join(dir, "consumer", "probe.mjs");
     await writeFile(probe, [
       'import { accessKeys } from "sporades/client";',

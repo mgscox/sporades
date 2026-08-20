@@ -728,8 +728,9 @@ function createConnection() {
     if (typeof connectionToken === "string" && connectionToken.length > 0) {
       url.searchParams.set("connectionToken", connectionToken);
     }
-    socket = new WebSocket(url);
-    socket.addEventListener("open", () => {
+    const openedSocket = new WebSocket(url);
+    socket = openedSocket;
+    openedSocket.addEventListener("open", () => {
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
       if (journeyConsentOptions) {
@@ -747,7 +748,7 @@ function createConnection() {
         });
       }
     });
-    socket.addEventListener("message", (event) => {
+    openedSocket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -795,14 +796,15 @@ function createConnection() {
         return;
       }
       if (pending.has(message.id)) {
-        pending.get(message.id)(message);
+        pending.get(message.id).resolve(message);
         pending.delete(message.id);
       }
     });
-    socket.addEventListener("close", () => {
+    openedSocket.addEventListener("close", () => {
       stopJourneyCapture();
-      for (const [id, resolve] of pending) {
-        resolve({
+      for (const [id, entry] of pending) {
+        if (entry.socket !== openedSocket) continue;
+        entry.resolve({
           id,
           type: "error",
           data: null,
@@ -812,16 +814,17 @@ function createConnection() {
             hint: "Reconnect and inspect current state before retrying a one-time operation.",
           },
         });
+        pending.delete(id);
       }
-      pending.clear();
       if (!pageRetired) setTimeout(open, 500);
     });
-    return socket;
+    return openedSocket;
   }
 
-  function send(message) {
+  function send(message, onSocket = null) {
     const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
+    onSocket?.(activeSocket);
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
@@ -853,8 +856,9 @@ function createConnection() {
   function request(type, fields = {}) {
     const id = nextId++;
     return new Promise((resolve) => {
-      pending.set(id, resolve);
-      send({ id, type, ...fields });
+      const entry = { resolve, socket: null };
+      pending.set(id, entry);
+      send({ id, type, ...fields }, (activeSocket) => { entry.socket = activeSocket; });
     });
   }
 

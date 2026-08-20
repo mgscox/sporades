@@ -522,6 +522,7 @@ accessKeys.rotate("key-id", { lifecycleRevision: 1 });
 accessKeys.revoke("key-id");
 accessKeys.delete("key-id");
 const accessKeyErrorCode: AccessKeyErrorCode = "ACCESS_KEY_REVISION_CONFLICT";
+const accessKeyTransportErrorCode: AccessKeyErrorCode = "TRANSPORT_CLOSED";
 accessKeyErrorCode.toLowerCase();
 // @ts-expect-error browser auth API does not expose privileged server-role authority.
 auth.privileged;
