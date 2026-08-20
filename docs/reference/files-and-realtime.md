@@ -49,6 +49,33 @@ const url = await files.url(file.id);
 const blob = await files.download(file.path);
 ```
 
+Private File Bearer authentication is disabled unless the Capsule explicitly
+opts in with `files.accessKeys.read`:
+
+```ts
+export default capsule({
+  name: "reports",
+  accessKeys: { scopes: ["reports:read"] },
+  files: {
+    accessKeys: { read: { scopes: ["reports:read"] } },
+  },
+});
+```
+
+Omit `scopes` from `read: {}` when existing File ownership and File ACL rules
+are the complete policy. If scopes are supplied, they must be non-empty,
+unique, concrete entries from the Capsule's central `accessKeys.scopes`
+vocabulary. Scope grants only narrow admission; they never replace ownership
+or File ACL checks.
+
+The private File route accepts either one `x-sporades-session-token` or one
+`Authorization: Bearer ...` credential. Dual, malformed, expired, rotated, or
+revoked credentials fail without falling back to the Session or Anonymous
+actor. File ACL rules receive the same frozen `ctx.auth` and `ctx.credential`
+provenance for either kind. Access-key downloads are `private, no-store`, and a
+revocation affects the next admission without interrupting bytes whose
+admission already completed.
+
 File operations that identify an existing file accept a File reference: either
 the stable File ID or the absolute File path. By default, the reference must
 resolve to one live file owned by the current user. A Capsule may deliberately

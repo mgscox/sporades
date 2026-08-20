@@ -490,14 +490,14 @@ export function createTableAclContext(context, database) {
         acl: createAclHelpers(database, context),
     };
 }
-export function createFileAclContext(auth, database) {
+export function createFileAclContext(auth, database, credential = { kind: "session" }) {
     // A File request has no trusted Capsule handler context. Its policy gets the
     // same constrained, read-only ACL decisions as a table rule, but only the
     // authenticated actor: no db API, mutable Teams API, request, or privileged
     // capability can cross this boundary.
     const context = {
         auth: Object.freeze({ ...auth }),
-        credential: Object.freeze({ kind: "session" }),
+        credential: Object.freeze({ ...credential }),
     };
     return Object.freeze({
         auth: context.auth,
@@ -505,11 +505,11 @@ export function createFileAclContext(auth, database) {
         acl: createAclHelpers(database, context),
     });
 }
-export function applyFileAcl(database, operation, row, auth) {
+export function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
     const rule = database.fileAcl?.resolve?.(operation);
     if (!rule)
         return false;
-    const context = createFileAclContext(auth, database);
+    const context = createFileAclContext(auth, database, credential);
     const input = Object.freeze({
         ctx: context,
         operation,

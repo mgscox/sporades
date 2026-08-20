@@ -54,6 +54,8 @@ import { Boolean, Number, String, capsule, endpoint, job, mutation, query, sched
 
 export default capsule({
   name: "bundle-equivalence",
+  accessKeys: { scopes: ["files:read"] },
+  files: { accessKeys: { read: { scopes: ["files:read"] } } },
 
   schema: {
     notes: table({
@@ -887,6 +889,61 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
         "nosuch.messagetype:m23",
       ],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle admits an explicitly scoped Access key to private File bytes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-file-"));
+  try {
+    const config = capsuleConfig();
+    const source = await buildBundle({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const booted = await bootBundle({ source, dir });
+    let socket;
+    try {
+      socket = await openBundleSocket(booted.baseUrl);
+      socket.send({
+        id: "file-owner-signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: { email: "bundle-file-owner@example.com", password: "correct horse battery staple", name: "Bundle File Owner" },
+      });
+      assert.equal((await socket.waitFor((message) => message.id === "file-owner-signup")).error, null);
+      socket.send({
+        id: "file-upload",
+        type: "file.uploadUrl",
+        file: { name: "bundle-private.txt", path: "/bundle-private.txt", type: "text/plain", size: 12 },
+      });
+      const upload = await socket.waitFor((message) => message.id === "file-upload");
+      assert.equal(upload.error, null, JSON.stringify(upload));
+      const uploaded = await fetch(new URL(upload.data.uploadUrl, booted.baseUrl), { method: "PUT", body: "bundle bytes" });
+      assert.equal(uploaded.status, 200, await uploaded.text());
+
+      socket.send({
+        id: "file-key-issue",
+        type: "accessKeys.issue",
+        input: { name: "bundle-file-reader", grants: ["files:read"] },
+      });
+      const issued = await socket.waitFor((message) => message.id === "file-key-issue");
+      assert.equal(issued.error, null, JSON.stringify(issued));
+      const privateUrl = new URL(`/__sporades/files/private/${upload.data.file.id}?v=${encodeURIComponent(upload.data.file.version)}`, booted.baseUrl);
+      const response = await fetch(privateUrl, { headers: { authorization: `Bearer ${issued.data.token}` } });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), "bundle bytes");
+      assert.equal(response.headers.get("cache-control"), "private, no-store");
+
+      const malformed = await fetch(privateUrl, { headers: { authorization: "Bearer malformed" } });
+      assert.equal(malformed.status, 401);
+      assert.equal(malformed.headers.get("www-authenticate"), 'Bearer realm="sporades", error="invalid_token"');
+      assert.equal(JSON.stringify(await malformed.json()).includes(issued.data.token), false);
+    } finally {
+      socket?.close();
+      await booted.stop();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

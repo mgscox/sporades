@@ -137,6 +137,14 @@ test("capsule registration freezes a copied scope vocabulary and declarative Aut
   assert.equal(handler({ credential: { kind: "session" } }).kind, "session");
   assert.deepEqual(capsule({ name: "explicit-empty", accessKeys: { scopes: [] } }).accessKeys.scopes, []);
   assert.equal("accessKeys" in capsule({ name: "omitted-empty" }), false);
+  const fileAccess = capsule({
+    name: "file-access",
+    accessKeys: { scopes: ["files:read"] },
+    files: { accessKeys: { read: { scopes: ["files:read"] } } },
+  });
+  assert.deepEqual(fileAccess.files.accessKeys.read.scopes, ["files:read"]);
+  assert.equal(Object.isFrozen(fileAccess.files.accessKeys.read.scopes), true);
+  assert.deepEqual(capsule({ name: "unscoped-file-access", files: { accessKeys: { read: {} } } }).files.accessKeys.read, {});
 });
 
 test("capsule registration fails closed for invalid scope and guard declarations", () => {
@@ -147,8 +155,17 @@ test("capsule registration fails closed for invalid scope and guard declarations
     { name: "duplicate-scope", accessKeys: { scopes: ["requests:read", "requests:read"] } },
     { name: "oversized-scope", accessKeys: { scopes: ["x".repeat(257)] } },
     { name: "too-many-scopes", accessKeys: { scopes: Array.from({ length: 1025 }, (_, index) => `scope-${index}`) } },
+    { name: "invalid-file-access-keys", files: { accessKeys: true } },
+    { name: "missing-file-read", files: { accessKeys: {} } },
+    { name: "unknown-file-policy", files: { accessKeys: { read: {}, write: {} } } },
+    { name: "malformed-file-read", files: { accessKeys: { read: true } } },
+    { name: "unknown-file-read-field", files: { accessKeys: { read: { extra: true } } } },
+    { name: "empty-file-scopes", accessKeys: { scopes: ["files:read"] }, files: { accessKeys: { read: { scopes: [] } } } },
+    { name: "wildcard-file-scope", accessKeys: { scopes: ["files:read"] }, files: { accessKeys: { read: { scopes: ["files:*"] } } } },
+    { name: "duplicate-file-scope", accessKeys: { scopes: ["files:read"] }, files: { accessKeys: { read: { scopes: ["files:read", "files:read"] } } } },
+    { name: "undeclared-file-scope", accessKeys: { scopes: ["files:read"] }, files: { accessKeys: { read: { scopes: ["files:write"] } } } },
   ]) {
-    assert.throws(() => capsule(definition), (error) => error.code === "INVALID_ACCESS_KEY_DECLARATION" || error.code === "INVALID_ACCESS_KEY_SCOPE");
+    assert.throws(() => capsule(definition), (error) => ["INVALID_ACCESS_KEY_DECLARATION", "INVALID_ACCESS_KEY_SCOPE", "INVALID_FILE_ACCESS_KEY_POLICY"].includes(error.code));
   }
 
   assert.throws(

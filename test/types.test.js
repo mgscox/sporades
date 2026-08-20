@@ -132,6 +132,7 @@ const app = capsule({
     },
   },
   files: {
+    accessKeys: { read: { scopes: ["todos:read"] } },
     acl: {
       read: ({ file, ctx }) => {
         file.path.toUpperCase();

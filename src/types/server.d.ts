@@ -171,7 +171,7 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
 export type CapsuleFilesDefinition = {
-  acl?: FileAclRules;
+  acl?: FileAclRules; accessKeys?: CapsuleFileAccessKeyPolicy;
 };
 
 /**
@@ -1044,3 +1044,6 @@ export function Date(): FieldBuilder<string | globalThis.Date | null>;
 export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 /** Reference field storing the row id of another table. */
 export function Reference(targetTable: string): ReferenceFieldBuilder;
+
+/** Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules. */
+export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };

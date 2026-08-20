@@ -968,8 +968,8 @@ export async function fileRowForOwner(database: LooseRecord, fileId: string, own
   return await database.adapter.fileRowForOwner(reference, ownerId);
 }
 
-export async function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any) {
-  const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+export async function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any, credential: LooseRecord = { kind: "session" }) {
+  const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
   return resolved.ok ? resolved.row : null;
 }
 
@@ -1083,11 +1083,11 @@ async function resolveLiveFileReference(database: LooseRecord, ownerId: any, ref
   return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
 }
 
-async function resolveAccessibleFileReference(database: LooseRecord, auth: LooseRecord, reference: string, operation: string) {
+async function resolveAccessibleFileReference(database: LooseRecord, auth: LooseRecord, reference: string, operation: string, credential: LooseRecord = { kind: "session" }) {
   const resolved: any = await resolvePrivilegedLiveFileReference(database, reference);
   if (!resolved.ok || !resolved.row) return resolved;
   if (resolved.row.ownerId === auth?.userId) return resolved;
-  const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+  const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
   return { ok: true, row: allowed ? resolved.row : null };
 }
 

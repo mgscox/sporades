@@ -615,6 +615,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             }
             : undefined,
         fileAcl,
+        fileAccessKeyRead: capsuleDefinition?.files?.accessKeys?.read
+            ? Object.freeze({ scopes: Object.freeze([...(capsuleDefinition.files.accessKeys.read.scopes ?? [])]) })
+            : null,
         securityPolicy: resolveRuntimeSecurityPolicy(config),
         fileStorage,
         fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,

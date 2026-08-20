@@ -163,6 +163,13 @@ function validatePublicTreeFileSet(files) {
 // src/server-runtime-source.ts
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+// src/auth-admission.ts
+var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
@@ -172,13 +179,6 @@ var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
-
-// src/auth-admission.ts
-var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
-
-// src/access-keys-runtime.ts
-var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
 
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";

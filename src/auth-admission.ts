@@ -69,25 +69,68 @@ export function normalizeAuthRequirements(options: unknown = {}): AuthRequiremen
 }
 
 export function normalizeCapsuleAuthDefinition<Definition extends LooseRecord>(definition: Definition): Definition {
-  if (!("accessKeys" in definition) || definition.accessKeys === undefined) {
-    return definition;
+  let normalized: LooseRecord = definition;
+  if (("accessKeys" in definition) && definition.accessKeys !== undefined) {
+    const accessKeys = definition.accessKeys;
+    if (!isPlainObject(accessKeys) || Object.keys(accessKeys).some((key) => key !== "scopes") || !("scopes" in accessKeys)) {
+      throw commandError(
+        "Invalid Capsule Access-key declaration.",
+        "Declare accessKeys as { scopes: readonly string[] } with no additional fields.",
+        "INVALID_ACCESS_KEY_DECLARATION",
+      );
+    }
+    const scopes = normalizeConcreteScopes(accessKeys.scopes, {
+      allowOmission: false,
+      code: "INVALID_ACCESS_KEY_SCOPE",
+      hint: "Declare up to 1,024 unique concrete scope strings of at most 256 UTF-8 bytes.",
+    });
+    normalized = {
+      ...definition,
+      accessKeys: Object.freeze({ scopes: Object.freeze(scopes) }),
+    };
   }
-  const accessKeys = definition.accessKeys;
-  if (!isPlainObject(accessKeys) || Object.keys(accessKeys).some((key) => key !== "scopes") || !("scopes" in accessKeys)) {
+  return normalizeFileAccessKeyPolicy(normalized) as Definition;
+}
+
+function normalizeFileAccessKeyPolicy<Definition extends LooseRecord>(definition: Definition): Definition {
+  if (definition.files?.accessKeys === undefined) return definition;
+  const policy = definition.files.accessKeys;
+  if (!isPlainObject(policy) || Object.keys(policy).some((key) => key !== "read") || !("read" in policy)) {
     throw commandError(
-      "Invalid Capsule Access-key declaration.",
-      "Declare accessKeys as { scopes: readonly string[] } with no additional fields.",
-      "INVALID_ACCESS_KEY_DECLARATION",
+      "Invalid private File Access-key policy.",
+      "Declare files.accessKeys as { read: { scopes?: readonly string[] } }.",
+      "INVALID_FILE_ACCESS_KEY_POLICY",
     );
   }
-  const scopes = normalizeConcreteScopes(accessKeys.scopes, {
-    allowOmission: false,
-    code: "INVALID_ACCESS_KEY_SCOPE",
-    hint: "Declare up to 1,024 unique concrete scope strings of at most 256 UTF-8 bytes.",
+  const read = policy.read;
+  if (!isPlainObject(read) || Object.keys(read).some((key) => key !== "scopes")) {
+    throw commandError(
+      "Invalid private File Access-key read policy.",
+      "Declare files.accessKeys.read as { scopes?: readonly string[] }.",
+      "INVALID_FILE_ACCESS_KEY_POLICY",
+    );
+  }
+  const scopes = normalizeConcreteScopes(read.scopes, {
+    allowOmission: true,
+    code: "INVALID_FILE_ACCESS_KEY_POLICY",
+    hint: "File read scopes must be omitted or be a non-empty list of unique concrete Capsule scopes.",
   });
+  const declaredScopes = new Set<string>(definition.accessKeys?.scopes ?? []);
+  if (scopes.some((scope) => !declaredScopes.has(scope))) {
+    throw commandError(
+      "Invalid private File Access-key read policy.",
+      "Every File read scope must be declared in capsule({ accessKeys: { scopes } }).",
+      "INVALID_FILE_ACCESS_KEY_POLICY",
+    );
+  }
   return {
     ...definition,
-    accessKeys: Object.freeze({ scopes: Object.freeze(scopes) }),
+    files: {
+      ...definition.files,
+      accessKeys: Object.freeze({
+        read: Object.freeze(read.scopes === undefined ? {} : { scopes: Object.freeze(scopes) }),
+      }),
+    },
   };
 }
 
@@ -154,7 +197,7 @@ function normalizeCredentialKinds(value: unknown): CredentialKind[] {
 
 function normalizeConcreteScopes(
   value: unknown,
-  options: { allowOmission: boolean; code: "INVALID_AUTH_REQUIREMENTS" | "INVALID_ACCESS_KEY_SCOPE"; hint: string },
+  options: { allowOmission: boolean; code: "INVALID_AUTH_REQUIREMENTS" | "INVALID_ACCESS_KEY_SCOPE" | "INVALID_FILE_ACCESS_KEY_POLICY"; hint: string },
 ) {
   if (value === undefined && options.allowOmission) {
     return [];

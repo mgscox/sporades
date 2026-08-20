@@ -2267,25 +2267,67 @@ function normalizeAuthRequirements(options = {}) {
   });
 }
 function normalizeCapsuleAuthDefinition(definition) {
-  if (!("accessKeys" in definition) || definition.accessKeys === void 0) {
-    return definition;
+  let normalized = definition;
+  if ("accessKeys" in definition && definition.accessKeys !== void 0) {
+    const accessKeys = definition.accessKeys;
+    if (!isPlainObject(accessKeys) || Object.keys(accessKeys).some((key) => key !== "scopes") || !("scopes" in accessKeys)) {
+      throw commandError(
+        "Invalid Capsule Access-key declaration.",
+        "Declare accessKeys as { scopes: readonly string[] } with no additional fields.",
+        "INVALID_ACCESS_KEY_DECLARATION"
+      );
+    }
+    const scopes = normalizeConcreteScopes(accessKeys.scopes, {
+      allowOmission: false,
+      code: "INVALID_ACCESS_KEY_SCOPE",
+      hint: "Declare up to 1,024 unique concrete scope strings of at most 256 UTF-8 bytes."
+    });
+    normalized = {
+      ...definition,
+      accessKeys: Object.freeze({ scopes: Object.freeze(scopes) })
+    };
   }
-  const accessKeys = definition.accessKeys;
-  if (!isPlainObject(accessKeys) || Object.keys(accessKeys).some((key) => key !== "scopes") || !("scopes" in accessKeys)) {
+  return normalizeFileAccessKeyPolicy(normalized);
+}
+function normalizeFileAccessKeyPolicy(definition) {
+  if (definition.files?.accessKeys === void 0) return definition;
+  const policy = definition.files.accessKeys;
+  if (!isPlainObject(policy) || Object.keys(policy).some((key) => key !== "read") || !("read" in policy)) {
     throw commandError(
-      "Invalid Capsule Access-key declaration.",
-      "Declare accessKeys as { scopes: readonly string[] } with no additional fields.",
-      "INVALID_ACCESS_KEY_DECLARATION"
+      "Invalid private File Access-key policy.",
+      "Declare files.accessKeys as { read: { scopes?: readonly string[] } }.",
+      "INVALID_FILE_ACCESS_KEY_POLICY"
     );
   }
-  const scopes = normalizeConcreteScopes(accessKeys.scopes, {
-    allowOmission: false,
-    code: "INVALID_ACCESS_KEY_SCOPE",
-    hint: "Declare up to 1,024 unique concrete scope strings of at most 256 UTF-8 bytes."
+  const read = policy.read;
+  if (!isPlainObject(read) || Object.keys(read).some((key) => key !== "scopes")) {
+    throw commandError(
+      "Invalid private File Access-key read policy.",
+      "Declare files.accessKeys.read as { scopes?: readonly string[] }.",
+      "INVALID_FILE_ACCESS_KEY_POLICY"
+    );
+  }
+  const scopes = normalizeConcreteScopes(read.scopes, {
+    allowOmission: true,
+    code: "INVALID_FILE_ACCESS_KEY_POLICY",
+    hint: "File read scopes must be omitted or be a non-empty list of unique concrete Capsule scopes."
   });
+  const declaredScopes = new Set(definition.accessKeys?.scopes ?? []);
+  if (scopes.some((scope) => !declaredScopes.has(scope))) {
+    throw commandError(
+      "Invalid private File Access-key read policy.",
+      "Every File read scope must be declared in capsule({ accessKeys: { scopes } }).",
+      "INVALID_FILE_ACCESS_KEY_POLICY"
+    );
+  }
   return {
     ...definition,
-    accessKeys: Object.freeze({ scopes: Object.freeze(scopes) })
+    files: {
+      ...definition.files,
+      accessKeys: Object.freeze({
+        read: Object.freeze(read.scopes === void 0 ? {} : { scopes: Object.freeze(scopes) })
+      })
+    }
   };
 }
 function validateCapsuleAuthRequirements(definition) {
@@ -2463,6 +2505,41 @@ export function capsule(definition) {
       throw error;
     }
     normalized = { ...definition, accessKeys: Object.freeze({ scopes: Object.freeze([...scopes]) }) };
+  }
+  if (normalized.files?.accessKeys !== undefined) {
+    const policy = normalized.files.accessKeys;
+    if (!plainObject(policy) || Object.keys(policy).some((key) => key !== "read") || !("read" in policy)) {
+      const error = new Error("Invalid private File Access-key policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    const read = policy.read;
+    if (!plainObject(read) || Object.keys(read).some((key) => key !== "scopes")) {
+      const error = new Error("Invalid private File Access-key read policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    const scopes = read.scopes ?? [];
+    const malformedScopes = read.scopes !== undefined && (
+      !Array.isArray(scopes) || scopes.length === 0 || scopes.length > 1024 ||
+      scopes.some((scope) => typeof scope !== "string" || scope.length === 0 || scope.includes("*") || new TextEncoder().encode(scope).byteLength > 256) ||
+      new Set(scopes).size !== scopes.length
+    );
+    const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
+    if (malformedScopes || scopes.some((scope) => !declaredScopes.has(scope))) {
+      const error = new Error("Invalid private File Access-key read policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    normalized = {
+      ...normalized,
+      files: {
+        ...normalized.files,
+        accessKeys: Object.freeze({
+          read: Object.freeze(read.scopes === undefined ? {} : { scopes: Object.freeze([...scopes]) }),
+        }),
+      },
+    };
   }
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
@@ -6173,6 +6250,546 @@ function chainMaybePromise(steps) {
   return pending ?? void 0;
 }
 
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
+var accessKeySecretDisclosedContexts = /* @__PURE__ */ new WeakSet();
+function accessKeyCrypto() {
+  return process.getBuiltinModule("node:crypto");
+}
+var ACCESS_KEY_CURRENT_LIMIT = 100;
+var ACCESS_KEY_RETAINED_LIMIT = 1e3;
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = /* @__PURE__ */ new Set([
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  "ACCESS_KEY_DELETE_REQUIRES_REVOKED",
+  "ACCESS_KEY_LIMIT_REACHED",
+  "ACCESS_KEY_NAME_CONFLICT",
+  "ACCESS_KEY_NOT_ACTIVE",
+  "ACCESS_KEY_NOT_FOUND",
+  "ACCESS_KEY_REVISION_CONFLICT",
+  "ACCESS_KEY_SECRET_CONFLICT",
+  "INVALID_ACCESS_KEY_EXPIRY",
+  "INVALID_ACCESS_KEY_GRANTS",
+  "INVALID_ACCESS_KEY_LIST_OPTIONS",
+  "INVALID_ACCESS_KEY_NAME"
+]);
+function publicAccessKeyManagementError(error) {
+  if (!PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES.has(error?.code)) return null;
+  return {
+    code: error.code,
+    message: error.message,
+    ...error.hint ? { hint: error.hint } : {}
+  };
+}
+function createAccessKeyTables(adapter) {
+  const sql = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_keys] ([id] TEXT PRIMARY KEY, [ownerUserId] TEXT NOT NULL, [name] TEXT NOT NULL, [reservedName] TEXT, [grantsJson] TEXT NOT NULL, [secretVersion] INTEGER NOT NULL, [selector] TEXT, [verifierDigest] TEXT, [lifecycleRevision] INTEGER NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT, [rotatedAt] TEXT, [revokedAt] TEXT, [revocationCause] TEXT, [lastUsedAt] TEXT)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_secret] ON [sporades_auth_access_keys] ([secretVersion], [selector])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_current_name] ON [sporades_auth_access_keys] ([ownerUserId], [reservedName])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE INDEX IF NOT EXISTS [sporades_auth_access_keys_owner_listing] ON [sporades_auth_access_keys] ([ownerUserId], [createdAt], [id])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] ([ownerUserId] TEXT PRIMARY KEY, [currentCount] INTEGER NOT NULL, [totalCount] INTEGER NOT NULL, [operationRevision] INTEGER NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] ([name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
+    )),
+    () => adapter.prepare(sql(
+      "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) ON CONFLICT ([name]) DO NOTHING"
+    )).run("selector", 0)
+  ]);
+}
+function createCurrentUserAccessKeysApi(database, contextGetter) {
+  return {
+    async issue(input) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        const record = {
+          id: accessKeyCrypto().randomUUID(),
+          ownerUserId: context.auth.userId,
+          name: normalized.name,
+          reservedName: normalized.name,
+          grantsJson: JSON.stringify(normalized.grants),
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          lifecycleRevision: 1,
+          createdAt: normalized.createdAt,
+          expiresAt: normalized.expiresAt
+        };
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
+        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
+        accessKeySecretDisclosedContexts.add(context);
+        await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError(
+        "Could not generate a unique Access key.",
+        "Retry Access-key issuance.",
+        "ACCESS_KEY_SECRET_CONFLICT"
+      );
+    },
+    async list(options = {}) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyListOptions(options);
+      const rows = await database.adapter.listAccessKeyRecordsForOwner(context.auth.userId);
+      return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+    },
+    async revoke(id) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const now = database.clock.now().toISOString();
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
+      if (!outcome) throw accessKeyNotFoundError();
+      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
+      await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+      return { accessKey };
+    },
+    async rotate(id, options) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      if (!isPlainObject2(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+        throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
+      }
+      const rotatedAt = database.clock.now().toISOString();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
+          ownerUserId: context.auth.userId,
+          id,
+          lifecycleRevision: options.lifecycleRevision,
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          rotatedAt
+        }));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
+        if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
+        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
+        accessKeySecretDisclosedContexts.add(context);
+        await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
+    },
+    async delete(id) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
+      if (outcome.status === "not-found") throw accessKeyNotFoundError();
+      if (outcome.status === "requires-revoked") {
+        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+      }
+      await emitOwnerAccessKeyAudit(database, "access-key.deleted", context, { id, name: outcome.record.name, grants: [] });
+      return { id, deleted: true };
+    }
+  };
+}
+function readAccessKeyAuthorization(request) {
+  const values = [];
+  if (Array.isArray(request?.rawHeaders)) {
+    for (let index = 0; index < request.rawHeaders.length; index += 2) {
+      if (String(request.rawHeaders[index]).toLowerCase() === "authorization") {
+        values.push(String(request.rawHeaders[index + 1] ?? ""));
+      }
+    }
+  } else {
+    const value2 = request?.headers?.authorization;
+    if (Array.isArray(value2)) values.push(...value2.map(String));
+    else if (value2 !== void 0) values.push(String(value2));
+  }
+  if (values.length === 0) return null;
+  if (values.length !== 1) throw accessKeyAuthenticationError("malformed");
+  const value = values[0];
+  if (/[,\u0000-\u001f\u007f]/.test(value)) throw accessKeyAuthenticationError("malformed");
+  const matched = value.match(/^Bearer (spk_1_([A-Za-z0-9_-]{22})_([A-Za-z0-9_-]{43}))$/i);
+  if (!matched || !matched[1].startsWith("spk_1_")) throw accessKeyAuthenticationError("malformed");
+  return { token: matched[1], selector: matched[2], verifier: matched[3] };
+}
+async function resolveAccessKeyCredential(database, request, sessionToken) {
+  const source = accessKeySourceBucket(request);
+  assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
+  let parsed;
+  try {
+    parsed = readAccessKeyAuthorization(request);
+  } catch (error) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    throw error;
+  }
+  if (!parsed) return null;
+  if (sessionToken !== null && sessionToken !== void 0) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    throw accessKeyAuthenticationError("dual");
+  }
+  const selectorFingerprint = accessKeySelectorFingerprint(parsed.selector);
+  assertAccessKeyFailureLimit(database, "selector", selectorFingerprint, 10, 5 * 6e4);
+  const row = await database.adapter.findAccessKeyAuthenticationRecord(parsed.selector);
+  const candidateDigest = Buffer.from(accessKeyVerifierDigest(parsed.selector, parsed.verifier), "hex");
+  let storedDigest = UNKNOWN_ACCESS_KEY_DIGEST;
+  if (typeof row?.verifierDigest === "string" && /^[a-f0-9]{64}$/i.test(row.verifierDigest)) {
+    storedDigest = Buffer.from(row.verifierDigest, "hex");
+  }
+  const verified = accessKeyCrypto().timingSafeEqual(candidateDigest, storedDigest);
+  const now = database.clock.now();
+  let failure = null;
+  if (!verified || !row) failure = "invalid";
+  else if (row.revokedAt) failure = "revoked";
+  else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
+  else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  if (failure) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 6e4);
+    throw accessKeyAuthenticationError(failure);
+  }
+  clearAccessKeyFailure(database, "selector", selectorFingerprint);
+  return {
+    auth: protectAccessKeyValue({
+      userId: row.ownerUserId,
+      displayName: row.ownerDisplayName,
+      email: row.ownerEmail ?? null,
+      picture: row.ownerPicture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "access-key"
+    }),
+    credential: protectAccessKeyValue({ kind: "access-key", id: row.id, name: row.name }),
+    grants: JSON.parse(row.grantsJson),
+    record: row,
+    admittedAt: now.toISOString()
+  };
+}
+function accessKeyAuthenticationError(reason, limited = false) {
+  const error = commandError(
+    limited ? "Too many authentication attempts." : "Unauthenticated.",
+    limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
+    limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED"
+  );
+  error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
+  error.sporadesAccessKeyReason = reason;
+  return error;
+}
+function emitAccessKeyAdmittedAudit(database, context, record) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "access-key.admitted",
+    level: "info",
+    message: "Access key admitted for its owner.",
+    data: {
+      actor: { userId: context.auth.userId },
+      credential: { kind: "access-key", id: context.credential.id, name: context.credential.name },
+      accessKey: { id: record.id, name: record.name },
+      handler: { kind: context.kind, path: context.request?.path ?? null }
+    }
+  });
+}
+function accessKeyCredentialLogAttribution(context) {
+  if (context?.credential?.kind !== "access-key") return {};
+  return {
+    credential: {
+      kind: "access-key",
+      id: context.credential.id,
+      name: context.credential.name
+    }
+  };
+}
+async function recordAccessKeyUsage(database, admission) {
+  const root = database.__rootDatabase ?? database;
+  const touches = root.__accessKeyUsageTouches ??= /* @__PURE__ */ new Map();
+  const admittedAtMs = Date.parse(admission.admittedAt);
+  const previous = touches.get(admission.record.id);
+  if (previous !== void 0 && admittedAtMs - previous < 60 * 6e4) return;
+  touches.delete(admission.record.id);
+  touches.set(admission.record.id, admittedAtMs);
+  for (const [id, touchedAt] of touches) {
+    if (admittedAtMs - touchedAt >= 60 * 6e4 || touches.size > 1e4) touches.delete(id);
+    else break;
+  }
+  try {
+    const coalesceBefore = new Date(admittedAtMs - 60 * 6e4).toISOString();
+    await database.adapter.touchAccessKeyLastUsed(admission.record.id, admission.admittedAt, coalesceBefore);
+  } catch {
+  }
+}
+function createAccessKeySecret() {
+  const selector = accessKeyCrypto().randomBytes(16).toString("base64url");
+  const verifier = accessKeyCrypto().randomBytes(32).toString("base64url");
+  return { selector, verifier, token: `spk_1_${selector}_${verifier}` };
+}
+function accessKeyVerifierDigest(selector, verifier) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-v1\0", "utf8").update(Buffer.from(selector, "base64url")).update(Buffer.from(verifier, "base64url")).digest("hex");
+}
+function requireOwnerSessionContext(context) {
+  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session" || context?.auth?.isAuthenticated !== true || context?.auth?.isGuest === true) {
+    throw commandError(
+      "Access-key owner approval requires a linked Session.",
+      "Sign in interactively and retry the Access-key operation.",
+      context?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED"
+    );
+  }
+  return context;
+}
+function normalizeAccessKeyIssue(input, declaredScopes, now) {
+  if (!isPlainObject2(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
+    throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const name = typeof input.name === "string" ? input.name.trim() : "";
+  if (!name || Array.from(name).length > 128) {
+    throw commandError("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const grants = normalizeAccessKeyGrants(input.grants, declaredScopes);
+  let expiresAt = null;
+  if (input.expiresAt !== void 0 && input.expiresAt !== null) {
+    const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= now.getTime()) {
+      throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+    }
+    expiresAt = new Date(parsed).toISOString();
+  }
+  return { name, grants, expiresAt, createdAt: now.toISOString() };
+}
+function normalizeAccessKeyGrants(value, declaredScopes) {
+  const grants = value === void 0 ? ["*"] : value;
+  if (!Array.isArray(grants) || grants.length === 0 || grants.length > ACCESS_KEY_GRANT_LIMIT) {
+    throw invalidAccessKeyGrantsError();
+  }
+  const result = [];
+  for (const grant of grants) {
+    if (typeof grant !== "string" || !grant || Buffer.byteLength(grant, "utf8") > ACCESS_KEY_GRANT_BYTE_LIMIT || result.includes(grant) || grant !== "*" && !declaredScopes.some((scope) => scopeGrantMatches(grant, scope))) {
+      throw invalidAccessKeyGrantsError();
+    }
+    result.push(grant);
+  }
+  result.sort();
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT) throw invalidAccessKeyGrantsError();
+  return result;
+}
+function normalizeAccessKeyListOptions(value) {
+  if (!isPlainObject2(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
+    throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  const limit = value.limit === void 0 ? 50 : value.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw commandError("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  if (value.status !== void 0 && !["active", "expired", "revoked"].includes(value.status)) {
+    throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  let cursor = null;
+  if (value.cursor !== void 0) {
+    try {
+      cursor = JSON.parse(Buffer.from(value.cursor, "base64url").toString("utf8"));
+    } catch {
+      cursor = null;
+    }
+    if (!isPlainObject2(cursor) || typeof cursor.createdAt !== "string" || typeof cursor.id !== "string") {
+      throw commandError("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    }
+  }
+  return { cursor, limit, status: value.status ?? null };
+}
+function accessKeyListPage(rows, declaredScopes, now, options) {
+  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
+  if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
+  const totalCount = summaries.length;
+  if (options.cursor) {
+    summaries = summaries.filter((summary) => summary.createdAt < options.cursor.createdAt || summary.createdAt === options.cursor.createdAt && summary.id < options.cursor.id);
+  }
+  const page = summaries.slice(0, options.limit);
+  const next = summaries.length > options.limit ? page.at(-1) : null;
+  return {
+    accessKeys: page,
+    declaredScopes: [...declaredScopes].sort(),
+    nextCursor: next ? Buffer.from(JSON.stringify({ createdAt: next.createdAt, id: next.id }), "utf8").toString("base64url") : null,
+    totalCount
+  };
+}
+function accessKeySummary(row, declaredScopes, now) {
+  const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
+  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
+  return {
+    id: row.id,
+    name: row.name,
+    grants: [...grants],
+    effectiveScopes: [...declaredScopes].filter((scope) => accessKeyGrantsSatisfyScopes(grants, [scope])).sort(),
+    status,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt ?? null,
+    rotatedAt: row.rotatedAt ?? null,
+    revokedAt: row.revokedAt ?? null,
+    revocationCause: row.revocationCause ?? null,
+    lastUsedAt: row.lastUsedAt ?? null,
+    lifecycleRevision: Number(row.lifecycleRevision)
+  };
+}
+function withAccessKeyTransaction(database, operation) {
+  return database.__transactionActive ? operation(database.adapter) : database.adapter.withTransaction(operation);
+}
+async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
+  const issued = event === "access-key.issued";
+  const rotated = event === "access-key.rotated";
+  const deleted = event === "access-key.deleted";
+  const input = {
+    category: "platform",
+    event,
+    level: "info",
+    message: issued ? "Access key issued by its owner." : rotated ? "Access key rotated by its owner." : deleted ? "Access-key history deleted by its owner." : "Access key revoked by its owner.",
+    data: {
+      operation: issued ? "accessKeys.issue" : rotated ? "accessKeys.rotate" : deleted ? "accessKeys.delete" : "accessKeys.revoke",
+      executionSource: "server-context",
+      outcome: "succeeded",
+      actor: { userId: context.auth.userId },
+      credential: { kind: "session" },
+      accessKey: {
+        id: accessKey.id,
+        ...accessKey.name ? { name: accessKey.name } : {},
+        ...issued || rotated ? { grants: [...accessKey.grants] } : {}
+      }
+    }
+  };
+  if (database.__transactionActive) {
+    const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
+    if (events.length === 0) accessKeyLifecycleAuditEventsByContext.set(context, events);
+    events.push(input);
+    return;
+  }
+  try {
+    await database.log?.emit?.(input);
+  } catch {
+  }
+}
+async function flushAccessKeyLifecycleAuditEvents(database, context) {
+  if (!context) return;
+  const events = accessKeyLifecycleAuditEventsByContext.get(context);
+  if (!Array.isArray(events) || !context) return;
+  accessKeyLifecycleAuditEventsByContext.delete(context);
+  for (const event of events) {
+    try {
+      await database.log?.emit?.(event);
+    } catch {
+    }
+  }
+}
+function dropAccessKeyLifecycleAuditEvents(context) {
+  if (context) accessKeyLifecycleAuditEventsByContext.delete(context);
+}
+function transferAccessKeyRuntimeState(previousContext, nextContext) {
+  const events = accessKeyLifecycleAuditEventsByContext.get(previousContext);
+  if (events) {
+    accessKeyLifecycleAuditEventsByContext.delete(previousContext);
+    accessKeyLifecycleAuditEventsByContext.set(nextContext, events);
+  }
+  if (accessKeySecretDisclosedContexts.has(previousContext)) {
+    accessKeySecretDisclosedContexts.delete(previousContext);
+    accessKeySecretDisclosedContexts.add(nextContext);
+  }
+}
+function accessKeySecretWasDisclosed(context) {
+  return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+async function emitAccessKeyOwnerTransitionAudits(database, input) {
+  for (const record of input.records ?? []) {
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.revoked",
+        level: "info",
+        message: "Access key retired by an owner security transition.",
+        data: {
+          operation: input.operation,
+          executionSource: "auth-runtime",
+          outcome: "succeeded",
+          actor: input.actor,
+          target: { ownerUserId: input.ownerUserId },
+          ...input.credential ? { credential: input.credential } : {},
+          accessKey: { id: record.id, name: record.name },
+          revocationCause: input.revocationCause
+        }
+      });
+    } catch {
+    }
+  }
+}
+function protectAccessKeyValue(value) {
+  const target = Object.freeze({ ...value });
+  const tampered = () => {
+    throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+  };
+  return new Proxy(target, { set: tampered, defineProperty: tampered, deleteProperty: tampered, setPrototypeOf: tampered });
+}
+function accessKeySelectorFingerprint(selector) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
+}
+function accessKeySourceBucket(request) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
+}
+function accessKeyLimiter(database, kind) {
+  const root = database.__rootDatabase ?? database;
+  root.__accessKeyFailureLimiters ??= { source: /* @__PURE__ */ new Map(), selector: /* @__PURE__ */ new Map() };
+  return root.__accessKeyFailureLimiters[kind];
+}
+function assertAccessKeyFailureLimit(database, kind, key, limit, windowMs) {
+  const state = accessKeyLimiter(database, kind).get(key);
+  const now = database.clock.now().getTime();
+  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+}
+function recordAccessKeyFailure(database, kind, key, windowMs) {
+  const limiter = accessKeyLimiter(database, kind);
+  const now = database.clock.now().getTime();
+  const previous = limiter.get(key);
+  const state = !previous || now - previous.startedAt >= windowMs ? { count: 1, startedAt: now, lastSeenAt: now } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
+  limiter.delete(key);
+  limiter.set(key, state);
+  for (const [candidate, candidateState] of limiter) {
+    if (now - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
+    else break;
+  }
+}
+function clearAccessKeyFailure(database, kind, key) {
+  accessKeyLimiter(database, kind).delete(key);
+}
+function throwAccessKeyIssueError(status) {
+  if (status === "owner-ineligible") {
+    throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
+  }
+  if (status === "name-conflict") {
+    throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
+  }
+  throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+}
+function accessKeyNotFoundError() {
+  return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
+}
+function invalidAccessKeyGrantsError() {
+  return commandError(
+    "Invalid Access-key grants.",
+    "Use 1 through 128 unique grant expressions that match the Capsule's declared scopes.",
+    "INVALID_ACCESS_KEY_GRANTS"
+  );
+}
+function isPlainObject2(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
@@ -6944,546 +7561,6 @@ function dateValueError(fieldName) {
   );
 }
 
-// src/access-keys-runtime.ts
-var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
-var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
-var accessKeySecretDisclosedContexts = /* @__PURE__ */ new WeakSet();
-function accessKeyCrypto() {
-  return process.getBuiltinModule("node:crypto");
-}
-var ACCESS_KEY_CURRENT_LIMIT = 100;
-var ACCESS_KEY_RETAINED_LIMIT = 1e3;
-var ACCESS_KEY_GRANT_LIMIT = 128;
-var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
-var PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = /* @__PURE__ */ new Set([
-  "UNAUTHENTICATED",
-  "FORBIDDEN",
-  "ACCESS_KEY_DELETE_REQUIRES_REVOKED",
-  "ACCESS_KEY_LIMIT_REACHED",
-  "ACCESS_KEY_NAME_CONFLICT",
-  "ACCESS_KEY_NOT_ACTIVE",
-  "ACCESS_KEY_NOT_FOUND",
-  "ACCESS_KEY_REVISION_CONFLICT",
-  "ACCESS_KEY_SECRET_CONFLICT",
-  "INVALID_ACCESS_KEY_EXPIRY",
-  "INVALID_ACCESS_KEY_GRANTS",
-  "INVALID_ACCESS_KEY_LIST_OPTIONS",
-  "INVALID_ACCESS_KEY_NAME"
-]);
-function publicAccessKeyManagementError(error) {
-  if (!PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES.has(error?.code)) return null;
-  return {
-    code: error.code,
-    message: error.message,
-    ...error.hint ? { hint: error.hint } : {}
-  };
-}
-function createAccessKeyTables(adapter) {
-  const sql = adapter.dialect.sql;
-  return chainMaybePromise([
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_keys] ([id] TEXT PRIMARY KEY, [ownerUserId] TEXT NOT NULL, [name] TEXT NOT NULL, [reservedName] TEXT, [grantsJson] TEXT NOT NULL, [secretVersion] INTEGER NOT NULL, [selector] TEXT, [verifierDigest] TEXT, [lifecycleRevision] INTEGER NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT, [rotatedAt] TEXT, [revokedAt] TEXT, [revocationCause] TEXT, [lastUsedAt] TEXT)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_secret] ON [sporades_auth_access_keys] ([secretVersion], [selector])"
-    )),
-    () => adapter.exec(sql(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_current_name] ON [sporades_auth_access_keys] ([ownerUserId], [reservedName])"
-    )),
-    () => adapter.exec(sql(
-      "CREATE INDEX IF NOT EXISTS [sporades_auth_access_keys_owner_listing] ON [sporades_auth_access_keys] ([ownerUserId], [createdAt], [id])"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] ([ownerUserId] TEXT PRIMARY KEY, [currentCount] INTEGER NOT NULL, [totalCount] INTEGER NOT NULL, [operationRevision] INTEGER NOT NULL)"
-    )),
-    () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] ([name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
-    )),
-    () => adapter.prepare(sql(
-      "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) ON CONFLICT ([name]) DO NOTHING"
-    )).run("selector", 0)
-  ]);
-}
-function createCurrentUserAccessKeysApi(database, contextGetter) {
-  return {
-    async issue(input) {
-      const context = requireOwnerSessionContext(contextGetter());
-      const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const secret = createAccessKeySecret();
-        const record = {
-          id: accessKeyCrypto().randomUUID(),
-          ownerUserId: context.auth.userId,
-          name: normalized.name,
-          reservedName: normalized.name,
-          grantsJson: JSON.stringify(normalized.grants),
-          secretVersion: 1,
-          selector: secret.selector,
-          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
-          lifecycleRevision: 1,
-          createdAt: normalized.createdAt,
-          expiresAt: normalized.expiresAt
-        };
-        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
-        if (outcome.status === "selector-conflict") continue;
-        if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
-        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
-        accessKeySecretDisclosedContexts.add(context);
-        await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
-        return { accessKey, token: secret.token };
-      }
-      throw commandError(
-        "Could not generate a unique Access key.",
-        "Retry Access-key issuance.",
-        "ACCESS_KEY_SECRET_CONFLICT"
-      );
-    },
-    async list(options = {}) {
-      const context = requireOwnerSessionContext(contextGetter());
-      const normalized = normalizeAccessKeyListOptions(options);
-      const rows = await database.adapter.listAccessKeyRecordsForOwner(context.auth.userId);
-      return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
-    },
-    async revoke(id) {
-      const context = requireOwnerSessionContext(contextGetter());
-      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const now = database.clock.now().toISOString();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
-      if (!outcome) throw accessKeyNotFoundError();
-      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
-      await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
-      return { accessKey };
-    },
-    async rotate(id, options) {
-      const context = requireOwnerSessionContext(contextGetter());
-      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      if (!isPlainObject2(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
-        throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
-      }
-      const rotatedAt = database.clock.now().toISOString();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const secret = createAccessKeySecret();
-        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
-          ownerUserId: context.auth.userId,
-          id,
-          lifecycleRevision: options.lifecycleRevision,
-          secretVersion: 1,
-          selector: secret.selector,
-          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
-          rotatedAt
-        }));
-        if (outcome.status === "selector-conflict") continue;
-        if (outcome.status === "not-found") throw accessKeyNotFoundError();
-        if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
-        if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
-        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
-        accessKeySecretDisclosedContexts.add(context);
-        await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
-        return { accessKey, token: secret.token };
-      }
-      throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
-    },
-    async delete(id) {
-      const context = requireOwnerSessionContext(contextGetter());
-      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
-      if (outcome.status === "not-found") throw accessKeyNotFoundError();
-      if (outcome.status === "requires-revoked") {
-        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
-      }
-      await emitOwnerAccessKeyAudit(database, "access-key.deleted", context, { id, name: outcome.record.name, grants: [] });
-      return { id, deleted: true };
-    }
-  };
-}
-function readAccessKeyAuthorization(request) {
-  const values = [];
-  if (Array.isArray(request?.rawHeaders)) {
-    for (let index = 0; index < request.rawHeaders.length; index += 2) {
-      if (String(request.rawHeaders[index]).toLowerCase() === "authorization") {
-        values.push(String(request.rawHeaders[index + 1] ?? ""));
-      }
-    }
-  } else {
-    const value2 = request?.headers?.authorization;
-    if (Array.isArray(value2)) values.push(...value2.map(String));
-    else if (value2 !== void 0) values.push(String(value2));
-  }
-  if (values.length === 0) return null;
-  if (values.length !== 1) throw accessKeyAuthenticationError("malformed");
-  const value = values[0];
-  if (/[,\u0000-\u001f\u007f]/.test(value)) throw accessKeyAuthenticationError("malformed");
-  const matched = value.match(/^Bearer (spk_1_([A-Za-z0-9_-]{22})_([A-Za-z0-9_-]{43}))$/i);
-  if (!matched || !matched[1].startsWith("spk_1_")) throw accessKeyAuthenticationError("malformed");
-  return { token: matched[1], selector: matched[2], verifier: matched[3] };
-}
-async function resolveAccessKeyCredential(database, request, sessionToken) {
-  const source = accessKeySourceBucket(request);
-  assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
-  let parsed;
-  try {
-    parsed = readAccessKeyAuthorization(request);
-  } catch (error) {
-    recordAccessKeyFailure(database, "source", source, 6e4);
-    throw error;
-  }
-  if (!parsed) return null;
-  if (sessionToken !== null && sessionToken !== void 0) {
-    recordAccessKeyFailure(database, "source", source, 6e4);
-    throw accessKeyAuthenticationError("dual");
-  }
-  const selectorFingerprint = accessKeySelectorFingerprint(parsed.selector);
-  assertAccessKeyFailureLimit(database, "selector", selectorFingerprint, 10, 5 * 6e4);
-  const row = await database.adapter.findAccessKeyAuthenticationRecord(parsed.selector);
-  const candidateDigest = Buffer.from(accessKeyVerifierDigest(parsed.selector, parsed.verifier), "hex");
-  let storedDigest = UNKNOWN_ACCESS_KEY_DIGEST;
-  if (typeof row?.verifierDigest === "string" && /^[a-f0-9]{64}$/i.test(row.verifierDigest)) {
-    storedDigest = Buffer.from(row.verifierDigest, "hex");
-  }
-  const verified = accessKeyCrypto().timingSafeEqual(candidateDigest, storedDigest);
-  const now = database.clock.now();
-  let failure = null;
-  if (!verified || !row) failure = "invalid";
-  else if (row.revokedAt) failure = "revoked";
-  else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
-  else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
-  if (failure) {
-    recordAccessKeyFailure(database, "source", source, 6e4);
-    recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 6e4);
-    throw accessKeyAuthenticationError(failure);
-  }
-  clearAccessKeyFailure(database, "selector", selectorFingerprint);
-  return {
-    auth: protectAccessKeyValue({
-      userId: row.ownerUserId,
-      displayName: row.ownerDisplayName,
-      email: row.ownerEmail ?? null,
-      picture: row.ownerPicture ?? null,
-      isAuthenticated: true,
-      isGuest: false,
-      provider: "access-key"
-    }),
-    credential: protectAccessKeyValue({ kind: "access-key", id: row.id, name: row.name }),
-    grants: JSON.parse(row.grantsJson),
-    record: row,
-    admittedAt: now.toISOString()
-  };
-}
-function accessKeyAuthenticationError(reason, limited = false) {
-  const error = commandError(
-    limited ? "Too many authentication attempts." : "Unauthenticated.",
-    limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
-    limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED"
-  );
-  error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
-  error.sporadesAccessKeyReason = reason;
-  return error;
-}
-function emitAccessKeyAdmittedAudit(database, context, record) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "access-key.admitted",
-    level: "info",
-    message: "Access key admitted for its owner.",
-    data: {
-      actor: { userId: context.auth.userId },
-      credential: { kind: "access-key", id: context.credential.id, name: context.credential.name },
-      accessKey: { id: record.id, name: record.name },
-      handler: { kind: context.kind, path: context.request?.path ?? null }
-    }
-  });
-}
-function accessKeyCredentialLogAttribution(context) {
-  if (context?.credential?.kind !== "access-key") return {};
-  return {
-    credential: {
-      kind: "access-key",
-      id: context.credential.id,
-      name: context.credential.name
-    }
-  };
-}
-async function recordAccessKeyUsage(database, admission) {
-  const root = database.__rootDatabase ?? database;
-  const touches = root.__accessKeyUsageTouches ??= /* @__PURE__ */ new Map();
-  const admittedAtMs = Date.parse(admission.admittedAt);
-  const previous = touches.get(admission.record.id);
-  if (previous !== void 0 && admittedAtMs - previous < 60 * 6e4) return;
-  touches.delete(admission.record.id);
-  touches.set(admission.record.id, admittedAtMs);
-  for (const [id, touchedAt] of touches) {
-    if (admittedAtMs - touchedAt >= 60 * 6e4 || touches.size > 1e4) touches.delete(id);
-    else break;
-  }
-  try {
-    const coalesceBefore = new Date(admittedAtMs - 60 * 6e4).toISOString();
-    await database.adapter.touchAccessKeyLastUsed(admission.record.id, admission.admittedAt, coalesceBefore);
-  } catch {
-  }
-}
-function createAccessKeySecret() {
-  const selector = accessKeyCrypto().randomBytes(16).toString("base64url");
-  const verifier = accessKeyCrypto().randomBytes(32).toString("base64url");
-  return { selector, verifier, token: `spk_1_${selector}_${verifier}` };
-}
-function accessKeyVerifierDigest(selector, verifier) {
-  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-v1\0", "utf8").update(Buffer.from(selector, "base64url")).update(Buffer.from(verifier, "base64url")).digest("hex");
-}
-function requireOwnerSessionContext(context) {
-  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session" || context?.auth?.isAuthenticated !== true || context?.auth?.isGuest === true) {
-    throw commandError(
-      "Access-key owner approval requires a linked Session.",
-      "Sign in interactively and retry the Access-key operation.",
-      context?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED"
-    );
-  }
-  return context;
-}
-function normalizeAccessKeyIssue(input, declaredScopes, now) {
-  if (!isPlainObject2(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
-    throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
-  }
-  const name = typeof input.name === "string" ? input.name.trim() : "";
-  if (!name || Array.from(name).length > 128) {
-    throw commandError("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
-  }
-  const grants = normalizeAccessKeyGrants(input.grants, declaredScopes);
-  let expiresAt = null;
-  if (input.expiresAt !== void 0 && input.expiresAt !== null) {
-    const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed <= now.getTime()) {
-      throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
-    }
-    expiresAt = new Date(parsed).toISOString();
-  }
-  return { name, grants, expiresAt, createdAt: now.toISOString() };
-}
-function normalizeAccessKeyGrants(value, declaredScopes) {
-  const grants = value === void 0 ? ["*"] : value;
-  if (!Array.isArray(grants) || grants.length === 0 || grants.length > ACCESS_KEY_GRANT_LIMIT) {
-    throw invalidAccessKeyGrantsError();
-  }
-  const result = [];
-  for (const grant of grants) {
-    if (typeof grant !== "string" || !grant || Buffer.byteLength(grant, "utf8") > ACCESS_KEY_GRANT_BYTE_LIMIT || result.includes(grant) || grant !== "*" && !declaredScopes.some((scope) => scopeGrantMatches(grant, scope))) {
-      throw invalidAccessKeyGrantsError();
-    }
-    result.push(grant);
-  }
-  result.sort();
-  if (Buffer.byteLength(JSON.stringify(result), "utf8") > ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT) throw invalidAccessKeyGrantsError();
-  return result;
-}
-function normalizeAccessKeyListOptions(value) {
-  if (!isPlainObject2(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
-    throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
-  }
-  const limit = value.limit === void 0 ? 50 : value.limit;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    throw commandError("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
-  }
-  if (value.status !== void 0 && !["active", "expired", "revoked"].includes(value.status)) {
-    throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
-  }
-  let cursor = null;
-  if (value.cursor !== void 0) {
-    try {
-      cursor = JSON.parse(Buffer.from(value.cursor, "base64url").toString("utf8"));
-    } catch {
-      cursor = null;
-    }
-    if (!isPlainObject2(cursor) || typeof cursor.createdAt !== "string" || typeof cursor.id !== "string") {
-      throw commandError("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
-    }
-  }
-  return { cursor, limit, status: value.status ?? null };
-}
-function accessKeyListPage(rows, declaredScopes, now, options) {
-  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
-  if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
-  const totalCount = summaries.length;
-  if (options.cursor) {
-    summaries = summaries.filter((summary) => summary.createdAt < options.cursor.createdAt || summary.createdAt === options.cursor.createdAt && summary.id < options.cursor.id);
-  }
-  const page = summaries.slice(0, options.limit);
-  const next = summaries.length > options.limit ? page.at(-1) : null;
-  return {
-    accessKeys: page,
-    declaredScopes: [...declaredScopes].sort(),
-    nextCursor: next ? Buffer.from(JSON.stringify({ createdAt: next.createdAt, id: next.id }), "utf8").toString("base64url") : null,
-    totalCount
-  };
-}
-function accessKeySummary(row, declaredScopes, now) {
-  const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
-  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
-  return {
-    id: row.id,
-    name: row.name,
-    grants: [...grants],
-    effectiveScopes: [...declaredScopes].filter((scope) => accessKeyGrantsSatisfyScopes(grants, [scope])).sort(),
-    status,
-    createdAt: row.createdAt,
-    expiresAt: row.expiresAt ?? null,
-    rotatedAt: row.rotatedAt ?? null,
-    revokedAt: row.revokedAt ?? null,
-    revocationCause: row.revocationCause ?? null,
-    lastUsedAt: row.lastUsedAt ?? null,
-    lifecycleRevision: Number(row.lifecycleRevision)
-  };
-}
-function withAccessKeyTransaction(database, operation) {
-  return database.__transactionActive ? operation(database.adapter) : database.adapter.withTransaction(operation);
-}
-async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
-  const issued = event === "access-key.issued";
-  const rotated = event === "access-key.rotated";
-  const deleted = event === "access-key.deleted";
-  const input = {
-    category: "platform",
-    event,
-    level: "info",
-    message: issued ? "Access key issued by its owner." : rotated ? "Access key rotated by its owner." : deleted ? "Access-key history deleted by its owner." : "Access key revoked by its owner.",
-    data: {
-      operation: issued ? "accessKeys.issue" : rotated ? "accessKeys.rotate" : deleted ? "accessKeys.delete" : "accessKeys.revoke",
-      executionSource: "server-context",
-      outcome: "succeeded",
-      actor: { userId: context.auth.userId },
-      credential: { kind: "session" },
-      accessKey: {
-        id: accessKey.id,
-        ...accessKey.name ? { name: accessKey.name } : {},
-        ...issued || rotated ? { grants: [...accessKey.grants] } : {}
-      }
-    }
-  };
-  if (database.__transactionActive) {
-    const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
-    if (events.length === 0) accessKeyLifecycleAuditEventsByContext.set(context, events);
-    events.push(input);
-    return;
-  }
-  try {
-    await database.log?.emit?.(input);
-  } catch {
-  }
-}
-async function flushAccessKeyLifecycleAuditEvents(database, context) {
-  if (!context) return;
-  const events = accessKeyLifecycleAuditEventsByContext.get(context);
-  if (!Array.isArray(events) || !context) return;
-  accessKeyLifecycleAuditEventsByContext.delete(context);
-  for (const event of events) {
-    try {
-      await database.log?.emit?.(event);
-    } catch {
-    }
-  }
-}
-function dropAccessKeyLifecycleAuditEvents(context) {
-  if (context) accessKeyLifecycleAuditEventsByContext.delete(context);
-}
-function transferAccessKeyRuntimeState(previousContext, nextContext) {
-  const events = accessKeyLifecycleAuditEventsByContext.get(previousContext);
-  if (events) {
-    accessKeyLifecycleAuditEventsByContext.delete(previousContext);
-    accessKeyLifecycleAuditEventsByContext.set(nextContext, events);
-  }
-  if (accessKeySecretDisclosedContexts.has(previousContext)) {
-    accessKeySecretDisclosedContexts.delete(previousContext);
-    accessKeySecretDisclosedContexts.add(nextContext);
-  }
-}
-function accessKeySecretWasDisclosed(context) {
-  return Boolean(context && accessKeySecretDisclosedContexts.has(context));
-}
-async function emitAccessKeyOwnerTransitionAudits(database, input) {
-  for (const record of input.records ?? []) {
-    try {
-      await database.log?.emit?.({
-        category: "platform",
-        event: "access-key.revoked",
-        level: "info",
-        message: "Access key retired by an owner security transition.",
-        data: {
-          operation: input.operation,
-          executionSource: "auth-runtime",
-          outcome: "succeeded",
-          actor: input.actor,
-          target: { ownerUserId: input.ownerUserId },
-          ...input.credential ? { credential: input.credential } : {},
-          accessKey: { id: record.id, name: record.name },
-          revocationCause: input.revocationCause
-        }
-      });
-    } catch {
-    }
-  }
-}
-function protectAccessKeyValue(value) {
-  const target = Object.freeze({ ...value });
-  const tampered = () => {
-    throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
-  };
-  return new Proxy(target, { set: tampered, defineProperty: tampered, deleteProperty: tampered, setPrototypeOf: tampered });
-}
-function accessKeySelectorFingerprint(selector) {
-  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
-}
-function accessKeySourceBucket(request) {
-  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
-}
-function accessKeyLimiter(database, kind) {
-  const root = database.__rootDatabase ?? database;
-  root.__accessKeyFailureLimiters ??= { source: /* @__PURE__ */ new Map(), selector: /* @__PURE__ */ new Map() };
-  return root.__accessKeyFailureLimiters[kind];
-}
-function assertAccessKeyFailureLimit(database, kind, key, limit, windowMs) {
-  const state = accessKeyLimiter(database, kind).get(key);
-  const now = database.clock.now().getTime();
-  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
-}
-function recordAccessKeyFailure(database, kind, key, windowMs) {
-  const limiter = accessKeyLimiter(database, kind);
-  const now = database.clock.now().getTime();
-  const previous = limiter.get(key);
-  const state = !previous || now - previous.startedAt >= windowMs ? { count: 1, startedAt: now, lastSeenAt: now } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
-  limiter.delete(key);
-  limiter.set(key, state);
-  for (const [candidate, candidateState] of limiter) {
-    if (now - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
-    else break;
-  }
-}
-function clearAccessKeyFailure(database, kind, key) {
-  accessKeyLimiter(database, kind).delete(key);
-}
-function throwAccessKeyIssueError(status) {
-  if (status === "owner-ineligible") {
-    throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
-  }
-  if (status === "name-conflict") {
-    throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
-  }
-  throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
-}
-function accessKeyNotFoundError() {
-  return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
-}
-function invalidAccessKeyGrantsError() {
-  return commandError(
-    "Invalid Access-key grants.",
-    "Use 1 through 128 unique grant expressions that match the Capsule's declared scopes.",
-    "INVALID_ACCESS_KEY_GRANTS"
-  );
-}
-function isPlainObject2(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 // src/acl-runtime.ts
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
@@ -7909,10 +7986,10 @@ function createTableAclContext(context, database) {
     acl: createAclHelpers(database, context)
   };
 }
-function createFileAclContext(auth, database) {
+function createFileAclContext(auth, database, credential = { kind: "session" }) {
   const context = {
     auth: Object.freeze({ ...auth }),
-    credential: Object.freeze({ kind: "session" })
+    credential: Object.freeze({ ...credential })
   };
   return Object.freeze({
     auth: context.auth,
@@ -7920,10 +7997,10 @@ function createFileAclContext(auth, database) {
     acl: createAclHelpers(database, context)
   });
 }
-function applyFileAcl(database, operation, row, auth) {
+function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
   const rule = database.fileAcl?.resolve?.(operation);
   if (!rule) return false;
-  const context = createFileAclContext(auth, database);
+  const context = createFileAclContext(auth, database, credential);
   const input = Object.freeze({
     ctx: context,
     operation,
@@ -9039,8 +9116,8 @@ function validatePublicUrlExpiry(options) {
   }
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
-async function fileRowForActor(database, auth, fileReference) {
-  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
   return resolved.ok ? resolved.row : null;
 }
 function fileMetadataFromRow(row) {
@@ -9145,11 +9222,11 @@ async function resolveLiveFileReference(database, ownerId, reference) {
   }
   return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
 }
-async function resolveAccessibleFileReference(database, auth, reference, operation) {
+async function resolveAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
   const resolved = await resolvePrivilegedLiveFileReference(database, reference);
   if (!resolved.ok || !resolved.row) return resolved;
   if (resolved.row.ownerId === auth?.userId) return resolved;
-  const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+  const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
   return { ok: true, row: allowed ? resolved.row : null };
 }
 async function resolvePrivilegedLiveFileReference(database, reference) {
@@ -9538,14 +9615,67 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
   const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : token ?? null);
-    const row = await fileRowForActor(database, session.auth, privateMatch[1]);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
+    const sessionToken = Array.isArray(token) ? token[0] : token ?? null;
+    const accessKeyPolicy = database.fileAccessKeyRead ?? null;
+    const hasAuthorization = request.headers.authorization !== void 0 || Array.isArray(request.rawHeaders) && request.rawHeaders.some((name, index) => index % 2 === 0 && String(name).toLowerCase() === "authorization");
+    let admittedWithAccessKey = false;
+    try {
+      let auth;
+      let credential;
+      if (accessKeyPolicy && hasAuthorization) {
+        const admission = await resolveAccessKeyCredential(database, request, token ?? null);
+        if (!admission) throw accessKeyAuthenticationError("missing");
+        auth = admission.auth;
+        credential = admission.credential;
+        admittedWithAccessKey = true;
+        if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+          const error = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+          error.sporadesAuthDenialLogData = {
+            requirement: "file-access-key-scopes",
+            handler: { kind: "file", path: requestUrl.pathname },
+            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
+            ...accessKeyCredentialLogAttribution({ credential })
+          };
+          throw error;
+        }
+        emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
+        await recordAccessKeyUsage(database, admission);
+      } else {
+        if (accessKeyPolicy && sessionToken === null) throw accessKeyAuthenticationError("missing");
+        const session = await resolveAnonymousSession(database, sessionToken);
+        auth = Object.freeze({ ...session.auth });
+        credential = Object.freeze({ kind: "session" });
+      }
+      if (admittedWithAccessKey) {
+        response.setHeader("cache-control", "private, no-store");
+        response.setHeader("pragma", "no-cache");
+      }
+      const row = await fileRowForActor(database, auth, privateMatch[1], credential);
+      if (!row || row.version !== requestUrl.searchParams.get("v")) {
+        writeNotFound(response);
+        return true;
+      }
+      await sendFileHttpResponse(database, response, row, { accessKey: admittedWithAccessKey });
+      return true;
+    } catch (error) {
+      if (admittedWithAccessKey || error?.sporadesAccessKeyFailure) {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("pragma", "no-cache");
+      }
+      if (error?.sporadesAuthDenialLogData) {
+        emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+      } else if (error?.sporadesAccessKeyFailure) {
+        emitAuthDeniedLog(database, { data: {
+          requirement: "file-access-key",
+          reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+          handler: { kind: "file", path: requestUrl.pathname },
+          actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null }
+        } });
+      }
+      emitHttpFailureLog(database, request, error);
+      writeEndpointError(response, error);
       return true;
     }
-    await sendFileHttpResponse(database, response, row);
-    return true;
   }
   const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
@@ -9568,12 +9698,13 @@ function writeNotFound(response) {
   response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
   response.end("Not found");
 }
-async function sendFileHttpResponse(database, response, row) {
+async function sendFileHttpResponse(database, response, row, options = {}) {
   try {
     const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable"
+      "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
+      ...options.accessKey ? { pragma: "no-cache" } : {}
     });
     response.end(bytes);
   } catch {
@@ -9614,7 +9745,7 @@ function writeEndpointResult(response, result) {
 function writeEndpointError(response, error) {
   const headers = { "content-type": "application/json; charset=utf-8" };
   if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
-    headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" ? 'Bearer realm="sporades", error="invalid_token"' : 'Bearer realm="sporades"';
+    headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" && error?.sporadesAccessKeyReason !== "missing" ? 'Bearer realm="sporades", error="invalid_token"' : 'Bearer realm="sporades"';
   }
   if (error?.sporadesAccessKeyFailure) {
     headers["cache-control"] = "no-store";
@@ -16612,6 +16743,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       }
     } : void 0,
     fileAcl,
+    fileAccessKeyRead: capsuleDefinition?.files?.accessKeys?.read ? Object.freeze({ scopes: Object.freeze([...capsuleDefinition.files.accessKeys.read.scopes ?? []]) }) : null,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,

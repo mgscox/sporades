@@ -106,6 +106,8 @@ test("the feature reference is split by lookup intent behind a compatible index"
   assert.match(jobs, /Inspect Jobs from the CLI/);
   assert.match(client, /Configure Microsoft sign-in/);
   assert.match(realtime, /User Journey Tracker/);
+  assert.match(realtime, /files\.accessKeys\.read/);
+  assert.match(realtime, /never replace ownership\s+or File ACL checks/i);
   assert.match(operations, /Sporades Doctor/);
 });
 

@@ -233,6 +233,41 @@ export function capsule(definition) {
     }
     normalized = { ...definition, accessKeys: Object.freeze({ scopes: Object.freeze([...scopes]) }) };
   }
+  if (normalized.files?.accessKeys !== undefined) {
+    const policy = normalized.files.accessKeys;
+    if (!plainObject(policy) || Object.keys(policy).some((key) => key !== "read") || !("read" in policy)) {
+      const error = new Error("Invalid private File Access-key policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    const read = policy.read;
+    if (!plainObject(read) || Object.keys(read).some((key) => key !== "scopes")) {
+      const error = new Error("Invalid private File Access-key read policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    const scopes = read.scopes ?? [];
+    const malformedScopes = read.scopes !== undefined && (
+      !Array.isArray(scopes) || scopes.length === 0 || scopes.length > 1024 ||
+      scopes.some((scope) => typeof scope !== "string" || scope.length === 0 || scope.includes("*") || new TextEncoder().encode(scope).byteLength > 256) ||
+      new Set(scopes).size !== scopes.length
+    );
+    const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
+    if (malformedScopes || scopes.some((scope) => !declaredScopes.has(scope))) {
+      const error = new Error("Invalid private File Access-key read policy.");
+      error.code = "INVALID_FILE_ACCESS_KEY_POLICY";
+      throw error;
+    }
+    normalized = {
+      ...normalized,
+      files: {
+        ...normalized.files,
+        accessKeys: Object.freeze({
+          read: Object.freeze(read.scopes === undefined ? {} : { scopes: Object.freeze([...scopes]) }),
+        }),
+      },
+    };
+  }
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
