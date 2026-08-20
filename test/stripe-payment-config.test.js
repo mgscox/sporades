@@ -10,7 +10,7 @@ const enabledStripeConfig = {
   secretKeyEnv: "STRIPE_SECRET_KEY",
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
-  callbackPath: "/__sporades/stripe/webhook",
+  callbackPath: "/stripe/webhook",
   apiVersion: "2026-07-29.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
@@ -93,6 +93,22 @@ test("Stripe return authority admits hosted HTTPS and explicit loopback HTTP ori
       assert.doesNotMatch(`${error.message}\n${error.hint}`, /user:secret|tenant=other/);
       return true;
     }, publicOrigin);
+  }
+});
+
+test("Stripe callback paths cannot occupy runtime-owned HTTP namespaces", () => {
+  for (const callbackPath of [
+    "/__sporades/auth/google/callback",
+    "/__sporades/uploads/upload-id",
+    "/__sporades/files/private/file-id",
+    "/__sporades/health/runtime",
+    "/__sporades/debug/auth/clients",
+  ]) {
+    assert.throws(
+      () => validatePaymentsConfig({ stripe: { ...enabledStripeConfig, callbackPath } }),
+      (error) => error.code === "INVALID_STRIPE_PAYMENTS_CONFIG",
+      callbackPath,
+    );
   }
 });
 

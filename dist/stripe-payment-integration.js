@@ -11,8 +11,9 @@ const DISABLED_RESULT = Object.freeze({
 /**
  * Creates the server-only Stripe integration used by generated Capsule wiring.
  * Dormant use receives no provider authority. Complete activation admits only
- * narrow validated Checkout and Customer Portal operations. Capsule code keeps
- * product, Customer association, and billing-holder authority outside Sporades.
+ * narrow validated Checkout, Customer Portal, and exact-byte callback
+ * verification operations. Capsule code keeps product, Customer association,
+ * billing-holder authority, and every payment consequence outside Sporades.
  */
 export function createStripePaymentIntegration(options) {
     if (options?.enabled !== false && options?.enabled !== true) {
@@ -81,8 +82,8 @@ export function createStripePaymentIntegration(options) {
                 }
                 return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
             },
-            async verifyWebhookEvent(_input) {
-                throw paymentError("STRIPE_WEBHOOKS_UNAVAILABLE", "Stripe callback admission is not available in this release.", "Keep the configured callback route unregistered until webhook support is implemented.", false);
+            async verifyWebhookEvent(input) {
+                return verifyStripeWebhookEvent(stripe, enabledConfig, options.env[enabledConfig.webhookSecretEnv], input);
             },
         });
     }
@@ -97,6 +98,67 @@ export function createStripePaymentIntegration(options) {
             return DISABLED_RESULT;
         },
     });
+}
+// Leave bounded envelope room beneath the Job Queue's 64 KiB payload contract.
+const MAX_VERIFIED_STRIPE_EVENT_BYTES = 60 * 1024;
+const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
+function verifyStripeWebhookEvent(stripe, config, secret, input) {
+    try {
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== "bodyBytes\0signature") {
+            throw new Error("invalid input");
+        }
+        if (!(input.bodyBytes instanceof Uint8Array) || input.bodyBytes.byteLength < 2 || input.bodyBytes.byteLength > MAX_VERIFIED_STRIPE_EVENT_BYTES) {
+            throw new Error("invalid body");
+        }
+        if (typeof input.signature !== "string" || input.signature.length < 1 || input.signature.length > 8 * 1024 || /[\r\n\0]/.test(input.signature)) {
+            throw new Error("invalid header");
+        }
+        const raw = stripe.webhooks.constructEvent(input.bodyBytes, input.signature, secret, STRIPE_WEBHOOK_TOLERANCE_SECONDS);
+        if (!isPlainJsonRecord(raw)
+            || raw.object !== "event"
+            || typeof raw.id !== "string"
+            || !/^evt_[A-Za-z0-9_]{1,240}$/.test(raw.id)
+            || typeof raw.type !== "string"
+            || !/^[a-z0-9_]+(?:\.[a-z0-9_]+)+$/.test(raw.type)
+            || raw.type.length > 200
+            || !Number.isInteger(raw.created)
+            || raw.created < 1
+            || typeof raw.livemode !== "boolean"
+            || raw.livemode !== config.livemode
+            || !isPlainJsonRecord(raw.data)
+            || !isPlainJsonRecord(raw.data.object)) {
+            throw new Error("invalid event");
+        }
+        const objectId = typeof raw.data.object.id === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(raw.data.object.id)
+            ? raw.data.object.id
+            : null;
+        const frozenRaw = deepFreezeJson(raw);
+        return Object.freeze({
+            provider: "stripe",
+            providerEventId: raw.id,
+            type: raw.type,
+            occurredAt: new Date(raw.created * 1000).toISOString(),
+            livemode: raw.livemode,
+            objectId,
+            raw: frozenRaw,
+        });
+    }
+    catch {
+        throw paymentError("STRIPE_WEBHOOK_REJECTED", "Stripe callback was rejected.", "Confirm the endpoint configuration and retry the provider delivery.", false);
+    }
+}
+function isPlainJsonRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+function deepFreezeJson(value) {
+    if (!value || typeof value !== "object" || Object.isFrozen(value))
+        return value;
+    for (const child of Object.values(value))
+        deepFreezeJson(child);
+    return Object.freeze(value);
 }
 function validateCustomerPortalInput(input, publicOrigin) {
     const keys = ["customerId", "idempotencyKey", "returnPath"];

@@ -48,8 +48,8 @@ export function validatePaymentsConfig(payments) {
         fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
     }
     validatePublicOrigin(stripe.publicOrigin);
-    if (!isSameOriginAbsolutePath(stripe.callbackPath)) {
-        fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path without a query or fragment.");
+    if (!isSameOriginAbsolutePath(stripe.callbackPath) || stripe.callbackPath === "/__sporades" || stripe.callbackPath.startsWith("/__sporades/")) {
+        fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
     }
     if (stripe.apiVersion !== STRIPE_API_VERSION) {
         fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);

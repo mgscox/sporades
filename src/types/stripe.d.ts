@@ -3,6 +3,7 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   secretKeyEnv: string;
   webhookSecretEnv: string;
   publicOrigin: string;
+  /** Runtime-owned POST path outside the reserved /__sporades namespace. */
   callbackPath: string;
   apiVersion: "2026-07-29.dahlia";
   livemode: boolean;
@@ -63,6 +64,24 @@ export type StripeCustomerPortalSessionResult = Readonly<{
   url: string;
 }>;
 
+export type StripeWebhookVerificationInput = Readonly<{
+  /** Exact bounded bytes received at the runtime-owned callback route. */
+  bodyBytes: Uint8Array;
+  /** Unmodified Stripe-Signature request header. */
+  signature: string;
+}>;
+
+/** Bounded provider value produced only after exact-byte signature verification. */
+export type VerifiedStripeEvent = Readonly<{
+  provider: "stripe";
+  providerEventId: string;
+  type: string;
+  occurredAt: string;
+  livemode: boolean;
+  objectId: string | null;
+  raw: Readonly<Record<string, unknown>>;
+}>;
+
 export type StripeDisabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: unknown): Promise<StripePaymentsDisabledResult>;
   createCustomerPortalSession(input: unknown): Promise<StripePaymentsDisabledResult>;
@@ -72,7 +91,7 @@ export type StripeDisabledPaymentIntegration = Readonly<{
 export type StripeEnabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: StripeCheckoutSessionInput): Promise<StripeCheckoutSessionResult>;
   createCustomerPortalSession(input: StripeCustomerPortalSessionInput): Promise<StripeCustomerPortalSessionResult>;
-  verifyWebhookEvent(input: unknown): Promise<never>;
+  verifyWebhookEvent(input: StripeWebhookVerificationInput): Promise<VerifiedStripeEvent>;
 }>;
 
 /** Narrow server-only payment operations; no raw Stripe client is exposed. */

@@ -489,13 +489,29 @@ and returns `{ ok: true, sessionId, url }` after binding the response to the
 requested Customer, configured account mode and return URL, and validating the
 exact `https://billing.stripe.com/p/session/...` authority. Provider timeouts,
 cancellation, retries, permanent rejection, and malformed responses follow the
-same bounded and redacted Job policy. Callback admission remains unavailable.
+same bounded and redacted Job policy.
+
+Enabled `verifyWebhookEvent` accepts only an exact `Uint8Array` body copy and
+the unmodified `Stripe-Signature` header. The official Stripe verifier checks
+the signature and its five-minute timestamp tolerance before JSON parsing. A
+successful call returns one frozen `VerifiedStripeEvent` containing provider
+Event identity, type, provider creation time, live/test mode, relevant object
+identity, and the verified raw provider value. Rejection is always the same
+bounded `STRIPE_WEBHOOK_REJECTED` error; provider diagnostics, expected
+signatures, payloads, and secrets are not exposed.
 
 The official server Stripe SDK is a Sporades dependency and is not copied into
 generated projects or browser Bundles. The real server Bundle inlines it. Keep
 provider credentials in Sealed Server env and provider identities in
-Capsule-owned server code. The payment foundation registers no Stripe callback
-route yet.
+Capsule-owned server code. Complete activation registers one runtime-owned POST
+callback route outside reserved `__sporades` namespaces. It admits every valid
+Stripe Event identity into one transaction-owned `_sporades.stripe-event` Job
+under the userless Privileged actor and acknowledges only after commit. Duplicate
+and concurrent delivery converges on the same Job. The Job payload is not shown
+by routine Job inspection, and admission creates no app billing records.
+Capsule code cannot enqueue the reserved handler by name, including from
+`ctx.privileged.run(...)`; only the active verified callback context receives
+the runtime-owned enqueue capability.
 
 ### Send SMTP mail
 

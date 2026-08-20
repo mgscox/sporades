@@ -14,7 +14,7 @@ const enabledConfig = {
   secretKeyEnv: "STRIPE_SECRET_KEY",
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
-  callbackPath: "/__sporades/stripe/webhook",
+  callbackPath: "/stripe/webhook",
   apiVersion: "2026-07-29.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
@@ -98,6 +98,98 @@ test("the integration grants no authority when activation options are incomplete
       assert.doesNotMatch(`${error.message}\n${error.hint}`, /sk_|whsec_|price_|cus_/i);
       return true;
     },
+  );
+});
+
+test("Stripe webhook verification preserves exact bytes and returns one bounded verified event", async () => {
+  const secret = "whsec_protocol_fixture";
+  const occurredAtSeconds = Math.floor(Date.now() / 1000);
+  const compact = JSON.stringify({
+    id: "evt_protocol_exact_1",
+    object: "event",
+    api_version: "2026-07-29.dahlia",
+    created: occurredAtSeconds,
+    data: { object: { id: "cs_test_exact_1", object: "checkout.session", customer: "cus_exact_1" } },
+    livemode: false,
+    pending_webhooks: 1,
+    request: { id: "req_exact_1", idempotency_key: null },
+    type: "checkout.session.completed",
+  });
+  const reordered = `{ "type": "checkout.session.completed", "request": { "id": "req_exact_1", "idempotency_key": null }, "pending_webhooks": 1, "livemode": false, "data": { "object": { "customer": "cus_exact_1", "object": "checkout.session", "id": "cs_test_exact_1" } }, "created": ${occurredAtSeconds}, "api_version": "2026-07-29.dahlia", "object": "event", "id": "evt_protocol_exact_1" }`;
+  assert.deepEqual(JSON.parse(compact), JSON.parse(reordered));
+  const signature = Stripe.webhooks.generateTestHeaderString({ payload: compact, secret, timestamp: occurredAtSeconds });
+  const integration = createStripePaymentIntegration({
+    enabled: true,
+    config: enabledConfig,
+    env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: secret },
+  });
+
+  const event = await integration.verifyWebhookEvent({
+    bodyBytes: new TextEncoder().encode(compact),
+    signature,
+  });
+
+  assert.deepEqual(event, {
+    provider: "stripe",
+    providerEventId: "evt_protocol_exact_1",
+    type: "checkout.session.completed",
+    occurredAt: new Date(occurredAtSeconds * 1000).toISOString(),
+    livemode: false,
+    objectId: "cs_test_exact_1",
+    raw: JSON.parse(compact),
+  });
+  assert.equal(Object.isFrozen(event), true);
+  assert.equal(Object.isFrozen(event.raw), true);
+  assert.equal(Object.isFrozen(event.raw.data.object), true);
+
+  await assert.rejects(
+    integration.verifyWebhookEvent({ bodyBytes: new TextEncoder().encode(reordered), signature }),
+    (error) => {
+      assert.equal(error.code, "STRIPE_WEBHOOK_REJECTED");
+      assert.equal(error.retryable, false);
+      assert.deepEqual(Object.keys(error).sort(), ["code", "hint", "retryable"]);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /signature|whsec_|expected|payload|json|evt_protocol/i);
+      return true;
+    },
+  );
+});
+
+test("Stripe webhook verification opaquely rejects unsafe request shapes", async () => {
+  const secret = "whsec_protocol_fixture";
+  const now = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({ id: "evt_protocol_invalid_1", object: "event", created: now, data: { object: { object: "customer" } }, livemode: false, type: "customer.updated" });
+  const validSignature = Stripe.webhooks.generateTestHeaderString({ payload, secret, timestamp: now });
+  const staleSignature = Stripe.webhooks.generateTestHeaderString({ payload, secret, timestamp: now - 301 });
+  const oversizedPayload = "x".repeat(60 * 1024 + 1);
+  const malformedEvent = JSON.stringify({ id: "evt_protocol_invalid_shape", object: "not-an-event", created: now, data: { object: {} }, livemode: false, type: "customer.updated" });
+  const integration = createStripePaymentIntegration({ enabled: true, config: enabledConfig, env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: secret } });
+
+  for (const input of [
+    { bodyBytes: new TextEncoder().encode(payload) },
+    { bodyBytes: new TextEncoder().encode(payload), signature: "malformed" },
+    { bodyBytes: new TextEncoder().encode(payload), signature: validSignature.replace(/v1=[^,]+/, "v1=wrong") },
+    { bodyBytes: new TextEncoder().encode(payload), signature: staleSignature },
+    { bodyBytes: new TextEncoder().encode("not-json"), signature: Stripe.webhooks.generateTestHeaderString({ payload: "not-json", secret, timestamp: now }) },
+    { bodyBytes: new TextEncoder().encode(oversizedPayload), signature: Stripe.webhooks.generateTestHeaderString({ payload: oversizedPayload, secret, timestamp: now }) },
+    { bodyBytes: new TextEncoder().encode(malformedEvent), signature: Stripe.webhooks.generateTestHeaderString({ payload: malformedEvent, secret, timestamp: now }) },
+    { bodyBytes: new TextEncoder().encode(payload), signature: validSignature, unexpected: true },
+  ]) {
+    await assert.rejects(integration.verifyWebhookEvent(input), (error) => {
+      assert.equal(error.code, "STRIPE_WEBHOOK_REJECTED");
+      assert.equal(error.retryable, false);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /signature|whsec_|expected|payload|json|evt_protocol|malformed/i);
+      return true;
+    });
+  }
+
+  const wrongSecretIntegration = createStripePaymentIntegration({
+    enabled: true,
+    config: enabledConfig,
+    env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_wrong_protocol_fixture" },
+  });
+  await assert.rejects(
+    wrongSecretIntegration.verifyWebhookEvent({ bodyBytes: new TextEncoder().encode(payload), signature: validSignature }),
+    (error) => error.code === "STRIPE_WEBHOOK_REJECTED" && error.retryable === false,
   );
 });
 

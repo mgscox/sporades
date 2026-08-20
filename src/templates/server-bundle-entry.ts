@@ -36,6 +36,7 @@ import {
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
+import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import {
   sporadesCapsuleModuleUrl,
   sporadesConfig,
@@ -84,6 +85,7 @@ if (sporadesAction) {
 }
 const database: any = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
+  createStripeCallbackEndpoint,
 });
 await database.init();
 database.log.emit({

@@ -100,13 +100,15 @@ import {
   finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
   normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
-  resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  STRIPE_EVENT_JOB,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -573,21 +575,40 @@ export async function openDevDatabase(
     ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
     : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+  const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
+    ? options?.createStripeCallbackEndpoint?.(
+        paymentsConfig,
+        serverEnv,
+        String(config.name ?? "capsule"),
+        options?.stripeCallbackAdmissionFault,
+      )
+    : null;
+  if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
+    throw commandError(
+      "Stripe callback integration is unavailable.",
+      "Build and run this Capsule with matching Sporades generated runtime artifacts.",
+      "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE",
+    );
+  }
+  const providerEndpoints: LooseRecord[] = [...emailEventEndpoints, ...(stripeCallbackEndpoint ? [stripeCallbackEndpoint] : [])];
+  for (const [providerIndex, providerEndpoint] of providerEndpoints.entries()) {
     const conflictsWithCapsule = capsuleEndpoints.some(
       (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
     );
-    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+    const conflictsWithProvider = providerEndpoints.slice(0, providerIndex).find(
       (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
     );
     if (conflictsWithCapsule || conflictsWithProvider) {
-      const error: any = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
-      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+      const stripeConflict = providerEndpoint.runtimeOwnedStripeCallback || conflictsWithProvider?.runtimeOwnedStripeCallback;
+      const error: any = new Error(stripeConflict
+        ? "Stripe callback route conflicts with another Capsule or provider route."
+        : "Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = stripeConflict ? "STRIPE_CALLBACK_ROUTE_CONFLICT" : "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Assign every Capsule endpoint and enabled provider a different path in sporades.json.";
       throw error;
     }
   }
-  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
+  const endpoints = [...capsuleEndpoints, ...providerEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   // Handler sources extracted from Capsule server code are re-created with
@@ -2808,11 +2829,17 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     typeof endpoint.handler === "function"
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
-  const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-  const session = (endpoint as LooseRecord).runtimeOwnedEmailEvent
+  const endpointRequest = await readEndpointRequest(
+    database,
+    requestUrl,
+    request,
+    !(endpoint as LooseRecord).runtimeOwnedStripeCallback,
+  );
+  const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
+  const session = runtimeOwnedProviderCallback
     ? { auth: {
         userId: privilegedAuthUserId(),
-        displayName: "Email provider callback",
+        displayName: (endpoint as LooseRecord).runtimeOwnedStripeCallback ? "Stripe provider callback" : "Email provider callback",
         email: null,
         picture: null,
         isAuthenticated: false,
@@ -2827,7 +2854,10 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       let handlerFailed = false;
       try {
         context = createEndpointContext(transactionDatabase, endpointRequest, session);
-        if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
+        if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
+          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+        }
+        if (!runtimeOwnedProviderCallback) {
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
         return await handler(context);
@@ -2909,7 +2939,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
   return transactionDatabase;
 }
 
-async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any) {
+async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -2917,7 +2947,7 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
     ]),
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database);
+  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
@@ -3422,10 +3452,11 @@ function referenceExists(database: LooseRecord, field: any, value: any) {
 // `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
 // first two are imported back at the top of this file; the other three have no consumer here.
 
-async function readEndpointPayload(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null) {
+async function readEndpointPayload(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null, parseJsonBody = true) {
   const raw = await readLimitedRequestBody(request, limitSource);
   const bodyBytes = immutableEndpointBodyBytes(raw);
   if (raw.byteLength === 0) return { body: null, bodyBytes };
+  if (!parseJsonBody) return { body: null, bodyBytes };
   const text = raw.toString("utf8");
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
     try {
@@ -5205,6 +5236,13 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       const queueDatabase = database.__rootDatabase ?? database;
       const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
+      if (
+        typeof handlerName === "string"
+        && handlerName.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX)
+        && Reflect.get(context, runtimeOwnedJobEnqueueHandler) !== handlerName
+      ) {
+        throw jobError("RESERVED_JOB_NAME", "Runtime-owned Job handlers cannot be enqueued by Capsule code.", "Use a Capsule-declared Job handler name.");
+      }
       const handler = database.jobs?.find((candidate: any) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");

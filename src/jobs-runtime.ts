@@ -98,6 +98,7 @@ type RuntimeConfig = LooseRecord;
 // `server-runtime-source.js` — so making it private would not fail that probe, it would silently
 // stop comparing this value between the two bundles.
 export const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 
 export function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
   const schedules: any[] = [];
@@ -540,6 +541,14 @@ export function createControllableRuntimeClock(initialInstant: string | number |
 // namespace, which Capsule definitions cannot claim.
 export function runtimeOwnedJobHandlers(runtime: { prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null> }) {
   return [
+    {
+      name: STRIPE_EVENT_JOB,
+      handler: async (_ctx: LooseRecord, event: LooseRecord) => ({
+        admitted: true,
+        providerEventId: event.providerEventId,
+        type: event.type,
+      }),
+    },
     {
       name: PASSWORD_RESET_MAIL_JOB,
       handler: async (ctx: LooseRecord, payload: LooseRecord) => {

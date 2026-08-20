@@ -189,6 +189,12 @@ const MIGRATED_RUNTIME_MODULES = [
   // publication. Its private origin validator keeps the trust boundary in the
   // deployed-module census even though no Capsule API resolves it by name.
   { file: "stripe-payment-config.js", atLeast: 5, sentinel: "validatePublicOrigin" },
+  // Activated server Bundles carry the narrow Stripe provider adapter and the
+  // runtime-owned callback composition module. The verifier sentinel is
+  // private so signature admission cannot silently leave the census while the
+  // public Checkout operations keep the module otherwise reachable.
+  { file: "stripe-payment-integration.js", atLeast: 12, sentinel: "verifyStripeWebhookEvent" },
+  { file: "stripe-webhook-runtime.js", atLeast: 0, sentinel: "createStripeCallbackEndpoint" },
   // Batch 3, and the largest subject added here: 104 functions, 51 of them private. The sentinel is
   // private for the third time running, and this one is worth naming. `passwordResetCodeParts` mints
   // the reset selector and verifier and is exported from nothing and registered in nothing — under

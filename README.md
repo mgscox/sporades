@@ -148,7 +148,7 @@ Sporades currently includes:
   remains the default; Vite is available explicitly with full-page Dev refresh.
 - Every new blank Capsule includes a built-in but disabled Stripe payment
   foundation: server-owned wiring, named Checkout and Customer Portal Jobs, shared Job state, an
-  empty Price catalogue, and no credentials, payment UI, callback route, or
+  empty Price catalogue, and no credentials, payment UI, active callback route, or
   browser Stripe SDK. Complete activation supports an authorized, idempotent
   one-time or recurring subscription Checkout through the same durable Job,
   actor-scoped progress, safe retries, and validated Stripe-hosted redirects.
@@ -157,7 +157,10 @@ Sporades currently includes:
   both checks before provider access so revocation fails safely. No Customer
   identity is stored in the Capsule intent or Job payload. It is the preferred
   surface for ordinary customer-managed payment methods, invoices,
-  cancellations, and supported subscription changes.
+  cancellations, and supported subscription changes. Complete activation also
+  registers one collision-checked callback path. Signed exact bytes are admitted
+  into one idempotent Privileged Job per Stripe Event before acknowledgment;
+  retries converge and no Capsule billing state changes automatically.
   The catalogue owns each Price mode; browser input owns neither mode nor Stripe
   identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,

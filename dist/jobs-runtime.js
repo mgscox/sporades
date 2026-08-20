@@ -89,6 +89,7 @@ const nodeCryptoModule = process.getBuiltinModule("node:crypto");
 // `server-runtime-source.js` — so making it private would not fail that probe, it would silently
 // stop comparing this value between the two bundles.
 export const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 export function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
     const schedules = [];
     for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
@@ -526,6 +527,14 @@ export function createControllableRuntimeClock(initialInstant) {
 // namespace, which Capsule definitions cannot claim.
 export function runtimeOwnedJobHandlers(runtime) {
     return [
+        {
+            name: STRIPE_EVENT_JOB,
+            handler: async (_ctx, event) => ({
+                admitted: true,
+                providerEventId: event.providerEventId,
+                type: event.type,
+            }),
+        },
         {
             name: PASSWORD_RESET_MAIL_JOB,
             handler: async (ctx, payload) => {

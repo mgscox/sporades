@@ -1194,8 +1194,8 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
   }
 });
 
-test("public docs agree on narrow Checkout and Customer Portal interfaces", async () => {
-  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput] = await Promise.all([
+test("public docs agree on narrow Checkout, Customer Portal, and callback admission interfaces", async () => {
+  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput, apiWebhookInput, apiVerifiedEvent] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("README.md"),
@@ -1205,6 +1205,8 @@ test("public docs agree on narrow Checkout and Customer Portal interfaces", asyn
     readProjectFile("docs/api/modules/stripe.html"),
     readProjectFile("docs/api/types/stripe.StripeCheckoutSessionInput.html"),
     readProjectFile("docs/api/types/stripe.StripeCustomerPortalSessionInput.html"),
+    readProjectFile("docs/api/types/stripe.StripeWebhookVerificationInput.html"),
+    readProjectFile("docs/api/types/stripe.VerifiedStripeEvent.html"),
   ]);
 
   for (const contents of [context, prd, readme, projects, server, blankGuide]) {
@@ -1224,20 +1226,33 @@ test("public docs agree on narrow Checkout and Customer Portal interfaces", asyn
   assert.match(context, /Customer Portal Session/);
   assert.match(context, /Capsule-owned Customer resolver/);
   assert.match(projects, /Job repeats policy admission[\s\S]{0,160}Customer resolution/);
+  assert.match(projects, /exact bounded request bytes[\s\S]{0,160}Stripe-Signature/i);
+  assert.match(projects, /idempotent Privileged[\s\S]{0,120}before the route returns `200`/i);
+  assert.match(context, /Verified Stripe event/);
+  assert.match(context, /grants no user, Session, Team, Capsule role, or browser authority/);
   assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
   assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
   assert.match(server, /checkout\.stripe\.com/);
   assert.match(server, /payment[\s\S]{0,80}subscription[\s\S]{0,80}mode/i);
   assert.match(server, /non-retryable/i);
   assert.match(server, /billing\.stripe\.com/);
+  assert.match(server, /cannot enqueue the reserved handler by name[\s\S]{0,160}ctx\.privileged\.run/i);
   assert.match(apiModule, /createStripePaymentIntegration/);
   assert.match(apiModule, /StripePaymentsDisabledResult/);
   assert.match(apiModule, /StripeCheckoutSessionInput/);
   assert.match(apiModule, /StripeCustomerPortalSessionInput/);
+  assert.match(apiModule, /StripeWebhookVerificationInput/);
+  assert.match(apiModule, /VerifiedStripeEvent/);
   assert.match(apiCheckoutInput, /mode/);
   assert.match(apiCheckoutInput, /payment/);
   assert.match(apiCheckoutInput, /subscription/);
   assert.match(apiPortalInput, /customerId/);
   assert.match(apiPortalInput, /returnPath/);
   assert.match(apiPortalInput, /idempotencyKey/);
+  assert.match(apiWebhookInput, /bodyBytes/);
+  assert.match(apiWebhookInput, /signature/);
+  assert.match(apiVerifiedEvent, /providerEventId/);
+  assert.match(apiVerifiedEvent, /occurredAt/);
+  assert.match(apiVerifiedEvent, /objectId/);
+  assert.match(apiVerifiedEvent, /raw/);
 });

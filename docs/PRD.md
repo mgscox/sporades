@@ -53,8 +53,12 @@ The repository currently includes:
   Stripe-hosted redirect. Unknown, deleted, unauthorized, and anonymous holders
   receive no Portal authority.
   Checkout starts provider billing; verified events and Capsule policy determine
-  local subscription, entitlement, and access consequences.
-  No callback route is active yet, and existing and non-blank Capsules remain unchanged.
+  local subscription, entitlement, and access consequences. Complete activation
+  registers one collision-checked Stripe callback route. It verifies the exact
+  bounded bytes before parsing and atomically admits each provider Event identity
+  into one idempotent Privileged Job before acknowledging. Provider retries
+  converge on that Job; admission grants no user or Team authority and performs
+  no Capsule billing consequence. Existing and non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

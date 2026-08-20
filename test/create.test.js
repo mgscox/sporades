@@ -252,10 +252,15 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(readme, /client\/payments\.ts/);
     assert.match(readme, /one-time[\s\S]{0,100}subscription/i);
     assert.match(readme, /verified events[\s\S]{0,100}Capsule policy/i);
+    assert.match(readme, /exact signed bytes[\s\S]{0,160}idempotent Privileged Job/i);
+    assert.match(readme, /admission performs no Capsule billing consequence/i);
     assert.match(readme, /Customer Portal is the preferred surface/i);
     assert.match(readme, /Unknown, deleted, and unauthorized holders/);
     assert.match(agents, /Sporades owns Stripe transport/i);
     assert.match(agents, /Checkout begins provider billing[\s\S]{0,120}local[\s\S]{0,80}access/i);
+    assert.match(agents, /enabled callback path is runtime-owned/i);
+    assert.match(agents, /verified provider values as sensitive/i);
+    assert.match(agents, /Never enqueue `_sporades\.stripe-event`/i);
     assert.match(agents, /authorizeStripeCustomerPortal/);
     assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
     assert.equal(packageJson.dependencies.stripe, undefined);

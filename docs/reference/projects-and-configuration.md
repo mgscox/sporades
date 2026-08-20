@@ -210,7 +210,7 @@ no provider authority. Activation is all-or-nothing:
       "secretKeyEnv": "STRIPE_SECRET_KEY",
       "webhookSecretEnv": "STRIPE_WEBHOOK_SECRET",
       "publicOrigin": "https://capsule.example",
-      "callbackPath": "/__sporades/stripe/webhook",
+      "callbackPath": "/stripe/webhook",
       "apiVersion": "2026-07-29.dahlia",
       "livemode": false,
       "requestTimeoutMs": 10000
@@ -228,6 +228,15 @@ paths are resolved only against that trusted origin, never an incoming Host
 header. Unknown providers, undeclared options, partial activation, mode-mismatched
 credentials, malformed origins, and unsupported compatibility versions fail as
 `INVALID_STRIPE_PAYMENTS_CONFIG`.
+
+`callbackPath` is an exact same-origin absolute path outside the reserved
+`/__sporades` runtime namespace. When Stripe is enabled, startup claims that
+path for one runtime-owned POST callback after rejecting method-and-path
+collisions with Capsule Custom endpoints and other enabled provider routes.
+Disabled or absent Stripe configuration registers no callback route.
+Sporades does not create or reconcile a Stripe webhook endpoint. The operator
+registers the exact `publicOrigin + callbackPath` URL in Stripe after the
+Capsule is reachable and seals that endpoint's matching `whsec_` secret.
 
 The generated `server/payments.ts` contains an empty server-owned Price
 catalogue, deny-by-default `authorizeStripeCheckout` and
@@ -273,8 +282,12 @@ Anonymous Checkout remains off by default. A Capsule may opt in only by
 deliberately relaxing the linked-user guard, authorizing the guest in the policy
 seam, and deriving the business reference in server code. That opt-in grants no
 Customer Portal or Team billing authority. Portal always retains its linked
-guard and independent Capsule billing-holder policy. The callback path is
-configuration only until webhook admission is implemented; it is not registered.
+guard and independent Capsule billing-holder policy. The activated callback
+verifies the exact bounded request bytes and `Stripe-Signature` header before
+parsing. Each accepted provider Event identity commits one idempotent Privileged
+Job before the route returns `200`; retries receive the same Job identity.
+Admission does not wait for or perform Capsule subscription, entitlement, or
+access consequences.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

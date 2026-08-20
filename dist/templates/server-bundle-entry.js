@@ -20,6 +20,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, inspectRuntimeJobs, inspectRuntimeSchedules, openDevDatabase, prepareHttpSecurity, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
+import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import { sporadesCapsuleModuleUrl, sporadesConfig, sporadesSealedServerEnv, sporadesServerEnv, sporadesServerSource, } from "sporades:server-bundle-inputs";
 // The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
 // the same module interface, not because a deployed Capsule imports itself: `server.mjs` is
@@ -63,6 +64,7 @@ if (sporadesAction) {
 }
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
     serviceEnv: runtimeServiceEnv,
+    createStripeCallbackEndpoint,
 });
 await database.init();
 database.log.emit({

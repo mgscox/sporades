@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   authStatus,
@@ -71,6 +71,7 @@ import {
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
+import { resolveSporadesPackageRoot } from "../package-root.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -2503,6 +2504,16 @@ function reportDevPublicCleanupDegradation(
   );
 }
 
+let stripeCallbackFactoryPromise: Promise<any> | undefined;
+
+async function stripeCallbackFactory(config: LooseRecord) {
+  if (!config.payments?.stripe?.enabled) return undefined;
+  stripeCallbackFactoryPromise ??= import(pathToFileURL(
+    path.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js"),
+  ).href).then((module) => module.createStripeCallbackEndpoint);
+  return await stripeCallbackFactoryPromise;
+}
+
 async function createDevRuntime(options: LooseRecord): Promise<any> {
   let database: any = await openDevDatabase(
     options.databasePath,
@@ -2510,7 +2521,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
-    { serviceEnv: options.serviceEnv },
+    { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) },
   );
   await database.init();
 
@@ -2525,7 +2536,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
-        { serviceEnv },
+        { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) },
       );
       database = await replaceRuntimeDatabase(database, nextDatabase);
     },

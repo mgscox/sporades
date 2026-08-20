@@ -8,7 +8,7 @@ import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "nod
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
 import path11 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat4, mkdir as mkdir3, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
@@ -2390,6 +2390,17 @@ ${options.epilogue}
               contents: inputsModule
             }));
           }
+        },
+        {
+          name: "sporades-node-builtin-prefix",
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /.*/ }, (args) => {
+              if (!args.path.startsWith("node:") && isBuiltin(args.path)) {
+                return { path: `node:${args.path}`, external: true };
+              }
+              return void 0;
+            });
+          }
         }
       ]
     });
@@ -3225,8 +3236,8 @@ function validatePaymentsConfig(payments) {
     fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
   validatePublicOrigin(stripe.publicOrigin);
-  if (!isSameOriginAbsolutePath(stripe.callbackPath)) {
-    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path without a query or fragment.");
+  if (!isSameOriginAbsolutePath(stripe.callbackPath) || stripe.callbackPath === "/__sporades" || stripe.callbackPath.startsWith("/__sporades/")) {
+    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
   }
   if (stripe.apiVersion !== STRIPE_API_VERSION) {
     fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
@@ -6056,6 +6067,7 @@ function chainMaybePromise(steps) {
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
+var STRIPE_EVENT_JOB = "_sporades.stripe-event";
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
@@ -6438,6 +6450,14 @@ function createRuntimeClock(clock) {
 }
 function runtimeOwnedJobHandlers(runtime) {
   return [
+    {
+      name: STRIPE_EVENT_JOB,
+      handler: async (_ctx, event) => ({
+        admitted: true,
+        providerEventId: event.providerEventId,
+        type: event.type
+      })
+    },
     {
       name: PASSWORD_RESET_MAIL_JOB,
       handler: async (ctx, payload) => {
@@ -15454,6 +15474,7 @@ function quoteIdentifier(identifier) {
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 async function shutdownAndCloseDatabase(database) {
   let shutdownError;
   let closeError;
@@ -15601,21 +15622,36 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   });
   const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+  const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled ? options?.createStripeCallbackEndpoint?.(
+    paymentsConfig,
+    serverEnv,
+    String(config.name ?? "capsule"),
+    options?.stripeCallbackAdmissionFault
+  ) : null;
+  if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
+    throw commandError2(
+      "Stripe callback integration is unavailable.",
+      "Build and run this Capsule with matching Sporades generated runtime artifacts.",
+      "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE"
+    );
+  }
+  const providerEndpoints = [...emailEventEndpoints, ...stripeCallbackEndpoint ? [stripeCallbackEndpoint] : []];
+  for (const [providerIndex, providerEndpoint] of providerEndpoints.entries()) {
     const conflictsWithCapsule = capsuleEndpoints.some(
       (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
     );
-    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+    const conflictsWithProvider = providerEndpoints.slice(0, providerIndex).find(
       (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
     );
     if (conflictsWithCapsule || conflictsWithProvider) {
-      const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
-      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+      const stripeConflict = providerEndpoint.runtimeOwnedStripeCallback || conflictsWithProvider?.runtimeOwnedStripeCallback;
+      const error = new Error(stripeConflict ? "Stripe callback route conflicts with another Capsule or provider route." : "Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = stripeConflict ? "STRIPE_CALLBACK_ROUTE_CONFLICT" : "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Assign every Capsule endpoint and enabled provider a different path in sporades.json.";
       throw error;
     }
   }
-  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
+  const endpoints = [...capsuleEndpoints, ...providerEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -17513,10 +17549,16 @@ async function routeEndpoint(database, request, response) {
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
-  const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-  const session = endpoint.runtimeOwnedEmailEvent ? { auth: {
+  const endpointRequest = await readEndpointRequest(
+    database,
+    requestUrl,
+    request,
+    !endpoint.runtimeOwnedStripeCallback
+  );
+  const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
+  const session = runtimeOwnedProviderCallback ? { auth: {
     userId: privilegedAuthUserId(),
-    displayName: "Email provider callback",
+    displayName: endpoint.runtimeOwnedStripeCallback ? "Stripe provider callback" : "Email provider callback",
     email: null,
     picture: null,
     isAuthenticated: false,
@@ -17530,7 +17572,10 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       let handlerFailed = false;
       try {
         context = createEndpointContext(transactionDatabase, endpointRequest, session);
-        if (!endpoint.runtimeOwnedEmailEvent) {
+        if (endpoint.runtimeOwnedStripeCallback) {
+          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+        }
+        if (!runtimeOwnedProviderCallback) {
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
         return await handler(context);
@@ -17612,7 +17657,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
   });
   return transactionDatabase;
 }
-async function readEndpointRequest(database, requestUrl, request) {
+async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -17620,7 +17665,7 @@ async function readEndpointRequest(database, requestUrl, request) {
     ])
   );
   const query = endpointQueryFromUrl(requestUrl);
-  const payload = await readEndpointPayload(request, headers, database);
+  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
@@ -18090,10 +18135,11 @@ function fieldValueForWrite(database, field, value) {
 function referenceExists(database, field, value) {
   return database.adapter.referenceExists(field, value);
 }
-async function readEndpointPayload(request, headers, limitSource = null) {
+async function readEndpointPayload(request, headers, limitSource = null, parseJsonBody = true) {
   const raw = await readLimitedRequestBody(request, limitSource);
   const bodyBytes = immutableEndpointBodyBytes(raw);
   if (raw.byteLength === 0) return { body: null, bodyBytes };
+  if (!parseJsonBody) return { body: null, bodyBytes };
   const text2 = raw.toString("utf8");
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
     try {
@@ -19709,6 +19755,9 @@ function createCurrentUserJobApi(database, contextGetter) {
       const queueDatabase = database.__rootDatabase ?? database;
       const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
+      if (typeof handlerName === "string" && handlerName.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX) && Reflect.get(context, runtimeOwnedJobEnqueueHandler) !== handlerName) {
+        throw jobError("RESERVED_JOB_NAME", "Runtime-owned Job handlers cannot be enqueued by Capsule code.", "Use a Capsule-declared Job handler name.");
+      }
       const handler = database.jobs?.find((candidate) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -21709,7 +21758,7 @@ Start in \`server/payments.ts\`: define each server-owned Price catalogue entry 
 
 Customer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.
 
-Anonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
+Anonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. Complete activation registers the configured callback path outside reserved runtime namespaces. Sporades verifies exact signed bytes and admits one idempotent Privileged Job per Stripe Event before acknowledging; this admission performs no Capsule billing consequence. Sporades owns Stripe transport, retries, compatibility, redirect validation, callback verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 `;
 }
 function blankPaymentSupportFiles(capsuleName) {
@@ -23400,8 +23449,11 @@ ${template === "blank" ? `
 - Recheck Portal authorization and Customer resolution in the durable Job; never persist or accept a browser-supplied Customer identity.
 - Prefer Customer Portal for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes; Capsule policy still decides who may enter it.
 - Checkout begins provider billing; verified events and Capsule policy determine local subscription, entitlement, and access consequences.
+- An enabled callback path is runtime-owned: do not shadow it with a Custom endpoint or parse and verify Stripe requests in Capsule code.
+- Treat verified provider values as sensitive. Callback admission creates one userless Privileged Job per Stripe Event but performs no billing or access consequence automatically.
+- Never enqueue \`_sporades.stripe-event\`; reserved runtime Job names are not a Capsule authoring seam, even inside \`ctx.privileged.run(...)\`.
 - Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
-- Sporades owns Stripe transport, compatibility, redirect validation, retries, provider timeouts, and safe provider errors.
+- Sporades owns Stripe transport, compatibility, redirect validation, callback verification, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 - Keep provider identities and credentials out of client and shared code. Browser input may choose only Capsule-defined product keys.
 ` : ""}
@@ -28380,6 +28432,14 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
     }
   );
 }
+var stripeCallbackFactoryPromise;
+async function stripeCallbackFactory(config) {
+  if (!config.payments?.stripe?.enabled) return void 0;
+  stripeCallbackFactoryPromise ??= import(pathToFileURL2(
+    path11.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
+  ).href).then((module) => module.createStripeCallbackEndpoint);
+  return await stripeCallbackFactoryPromise;
+}
 async function createDevRuntime(options) {
   let database = await openDevDatabase(
     options.databasePath,
@@ -28387,7 +28447,7 @@ async function createDevRuntime(options) {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
-    { serviceEnv: options.serviceEnv }
+    { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) }
   );
   await database.init();
   return {
@@ -28401,7 +28461,7 @@ async function createDevRuntime(options) {
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
-        { serviceEnv }
+        { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) }
       );
       database = await replaceRuntimeDatabase(database, nextDatabase);
     },

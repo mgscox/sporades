@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import Stripe from "stripe";
 
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -1897,7 +1898,7 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
       assert.ok(paymentJob.data == null);
       assert.ok(paymentJob.error == null);
 
-      const dormantCallback = await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" });
+      const dormantCallback = await fetch(`${started.data.url}/stripe/webhook`, { method: "POST", body: "{}" });
       assert.equal(dormantCallback.status, 404);
 
       const html = await (await fetch(`${started.data.url}/`)).text();
@@ -1978,7 +1979,7 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
       assert.equal(started.data.event, "started");
       assert.equal((await fetch(started.data.url)).status, 200);
       await access(path.join(projectDir, ".sporades", "build", "server.mjs"));
-      assert.equal((await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
+      assert.equal((await fetch(`${started.data.url}/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
@@ -1986,7 +1987,7 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
   });
 });
 
-test("a generated activated blank Capsule starts Checkout and Customer Portal through actor-scoped durable Jobs", { timeout: 120_000 }, async () => {
+test("a generated activated blank Capsule runs Checkout, Customer Portal, and signed callback admission through durable Jobs", { timeout: 120_000 }, async () => {
   await withTempDir(async (dir) => {
     const providerRequests = [];
     const provider = createServer(async (request, response) => {
@@ -2066,7 +2067,7 @@ test("a generated activated blank Capsule starts Checkout and Customer Portal th
         secretKeyEnv: "STRIPE_SECRET_KEY",
         webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
         publicOrigin: "https://payments.example.test",
-        callbackPath: "/__sporades/stripe/webhook",
+        callbackPath: "/stripe/webhook",
         apiVersion: "2026-07-29.dahlia",
         livemode: false,
         requestTimeoutMs: 10_000,
@@ -2270,12 +2271,39 @@ test("a generated activated blank Capsule starts Checkout and Customer Portal th
       assert.equal(foreignPortal.data ?? null, null);
       assert.equal(foreignPortal.error ?? null, null);
 
-      assert.equal((await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
+      const stripeEvent = JSON.stringify({
+        id: "evt_generated_callback_1",
+        object: "event",
+        api_version: "2026-07-29.dahlia",
+        created: Math.floor(Date.now() / 1000),
+        data: { object: { id: "obj_future_1", object: "future.billing.object" } },
+        livemode: false,
+        pending_webhooks: 1,
+        request: null,
+        type: "future.billing.reconciled",
+      });
+      const stripeSignature = Stripe.webhooks.generateTestHeaderString({ payload: stripeEvent, secret: "whsec_generated_fixture" });
+      const postStripeEvent = () => fetch(`${started.data.url}/stripe/webhook`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "stripe-signature": stripeSignature },
+        body: stripeEvent,
+      });
+      const firstCallback = await postStripeEvent();
+      const duplicateCallback = await postStripeEvent();
+      assert.equal(firstCallback.status, 200);
+      assert.equal(duplicateCallback.status, 200);
+      const firstAdmission = await firstCallback.json();
+      const duplicateAdmission = await duplicateCallback.json();
+      assert.equal(firstAdmission.jobId, duplicateAdmission.jobId);
+      const admittedJobs = JSON.parse((await runCli(["jobs"], { cwd: projectDir })).stdout).data.jobs;
+      assert.equal(admittedJobs.filter((candidate) => candidate.id === firstAdmission.jobId && candidate.handler === "_sporades.stripe-event").length, 1);
+      assert.doesNotMatch(JSON.stringify(admittedJobs), /obj_future_1|pending_webhooks|whsec_generated_fixture|stripe-signature/i);
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
       assert.doesNotMatch(serverBundle, /sk_test_generated_fixture|whsec_generated_fixture/);
       assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);
       assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
       assert.match(serverBundle, /STRIPE_PORTAL_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_WEBHOOK_REJECTED/);
     } finally {
       await closeSocketGracefully(foreignSocket);
       await closeSocketGracefully(socket);
@@ -2300,7 +2328,7 @@ test("activated Stripe rejects legacy plaintext server env before publishing a B
       secretKeyEnv: "STRIPE_SECRET_KEY",
       webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
       publicOrigin: "https://payments.example.test",
-      callbackPath: "/__sporades/stripe/webhook",
+      callbackPath: "/stripe/webhook",
       apiVersion: "2026-07-29.dahlia",
       livemode: false,
       requestTimeoutMs: 10_000,
