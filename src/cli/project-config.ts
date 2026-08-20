@@ -6,9 +6,11 @@ import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, supportsClientCapability } from "../client-capabilities.js";
 import { validateMailConfig } from "../mail-config.js";
+import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 
 export { validateMailConfig } from "../mail-config.js";
+export { validatePaymentsConfig } from "../stripe-payment-config.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
 
@@ -169,46 +171,6 @@ export function validateSchedulingConfig(scheduling: LooseRecord) {
   if (seconds !== undefined && (!Number.isInteger(seconds) || seconds < 1 || seconds > 300)) {
     throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
-}
-
-/** Ticket 02 admits only the credential-free dormant Stripe foundation. */
-export function validatePaymentsConfig(payments: unknown) {
-  if (payments === undefined) return undefined;
-  const fail = (message: string, hint: string) => {
-    const error: Error & { code?: string; hint?: string } = new Error(message);
-    error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
-    error.hint = hint;
-    throw error;
-  };
-  if (!payments || typeof payments !== "object" || Array.isArray(payments)) {
-    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
-  }
-  const paymentRecord = payments as LooseRecord;
-  const unknownProviders = Object.keys(paymentRecord).filter((key) => key !== "stripe");
-  if (unknownProviders.length > 0) {
-    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
-  }
-  if (paymentRecord.stripe === undefined) {
-    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with `enabled` set to false.");
-  }
-  const stripe = paymentRecord.stripe;
-  if (!stripe || typeof stripe !== "object" || Array.isArray(stripe)) {
-    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with `enabled` set to false.");
-  }
-  const stripeRecord = stripe as LooseRecord;
-  const unknownStripeKeys = Object.keys(stripeRecord).filter((key) => key !== "enabled");
-  if (unknownStripeKeys.length > 0) {
-    fail("Unsupported Stripe payments configuration.", "Configure only `payments.stripe.enabled` in the dormant foundation.");
-  }
-  if (stripeRecord.enabled !== false) {
-    fail(
-      "Stripe payments are not fully configured.",
-      stripeRecord.enabled === true
-        ? "Configure Sealed Server env and server-owned Prices before enabling Stripe payments."
-        : "Set `payments.stripe.enabled` to false until the complete provider configuration is ready.",
-    );
-  }
-  return { stripe: { enabled: false } };
 }
 
 export async function readOptionalProjectSecurity(projectDir: string, session: string) {

@@ -918,13 +918,18 @@ export function decodeJobCursor(value) {
     }
 }
 export function safeJobFailure(error) {
-    const knownCodes = new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+    const knownCodes = new Set([
+        "JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD",
+        "STRIPE_CHECKOUT_REJECTED", "STRIPE_CHECKOUT_RESPONSE_INVALID",
+    ]);
     const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
     const messages = {
         JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
         UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
         JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
         INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+        STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
+        STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
         JOB_FAILED: "Job handler failed.",
     };
     return { code, message: messages[code] };

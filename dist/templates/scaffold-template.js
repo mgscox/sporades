@@ -1134,14 +1134,14 @@ function vanillaTemplateFiles(options) {
             ? blankPaymentReadme(options.name, "A framework-neutral Vanilla TypeScript Sporades capsule.")
             : `# ${options.name}\n\nA framework-neutral Vanilla TypeScript Sporades capsule.\n`,
         "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
-import { paymentJobs, paymentQueries } from "./payments.js";` : ""}
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
   journey: { enabled: true },
-  schema: { notes: table({ text: String(), ownerId: String() }) },
+  schema: { notes: table({ text: String(), ownerId: String() })${payments ? ", ...paymentSchema" : ""} },
   queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all())${payments ? ", ...paymentQueries" : ""} },
-  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
+  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId }))${payments ? ", ...paymentMutations" : ""} },
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
@@ -1150,7 +1150,7 @@ export default capsule({
 `,
         "client/index.ts": vanillaClientTemplate(),
         "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };\n`,
-        ...(payments ? blankPaymentSupportFiles() : {}),
+        ...(payments ? blankPaymentSupportFiles(options.name) : {}),
     };
 }
 function vanillaClientTemplate() {
@@ -1253,40 +1253,111 @@ function blankTemplateFiles(options) {
     return {
         "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
         "server/index.ts": `import { capsule } from "sporades/server";
-import { paymentJobs, paymentQueries } from "./payments.js";
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
-  schema: {},
+  schema: paymentSchema,
   queries: paymentQueries,
-  mutations: {},
+  mutations: paymentMutations,
   jobs: paymentJobs,
 });
 `,
-        ...blankPaymentSupportFiles(),
+        ...blankPaymentSupportFiles(options.name),
         "client/index.tsx": blankClientTemplate(options.framework),
         "shared/types.ts": `export {};\n`,
     };
 }
 function blankPaymentReadme(name, introduction) {
-    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a dormant Stripe payment foundation. It remains disabled at \`payments.stripe.enabled\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nStart in \`server/payments.ts\`: define the server-owned Price catalogue and replace the policy placeholders only after deciding which users or Teams may act. Sporades owns Stripe transport, retries, signature verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
+    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define the server-owned Price catalogue and replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity. The mutation atomically persists the intent and enqueues an idempotent durable Job; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
 }
-function blankPaymentSupportFiles() {
+function blankPaymentSupportFiles(capsuleName) {
     return {
-        "server/payments.ts": `import { job, query } from "sporades/server";
+        "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
+import type { CapsuleContext } from "sporades/server";
+import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
 import type { PaymentJobState } from "../shared/payments.js";
 
-// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
-export const stripePrices = Object.freeze({});
+type CheckoutProduct = Readonly<{ priceId: string; maxQuantity: number }>;
+type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
 
-// Dormant by default. Activation requires complete project configuration and Sealed Server env.
-const stripe = createStripePaymentIntegration({ enabled: false });
+// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
+export const stripePrices: Readonly<Record<string, CheckoutProduct>> = Object.freeze({});
+
+export const paymentSchema = {
+  paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), quantity: Numeric(), status: Text() })
+    .unique("ownerId", "intentId")
+    .acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: ({ previous, next, ctx }) => (next ?? previous)?.ownerId === ctx.auth.userId,
+    }),
+};
+
+// Capsule policy seam. Deliberately deny until the Capsule author makes an explicit policy decision.
+export async function authorizeStripeCheckout(_ctx: CapsuleContext, _input: CheckoutInput): Promise<boolean> {
+  return false;
+}
 
 export const paymentJobs = {
-  stripeCheckout: job((_ctx, input) => stripe.createCheckoutSession(input)),
-  stripeCustomerPortal: job((_ctx, input) => stripe.createCustomerPortalSession(input)),
+  stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => {
+    const config = ctx.payments?.stripe;
+    const stripe = config?.enabled
+      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+      : createStripePaymentIntegration({ enabled: false });
+    return stripe.createCheckoutSession(input);
+  }),
+  stripeCustomerPortal: job((ctx, input) => {
+    const config = ctx.payments?.stripe;
+    const stripe = config?.enabled
+      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+      : createStripePaymentIntegration({ enabled: false });
+    return stripe.createCustomerPortalSession(input);
+  }),
 };
+
+export const paymentMutations = {
+  startStripeCheckout: mutation(async (ctx, input: CheckoutInput) => {
+    const actor = requireAuth(ctx, { linked: true });
+    validateCheckoutInput(input);
+    const product = stripePrices[input.productKey];
+    if (!product || !validPrice(product) || input.quantity > product.maxQuantity) throw checkoutError("PAYMENT_PRODUCT_UNAVAILABLE", "That product is not available for Checkout.", "Choose an available Capsule product and server-approved quantity.");
+    if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before starting Checkout.");
+    if (!await authorizeStripeCheckout(ctx, input)) throw checkoutError("PAYMENT_CHECKOUT_FORBIDDEN", "Checkout is not authorized.", "Ask a Capsule billing administrator to review this payment action.");
+
+    const inserted = await ctx.db.paymentIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, productKey: input.productKey, quantity: input.quantity, status: "queued" }, "ownerId", "intentId");
+    const intent = inserted ?? await ctx.db.paymentIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
+    if (!intent || intent.productKey !== input.productKey || intent.quantity !== input.quantity) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different product or quantity.");
+
+    const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:checkout:`)} + actor.userId + ":" + input.intentId;
+    const queued = await ctx.jobs.enqueue("stripeCheckout", {
+      priceId: product.priceId,
+      quantity: input.quantity,
+      successPath: "/payments/success",
+      cancelPath: "/payments/cancelled",
+      idempotencyKey,
+      businessReference: input.intentId,
+    }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
+    return { intentId: input.intentId, jobId: queued.id };
+  }),
+};
+
+function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
+  const keys = ["intentId", "productKey", "quantity"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\\0") !== keys.join("\\0")) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout request.", "Pass only intentId, productKey, and quantity.");
+  const candidate = input as Record<string, unknown>;
+  if (typeof candidate.intentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(candidate.intentId)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid payment intent identity.", "Pass one stable opaque intentId from 8 through 128 characters.");
+  if (typeof candidate.productKey !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(candidate.productKey)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Capsule product key.", "Choose one lowercase server-owned product key.");
+  if (!Number.isInteger(candidate.quantity) || Number(candidate.quantity) < 1 || Number(candidate.quantity) > 99) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout quantity.", "Pass an integer quantity from 1 through 99.");
+}
+
+function validPrice(product: CheckoutProduct) {
+  return /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
+}
+
+function checkoutError(code: string, message: string, hint: string) {
+  return Object.assign(new Error(message), { code, hint });
+}
 
 const paymentJobHandlers = new Set(Object.keys(paymentJobs));
 
@@ -1304,7 +1375,62 @@ export const paymentQueries = {
   }),
 };
 `,
-        "shared/payments.ts": `export type PaymentJobState = {
+        "client/payments.ts": `import { mutations, queries } from "sporades/client";
+import type { SporadesError, Subscription } from "sporades/client";
+import type { PaymentCheckoutResult, PaymentJobState } from "../shared/payments.js";
+
+export type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
+export type CheckoutProgress =
+  | Readonly<{ status: "pending"; intentId: string; jobId: string }>
+  | Readonly<{ status: "succeeded"; intentId: string; jobId: string; sessionId: string; url: string }>
+  | Readonly<{ status: "failed"; intentId: string; jobId: string | null; error: SporadesError }>;
+
+// The caller owns the returned subscription and should unsubscribe when its UI is disposed.
+export async function startStripeCheckout(input: CheckoutInput, onProgress: (progress: CheckoutProgress) => void): Promise<Subscription> {
+  const started = await mutations.run<{ intentId: string; jobId: string }>("startStripeCheckout", input);
+  if (started.error || !started.data) {
+    onProgress({ status: "failed", intentId: input.intentId, jobId: null, error: started.error ?? { message: "Checkout did not start." } });
+    return { unsubscribe() {} };
+  }
+
+  const { intentId, jobId } = started.data;
+  onProgress({ status: "pending", intentId, jobId });
+  let settled = false;
+  return queries.subscribe<PaymentJobState>("paymentJob", (state) => {
+    if (settled || state.loading) return;
+    if (state.error) return fail(state.error);
+    const job = state.data;
+    if (!job) return fail({ message: "Checkout progress is unavailable." });
+    if (job.status === "failed" || job.status === "cancelled") return fail(job.failure ?? { message: "Checkout did not complete." });
+    if (job.status !== "succeeded") return;
+    const result = validCheckoutResult(job.result);
+    if (!result) return fail({ message: "Checkout returned an invalid redirect." });
+    settled = true;
+    onProgress({ status: "succeeded", intentId, jobId, sessionId: result.sessionId, url: result.url });
+    window.location.assign(result.url);
+  }, jobId);
+
+  function fail(error: SporadesError) {
+    settled = true;
+    onProgress({ status: "failed", intentId, jobId, error });
+  }
+}
+
+function validCheckoutResult(value: unknown): PaymentCheckoutResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (Object.keys(result).sort().join("\\0") !== ["ok", "sessionId", "url"].join("\\0")) return null;
+  if (result.ok !== true || typeof result.sessionId !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(result.sessionId) || typeof result.url !== "string") return null;
+  try {
+    const url = new URL(result.url);
+    if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || url.username || url.password || url.port) return null;
+  } catch { return null; }
+  return result as PaymentCheckoutResult;
+}
+`,
+        "shared/payments.ts": `export type PaymentCheckoutResult = { ok: true; sessionId: string; url: string };
+
+export type PaymentJobState = {
   id: string;
   status: "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
   attempts: number;
@@ -2730,8 +2856,12 @@ Client toolchain: ${toolchain}
 ${template === "blank" ? `
 ## Built-in Stripe payments
 
-- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and Sealed Server env are ready.
-- Sporades owns Stripe transport, signature verification, retries, provider timeouts, and safe provider errors.
+- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and matching Sealed Server env are ready.
+- Define product-key to Price mappings only in \`server/payments.ts\`; browser input must never carry a provider Price identity.
+- Keep \`authorizeStripeCheckout\` deny-by-default until the Capsule makes an explicit linked-user or Team billing decision.
+- Start Checkout in the mutation, observe its actor-scoped durable Job, and redirect only through the validator in \`client/payments.ts\`.
+- Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
+- Sporades owns Stripe transport, compatibility, redirect validation, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 - Keep provider identities and credentials out of client and shared code. Browser input may choose only Capsule-defined product keys.
 ` : ""}
@@ -2749,7 +2879,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-${template === "blank" ? "- `server/payments.ts` - dormant payment Jobs, known-Job query, and server-owned Price catalogue\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
+${template === "blank" ? "- `server/payments.ts` - payment mutations and Jobs, known-Job query, policy seam, and server-owned Price catalogue\n- `client/payments.ts` - Checkout progress and validated redirect helper\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
 - \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}

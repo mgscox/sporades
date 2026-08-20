@@ -107,11 +107,11 @@ A runtime context, not just a set of exports. Internally manages the SQLite conn
 _Avoid_: server module, server library (it's a living context, not a static library)
 
 **Stripe payment integration**:
-The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. The Ticket 02 foundation admits only `enabled: false`; every operation returns `STRIPE_PAYMENTS_DISABLED`, and premature activation fails before receiving provider authority.
+The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. A dormant integration returns `STRIPE_PAYMENTS_DISABLED`; complete activation admits only validated Sealed Server credentials and lets a durable Job create a one-time Stripe-hosted Checkout Session with a stable business idempotency key and bounded safe result.
 _Avoid_: Stripe client, payment proxy, browser Stripe SDK
 
 **Built-in payment foundation**:
-The ordinary, dormant payment scaffolding generated into every new blank Capsule. It includes `server/payments.ts`, shared payment Job state, named payment Jobs, a bounded known-Job query, an empty server-owned Price catalogue, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
+The ordinary payment scaffolding generated into every new blank Capsule. It starts dormant and includes `server/payments.ts`, `client/payments.ts`, shared payment Job state, named payment Jobs, a bounded known-Job query, an empty server-owned Price catalogue, a deny-by-default billing policy seam, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
 _Avoid_: payment template, Stripe demo, billing feature
 
 **Price catalogue**:
@@ -437,7 +437,7 @@ The project configuration file at the project root. Read by the CLI at startup; 
 _Avoid_: config file (too generic — it's the specific project config)
 
 **Stripe payment configuration**:
-The optional `payments.stripe` project configuration. Ticket 02 accepts only the credential-free dormant shape `{ "enabled": false }`; absence preserves existing Capsules, and `true` is rejected until the complete Server env and Price contract exists.
+The optional `payments.stripe` project configuration. `{ "enabled": false }` is credential-free and dormant. Activation is all-or-nothing and names Sealed Server env keys, the trusted public Capsule origin and callback path, the pinned Stripe compatibility version, account mode, and a bounded provider timeout. It never contains secret values or Price identities, and the runtime fails closed before publication when its complete configuration and matching credentials are unavailable.
 _Avoid_: Stripe credentials, payment settings, provider payload
 
 **Scheduling policy**:

@@ -68,14 +68,17 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
-import { createStripePaymentIntegration, type StripePaymentsDisabledResult } from "sporades/server/stripe";
+import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripePaymentsDisabledResult } from "sporades/server/stripe";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const dormantStripe = createStripePaymentIntegration({ enabled: false });
 const disabledCheckout: Promise<StripePaymentsDisabledResult> = dormantStripe.createCheckoutSession({});
 void disabledCheckout;
-// @ts-expect-error Ticket 02 exposes only the dormant integration state.
+// @ts-expect-error Enabled integration requires normalized configuration and named Server env.
 createStripePaymentIntegration({ enabled: true });
+const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/__sporades/stripe/webhook", apiVersion: "2026-07-29.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
+const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
+void checkout;
 // @ts-expect-error The narrow payment boundary does not expose Stripe's generic request surface.
 dormantStripe.request("GET", "/v1/customers");
 // @ts-expect-error The narrow payment boundary does not expose the underlying Stripe client.

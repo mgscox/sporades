@@ -39,9 +39,15 @@ The repository currently includes:
   Capsule: disabled `payments.stripe` configuration, server-owned payment
   wiring and empty Price catalogue, named payment Jobs, bounded known-Job
   state, shared types, and activation guidance. Stripe mechanics remain behind
-  the narrow server-only `sporades/server/stripe` export; Ticket 02 grants no
-  provider authority, registers no callback route, and leaves existing and
-  non-blank Capsules unchanged.
+  the narrow server-only `sporades/server/stripe` export. Complete activation
+  validates named Sealed Server credentials and trusted return authority before
+  publication. A linked actor can then pass a Capsule product key through an
+  explicit deny-by-default policy seam to atomically persist an intent and
+  enqueue an idempotent durable Job. The Job performs one-time Stripe Checkout
+  after commit, exposes bounded actor-scoped progress, retries transient failure,
+  redacts permanent failure, and returns only a validated Stripe-hosted redirect.
+  No callback route or Customer Portal authority is active yet, and existing and
+  non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

@@ -10,6 +10,7 @@ import { createServerBundleModuleSource } from "./templates/server-bundle-module
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
+import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -89,6 +90,7 @@ export async function createBundle(
     ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)
     : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
+  validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
 
   const [serverSource, clientSource] = await Promise.all([
     readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")

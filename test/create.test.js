@@ -153,9 +153,9 @@ test("sporades create writes a runnable React blank scaffold by default", async 
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /capsule\(/);
-    assert.match(serverEntry, /schema: \{\}/);
+    assert.match(serverEntry, /schema: paymentSchema/);
     assert.match(serverEntry, /queries: paymentQueries/);
-    assert.match(serverEntry, /mutations: \{\}/);
+    assert.match(serverEntry, /mutations: paymentMutations/);
     assert.match(serverEntry, /jobs: paymentJobs/);
     assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
 
@@ -194,6 +194,7 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     const payments = await readFile(path.join(projectDir, "server", "payments.ts"), "utf8");
+    const paymentClient = await readFile(path.join(projectDir, "client", "payments.ts"), "utf8");
     const shared = await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8");
     const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
     const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
@@ -203,18 +204,34 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(serverEntry, /queries:\s*paymentQueries/);
     assert.match(payments, /from "sporades\/server\/stripe"/);
     assert.match(payments, /createStripePaymentIntegration\(\{ enabled: false \}\)/);
-    assert.match(payments, /stripePrices\s*=\s*Object\.freeze\(\{\}\)/);
+    assert.match(payments, /stripePrices[^=]*=\s*Object\.freeze\(\{\}\)/);
     assert.match(payments, /stripeCheckout/);
     assert.match(payments, /stripeCustomerPortal/);
+    assert.match(payments, /startStripeCheckout/);
+    assert.match(payments, /requireAuth\(ctx, \{ linked: true \}\)/);
+    assert.match(payments, /authorizeStripeCheckout/);
+    assert.match(payments, /return false/);
+    assert.match(payments, /\.acl\(/);
+    assert.match(payments, /row\?\.ownerId === ctx\.auth\.userId/);
+    assert.match(payments, /insertOrIgnore/);
+    assert.match(payments, /ctx\.jobs\.enqueue\("stripeCheckout"/);
+    assert.match(payments, /idempotencyKey/);
     assert.match(payments, /ctx\.jobs\.get\(jobId\)/);
     assert.match(shared, /export type PaymentJobState/);
+    assert.match(paymentClient, /status: "pending"/);
+    assert.match(paymentClient, /status: "succeeded"/);
+    assert.match(paymentClient, /status: "failed"/);
+    assert.match(paymentClient, /checkout\.stripe\.com/);
+    assert.match(paymentClient, /window\.location\.assign/);
     assert.match(readme, /payments\.stripe\.enabled/);
     assert.match(readme, /Sealed Server env/);
+    assert.match(readme, /Anonymous Checkout requires an explicit Capsule opt-in/);
+    assert.match(readme, /client\/payments\.ts/);
     assert.match(agents, /Sporades owns Stripe transport/i);
     assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
     assert.equal(packageJson.dependencies.stripe, undefined);
 
-    const generated = [serverEntry, payments, shared, readme, agents, await readFile(path.join(projectDir, ".env.sporades.server"), "utf8")].join("\n");
+    const generated = [serverEntry, payments, paymentClient, shared, readme, agents, await readFile(path.join(projectDir, ".env.sporades.server"), "utf8")].join("\n");
     assert.doesNotMatch(generated, /sk_(?:live|test)_|whsec_|price_[A-Za-z0-9]|cus_[A-Za-z0-9]|https:\/\/checkout\.stripe\.com/i);
   });
 });
@@ -230,6 +247,7 @@ test("every supported blank framework receives the same dormant payment foundati
       assert.deepEqual(config.payments, { stripe: { enabled: false } }, framework);
       assert.match(await readFile(path.join(projectDir, "server", "payments.ts"), "utf8"), /createStripePaymentIntegration/, framework);
       assert.match(await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8"), /PaymentJobState/, framework);
+      assert.match(await readFile(path.join(projectDir, "client", "payments.ts"), "utf8"), /startStripeCheckout/, framework);
       assert.match(await readFile(path.join(projectDir, "server", "index.ts"), "utf8"), /paymentJobs/, framework);
     }
   });
@@ -605,7 +623,8 @@ test("sporades create --template blank writes the blank scaffold", async () => {
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
 
     assert.equal(config.template, "blank");
-    assert.match(serverEntry, /schema: \{\}/);
+    assert.match(serverEntry, /schema: paymentSchema/);
+    assert.match(serverEntry, /mutations: paymentMutations/);
     assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
     assert.match(clientEntry, /Blank Sporades Capsule/);
     assert.doesNotMatch(clientEntry, /useQuery|useMutation|useAuth|files|messages|todo/i);

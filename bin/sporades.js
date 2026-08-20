@@ -3175,6 +3175,130 @@ function publicTreeError(message, hint, diagnostics) {
   return Object.assign(new Error(message), { hint, ...diagnostics === void 0 ? {} : { diagnostics } });
 }
 
+// src/stripe-payment-config.ts
+var STRIPE_API_VERSION = "2026-07-29.dahlia";
+var ENABLED_KEYS = [
+  "enabled",
+  "secretKeyEnv",
+  "webhookSecretEnv",
+  "publicOrigin",
+  "callbackPath",
+  "apiVersion",
+  "livemode",
+  "requestTimeoutMs"
+];
+function validatePaymentsConfig(payments) {
+  if (payments === void 0) return void 0;
+  if (!isPlainRecord(payments)) {
+    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
+  }
+  const unknownProviders = Object.keys(payments).filter((key) => key !== "stripe");
+  if (unknownProviders.length > 0) {
+    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
+  }
+  if (payments.stripe === void 0) {
+    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
+  }
+  if (!isPlainRecord(payments.stripe)) {
+    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
+  }
+  const stripe = payments.stripe;
+  if (stripe.enabled === false) {
+    if (Object.keys(stripe).some((key) => key !== "enabled")) {
+      fail("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
+    }
+    return { stripe: { enabled: false } };
+  }
+  if (stripe.enabled !== true) {
+    fail("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
+  }
+  const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
+  if (unknownKeys.length > 0) {
+    fail("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
+  }
+  for (const key of ENABLED_KEYS) {
+    if (!(key in stripe)) {
+      fail("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
+    }
+  }
+  if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
+    fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
+  }
+  validatePublicOrigin(stripe.publicOrigin);
+  if (!isSameOriginAbsolutePath(stripe.callbackPath)) {
+    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path without a query or fragment.");
+  }
+  if (stripe.apiVersion !== STRIPE_API_VERSION) {
+    fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
+  }
+  if (typeof stripe.livemode !== "boolean") {
+    fail("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
+  }
+  if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
+    fail("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
+  }
+  return {
+    stripe: {
+      enabled: true,
+      secretKeyEnv: stripe.secretKeyEnv,
+      webhookSecretEnv: stripe.webhookSecretEnv,
+      publicOrigin: stripe.publicOrigin,
+      callbackPath: stripe.callbackPath,
+      apiVersion: STRIPE_API_VERSION,
+      livemode: stripe.livemode,
+      requestTimeoutMs: stripe.requestTimeoutMs
+    }
+  };
+}
+function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
+  const normalized = validatePaymentsConfig(payments);
+  if (!normalized || normalized.stripe.enabled === false) return normalized;
+  const secretKey = serverEnv?.[normalized.stripe.secretKeyEnv];
+  const webhookSecret = serverEnv?.[normalized.stripe.webhookSecretEnv];
+  const expectedSecretPrefix = normalized.stripe.livemode ? "sk_live_" : "sk_test_";
+  if (typeof secretKey !== "string" || !secretKey.startsWith(expectedSecretPrefix) || secretKey.length <= expectedSecretPrefix.length) {
+    fail("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
+  }
+  if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
+    fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  return normalized;
+}
+function isPlainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function isServerEnvReference(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+function validatePublicOrigin(value) {
+  if (typeof value !== "string") {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  let origin;
+  try {
+    origin = new URL(value);
+  } catch {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  const loopback = origin.hostname === "localhost" || origin.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
+  const secureHosted = origin.protocol === "https:";
+  const localHttp = origin.protocol === "http:" && loopback;
+  if (!secureHosted && !localHttp || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/" || origin.origin !== value.replace(/\/$/, "")) {
+    fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
+  }
+}
+function isSameOriginAbsolutePath(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+}
+function fail(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
@@ -3205,6 +3329,7 @@ async function createBundle(projectDir, config, options = {}) {
   const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
   const serverEnv = sealedEnvelope ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey) : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
+  validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   const [serverSource, clientSource] = await Promise.all([
     readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.").catch((error) => {
       throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
@@ -4177,7 +4302,7 @@ function captureMailConfigData(value, allowed, message, hint) {
   }
   return new Map(entries);
 }
-function isServerEnvReference(value) {
+function isServerEnvReference2(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
 }
 
@@ -4223,7 +4348,7 @@ function validateEmailWebhooksConfig(webhooks) {
         `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
       );
     }
-    if (!isServerEnvReference(secretEnv)) {
+    if (!isServerEnvReference2(secretEnv)) {
       invalidMailConfig(
         `Invalid ${provider} webhook Server env reference.`,
         `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
@@ -4236,9 +4361,9 @@ function validateEmailWebhooksConfig(webhooks) {
 
 // src/mail-config.ts
 function validateMailConfig(mail) {
-  const fail = invalidMailConfig;
+  const fail2 = invalidMailConfig;
   const capture = captureMailConfigData;
-  const envReference = isServerEnvReference;
+  const envReference = isServerEnvReference2;
   const optional = (target, name, value) => {
     if (value !== void 0) target[name] = value;
   };
@@ -4261,13 +4386,13 @@ function validateMailConfig(mail) {
   const host = smtpData.get("host");
   const port = smtpData.get("port");
   if (typeof vendor !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(vendor)) {
-    fail("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
+    fail2("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
   }
   if (typeof host !== "string" || host.length < 1 || host.length > 253 || /[^\x21-\x7e]/.test(host)) {
-    fail("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
+    fail2("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
+    fail2("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
   }
   const tlsData = capture(
     smtpData.get("tls"),
@@ -4279,13 +4404,13 @@ function validateMailConfig(mail) {
   const rejectUnauthorized = tlsData.get("rejectUnauthorized");
   const servername = tlsData.get("servername");
   if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(tlsMode)) {
-    fail("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
+    fail2("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
   }
   if (rejectUnauthorized !== void 0 && typeof rejectUnauthorized !== "boolean") {
-    fail("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
+    fail2("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
   }
   if (servername !== void 0 && (typeof servername !== "string" || servername.length < 1 || servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername) || servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
-    fail("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
+    fail2("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
   }
   const authData = capture(
     smtpData.get("auth"),
@@ -4299,31 +4424,31 @@ function validateMailConfig(mail) {
   let auth;
   if (authMethod === "none") {
     if (authData.size !== 1) {
-      fail("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
+      fail2("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
     }
     auth = { method: "none" };
   } else {
     if (!["PLAIN", "LOGIN"].includes(authMethod) || typeof usernameEnv !== "string" || typeof passwordEnv !== "string") {
-      fail("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+      fail2("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
     }
     if (!envReference(usernameEnv) || !envReference(passwordEnv)) {
-      fail("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
+      fail2("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
     }
     auth = { method: authMethod, usernameEnv, passwordEnv };
   }
   if (["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none") {
-    fail(
+    fail2(
       "SMTP plaintext delivery requires an explicit unauthenticated relay.",
       'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
     );
   }
   const defaultFrom = smtpData.get("defaultFrom");
   if (defaultFrom !== void 0 && (typeof defaultFrom !== "string" || defaultFrom.length < 1 || defaultFrom.length > 320 || /[\r\n\0]/.test(defaultFrom))) {
-    fail("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
+    fail2("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
   }
   const validateTimeout = (name, value, maximum, label) => {
     if (value !== void 0 && (!Number.isInteger(value) || value < 100 || value > maximum)) {
-      fail(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name}\` to an integer from 100 through ${maximum} milliseconds.`);
+      fail2(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name}\` to an integer from 100 through ${maximum} milliseconds.`);
     }
   };
   const connectionTimeoutMs = smtpData.get("connectionTimeoutMs");
@@ -6589,13 +6714,22 @@ function decodeJobCursor(value) {
   }
 }
 function safeJobFailure(error) {
-  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const knownCodes = /* @__PURE__ */ new Set([
+    "JOB_ACTOR_UNAVAILABLE",
+    "UNKNOWN_JOB_HANDLER",
+    "JOB_RESULT_TOO_LARGE",
+    "INVALID_JOB_PAYLOAD",
+    "STRIPE_CHECKOUT_REJECTED",
+    "STRIPE_CHECKOUT_RESPONSE_INVALID"
+  ]);
   const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
   const messages = {
     JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
     UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
     JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
     INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
+    STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
     JOB_FAILED: "Job handler failed."
   };
   return { code, message: messages[code] };
@@ -11031,7 +11165,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
       invalidHint: "Check Microsoft tenant selection and retry sign-in."
     });
     const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
-    if (!isPlainRecord(discovery) || !required.every(
+    if (!isPlainRecord2(discovery) || !required.every(
       (key) => typeof discovery[key] === "string" && discovery[key].length > 0 && discovery[key].length <= 2048
     )) {
       throw commandError2(
@@ -11172,7 +11306,7 @@ async function completeMicrosoftOAuth(database, context) {
     invalidMessage: "Microsoft OAuth response was invalid.",
     invalidHint: "Check the Microsoft client configuration and retry sign-in."
   });
-  if (!isPlainRecord(token)) {
+  if (!isPlainRecord2(token)) {
     throw commandError2(
       "Microsoft OAuth response was invalid.",
       "Check the Microsoft client configuration and retry sign-in.",
@@ -11189,7 +11323,7 @@ async function completeMicrosoftOAuth(database, context) {
   return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
 }
 async function verifyMicrosoftIdentityToken(database, token, expectedNonce, discovery) {
-  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
+  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord2(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
     throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const parts = token.split(".");
@@ -11453,7 +11587,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
     for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
       if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
     }
-    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord(value) && value.kid === missingKid2);
+    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord2(value) && value.kid === missingKid2);
     state.missingKidCooldowns.delete(missingKid2);
     if (!found) state.missingKidCooldowns.set(missingKid2, at + 1e4);
     while (state.missingKidCooldowns.size > 64) {
@@ -11498,7 +11632,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
       invalidMessage: "Microsoft signing keys were invalid.",
       invalidHint: "Retry Microsoft sign-in."
     });
-    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
+    if (!isPlainRecord2(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
       throw commandError2("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
     }
     if (requestGeneration >= state.generation) {
@@ -11523,7 +11657,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
 }
 async function selectMicrosoftJwk(database, discovery, kid) {
   let jwks = await loadMicrosoftJwks(database, discovery, false);
-  let candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+  let candidate = jwks.keys.find((value) => isPlainRecord2(value) && value.kid === kid);
   if (!candidate) {
     const microsoft = database.authConfig.providers.microsoft;
     const cacheKey = microsoftOidcCacheKey([
@@ -11534,7 +11668,7 @@ async function selectMicrosoftJwk(database, discovery, kid) {
     ]);
     const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
     jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
-    candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+    candidate = jwks.keys.find((value) => isPlainRecord2(value) && value.kid === kid);
   }
   if (!candidate) {
     throw commandError2("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
@@ -11545,7 +11679,7 @@ async function selectMicrosoftJwk(database, discovery, kid) {
   }
   return candidate;
 }
-function isPlainRecord(value) {
+function isPlainRecord2(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
@@ -11557,7 +11691,7 @@ function parseMicrosoftJwtPart(value, maxBytes) {
   const decoded = decodeJwtPart(value);
   if (decoded.length > maxBytes) throw new Error("JWT segment exceeded its byte limit");
   const parsed = JSON.parse(decoded.toString("utf8"));
-  if (!isPlainRecord(parsed)) throw new Error("JWT segment was not an object");
+  if (!isPlainRecord2(parsed)) throw new Error("JWT segment was not an object");
   return parsed;
 }
 function microsoftTenantAllowsClaims(selectedTenant, tenantId, issuer, discoveredIssuer) {
@@ -15432,6 +15566,7 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
   }
 }
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+  const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
@@ -15531,6 +15666,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    paymentsConfig,
     mail,
     authConfig: authStatus2(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -17484,6 +17620,7 @@ function createEndpointContext(database, endpointRequest, session) {
   const context = {
     auth,
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
       request: {
         method: endpointRequest.method,
@@ -18525,6 +18662,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
+      database.__notifyJobStateQueries = refreshQueries;
       void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
       return;
     }
@@ -18835,17 +18973,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(() => {
-          for (const subscribedClient of clients) {
-            for (const subscription of subscribedClient.subscriptions.values()) {
-              void sendQueryResult(
-                subscribedClient,
-                subscription,
-                (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-              );
-            }
-          }
-        }, 0);
+        setTimeout(refreshQueries, 0);
       }
       return;
     }
@@ -18942,6 +19070,17 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       try {
         onError(error);
       } catch {
+      }
+    }
+  }
+  function refreshQueries() {
+    for (const subscribedClient of clients) {
+      for (const subscription of subscribedClient.subscriptions.values()) {
+        void sendQueryResult(
+          subscribedClient,
+          subscription,
+          (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
+        );
       }
     }
   }
@@ -19488,6 +19627,7 @@ function createMutationContext(database, auth) {
   const context = {
     auth,
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database),
     __pendingAclWrites: []
   };
@@ -19917,6 +20057,7 @@ async function runCurrentUserJobWorker(database) {
           return;
         }
         const handlerFailure = safeJobFailure(error);
+        const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
@@ -19926,7 +20067,7 @@ async function runCurrentUserJobWorker(database) {
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken) : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
-        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
+        const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
         const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
         const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
         const retryAvailableAt = retryAvailableAtCandidate !== null && retry !== null && jobRetryHorizonFits(new Date(retryAvailableAtCandidate), retry, remainingAttempts) ? retryAvailableAtCandidate : null;
@@ -19950,6 +20091,7 @@ async function runCurrentUserJobWorker(database) {
       } finally {
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
+        database.__notifyJobStateQueries?.();
       }
     }
   } finally {
@@ -21402,14 +21544,14 @@ function vanillaTemplateFiles(options) {
 A framework-neutral Vanilla TypeScript Sporades capsule.
 `,
     "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
-import { paymentJobs, paymentQueries } from "./payments.js";` : ""}
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
   journey: { enabled: true },
-  schema: { notes: table({ text: String(), ownerId: String() }) },
+  schema: { notes: table({ text: String(), ownerId: String() })${payments ? ", ...paymentSchema" : ""} },
   queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all())${payments ? ", ...paymentQueries" : ""} },
-  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
+  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId }))${payments ? ", ...paymentMutations" : ""} },
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
@@ -21419,7 +21561,7 @@ export default capsule({
     "client/index.ts": vanillaClientTemplate(),
     "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };
 `,
-    ...payments ? blankPaymentSupportFiles() : {}
+    ...payments ? blankPaymentSupportFiles(options.name) : {}
   };
 }
 function vanillaClientTemplate() {
@@ -21522,17 +21664,17 @@ function blankTemplateFiles(options) {
   return {
     "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
     "server/index.ts": `import { capsule } from "sporades/server";
-import { paymentJobs, paymentQueries } from "./payments.js";
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
-  schema: {},
+  schema: paymentSchema,
   queries: paymentQueries,
-  mutations: {},
+  mutations: paymentMutations,
   jobs: paymentJobs,
 });
 `,
-    ...blankPaymentSupportFiles(),
+    ...blankPaymentSupportFiles(options.name),
     "client/index.tsx": blankClientTemplate(options.framework),
     "shared/types.ts": `export {};
 `
@@ -21545,27 +21687,102 @@ ${introduction}
 
 ## Built-in payments
 
-This blank Capsule includes a dormant Stripe payment foundation. It remains disabled at \`payments.stripe.enabled\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.
+This blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.
 
-Start in \`server/payments.ts\`: define the server-owned Price catalogue and replace the policy placeholders only after deciding which users or Teams may act. Sporades owns Stripe transport, retries, signature verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
+Activation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.
+
+Start in \`server/payments.ts\`: define the server-owned Price catalogue and replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity. The mutation atomically persists the intent and enqueues an idempotent durable Job; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.
+
+Anonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 `;
 }
-function blankPaymentSupportFiles() {
+function blankPaymentSupportFiles(capsuleName) {
   return {
-    "server/payments.ts": `import { job, query } from "sporades/server";
+    "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
+import type { CapsuleContext } from "sporades/server";
+import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
 import type { PaymentJobState } from "../shared/payments.js";
 
-// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
-export const stripePrices = Object.freeze({});
+type CheckoutProduct = Readonly<{ priceId: string; maxQuantity: number }>;
+type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
 
-// Dormant by default. Activation requires complete project configuration and Sealed Server env.
-const stripe = createStripePaymentIntegration({ enabled: false });
+// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
+export const stripePrices: Readonly<Record<string, CheckoutProduct>> = Object.freeze({});
+
+export const paymentSchema = {
+  paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), quantity: Numeric(), status: Text() })
+    .unique("ownerId", "intentId")
+    .acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: ({ previous, next, ctx }) => (next ?? previous)?.ownerId === ctx.auth.userId,
+    }),
+};
+
+// Capsule policy seam. Deliberately deny until the Capsule author makes an explicit policy decision.
+export async function authorizeStripeCheckout(_ctx: CapsuleContext, _input: CheckoutInput): Promise<boolean> {
+  return false;
+}
 
 export const paymentJobs = {
-  stripeCheckout: job((_ctx, input) => stripe.createCheckoutSession(input)),
-  stripeCustomerPortal: job((_ctx, input) => stripe.createCustomerPortalSession(input)),
+  stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => {
+    const config = ctx.payments?.stripe;
+    const stripe = config?.enabled
+      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+      : createStripePaymentIntegration({ enabled: false });
+    return stripe.createCheckoutSession(input);
+  }),
+  stripeCustomerPortal: job((ctx, input) => {
+    const config = ctx.payments?.stripe;
+    const stripe = config?.enabled
+      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+      : createStripePaymentIntegration({ enabled: false });
+    return stripe.createCustomerPortalSession(input);
+  }),
 };
+
+export const paymentMutations = {
+  startStripeCheckout: mutation(async (ctx, input: CheckoutInput) => {
+    const actor = requireAuth(ctx, { linked: true });
+    validateCheckoutInput(input);
+    const product = stripePrices[input.productKey];
+    if (!product || !validPrice(product) || input.quantity > product.maxQuantity) throw checkoutError("PAYMENT_PRODUCT_UNAVAILABLE", "That product is not available for Checkout.", "Choose an available Capsule product and server-approved quantity.");
+    if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before starting Checkout.");
+    if (!await authorizeStripeCheckout(ctx, input)) throw checkoutError("PAYMENT_CHECKOUT_FORBIDDEN", "Checkout is not authorized.", "Ask a Capsule billing administrator to review this payment action.");
+
+    const inserted = await ctx.db.paymentIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, productKey: input.productKey, quantity: input.quantity, status: "queued" }, "ownerId", "intentId");
+    const intent = inserted ?? await ctx.db.paymentIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
+    if (!intent || intent.productKey !== input.productKey || intent.quantity !== input.quantity) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different product or quantity.");
+
+    const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:checkout:`)} + actor.userId + ":" + input.intentId;
+    const queued = await ctx.jobs.enqueue("stripeCheckout", {
+      priceId: product.priceId,
+      quantity: input.quantity,
+      successPath: "/payments/success",
+      cancelPath: "/payments/cancelled",
+      idempotencyKey,
+      businessReference: input.intentId,
+    }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
+    return { intentId: input.intentId, jobId: queued.id };
+  }),
+};
+
+function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
+  const keys = ["intentId", "productKey", "quantity"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\\0") !== keys.join("\\0")) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout request.", "Pass only intentId, productKey, and quantity.");
+  const candidate = input as Record<string, unknown>;
+  if (typeof candidate.intentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(candidate.intentId)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid payment intent identity.", "Pass one stable opaque intentId from 8 through 128 characters.");
+  if (typeof candidate.productKey !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(candidate.productKey)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Capsule product key.", "Choose one lowercase server-owned product key.");
+  if (!Number.isInteger(candidate.quantity) || Number(candidate.quantity) < 1 || Number(candidate.quantity) > 99) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout quantity.", "Pass an integer quantity from 1 through 99.");
+}
+
+function validPrice(product: CheckoutProduct) {
+  return /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
+}
+
+function checkoutError(code: string, message: string, hint: string) {
+  return Object.assign(new Error(message), { code, hint });
+}
 
 const paymentJobHandlers = new Set(Object.keys(paymentJobs));
 
@@ -21583,7 +21800,62 @@ export const paymentQueries = {
   }),
 };
 `,
-    "shared/payments.ts": `export type PaymentJobState = {
+    "client/payments.ts": `import { mutations, queries } from "sporades/client";
+import type { SporadesError, Subscription } from "sporades/client";
+import type { PaymentCheckoutResult, PaymentJobState } from "../shared/payments.js";
+
+export type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
+export type CheckoutProgress =
+  | Readonly<{ status: "pending"; intentId: string; jobId: string }>
+  | Readonly<{ status: "succeeded"; intentId: string; jobId: string; sessionId: string; url: string }>
+  | Readonly<{ status: "failed"; intentId: string; jobId: string | null; error: SporadesError }>;
+
+// The caller owns the returned subscription and should unsubscribe when its UI is disposed.
+export async function startStripeCheckout(input: CheckoutInput, onProgress: (progress: CheckoutProgress) => void): Promise<Subscription> {
+  const started = await mutations.run<{ intentId: string; jobId: string }>("startStripeCheckout", input);
+  if (started.error || !started.data) {
+    onProgress({ status: "failed", intentId: input.intentId, jobId: null, error: started.error ?? { message: "Checkout did not start." } });
+    return { unsubscribe() {} };
+  }
+
+  const { intentId, jobId } = started.data;
+  onProgress({ status: "pending", intentId, jobId });
+  let settled = false;
+  return queries.subscribe<PaymentJobState>("paymentJob", (state) => {
+    if (settled || state.loading) return;
+    if (state.error) return fail(state.error);
+    const job = state.data;
+    if (!job) return fail({ message: "Checkout progress is unavailable." });
+    if (job.status === "failed" || job.status === "cancelled") return fail(job.failure ?? { message: "Checkout did not complete." });
+    if (job.status !== "succeeded") return;
+    const result = validCheckoutResult(job.result);
+    if (!result) return fail({ message: "Checkout returned an invalid redirect." });
+    settled = true;
+    onProgress({ status: "succeeded", intentId, jobId, sessionId: result.sessionId, url: result.url });
+    window.location.assign(result.url);
+  }, jobId);
+
+  function fail(error: SporadesError) {
+    settled = true;
+    onProgress({ status: "failed", intentId, jobId, error });
+  }
+}
+
+function validCheckoutResult(value: unknown): PaymentCheckoutResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (Object.keys(result).sort().join("\\0") !== ["ok", "sessionId", "url"].join("\\0")) return null;
+  if (result.ok !== true || typeof result.sessionId !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(result.sessionId) || typeof result.url !== "string") return null;
+  try {
+    const url = new URL(result.url);
+    if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || url.username || url.password || url.port) return null;
+  } catch { return null; }
+  return result as PaymentCheckoutResult;
+}
+`,
+    "shared/payments.ts": `export type PaymentCheckoutResult = { ok: true; sessionId: string; url: string };
+
+export type PaymentJobState = {
   id: string;
   status: "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
   attempts: number;
@@ -23012,8 +23284,12 @@ Client toolchain: ${toolchain}
 ${template === "blank" ? `
 ## Built-in Stripe payments
 
-- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and Sealed Server env are ready.
-- Sporades owns Stripe transport, signature verification, retries, provider timeouts, and safe provider errors.
+- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and matching Sealed Server env are ready.
+- Define product-key to Price mappings only in \`server/payments.ts\`; browser input must never carry a provider Price identity.
+- Keep \`authorizeStripeCheckout\` deny-by-default until the Capsule makes an explicit linked-user or Team billing decision.
+- Start Checkout in the mutation, observe its actor-scoped durable Job, and redirect only through the validator in \`client/payments.ts\`.
+- Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
+- Sporades owns Stripe transport, compatibility, redirect validation, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 - Keep provider identities and credentials out of client and shared code. Browser input may choose only Capsule-defined product keys.
 ` : ""}
@@ -23031,7 +23307,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-${template === "blank" ? "- `server/payments.ts` - dormant payment Jobs, known-Job query, and server-owned Price catalogue\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
+${template === "blank" ? "- `server/payments.ts` - payment mutations and Jobs, known-Job query, policy seam, and server-owned Price catalogue\n- `client/payments.ts` - Checkout progress and validated redirect helper\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
 - \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
@@ -23998,30 +24274,30 @@ var PASSWORD_RESET_MAX_TTL_MS3 = 24 * 60 * 60 * 1e3;
 function validatePasswordResetConfig(auth) {
   const passwordReset = auth?.email?.passwordReset;
   if (passwordReset === void 0) return;
-  const fail = (message, hint) => {
+  const fail2 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_AUTH_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
-    fail("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+    fail2("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
   }
   const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
   if (unknown.length > 0) {
-    fail(
+    fail2(
       `Unsupported password reset option: ${unknown.sort().join(", ")}`,
       "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`."
     );
   }
   if (passwordReset.path !== void 0 && !isSameOriginResetPath(passwordReset.path)) {
-    fail(
+    fail2(
       "Invalid password reset page path.",
       "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
     );
   }
   if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS3 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS3)) {
-    fail(
+    fail2(
       "Invalid password reset code lifetime.",
       "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."
     );
@@ -24034,21 +24310,21 @@ function isSameOriginResetPath(value) {
 }
 function validateTeamsConfig(teams) {
   if (teams === void 0) return;
-  const fail = (message, hint) => {
+  const fail2 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_TEAMS_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!teams || typeof teams !== "object" || Array.isArray(teams) || Object.keys(teams).some((key) => key !== "join")) {
-    fail("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
+    fail2("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
   }
   if (teams.join === void 0) return;
   if (!teams.join || typeof teams.join !== "object" || Array.isArray(teams.join) || Object.keys(teams.join).some((key) => key !== "path")) {
-    fail("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
+    fail2("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
   }
   if (teams.join.path !== void 0 && !isSameOriginResetPath(teams.join.path)) {
-    fail("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
+    fail2("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
   }
 }
 function validateClientConfig(client) {
@@ -24078,42 +24354,6 @@ function validateSchedulingConfig(scheduling) {
   if (seconds !== void 0 && (!Number.isInteger(seconds) || seconds < 1 || seconds > 300)) {
     throw commandError4("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
-}
-function validatePaymentsConfig(payments) {
-  if (payments === void 0) return void 0;
-  const fail = (message, hint) => {
-    const error = new Error(message);
-    error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
-    error.hint = hint;
-    throw error;
-  };
-  if (!payments || typeof payments !== "object" || Array.isArray(payments)) {
-    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
-  }
-  const paymentRecord = payments;
-  const unknownProviders = Object.keys(paymentRecord).filter((key) => key !== "stripe");
-  if (unknownProviders.length > 0) {
-    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
-  }
-  if (paymentRecord.stripe === void 0) {
-    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with `enabled` set to false.");
-  }
-  const stripe = paymentRecord.stripe;
-  if (!stripe || typeof stripe !== "object" || Array.isArray(stripe)) {
-    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with `enabled` set to false.");
-  }
-  const stripeRecord = stripe;
-  const unknownStripeKeys = Object.keys(stripeRecord).filter((key) => key !== "enabled");
-  if (unknownStripeKeys.length > 0) {
-    fail("Unsupported Stripe payments configuration.", "Configure only `payments.stripe.enabled` in the dormant foundation.");
-  }
-  if (stripeRecord.enabled !== false) {
-    fail(
-      "Stripe payments are not fully configured.",
-      stripeRecord.enabled === true ? "Configure Sealed Server env and server-owned Prices before enabling Stripe payments." : "Set `payments.stripe.enabled` to false until the complete provider configuration is ready."
-    );
-  }
-  return { stripe: { enabled: false } };
 }
 async function readOptionalProjectSecurity(projectDir, session) {
   try {

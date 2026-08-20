@@ -448,7 +448,10 @@ Recovery is achieved by re-sealing known values:
   sealed values cannot be recovered. Regenerate the real provider secrets, add
   them back to Server env, import, and push a new Host-encrypted release.
 
-### Use the dormant Stripe payment boundary
+### Use the Stripe payment boundary
+
+The built-in Stripe payment boundary starts dormant in every blank Capsule and
+receives no provider authority until complete activation.
 
 The blank template imports `createStripePaymentIntegration` from the separate
 server-only export:
@@ -461,19 +464,29 @@ const result = await stripe.createCheckoutSession({});
 // result.error.code === "STRIPE_PAYMENTS_DISABLED"
 ```
 
-The Ticket 02 boundary exposes only `createCheckoutSession`,
+The boundary exposes only `createCheckoutSession`,
 `createCustomerPortalSession`, and `verifyWebhookEvent`. It does not expose a
 generic provider request function or the underlying Stripe client. While
 disabled, every operation returns a stable `STRIPE_PAYMENTS_DISABLED` result
 with an activation hint, performs no provider request, and receives no payment
-authority. Passing `enabled: true` fails with
-`STRIPE_PAYMENTS_NOT_CONFIGURED`; complete activation belongs to later narrow
-payment contracts.
+authority.
+
+Complete `enabled: true` options contain the validated project configuration,
+the runtime's Sealed Server env view, and the durable Job AbortSignal. The
+enabled `createCheckoutSession` accepts only a server-owned Price ID, bounded
+quantity, trusted same-origin return paths, stable business idempotency key,
+and opaque business reference. It always requests one-time payment mode and
+returns only `{ ok: true, sessionId, url }` after validating Stripe's mode,
+account mode, Session identity, and exact `https://checkout.stripe.com` host.
+Transient failures are retryable by the durable Job; permanent rejection and
+invalid responses are bounded, redacted, and non-retryable. Customer Portal
+and callback admission remain unavailable in this slice.
 
 The official server Stripe SDK is a Sporades dependency and is not copied into
-generated projects or browser Bundles. Keep provider credentials in Sealed
-Server env and provider identities in Capsule-owned server code. The dormant
-foundation registers no Stripe callback route.
+generated projects or browser Bundles. The real server Bundle inlines it. Keep
+provider credentials in Sealed Server env and provider identities in
+Capsule-owned server code. The payment foundation registers no Stripe callback
+route yet.
 
 ### Send SMTP mail
 

@@ -60,6 +60,7 @@
       "src/server-runtime-source.ts",
       "src/server.ts",
       "src/stored-value-coding.ts",
+      "src/stripe-payment-config.ts",
       "src/stripe-payment-integration.ts",
       "src/teams-runtime.ts",
       "src/templates/client-runtime-template.ts",
@@ -74,7 +75,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "eaa41693438a88811abb83edf929c7f60acf5123697e3b18a02267c5f2238cef"
+    "digest": "dc72d6178f070b0abc9d621b22d1bc2eb9a10fbaeecf5cb86b5e3fe69d42e3da"
   },
   "outputs": {
     "files": [
@@ -288,6 +289,10 @@
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
       "dist/stored-value-coding.js.map",
+      "dist/stripe-payment-config.d.ts",
+      "dist/stripe-payment-config.d.ts.map",
+      "dist/stripe-payment-config.js",
+      "dist/stripe-payment-config.js.map",
       "dist/stripe-payment-integration.d.ts",
       "dist/stripe-payment-integration.d.ts.map",
       "dist/stripe-payment-integration.js",
@@ -317,6 +322,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "db178f4e97c5106b5f1d546714710d0144ac231e65385a094b608f11f3afb8d3"
+    "digest": "8210e581c422a7671cde84a44cd92fd6d6d0a69c710d83cc0a27254ee5eab115"
   }
 }

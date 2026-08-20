@@ -113,7 +113,8 @@ entry as a write-free preflight error and never rewrites the source shell.
 
 `server/index.ts` defines the Capsule: schema, queries, mutations, endpoints,
 messages, Jobs, middleware, and server-side behavior. A blank Capsule imports
-its dormant payment Jobs and known-Job query from `server/payments.ts`.
+its built-in payment mutations, Jobs, policy seam, and known-Job query from
+`server/payments.ts`.
 
 `client/index.tsx` is the browser entry. It imports the configured framework and
 `sporades/client`.
@@ -182,7 +183,7 @@ A typical `sporades.json` looks like this:
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
-### Dormant Stripe payments in blank Capsules
+### Built-in Stripe payments in blank Capsules
 
 Every newly generated blank Capsule includes this credential-free project
 configuration:
@@ -198,24 +199,67 @@ configuration:
 ```
 
 `payments` remains optional so existing Capsules and non-blank demonstration
-templates retain their current behavior. Ticket 02 accepts only the exact
-dormant Stripe shape above. Setting `enabled` to `true`, adding unknown payment
-providers, or adding undeclared Stripe options fails configuration validation
-with `INVALID_STRIPE_PAYMENTS_CONFIG`; activation is not partial.
+templates retain their current behavior. The dormant shape is exact and grants
+no provider authority. Activation is all-or-nothing:
+
+```json
+{
+  "payments": {
+    "stripe": {
+      "enabled": true,
+      "secretKeyEnv": "STRIPE_SECRET_KEY",
+      "webhookSecretEnv": "STRIPE_WEBHOOK_SECRET",
+      "publicOrigin": "https://capsule.example",
+      "callbackPath": "/__sporades/stripe/webhook",
+      "apiVersion": "2026-07-29.dahlia",
+      "livemode": false,
+      "requestTimeoutMs": 10000
+    }
+  }
+}
+```
+
+The two env fields name values stored with `sporades env set`; secret values do
+not belong in `sporades.json`. The runtime validates the complete shape and the
+matching `sk_test_` or `sk_live_` and `whsec_` Sealed Server credentials before
+publishing an activated Capsule. A hosted `publicOrigin` must be an exact HTTPS
+origin. Explicit loopback HTTP origins are admitted for Dev sessions. Return
+paths are resolved only against that trusted origin, never an incoming Host
+header. Unknown providers, undeclared options, partial activation, mode-mismatched
+credentials, malformed origins, and unsupported compatibility versions fail as
+`INVALID_STRIPE_PAYMENTS_CONFIG`.
 
 The generated `server/payments.ts` contains an empty server-owned Price
-catalogue, named Checkout and Customer Portal Jobs, and a query that exposes
-only bounded state for a known payment Job. `shared/payments.ts` contains the
-serializable Job-state shape. No Stripe UI, credentials, Customer identity,
-live Price identity, webhook secret, provider URL, or callback route is
-generated.
+catalogue, a deny-by-default `authorizeStripeCheckout` policy seam, named
+Checkout and Customer Portal Jobs, and a query that exposes only bounded state
+for a known payment Job owned by the current actor. `shared/payments.ts`
+contains the serializable Job-state shape. `client/payments.ts` starts Checkout,
+reports pending, succeeded, or safely failed progress, validates the returned
+Stripe-hosted URL, and redirects only after success. It is not imported into the
+blank UI automatically.
 
-Sporades owns Stripe transport, retries, callback verification, and safe
-provider-error translation behind `sporades/server/stripe`. The Capsule owns
+To activate one-time Checkout, define Capsule product keys in the server-owned
+Price catalogue, make an explicit billing decision in
+`authorizeStripeCheckout`, enable the complete configuration, and seal both
+named credentials. Browser input contains only an opaque intent ID, Capsule
+product key, and bounded quantity. The linked-user mutation atomically persists
+the intent and enqueues a durable Job. Network I/O starts after commit. Capsule,
+operation, actor, and intent identity form the stable Stripe and Job idempotency
+key, so retries and repeated mutation calls converge on the same work. Transient
+provider failures retry within the declared Job policy; permanent rejection is
+retained as bounded redacted failure metadata.
+
+Anonymous Checkout remains off by default. A Capsule may opt in only by
+deliberately relaxing the linked-user guard, authorizing the guest in the policy
+seam, and deriving the business reference in server code. That opt-in grants no
+Customer Portal or Team billing authority. The callback path is configuration
+only until webhook admission is implemented; it is not registered by this
+Checkout slice.
+
+Sporades owns Stripe transport, retries, compatibility, redirect validation,
+and safe provider-error translation behind `sporades/server/stripe`. The Capsule owns
 Prices, Customers, Teams, billing authority, subscriptions, entitlements,
-notifications, retention, export, and erasure. Before a later payment ticket
-enables the integration, define those policies in server code and put
-credentials only in Sealed Server env. Do not place secrets or provider
+notifications, retention, export, and erasure. Do not place secrets or provider
 identities in `sporades.json`, shared code, or browser code.
 
 Use `dev.port` when you always want a different Dev session port. Use

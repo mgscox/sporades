@@ -20,7 +20,7 @@ learn or adapt:
 
 | Template | What it demonstrates |
 | --- | --- |
-| `blank` | The minimal Capsule layout, the selected framework's connection to `sporades/client`, and a built-in but disabled Stripe payment foundation with no UI or credentials. Start here when you do not want example domain code. |
+| `blank` | The minimal Capsule layout, the selected framework's connection to `sporades/client`, and a built-in but disabled Stripe payment foundation with no UI or credentials. Its server policy seam, durable Job, and validated client redirect helper scaffold one-time Checkout after deliberate activation. Start here when you do not want example domain code. |
 | `todo` | Anonymous per-user data, a table, subscribed query, mutation, and automatic realtime refresh after writes. |
 | `guestbook` | Server-trusted identity from `ctx.auth`, input validation, anonymous and linked-user attribution, and a realtime ordered feed. |
 | `photo-library` | File uploads, private and public file URLs, persisted file metadata, authentication-aware views, and a durable scheduled Job. |

@@ -1,5 +1,6 @@
 import { type LooseRecord } from "./cli-support.js";
 export { validateMailConfig } from "../mail-config.js";
+export { validatePaymentsConfig } from "../stripe-payment-config.js";
 export declare const SECURITY_SESSIONS: Set<string>;
 export declare function readProjectConfig(projectDir: string): Promise<any>;
 export declare function validatePasswordResetConfig(auth: LooseRecord): void;
@@ -7,12 +8,6 @@ export declare function validatePasswordResetConfig(auth: LooseRecord): void;
 export declare function validateTeamsConfig(teams: LooseRecord): void;
 export declare function validateClientConfig(client: LooseRecord): void;
 export declare function validateSchedulingConfig(scheduling: LooseRecord): void;
-/** Ticket 02 admits only the credential-free dormant Stripe foundation. */
-export declare function validatePaymentsConfig(payments: unknown): {
-    stripe: {
-        enabled: boolean;
-    };
-} | undefined;
 export declare function readOptionalProjectSecurity(projectDir: string, session: string): Promise<{
     cors: {
         sameOrigin: boolean;

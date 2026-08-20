@@ -185,6 +185,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // This validation module intentionally has three cohesive declarations, so
   // its strict-greater-than census floor is two.
   { file: "mail-config-validation.js", atLeast: 2, sentinel: "captureMailConfigData" },
+  // Stripe activation validation is shared by CLI build admission and runtime
+  // publication. Its private origin validator keeps the trust boundary in the
+  // deployed-module census even though no Capsule API resolves it by name.
+  { file: "stripe-payment-config.js", atLeast: 5, sentinel: "validatePublicOrigin" },
   // Batch 3, and the largest subject added here: 104 functions, 51 of them private. The sentinel is
   // private for the third time running, and this one is worth naming. `passwordResetCodeParts` mints
   // the reset selector and verifier and is exported from nothing and registered in nothing — under

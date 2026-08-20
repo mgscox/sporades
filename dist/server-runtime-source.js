@@ -5,6 +5,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
+import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
@@ -479,6 +480,7 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
     catch { }
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+    const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
         throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
     }
@@ -581,6 +583,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __handlerContextMappingCount: 0,
         rowCache,
         serverEnv,
+        paymentsConfig,
         mail,
         authConfig: authStatus(config, serverEnv),
         passwordResetConfig: resolvePasswordResetConfig(config),
@@ -2695,6 +2698,7 @@ function createEndpointContext(database, endpointRequest, session) {
     const context = {
         auth,
         env: database.serverEnv,
+        payments: database.paymentsConfig,
         log: createEndpointLogger(database, {
             request: {
                 method: endpointRequest.method,
@@ -3753,6 +3757,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
             client.subscriptions.set(message.id, subscription);
+            database.__notifyJobStateQueries = refreshQueries;
             void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
             return;
         }
@@ -4095,13 +4100,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
             sendJson(client, formatMutationResult(message, mutationName, result));
             if (result.ok && mutationResultsWithWrites.has(result)) {
-                setTimeout(() => {
-                    for (const subscribedClient of clients) {
-                        for (const subscription of subscribedClient.subscriptions.values()) {
-                            void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
-                        }
-                    }
-                }, 0);
+                setTimeout(refreshQueries, 0);
             }
             return;
         }
@@ -4204,6 +4203,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                 onError(error);
             }
             catch { /* A closed transport already owns cleanup. */ }
+        }
+    }
+    function refreshQueries() {
+        for (const subscribedClient of clients) {
+            for (const subscription of subscribedClient.subscriptions.values()) {
+                void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
+            }
         }
     }
     async function sendAuthResult(client, id) {
@@ -4778,6 +4784,7 @@ function createMutationContext(database, auth) {
     const context = {
         auth,
         env: database.serverEnv,
+        payments: database.paymentsConfig,
         log: createEndpointLogger(database),
         __pendingAclWrites: [],
     };
@@ -5258,6 +5265,7 @@ export async function runCurrentUserJobWorker(database) {
                     return;
                 }
                 const handlerFailure = safeJobFailure(error);
+                const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
                 const failedAt = database.clock.now().toISOString();
                 const history = JSON.parse(row.attemptHistory || "[]");
                 const retry = parsePersistedJobRetry(row.retryJson);
@@ -5267,7 +5275,7 @@ export async function runCurrentUserJobWorker(database) {
                     ? await database.adapter.prepare(sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(row.id, claimToken)
                     : null;
                 const cancelled = Boolean(cancellation?.cancelRequestedAt);
-                const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+                const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
                     && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
                 const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
                 const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
@@ -5300,6 +5308,7 @@ export async function runCurrentUserJobWorker(database) {
                 const activeClaim = database.__jobAbortControllers?.get(row.id);
                 if (activeClaim?.claimToken === claimToken)
                     database.__jobAbortControllers.delete(row.id);
+                database.__notifyJobStateQueries?.();
             }
         }
     }

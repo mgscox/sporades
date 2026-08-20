@@ -10,6 +10,7 @@ import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, 
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 import { validateMailConfig } from "./mail-config.js";
+import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
@@ -549,6 +550,7 @@ export async function openDevDatabase(
   capsuleDefinition: any = null,
   options: LooseRecord = {},
 ) {
+  const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
@@ -656,6 +658,7 @@ export async function openDevDatabase(
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    paymentsConfig,
     mail,
     authConfig: authStatus(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -2929,6 +2932,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const context: LooseRecord = {
     auth,
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
       request: {
         method: endpointRequest.method,
@@ -4061,6 +4065,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
+      database.__notifyJobStateQueries = refreshQueries;
       void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error));
       return;
     }
@@ -4382,17 +4387,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(() => {
-          for (const subscribedClient of clients) {
-            for (const subscription of subscribedClient.subscriptions.values()) {
-              void sendQueryResult(
-                subscribedClient,
-                subscription,
-                (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
-              );
-            }
-          }
-        }, 0);
+        setTimeout(refreshQueries, 0);
       }
       return;
     }
@@ -4498,6 +4493,18 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     } catch (error) {
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
+    }
+  }
+
+  function refreshQueries() {
+    for (const subscribedClient of clients) {
+      for (const subscription of subscribedClient.subscriptions.values()) {
+        void sendQueryResult(
+          subscribedClient,
+          subscription,
+          (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
+        );
+      }
     }
   }
 
@@ -5127,6 +5134,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
   const context: LooseRecord = {
     auth,
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database),
     __pendingAclWrites: [],
   };
@@ -5513,6 +5521,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           return;
         }
         const handlerFailure = safeJobFailure(error);
+        const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
@@ -5524,7 +5533,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           )).get(row.id, claimToken)
           : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
-        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+        const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
           && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
         const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
         const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
@@ -5558,6 +5567,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
       } finally {
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
+        database.__notifyJobStateQueries?.();
       }
     }
   } finally {

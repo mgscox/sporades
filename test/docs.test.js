@@ -1194,7 +1194,7 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
   }
 });
 
-test("public docs agree on the dormant built-in Stripe foundation", async () => {
+test("public docs agree on dormant and activated one-time Stripe Checkout", async () => {
   const [context, prd, readme, projects, server, blankGuide, apiModule] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
@@ -1210,8 +1210,13 @@ test("public docs agree on the dormant built-in Stripe foundation", async () => 
   }
   assert.match(projects, /payments[\s\S]{0,80}stripe[\s\S]{0,80}enabled[\s\S]{0,80}false/i);
   assert.match(projects, /Existing Capsules[\s\S]{0,120}retain their current behavior/i);
+  assert.match(projects, /authorizeStripeCheckout/);
+  assert.match(projects, /idempotency/i);
+  assert.match(projects, /Anonymous Checkout remains off by default/i);
   assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
   assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
+  assert.match(server, /checkout\.stripe\.com/);
+  assert.match(server, /non-retryable/i);
   assert.match(apiModule, /createStripePaymentIntegration/);
   assert.match(apiModule, /StripePaymentsDisabledResult/);
 });

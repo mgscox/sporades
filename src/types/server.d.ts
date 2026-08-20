@@ -1,3 +1,5 @@
+import type { StripeEnabledPaymentsConfig } from "./stripe.js";
+
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 
 /** JSON-compatible values accepted by Sporades `Json()` fields and preferences APIs. */
@@ -610,6 +612,10 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   db: DatabaseFromSchema<Schema>;
   auth: AuthContext;
   env: Record<string, string>;
+  /** Normalized non-secret payment configuration. Secret values remain in `env` and are resolved only by the server integration. */
+  payments: Readonly<{ stripe: Readonly<{ enabled: false }> | StripeEnabledPaymentsConfig }> | undefined;
+  /** Cooperative cancellation is present for durable Job and Privileged execution. */
+  signal?: AbortSignal;
   log: Logger;
   messages: MessageApi;
   privileged: PrivilegedApi<Schema>;
@@ -866,11 +872,11 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   name: string;
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any>>>;
-  mutations?: Record<string, MutationDefinition>;
+  mutations?: Record<string, MutationDefinition<any>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
-  jobs?: Record<string, JobDefinition>;
+  jobs?: Record<string, JobDefinition<any>>;
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: {

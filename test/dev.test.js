@@ -154,8 +154,10 @@ function runCli(args, options = {}) {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+
+    if (options.stdin !== undefined) child.stdin.end(options.stdin);
 
     let stdout = "";
     let stderr = "";
@@ -1980,6 +1982,162 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("a generated activated blank Capsule starts one idempotent Checkout through its durable Job", { timeout: 120_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const providerRequests = [];
+    const provider = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const params = new URLSearchParams(body);
+      providerRequests.push({ headers: request.headers, body: params });
+      const retryRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === "intent-retry-1");
+      if (params.get("client_reference_id") === "intent-retry-1" && retryRequests.length === 1) {
+        response.writeHead(500, { "content-type": "application/json", "request-id": "req_retry_once" });
+        response.end(JSON.stringify({ error: { message: "temporary provider failure" } }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json", "request-id": "req_generated_checkout" });
+      response.end(JSON.stringify({
+        id: "cs_test_generated_checkout",
+        object: "checkout.session",
+        livemode: false,
+        mode: "payment",
+        url: "https://checkout.stripe.com/c/pay/cs_test_generated_checkout#fixture",
+      }));
+    });
+    await new Promise((resolve, reject) => {
+      provider.once("error", reject);
+      provider.listen(0, "127.0.0.1", resolve);
+    });
+    const apiBaseUrl = `http://127.0.0.1:${provider.address().port}`;
+
+    let child;
+    let socket;
+    let foreignSocket;
+    try {
+      const createResult = await runCli(["create", "checkout-blank", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(createResult.code, 0, createResult.stderr);
+      const projectDir = path.join(dir, "checkout-blank");
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.dev.port = 0;
+      config.auth = { providers: { anonymous: true, email: true } };
+      config.payments.stripe = {
+        enabled: true,
+        secretKeyEnv: "STRIPE_SECRET_KEY",
+        webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+        publicOrigin: "https://payments.example.test",
+        callbackPath: "/__sporades/stripe/webhook",
+        apiVersion: "2026-07-29.dahlia",
+        livemode: false,
+        requestTimeoutMs: 10_000,
+      };
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+      for (const [name, value] of [
+        ["STRIPE_SECRET_KEY", "sk_test_generated_fixture"],
+        ["STRIPE_WEBHOOK_SECRET", "whsec_generated_fixture"],
+      ]) {
+        const sealed = await runCli(["env", "set", name, "--stdin", "--json"], { cwd: projectDir, stdin: `${value}\n` });
+        assert.equal(sealed.code, 0, sealed.stderr);
+        assert.doesNotMatch(`${sealed.stdout}${sealed.stderr}`, /generated_fixture/);
+      }
+
+      const paymentsPath = path.join(projectDir, "server", "payments.ts");
+      const paymentSource = await readFile(paymentsPath, "utf8");
+      await writeFile(
+        paymentsPath,
+        paymentSource
+          .replace("Object.freeze({})", 'Object.freeze({ starter: { priceId: "price_server_owned", maxQuantity: 3 } })')
+          .replace("  return false;", "  return true;")
+          .replaceAll("signal: ctx.signal })", `signal: ctx.signal, apiBaseUrl: ${JSON.stringify(apiBaseUrl)} })`),
+      );
+      await installFakeReact(projectDir);
+
+      child = startCli(["dev", "--json"], { cwd: projectDir });
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      const send = async (target, message) => {
+        const response = waitForSocketMessage(target, (candidate) => candidate.id === message.id);
+        target.send(JSON.stringify(message));
+        return await response;
+      };
+      const checkoutInput = { intentId: "intent-generated-1", productKey: "starter", quantity: 2 };
+      const anonymous = await send(socket, { id: "anonymous-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      assert.ok(anonymous.error);
+      assert.equal(providerRequests.length, 0);
+
+      const signup = await send(socket, {
+        id: "signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: { email: "buyer@example.test", password: "correct horse battery staple", name: "Buyer" },
+      });
+      assert.equal(signup.error, null);
+      assert.equal(signup.data.auth.isGuest, false);
+
+      const injected = await send(socket, { id: "injected", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...checkoutInput, priceId: "price_browser_supplied" }] });
+      assert.ok(injected.error);
+      const unknown = await send(socket, { id: "unknown", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...checkoutInput, intentId: "intent-unknown-1", productKey: "unknown" }] });
+      assert.ok(unknown.error);
+      assert.equal(providerRequests.length, 0);
+
+      const startedCheckout = await send(socket, { id: "checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      assert.equal(startedCheckout.error, null, JSON.stringify(startedCheckout));
+      const jobId = startedCheckout.data.jobId;
+      const succeededPromise = waitForSocketMessage(socket, (message) => message.id === "payment-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "payment-state", type: "query.subscribe", query: "paymentJob", args: [jobId] }));
+      const succeeded = await succeededPromise;
+      assert.deepEqual(succeeded.data.result, {
+        ok: true,
+        sessionId: "cs_test_generated_checkout",
+        url: "https://checkout.stripe.com/c/pay/cs_test_generated_checkout#fixture",
+      });
+      assert.equal(providerRequests.length, 1);
+      assert.equal(providerRequests[0].headers["idempotency-key"], `sporades:checkout-blank:stripe:checkout:${signup.data.auth.userId}:intent-generated-1`);
+      assert.equal(providerRequests[0].body.get("line_items[0][price]"), "price_server_owned");
+
+      const repeated = await send(socket, { id: "checkout-repeat", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      assert.equal(repeated.error, null);
+      assert.equal(repeated.data.jobId, jobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.length, 1);
+
+      const retryInput = { intentId: "intent-retry-1", productKey: "starter", quantity: 1 };
+      const retryStarted = await send(socket, { id: "checkout-retry", type: "mutation.run", mutation: "startStripeCheckout", args: [retryInput] });
+      assert.equal(retryStarted.error, null, JSON.stringify(retryStarted));
+      const retrySucceededPromise = waitForSocketMessage(socket, (message) => message.id === "payment-retry-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "payment-retry-state", type: "query.subscribe", query: "paymentJob", args: [retryStarted.data.jobId] }));
+      const retrySucceeded = await retrySucceededPromise;
+      assert.equal(retrySucceeded.data.attempts, 2);
+      const retryRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === "intent-retry-1");
+      assert.equal(retryRequests.length, 2);
+      assert.equal(retryRequests[0].headers["idempotency-key"], retryRequests[1].headers["idempotency-key"]);
+      assert.match(retryRequests[0].headers["idempotency-key"], /:intent-retry-1$/);
+
+      foreignSocket = await openSocket(started.data.url);
+      const foreign = await send(foreignSocket, { id: "foreign-state", type: "query.subscribe", query: "paymentJob", args: [jobId] });
+      assert.equal(foreign.data ?? null, null);
+      assert.equal(foreign.error ?? null, null);
+
+      assert.equal((await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      assert.doesNotMatch(serverBundle, /sk_test_generated_fixture|whsec_generated_fixture/);
+      assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);
+      assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
+    } finally {
+      await closeSocketGracefully(foreignSocket);
+      await closeSocketGracefully(socket);
+      child?.kill("SIGTERM");
+      if (child) await new Promise((resolve) => child.once("exit", resolve));
+      provider.closeAllConnections();
+      await new Promise((resolve) => provider.close(resolve));
     }
   });
 });

@@ -18,6 +18,7 @@ export declare function scaffoldFiles(options: {
     "index.html": string;
 } | {
     "server/payments.ts"?: string | undefined;
+    "client/payments.ts"?: string | undefined;
     "shared/payments.ts"?: string | undefined;
     "README.md": string;
     "server/index.ts": string;
