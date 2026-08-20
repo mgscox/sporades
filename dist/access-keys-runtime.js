@@ -363,7 +363,7 @@ function withAccessKeyTransaction(database, operation) {
 }
 function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     const issued = event === "access-key.issued";
-    database.log?.emit?.({
+    const input = {
         category: "platform",
         event,
         level: "info",
@@ -380,7 +380,25 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
                 ...(issued ? { grants: [...accessKey.grants] } : {}),
             },
         },
-    });
+    };
+    if (database.__transactionActive) {
+        context.__accessKeyLifecycleAuditEvents ??= [];
+        context.__accessKeyLifecycleAuditEvents.push(input);
+        return;
+    }
+    database.log?.emit?.(input);
+}
+export function flushAccessKeyLifecycleAuditEvents(database, context) {
+    const events = context?.__accessKeyLifecycleAuditEvents;
+    if (!Array.isArray(events) || !context)
+        return;
+    delete context.__accessKeyLifecycleAuditEvents;
+    for (const event of events)
+        database.log?.emit?.(event);
+}
+export function dropAccessKeyLifecycleAuditEvents(context) {
+    if (context)
+        delete context.__accessKeyLifecycleAuditEvents;
 }
 function protectAccessKeyValue(value) {
     const target = Object.freeze({ ...value });

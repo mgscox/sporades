@@ -389,7 +389,7 @@ function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: Lo
 
 function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: LooseRecord, accessKey: LooseRecord) {
   const issued = event === "access-key.issued";
-  database.log?.emit?.({
+  const input = {
     category: "platform",
     event,
     level: "info",
@@ -406,7 +406,24 @@ function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: 
         ...(issued ? { grants: [...accessKey.grants] } : {}),
       },
     },
-  });
+  };
+  if (database.__transactionActive) {
+    context.__accessKeyLifecycleAuditEvents ??= [];
+    context.__accessKeyLifecycleAuditEvents.push(input);
+    return;
+  }
+  database.log?.emit?.(input);
+}
+
+export function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {
+  const events = context?.__accessKeyLifecycleAuditEvents;
+  if (!Array.isArray(events) || !context) return;
+  delete context.__accessKeyLifecycleAuditEvents;
+  for (const event of events) database.log?.emit?.(event);
+}
+
+export function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined) {
+  if (context) delete context.__accessKeyLifecycleAuditEvents;
 }
 
 function protectAccessKeyValue(value: LooseRecord) {

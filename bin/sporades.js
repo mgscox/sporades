@@ -7233,7 +7233,7 @@ function withAccessKeyTransaction(database, operation) {
 }
 function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
   const issued = event === "access-key.issued";
-  database.log?.emit?.({
+  const input = {
     category: "platform",
     event,
     level: "info",
@@ -7250,7 +7250,22 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
         ...issued ? { grants: [...accessKey.grants] } : {}
       }
     }
-  });
+  };
+  if (database.__transactionActive) {
+    context.__accessKeyLifecycleAuditEvents ??= [];
+    context.__accessKeyLifecycleAuditEvents.push(input);
+    return;
+  }
+  database.log?.emit?.(input);
+}
+function flushAccessKeyLifecycleAuditEvents(database, context) {
+  const events = context?.__accessKeyLifecycleAuditEvents;
+  if (!Array.isArray(events) || !context) return;
+  delete context.__accessKeyLifecycleAuditEvents;
+  for (const event of events) database.log?.emit?.(event);
+}
+function dropAccessKeyLifecycleAuditEvents(context) {
+  if (context) delete context.__accessKeyLifecycleAuditEvents;
 }
 function protectAccessKeyValue(value) {
   const target = Object.freeze({ ...value });
@@ -18224,11 +18239,13 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     throw error;
@@ -18485,6 +18502,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
     if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
       context.__pendingAclWrites = baseContext.__pendingAclWrites;
     }
+    if (baseContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
+      context.__accessKeyLifecycleAuditEvents = baseContext.__accessKeyLifecycleAuditEvents;
+    }
   }
   return context;
 }
@@ -18497,7 +18517,7 @@ function admitCredentialHandler(handler, context, kind) {
   const credentialKind = context?.credential?.kind ?? "session";
   if (auth?.isAuthenticated !== true || requirements.linked && auth?.isGuest === true) {
     const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, requirements.linked ? "linked" : "authenticated");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
     if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
     throw error;
   }
@@ -18507,7 +18527,7 @@ function admitCredentialHandler(handler, context, kind) {
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN"
     );
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "credential");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
     if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
       error.sporadesAccessKeyFailure = "forbidden";
     }
@@ -18515,7 +18535,7 @@ function admitCredentialHandler(handler, context, kind) {
   }
   if (credentialKind === "access-key" && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)) {
     const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "scope");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
     error.sporadesAccessKeyFailure = "forbidden";
     throw error;
   }
@@ -20225,6 +20245,7 @@ async function runMutation(database, auth, mutationName, args) {
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -20234,6 +20255,7 @@ async function runMutation(database, auth, mutationName, args) {
     return committed;
   } catch (error) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     database.rowCache.clear();
@@ -20321,11 +20343,13 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {

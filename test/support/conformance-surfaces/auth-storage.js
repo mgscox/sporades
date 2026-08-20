@@ -1187,6 +1187,58 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key retained quota rejects record 1001 without corrupting historical counters",
+    async run(adapter) {
+      for (let index = 0; index < 1000; index += 1) {
+        const suffix = String(index).padStart(4, "0");
+        const id = `access-key-retained-${suffix}`;
+        const issued = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+          id,
+          ownerUserId: SWEPT_USER.id,
+          name: "reusable-retained-name",
+          reservedName: "reusable-retained-name",
+          grantsJson: JSON.stringify(["requests:read"]),
+          secretVersion: 1,
+          selector: `r${index.toString(36).padStart(21, "0")}`,
+          verifierDigest: "fb".repeat(32),
+          lifecycleRevision: 1,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        }));
+        assert.deepEqual(issued, { status: "issued" });
+        const revoked = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+          ownerUserId: SWEPT_USER.id,
+          id,
+          revokedAt: LATER,
+          revocationCause: "owner",
+        }));
+        assert.equal(revoked.id, id);
+      }
+      const rejected = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        id: "access-key-retained-overflow",
+        ownerUserId: SWEPT_USER.id,
+        name: "reusable-retained-name",
+        reservedName: "reusable-retained-name",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "roverflow00000000000000",
+        verifierDigest: "fc".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      }));
+      assert.deepEqual(rejected, { status: "limit" });
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(SWEPT_USER.id);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 0,
+        totalCount: 1000,
+      });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(SWEPT_USER.id)).length, 1000);
+    },
+  },
+  {
     // A DDL method, so ADR-0034 lets the engines emit different statement text for it — Postgres
     // uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition probes
     // `PRAGMA table_info` first. What they may not differ on is what a Capsule boot finds

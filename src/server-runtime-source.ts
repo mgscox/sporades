@@ -65,6 +65,7 @@ import {
 } from "./auth-admission.js";
 import {
   accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
+  dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
   recordAccessKeyUsage, resolveAccessKeyCredential,
 } from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
@@ -2923,11 +2924,13 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     throw error;
@@ -3200,6 +3203,9 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
       context.__pendingAclWrites = baseContext.__pendingAclWrites;
     }
+    if (baseContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
+      context.__accessKeyLifecycleAuditEvents = baseContext.__accessKeyLifecycleAuditEvents;
+    }
   }
   return context;
 }
@@ -3213,7 +3219,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
   const credentialKind = context?.credential?.kind ?? "session";
   if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
     const error: LooseRecord = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, requirements.linked ? "linked" : "authenticated");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
     if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
     throw error;
   }
@@ -3223,7 +3229,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN",
     );
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "credential");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
     if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
       error.sporadesAccessKeyFailure = "forbidden";
     }
@@ -3234,7 +3240,7 @@ function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: st
     && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)
   ) {
     const error: LooseRecord = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, credential: context?.credential, kind }, "scope");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
     error.sporadesAccessKeyFailure = "forbidden";
     throw error;
   }
@@ -5108,6 +5114,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -5117,6 +5124,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     return committed;
   } catch (error: any) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     database.rowCache.clear();
@@ -5210,11 +5218,13 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       }
     });
     commitPendingJobCancellationAborts(context);
+    flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {

@@ -92,6 +92,7 @@ export async function withLibsqlAdapter(fn, options = {}) {
       let adapter = await createLibsqlDatabaseAdapter({ url: service.url });
       try {
         return await fn(adapter, {
+          ...service,
           service,
           async restart() {
             await adapter.close();

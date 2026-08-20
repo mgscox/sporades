@@ -75,6 +75,14 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
       revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+      issueThenFail: mutation(async (ctx) => {
+        await ctx.accessKeys.issue({ name: "rolled-back-key" });
+        throw new Error("rollback after issue");
+      }),
+      revokeThenFail: mutation(async (ctx, id) => {
+        await ctx.accessKeys.revoke(id);
+        throw new Error("rollback after revoke");
+      }),
       inspectPrivilegedProjection: mutation((ctx) => ctx.privileged.run(
         { operation: "access-keys.inspect-projection", targetResourceKind: "access-key" },
         (privilegedCtx) => ({ hasAccessKeys: "accessKeys" in privilegedCtx }),
@@ -118,6 +126,14 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       totalCount: 1,
     });
 
+    const failedIssue = await runMutation(database, auth, "issueThenFail", []);
+    assert.equal(failedIssue.error.message, "rollback after issue");
+    assert.equal((await runQuery(database, auth, "listKeys")).data.accessKeys.some((key) => key.name === "rolled-back-key"), false);
+
+    const failedRevoke = await runMutation(database, auth, "revokeThenFail", [issued.data.accessKey.id]);
+    assert.equal(failedRevoke.error.message, "rollback after revoke");
+    assert.equal((await runQuery(database, auth, "listKeys")).data.accessKeys[0].status, "active");
+
     const revoked = await runMutation(database, auth, "revokeKey", [issued.data.accessKey.id]);
     assert.equal(revoked.error, null, JSON.stringify(revoked.error));
     assert.equal(revoked.data.accessKey.status, "revoked");
@@ -134,6 +150,9 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     assert.deepEqual(privilegedProjection.data, { hasAccessKeys: false });
 
     const lifecycleEvents = await database.log.tail(50);
+    assert.equal(lifecycleEvents.some((event) => event.data?.accessKey?.name === "rolled-back-key"), false);
+    assert.equal(lifecycleEvents.filter((event) => event.event === "access-key.issued").length, 1);
+    assert.equal(lifecycleEvents.filter((event) => event.event === "access-key.revoked").length, 1);
     const issuedEvent = lifecycleEvents.find((event) => event.event === "access-key.issued");
     assert.deepEqual(issuedEvent.data, {
       operation: "accessKeys.issue",
@@ -302,8 +321,10 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     });
     assert.equal(handlerFailure.status, 500);
     const denialEvents = await database.log.tail(100);
+    const scopeDenialEvent = denialEvents.find((candidate) => candidate.event === "auth.denied" && candidate.data?.requirement === "scope");
+    assert.ok(scopeDenialEvent, JSON.stringify(denialEvents));
+    assert.equal("credential" in scopeDenialEvent.data, false);
     for (const event of [
-      denialEvents.find((candidate) => candidate.event === "auth.denied" && candidate.data?.requirement === "scope"),
       denialEvents.find((candidate) => candidate.event === "acl.denied" && candidate.data?.resource?.name === "protectedRecords"),
       denialEvents.find((candidate) => candidate.event === "http.request.failed" && candidate.request?.path === "/handler-failure"),
     ]) {
