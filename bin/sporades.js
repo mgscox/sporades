@@ -2271,6 +2271,27 @@ function validateCapsuleAuthRequirements(definition) {
   }
   return definition;
 }
+function scopeGrantMatches(grant, requiredScope) {
+  const parts = grant.split("*");
+  if (parts.length === 1) return grant === requiredScope;
+  let offset = grant.startsWith("*") ? 0 : parts[0].length;
+  if (!grant.startsWith("*") && !requiredScope.startsWith(parts[0])) return false;
+  const suffix = grant.endsWith("*") ? "" : parts.at(-1) ?? "";
+  const limit = requiredScope.length - suffix.length;
+  if (limit < offset || suffix && !requiredScope.endsWith(suffix)) return false;
+  const firstInterior = grant.startsWith("*") ? 0 : 1;
+  const lastInterior = grant.endsWith("*") ? parts.length : parts.length - 1;
+  for (const part of parts.slice(firstInterior, lastInterior)) {
+    if (!part) continue;
+    const foundAt = requiredScope.indexOf(part, offset);
+    if (foundAt === -1 || foundAt + part.length > limit) return false;
+    offset = foundAt + part.length;
+  }
+  return true;
+}
+function accessKeyGrantsSatisfyScopes(grants, requiredScopes) {
+  return requiredScopes.every((requiredScope) => grants.some((grant) => scopeGrantMatches(grant, requiredScope)));
+}
 function normalizeCredentialKinds(value) {
   if (value === void 0) {
     return ["session", "access-key"];
@@ -9014,7 +9035,15 @@ function writeEndpointResult(response, result) {
   response.end(String(result ?? ""));
 }
 function writeEndpointError(response, error) {
-  response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
+  const headers = { "content-type": "application/json; charset=utf-8" };
+  if (error?.code === "UNAUTHENTICATED") {
+    headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" ? 'Bearer realm="sporades", error="invalid_token"' : 'Bearer realm="sporades"';
+  }
+  if (error?.sporadesAccessKeyFailure) {
+    headers["cache-control"] = "no-store";
+    headers.pragma = "no-cache";
+  }
+  response.writeHead(endpointErrorStatus(error), headers);
   response.end(
     `${JSON.stringify({
       ok: false,
@@ -9031,6 +9060,7 @@ function writeEndpointError(response, error) {
 function endpointErrorStatus(error) {
   if (error?.code === "UNAUTHENTICATED") return 401;
   if (error?.code === "FORBIDDEN") return 403;
+  if (error?.code === "AUTH_RATE_LIMITED") return 429;
   if (isPayloadTooLargeError(error)) return 413;
   if (isClientRequestError(error)) return 400;
   return 500;
@@ -10186,6 +10216,375 @@ function flushTeamSecurityEvents(database, context, options = {}) {
     if (options.deniedOnly && event?.data?.outcome !== "denied") continue;
     database.log?.emit?.(event);
   }
+}
+
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+function accessKeyCrypto() {
+  return process.getBuiltinModule("node:crypto");
+}
+var ACCESS_KEY_CURRENT_LIMIT = 100;
+var ACCESS_KEY_RETAINED_LIMIT = 1e3;
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+function createAccessKeyTables(adapter) {
+  const sql = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_keys] ([id] TEXT PRIMARY KEY, [ownerUserId] TEXT NOT NULL, [name] TEXT NOT NULL, [reservedName] TEXT, [grantsJson] TEXT NOT NULL, [secretVersion] INTEGER NOT NULL, [selector] TEXT, [verifierDigest] TEXT, [lifecycleRevision] INTEGER NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT, [rotatedAt] TEXT, [revokedAt] TEXT, [revocationCause] TEXT, [lastUsedAt] TEXT)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_secret] ON [sporades_auth_access_keys] ([secretVersion], [selector])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_current_name] ON [sporades_auth_access_keys] ([ownerUserId], [reservedName])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE INDEX IF NOT EXISTS [sporades_auth_access_keys_owner_listing] ON [sporades_auth_access_keys] ([ownerUserId], [createdAt], [id])"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] ([ownerUserId] TEXT PRIMARY KEY, [currentCount] INTEGER NOT NULL, [totalCount] INTEGER NOT NULL, [operationRevision] INTEGER NOT NULL)"
+    ))
+  ]);
+}
+function createCurrentUserAccessKeysApi(database, contextGetter) {
+  return {
+    async issue(input) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        const record = {
+          id: accessKeyCrypto().randomUUID(),
+          ownerUserId: context.auth.userId,
+          name: normalized.name,
+          reservedName: normalized.name,
+          grantsJson: JSON.stringify(normalized.grants),
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          lifecycleRevision: 1,
+          createdAt: normalized.createdAt,
+          expiresAt: normalized.expiresAt
+        };
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
+        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
+        context.__sporadesSecretDisclosed = true;
+        emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError(
+        "Could not generate a unique Access key.",
+        "Retry Access-key issuance.",
+        "ACCESS_KEY_SECRET_CONFLICT"
+      );
+    },
+    async list(options = {}) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyListOptions(options);
+      const rows = await database.adapter.listAccessKeyRecordsForOwner(context.auth.userId);
+      return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+    },
+    async revoke(id) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const now = database.clock.now().toISOString();
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
+      if (!outcome) throw accessKeyNotFoundError();
+      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
+      emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+      return { accessKey };
+    }
+  };
+}
+function readAccessKeyAuthorization(request) {
+  const values = [];
+  if (Array.isArray(request?.rawHeaders)) {
+    for (let index = 0; index < request.rawHeaders.length; index += 2) {
+      if (String(request.rawHeaders[index]).toLowerCase() === "authorization") {
+        values.push(String(request.rawHeaders[index + 1] ?? ""));
+      }
+    }
+  } else {
+    const value2 = request?.headers?.authorization;
+    if (Array.isArray(value2)) values.push(...value2.map(String));
+    else if (value2 !== void 0) values.push(String(value2));
+  }
+  if (values.length === 0) return null;
+  if (values.length !== 1) throw accessKeyAuthenticationError("malformed");
+  const value = values[0];
+  if (/[,\u0000-\u001f\u007f]/.test(value)) throw accessKeyAuthenticationError("malformed");
+  const matched = value.match(/^Bearer (spk_1_([A-Za-z0-9_-]{22})_([A-Za-z0-9_-]{43}))$/i);
+  if (!matched || !matched[1].startsWith("spk_1_")) throw accessKeyAuthenticationError("malformed");
+  return { token: matched[1], selector: matched[2], verifier: matched[3] };
+}
+async function resolveAccessKeyCredential(database, request, sessionToken) {
+  const source = accessKeySourceBucket(request);
+  assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
+  let parsed;
+  try {
+    parsed = readAccessKeyAuthorization(request);
+  } catch (error) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    throw error;
+  }
+  if (!parsed) return null;
+  if (sessionToken !== null && sessionToken !== void 0) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    throw accessKeyAuthenticationError("dual");
+  }
+  const selectorFingerprint = accessKeySelectorFingerprint(parsed.selector);
+  assertAccessKeyFailureLimit(database, "selector", selectorFingerprint, 10, 5 * 6e4);
+  const row = await database.adapter.findAccessKeyAuthenticationRecord(parsed.selector);
+  const candidateDigest = Buffer.from(accessKeyVerifierDigest(parsed.selector, parsed.verifier), "hex");
+  let storedDigest = UNKNOWN_ACCESS_KEY_DIGEST;
+  if (typeof row?.verifierDigest === "string" && /^[a-f0-9]{64}$/i.test(row.verifierDigest)) {
+    storedDigest = Buffer.from(row.verifierDigest, "hex");
+  }
+  const verified = accessKeyCrypto().timingSafeEqual(candidateDigest, storedDigest);
+  const now = database.clock.now();
+  let failure = null;
+  if (!verified || !row) failure = "invalid";
+  else if (row.revokedAt) failure = "revoked";
+  else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
+  else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  if (failure) {
+    recordAccessKeyFailure(database, "source", source, 6e4);
+    recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 6e4);
+    throw accessKeyAuthenticationError(failure);
+  }
+  clearAccessKeyFailure(database, "selector", selectorFingerprint);
+  return {
+    auth: protectAccessKeyValue({
+      userId: row.ownerUserId,
+      displayName: row.ownerDisplayName,
+      email: row.ownerEmail ?? null,
+      picture: row.ownerPicture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "access-key"
+    }),
+    credential: protectAccessKeyValue({ kind: "access-key", id: row.id, name: row.name }),
+    grants: JSON.parse(row.grantsJson),
+    record: row,
+    admittedAt: now.toISOString()
+  };
+}
+function accessKeyAuthenticationError(reason, limited = false) {
+  const error = commandError(
+    limited ? "Too many authentication attempts." : "Unauthenticated.",
+    limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
+    limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED"
+  );
+  error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
+  error.sporadesAccessKeyReason = reason;
+  return error;
+}
+function emitAccessKeyAdmittedAudit(database, context, record) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "access-key.admitted",
+    level: "info",
+    message: "Access key admitted for its owner.",
+    data: {
+      actor: { userId: context.auth.userId },
+      credential: { kind: "access-key", id: context.credential.id, name: context.credential.name },
+      accessKey: { id: record.id, name: record.name },
+      handler: { kind: context.kind, path: context.request?.path ?? null }
+    }
+  });
+}
+function createAccessKeySecret() {
+  const selector = accessKeyCrypto().randomBytes(16).toString("base64url");
+  const verifier = accessKeyCrypto().randomBytes(32).toString("base64url");
+  return { selector, verifier, token: `spk_1_${selector}_${verifier}` };
+}
+function accessKeyVerifierDigest(selector, verifier) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-v1\0", "utf8").update(Buffer.from(selector, "base64url")).update(Buffer.from(verifier, "base64url")).digest("hex");
+}
+function requireOwnerSessionContext(context) {
+  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session" || context?.auth?.isAuthenticated !== true || context?.auth?.isGuest === true) {
+    throw commandError(
+      "Access-key owner approval requires a linked Session.",
+      "Sign in interactively and retry the Access-key operation.",
+      context?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED"
+    );
+  }
+  return context;
+}
+function normalizeAccessKeyIssue(input, declaredScopes, now) {
+  if (!isPlainObject2(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
+    throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const name = typeof input.name === "string" ? input.name.trim() : "";
+  if (!name || Array.from(name).length > 128) {
+    throw commandError("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const grants = normalizeAccessKeyGrants(input.grants, declaredScopes);
+  let expiresAt = null;
+  if (input.expiresAt !== void 0 && input.expiresAt !== null) {
+    const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= now.getTime()) {
+      throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+    }
+    expiresAt = new Date(parsed).toISOString();
+  }
+  return { name, grants, expiresAt, createdAt: now.toISOString() };
+}
+function normalizeAccessKeyGrants(value, declaredScopes) {
+  const grants = value === void 0 ? ["*"] : value;
+  if (!Array.isArray(grants) || grants.length === 0 || grants.length > ACCESS_KEY_GRANT_LIMIT) {
+    throw invalidAccessKeyGrantsError();
+  }
+  const result = [];
+  for (const grant of grants) {
+    if (typeof grant !== "string" || !grant || Buffer.byteLength(grant, "utf8") > ACCESS_KEY_GRANT_BYTE_LIMIT || result.includes(grant) || grant !== "*" && !declaredScopes.some((scope) => scopeGrantMatches(grant, scope))) {
+      throw invalidAccessKeyGrantsError();
+    }
+    result.push(grant);
+  }
+  result.sort();
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT) throw invalidAccessKeyGrantsError();
+  return result;
+}
+function normalizeAccessKeyListOptions(value) {
+  if (!isPlainObject2(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
+    throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  const limit = value.limit === void 0 ? 50 : value.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw commandError("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  if (value.status !== void 0 && !["active", "expired", "revoked"].includes(value.status)) {
+    throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  let cursor = null;
+  if (value.cursor !== void 0) {
+    try {
+      cursor = JSON.parse(Buffer.from(value.cursor, "base64url").toString("utf8"));
+    } catch {
+      cursor = null;
+    }
+    if (!isPlainObject2(cursor) || typeof cursor.createdAt !== "string" || typeof cursor.id !== "string") {
+      throw commandError("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    }
+  }
+  return { cursor, limit, status: value.status ?? null };
+}
+function accessKeyListPage(rows, declaredScopes, now, options) {
+  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
+  if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
+  const totalCount = summaries.length;
+  if (options.cursor) {
+    summaries = summaries.filter((summary) => summary.createdAt < options.cursor.createdAt || summary.createdAt === options.cursor.createdAt && summary.id < options.cursor.id);
+  }
+  const page = summaries.slice(0, options.limit);
+  const next = summaries.length > options.limit ? page.at(-1) : null;
+  return {
+    accessKeys: page,
+    declaredScopes: [...declaredScopes].sort(),
+    nextCursor: next ? Buffer.from(JSON.stringify({ createdAt: next.createdAt, id: next.id }), "utf8").toString("base64url") : null,
+    totalCount
+  };
+}
+function accessKeySummary(row, declaredScopes, now) {
+  const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
+  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
+  return {
+    id: row.id,
+    name: row.name,
+    grants: [...grants],
+    effectiveScopes: [...declaredScopes].filter((scope) => accessKeyGrantsSatisfyScopes(grants, [scope])).sort(),
+    status,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt ?? null,
+    rotatedAt: row.rotatedAt ?? null,
+    revokedAt: row.revokedAt ?? null,
+    revocationCause: row.revocationCause ?? null,
+    lastUsedAt: row.lastUsedAt ?? null,
+    lifecycleRevision: Number(row.lifecycleRevision)
+  };
+}
+function withAccessKeyTransaction(database, operation) {
+  return database.__transactionActive ? operation(database.adapter) : database.adapter.withTransaction(operation);
+}
+function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
+  database.log?.emit?.({
+    category: "platform",
+    event,
+    level: "info",
+    message: event === "access-key.issued" ? "Access key issued by its owner." : "Access key revoked by its owner.",
+    data: {
+      actor: { userId: context.auth.userId },
+      credential: { kind: "session" },
+      accessKey: { id: accessKey.id, name: accessKey.name }
+    }
+  });
+}
+function protectAccessKeyValue(value) {
+  const target = Object.freeze({ ...value });
+  const tampered = () => {
+    throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+  };
+  return new Proxy(target, { set: tampered, defineProperty: tampered, deleteProperty: tampered, setPrototypeOf: tampered });
+}
+function accessKeySelectorFingerprint(selector) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
+}
+function accessKeySourceBucket(request) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
+}
+function accessKeyLimiter(database, kind) {
+  const root = database.__rootDatabase ?? database;
+  root.__accessKeyFailureLimiters ??= { source: /* @__PURE__ */ new Map(), selector: /* @__PURE__ */ new Map() };
+  return root.__accessKeyFailureLimiters[kind];
+}
+function assertAccessKeyFailureLimit(database, kind, key, limit, windowMs) {
+  const state = accessKeyLimiter(database, kind).get(key);
+  const now = database.clock.now().getTime();
+  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+}
+function recordAccessKeyFailure(database, kind, key, windowMs) {
+  const limiter = accessKeyLimiter(database, kind);
+  const now = database.clock.now().getTime();
+  const previous = limiter.get(key);
+  const state = !previous || now - previous.startedAt >= windowMs ? { count: 1, startedAt: now, lastSeenAt: now } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
+  limiter.delete(key);
+  limiter.set(key, state);
+  for (const [candidate, candidateState] of limiter) {
+    if (now - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
+    else break;
+  }
+}
+function clearAccessKeyFailure(database, kind, key) {
+  accessKeyLimiter(database, kind).delete(key);
+}
+function throwAccessKeyIssueError(status) {
+  if (status === "owner-ineligible") {
+    throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
+  }
+  if (status === "name-conflict") {
+    throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
+  }
+  throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+}
+function accessKeyNotFoundError() {
+  return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
+}
+function invalidAccessKeyGrantsError() {
+  return commandError(
+    "Invalid Access-key grants.",
+    "Use 1 through 128 unique grant expressions that match the Capsule's declared scopes.",
+    "INVALID_ACCESS_KEY_GRANTS"
+  );
+}
+function isPlainObject2(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 // src/auth-runtime.ts
@@ -12846,6 +13245,7 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
         "CREATE TABLE IF NOT EXISTS [sporades_auth_users] ([id] TEXT PRIMARY KEY, [createdAt] TEXT NOT NULL, [displayName] TEXT NOT NULL, [email] TEXT, [picture] TEXT, [isAuthenticated] INTEGER NOT NULL, [isGuest] INTEGER NOT NULL, [provider] TEXT NOT NULL)"
       )
     ),
+    () => createAccessKeyTables(sqlite),
     () => sqlite.exec(
       sql(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_sessions] ([token] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [provider] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
@@ -13954,6 +14354,110 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     ensureAuthStorage(authConfig = null) {
       return createAnonymousAuthTables(this, authConfig);
+    },
+    issueAccessKeyRecord(row) {
+      let outcome = null;
+      const sequence = chainMaybePromise([
+        () => thenIfPromise(this.prepare(
+          sql(
+            "SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = ? AND [isGuest] = ?"
+          )
+        ).get(row.ownerUserId, 1, 0), (owner) => {
+          if (!owner) outcome = { status: "owner-ineligible" };
+        }),
+        () => outcome ?? this.prepare(
+          sql(
+            "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
+          )
+        ).run(row.ownerUserId, 0, 0, 0),
+        () => outcome ?? thenIfPromise(this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] + 1, [totalCount] = [totalCount] + 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ? AND [currentCount] < ? AND [totalCount] < ?"
+          )
+        ).run(row.ownerUserId, ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT), (reserved) => {
+          if (reserved.changes === 0) outcome = { status: "limit" };
+        }),
+        () => outcome ?? thenIfPromise(this.prepare(
+          sql(
+            "INSERT INTO [sporades_auth_access_keys] ([id], [ownerUserId], [name], [reservedName], [grantsJson], [secretVersion], [selector], [verifierDigest], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING"
+          )
+        ).run(
+          row.id,
+          row.ownerUserId,
+          row.name,
+          row.reservedName,
+          row.grantsJson,
+          row.secretVersion,
+          row.selector,
+          row.verifierDigest,
+          row.lifecycleRevision,
+          row.createdAt,
+          row.expiresAt
+        ), (inserted) => {
+          if (inserted.changes !== 0) outcome = { status: "issued" };
+        }),
+        () => outcome ?? this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, [totalCount] = [totalCount] - 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+          )
+        ).run(row.ownerUserId),
+        () => outcome ?? thenIfPromise(this.prepare(
+          sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [reservedName] = ?")
+        ).get(row.ownerUserId, row.reservedName), (nameCollision) => {
+          outcome = { status: nameCollision ? "name-conflict" : "selector-conflict" };
+        })
+      ]);
+      return thenIfPromise(sequence, () => outcome);
+    },
+    listAccessKeyRecordsForOwner(ownerUserId) {
+      return this.prepare(
+        sql(
+          "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC"
+        )
+      ).all(ownerUserId);
+    },
+    findAccessKeyAuthenticationRecord(selector) {
+      return this.prepare(
+        sql(
+          "SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], [u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], [u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] WHERE [k].[secretVersion] = ? AND [k].[selector] = ?"
+        )
+      ).get(1, selector) ?? null;
+    },
+    touchAccessKeyLastUsed(id, usedAt, coalesceBefore) {
+      return this.prepare(
+        sql(
+          "UPDATE [sporades_auth_access_keys] SET [lastUsedAt] = ? WHERE [id] = ? AND [revokedAt] IS NULL AND ([lastUsedAt] IS NULL OR [lastUsedAt] < ?)"
+        )
+      ).run(usedAt, id, coalesceBefore);
+    },
+    revokeAccessKeyRecord(input) {
+      let existing = null;
+      let revoked = false;
+      const sequence = chainMaybePromise([
+        () => thenIfPromise(this.prepare(
+          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+        ).get(input.ownerUserId, input.id), (row) => {
+          existing = row ?? null;
+        }),
+        () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL"
+          )
+        ).run(input.revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
+          revoked = result.changes !== 0;
+        }),
+        () => !revoked ? void 0 : this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+          )
+        ).run(input.ownerUserId),
+        () => !revoked ? void 0 : thenIfPromise(this.prepare(
+          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+        ).get(input.ownerUserId, input.id), (row) => {
+          existing = row ?? null;
+        })
+      ]);
+      return thenIfPromise(sequence, () => existing);
     },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);
@@ -15716,6 +16220,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     messages,
     jobs,
     schedules,
+    accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
@@ -17571,10 +18076,26 @@ async function routeEndpoint(database, request, response) {
     return false;
   }
   try {
-    writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
+    const result = await runEndpoint(database, endpoint, requestUrl, request);
+    if (request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed) {
+      response.setHeader("cache-control", "private, no-store");
+      response.setHeader("pragma", "no-cache");
+    }
+    writeEndpointResult(response, result);
   } catch (error) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    } else if (error?.sporadesAccessKeyFailure) {
+      emitAuthDeniedLog(database, { data: {
+        requirement: "access-key",
+        reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+        handler: { kind: "endpoint", path: requestUrl.pathname },
+        actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null }
+      } });
+    }
+    if (request.__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("pragma", "no-cache");
     }
     emitHttpFailureLog(database, request, error);
     writeEndpointError(response, error);
@@ -17584,6 +18105,9 @@ async function routeEndpoint(database, request, response) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
+  const requirements = readAuthRequirements(handler);
+  const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
+  if (requirements) delete endpointRequest.headers.authorization;
   const session = endpoint.runtimeOwnedEmailEvent ? { auth: {
     userId: privilegedAuthUserId(),
     displayName: "Email provider callback",
@@ -17592,21 +18116,44 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     isAuthenticated: false,
     isGuest: false,
     provider: "privileged-server-role"
-  } } : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  } } : hasAuthorization ? null : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createEndpointContext(transactionDatabase, endpointRequest, session, {
-          ordinaryCredential: !endpoint.runtimeOwnedEmailEvent
+        const accessKeyAdmission = hasAuthorization ? await resolveAccessKeyCredential(
+          transactionDatabase,
+          request,
+          readEndpointSessionToken(endpointRequest.headers, endpointRequest.query)
+        ) : null;
+        const resolvedSession = accessKeyAdmission ?? session;
+        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
+          ordinaryCredential: !endpoint.runtimeOwnedEmailEvent,
+          credential: accessKeyAdmission?.credential,
+          accessKeyGrants: accessKeyAdmission?.grants
         });
         if (!endpoint.runtimeOwnedEmailEvent) {
-          admitSessionHandler(handler, context.auth, "endpoint");
+          admitCredentialHandler(handler, context, "endpoint");
+          if (accessKeyAdmission) {
+            request.__sporadesAccessKeyAdmitted = true;
+            emitAccessKeyAdmittedAudit(transactionDatabase, { ...context, kind: "endpoint" }, accessKeyAdmission.record);
+            try {
+              const coalesceBefore = new Date(Date.parse(accessKeyAdmission.admittedAt) - 60 * 6e4).toISOString();
+              await transactionDatabase.adapter.touchAccessKeyLastUsed(
+                accessKeyAdmission.record.id,
+                accessKeyAdmission.admittedAt,
+                coalesceBefore
+              );
+            } catch {
+            }
+          }
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
-        return await handler(context);
+        const result2 = await handler(context);
+        if (context.__sporadesSecretDisclosed) request.__sporadesSecretDisclosed = true;
+        return result2;
       } catch (error) {
         handlerFailed = true;
         throw error;
@@ -17705,7 +18252,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const auth = protectContextIdentity(session.auth);
   const context = {
     auth,
-    ...options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) },
+    ...options.ordinaryCredential === false ? {} : {
+      credential: protectContextIdentity(options.credential ?? { kind: "session" })
+    },
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
@@ -17721,6 +18270,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       body: endpointRequest.body
     }
   };
+  if (options.accessKeyGrants) {
+    Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -17733,6 +18285,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     }
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -17868,21 +18421,43 @@ async function applyContextMiddleware(database, baseContext, kind) {
   }
   return context;
 }
-function admitSessionHandler(handler, auth, kind) {
+function admitCredentialHandler(handler, context, kind) {
   const requirements = readAuthRequirements(handler);
   if (!requirements) {
     return;
   }
-  requireAuth({ auth, kind }, { linked: requirements.linked });
-  if (!requirements.credentials.includes("session")) {
+  const auth = context?.auth;
+  const credentialKind = context?.credential?.kind ?? "session";
+  if (auth?.isAuthenticated !== true || requirements.linked && auth?.isGuest === true) {
+    const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+    if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
+    throw error;
+  }
+  if (!requirements.credentials.includes(credentialKind)) {
     const error = commandError(
       "Forbidden.",
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN"
     );
     error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
+      error.sporadesAccessKeyFailure = "forbidden";
+    }
     throw error;
   }
+  if (credentialKind === "access-key" && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)) {
+    const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+    error.sporadesAccessKeyFailure = "forbidden";
+    throw error;
+  }
+}
+function endpointHasAuthorization(request) {
+  if (Array.isArray(request?.rawHeaders)) {
+    return request.rawHeaders.some((value, index) => index % 2 === 0 && String(value).toLowerCase() === "authorization");
+  }
+  return request?.headers?.authorization !== void 0;
 }
 function runContextMiddleware(middlewareSource, context) {
   const createMiddleware = new Function(`return (${middlewareSource});`);
@@ -19416,7 +19991,7 @@ async function runQuery(database, auth, queryName, rawArgs = []) {
   let context;
   try {
     context = createMutationContext(database, auth);
-    if (queryHandler) admitSessionHandler(queryHandler, context.auth, "query");
+    if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error) {
     if (error?.sporadesAuthDenialLogData) {
@@ -19558,7 +20133,7 @@ async function runMutation(database, auth, mutationName, args) {
         context = createMutationContext(transactionDatabase, auth);
         const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-        if (mutationHandler) admitSessionHandler(mutationHandler, context.auth, "mutation");
+        if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
@@ -19659,7 +20234,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       assertJsonCompatible(data);
     }
     const messageHandler = materializeHandler(handler);
-    admitSessionHandler(messageHandler, auth, "message");
+    admitCredentialHandler(messageHandler, { auth, credential: { kind: "session" } }, "message");
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
@@ -19771,6 +20346,7 @@ function createMutationContext(database, auth, options = {}) {
     }
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);

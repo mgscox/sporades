@@ -295,6 +295,25 @@ const app = capsule({
       const deleted = await ctx.teams.delete(renamed.team.id);
       return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, roleUpdate.updated ? "roles" : "", promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
     }),
+    ownAccessKeys: query(async (ctx) => {
+      const issued = await ctx.accessKeys.issue({
+        name: "typed-key",
+        grants: ["todos:read"],
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      issued.token.toUpperCase();
+      issued.accessKey.effectiveScopes.map((scope) => scope.toUpperCase());
+      const listed = await ctx.accessKeys.list({ status: "active", limit: 25 });
+      listed.declaredScopes.map((scope) => scope.toUpperCase());
+      listed.nextCursor?.toUpperCase();
+      const revoked = await ctx.accessKeys.revoke(issued.accessKey.id);
+      revoked.accessKey.lifecycleRevision.valueOf();
+      // @ts-expect-error Access-key grants are immutable after issuance.
+      ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
+      // @ts-expect-error Access-key status filters are a closed vocabulary.
+      await ctx.accessKeys.list({ status: "disabled" });
+      return listed.totalCount;
+    }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
         operation: "todos.maintenance.read",

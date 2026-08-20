@@ -27,7 +27,8 @@ import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, crea
 import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
-import { normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
+import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
+import { createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -558,6 +559,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         messages,
         jobs,
         schedules,
+        accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
         clock,
         capsuleIdentity: String(config.name ?? "capsule"),
         scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
@@ -2577,11 +2579,28 @@ export async function routeEndpoint(database, request, response) {
         return false;
     }
     try {
-        writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
+        const result = await runEndpoint(database, endpoint, requestUrl, request);
+        if (request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed) {
+            response.setHeader("cache-control", "private, no-store");
+            response.setHeader("pragma", "no-cache");
+        }
+        writeEndpointResult(response, result);
     }
     catch (error) {
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
+        else if (error?.sporadesAccessKeyFailure) {
+            emitAuthDeniedLog(database, { data: {
+                    requirement: "access-key",
+                    reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+                    handler: { kind: "endpoint", path: requestUrl.pathname },
+                    actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
+                } });
+        }
+        if (request.__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+            response.setHeader("cache-control", "no-store");
+            response.setHeader("pragma", "no-cache");
         }
         emitHttpFailureLog(database, request, error);
         writeEndpointError(response, error);
@@ -2593,6 +2612,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
     const endpointRequest = await readEndpointRequest(database, requestUrl, request);
+    const requirements = readAuthRequirements(handler);
+    const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
+    if (requirements)
+        delete endpointRequest.headers.authorization;
     const session = endpoint.runtimeOwnedEmailEvent
         ? { auth: {
                 userId: privilegedAuthUserId(),
@@ -2603,21 +2626,41 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
                 isGuest: false,
                 provider: "privileged-server-role",
             } }
-        : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+        : hasAuthorization
+            ? null
+            : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
     let context;
     try {
         const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
             try {
-                context = createEndpointContext(transactionDatabase, endpointRequest, session, {
+                const accessKeyAdmission = hasAuthorization
+                    ? await resolveAccessKeyCredential(transactionDatabase, request, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query))
+                    : null;
+                const resolvedSession = (accessKeyAdmission ?? session);
+                context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
                     ordinaryCredential: !endpoint.runtimeOwnedEmailEvent,
+                    credential: accessKeyAdmission?.credential,
+                    accessKeyGrants: accessKeyAdmission?.grants,
                 });
                 if (!endpoint.runtimeOwnedEmailEvent) {
-                    admitSessionHandler(handler, context.auth, "endpoint");
+                    admitCredentialHandler(handler, context, "endpoint");
+                    if (accessKeyAdmission) {
+                        request.__sporadesAccessKeyAdmitted = true;
+                        emitAccessKeyAdmittedAudit(transactionDatabase, { ...context, kind: "endpoint" }, accessKeyAdmission.record);
+                        try {
+                            const coalesceBefore = new Date(Date.parse(accessKeyAdmission.admittedAt) - 60 * 60_000).toISOString();
+                            await transactionDatabase.adapter.touchAccessKeyLastUsed(accessKeyAdmission.record.id, accessKeyAdmission.admittedAt, coalesceBefore);
+                        }
+                        catch { }
+                    }
                     context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                 }
-                return await handler(context);
+                const result = await handler(context);
+                if (context.__sporadesSecretDisclosed)
+                    request.__sporadesSecretDisclosed = true;
+                return result;
             }
             catch (error) {
                 handlerFailed = true;
@@ -2710,7 +2753,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const auth = protectContextIdentity(session.auth);
     const context = {
         auth,
-        ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
+        ...(options.ordinaryCredential === false ? {} : {
+            credential: protectContextIdentity(options.credential ?? { kind: "session" }),
+        }),
         env: database.serverEnv,
         log: createEndpointLogger(database, {
             request: {
@@ -2726,6 +2771,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             body: endpointRequest.body,
         },
     };
+    if (options.accessKeyGrants) {
+        Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
+    }
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -2738,6 +2786,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         },
     };
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+    context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -2879,19 +2928,41 @@ async function applyContextMiddleware(database, baseContext, kind) {
     }
     return context;
 }
-function admitSessionHandler(handler, auth, kind) {
+function admitCredentialHandler(handler, context, kind) {
     const requirements = readAuthRequirements(handler);
     if (!requirements) {
         return;
     }
-    requireAuth({ auth, kind }, { linked: requirements.linked });
-    if (!requirements.credentials.includes("session")) {
-        const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
-        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    const auth = context?.auth;
+    const credentialKind = context?.credential?.kind ?? "session";
+    if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
+        const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+        if (requirements.credentials.includes("access-key"))
+            error.sporadesAccessKeyFailure = "missing";
         throw error;
     }
-    // A permitted Session satisfies declared scope requirements. Access-key
-    // grants are matched when Bearer admission is introduced.
+    if (!requirements.credentials.includes(credentialKind)) {
+        const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+        if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
+            error.sporadesAccessKeyFailure = "forbidden";
+        }
+        throw error;
+    }
+    if (credentialKind === "access-key"
+        && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)) {
+        const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+        error.sporadesAccessKeyFailure = "forbidden";
+        throw error;
+    }
+}
+function endpointHasAuthorization(request) {
+    if (Array.isArray(request?.rawHeaders)) {
+        return request.rawHeaders.some((value, index) => index % 2 === 0 && String(value).toLowerCase() === "authorization");
+    }
+    return request?.headers?.authorization !== undefined;
 }
 function runContextMiddleware(middlewareSource, context) {
     const createMiddleware = new Function(`return (${middlewareSource});`);
@@ -4472,7 +4543,7 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
     try {
         context = createMutationContext(database, auth);
         if (queryHandler)
-            admitSessionHandler(queryHandler, context.auth, "query");
+            admitCredentialHandler(queryHandler, context, "query");
         context = await applyContextMiddleware(database, context, "query");
     }
     catch (error) {
@@ -4628,7 +4699,7 @@ export async function runMutation(database, auth, mutationName, args) {
                 const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
                 const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
                 if (mutationHandler)
-                    admitSessionHandler(mutationHandler, context.auth, "mutation");
+                    admitCredentialHandler(mutationHandler, context, "mutation");
                 context = await applyContextMiddleware(transactionDatabase, context, "mutation");
                 for (const hookSource of database.mutationHooks.beforeMutation) {
                     await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
@@ -4736,7 +4807,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
             assertJsonCompatible(data);
         }
         const messageHandler = materializeHandler(handler);
-        admitSessionHandler(messageHandler, auth, "message");
+        admitCredentialHandler(messageHandler, { auth, credential: { kind: "session" } }, "message");
         const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
@@ -4843,6 +4914,7 @@ function createMutationContext(database, auth, options = {}) {
         },
     };
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+    context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);

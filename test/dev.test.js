@@ -6120,6 +6120,8 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
       assert.deepEqual(JSON.parse(listResult.stdout).data.tables, [
         "notes",
         "sporades",
+        "sporades_auth_access_key_owners",
+        "sporades_auth_access_keys",
         "sporades_auth_identities",
         "sporades_auth_oauth_states",
         "sporades_auth_sessions",
@@ -9489,6 +9491,8 @@ test("sporades db list returns tables from the running dev session database", as
         data: {
           tables: [
             "sporades",
+            "sporades_auth_access_key_owners",
+            "sporades_auth_access_keys",
             "sporades_auth_identities",
             "sporades_auth_oauth_states",
             "sporades_auth_sessions",
@@ -9554,6 +9558,20 @@ test("sporades db dump returns structured table data from the running dev sessio
                     '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}],"uniqueConstraints":[]}]}',
                 },
               ],
+            },
+            {
+              name: "sporades_auth_access_key_owners",
+              columns: ["ownerUserId", "currentCount", "totalCount", "operationRevision"],
+              rows: [],
+            },
+            {
+              name: "sporades_auth_access_keys",
+              columns: [
+                "id", "ownerUserId", "name", "reservedName", "grantsJson", "secretVersion", "selector",
+                "verifierDigest", "lifecycleRevision", "createdAt", "expiresAt", "rotatedAt", "revokedAt",
+                "revocationCause", "lastUsedAt",
+              ],
+              rows: [],
             },
             {
               name: "sporades_auth_identities",
@@ -9712,6 +9730,8 @@ test("sporades db query runs read-only SQL against the running dev session datab
           columns: ["name"],
           rows: [
             { name: "sporades" },
+            { name: "sporades_auth_access_key_owners" },
+            { name: "sporades_auth_access_keys" },
             { name: "sporades_auth_identities" },
             { name: "sporades_auth_oauth_states" },
             { name: "sporades_auth_sessions" },

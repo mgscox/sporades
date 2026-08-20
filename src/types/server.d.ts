@@ -300,6 +300,46 @@ export type AccessKeyCredentialProvenance = Readonly<{ kind: "access-key"; id: s
 export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCredentialProvenance;
 export type CredentialKind = CredentialProvenance["kind"];
 
+export type AccessKeyStatus = "active" | "expired" | "revoked";
+
+export type AccessKeySummary = {
+  id: string;
+  name: string;
+  grants: string[];
+  effectiveScopes: string[];
+  status: AccessKeyStatus;
+  createdAt: string;
+  expiresAt: string | null;
+  rotatedAt: string | null;
+  revokedAt: string | null;
+  revocationCause: string | null;
+  lastUsedAt: string | null;
+  lifecycleRevision: number;
+};
+
+export type IssueAccessKeyInput = {
+  name: string;
+  grants?: string[];
+  expiresAt?: string | null;
+};
+
+export type ListAccessKeysOptions = {
+  cursor?: string;
+  limit?: number;
+  status?: AccessKeyStatus;
+};
+
+export type CurrentUserAccessKeysApi = {
+  issue(input: IssueAccessKeyInput): Promise<{ accessKey: AccessKeySummary; token: string }>;
+  list(options?: ListAccessKeysOptions): Promise<{
+    accessKeys: AccessKeySummary[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+  }>;
+  revoke(id: string): Promise<{ accessKey: AccessKeySummary }>;
+};
+
 export type RequireAuthOptions = {
   /** Require a linked account instead of allowing an Anonymous session. */
   linked?: boolean;
@@ -586,7 +626,7 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
@@ -632,6 +672,8 @@ export type CapsuleContext<
   serverAuth: ServerAuthApi;
   /** Runtime-owned current-user Teams with normal linked-user authorization. */
   teams: CurrentUserTeamsApi;
+  /** Runtime-owned Access keys issued and managed by the current linked Session owner. */
+  accessKeys: CurrentUserAccessKeysApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */

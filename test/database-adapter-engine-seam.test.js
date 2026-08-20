@@ -164,6 +164,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // Auth admission is carried as a complete runtime module so the public and
   // deployed scope/guard validation paths share one matcher and one marker.
   { file: "auth-admission.js", atLeast: 10, sentinel: "scopeGrantMatches" },
+  // User-owned Access-key storage, lifecycle, verification, and bounded
+  // admission throttles ship as one runtime domain. The private selector
+  // fingerprint is security-sensitive and must remain visible to the walker.
+  { file: "access-keys-runtime.js", atLeast: 20, sentinel: "accessKeySelectorFingerprint" },
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
   // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it

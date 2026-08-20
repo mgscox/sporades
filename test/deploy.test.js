@@ -2305,6 +2305,8 @@ test("sporades logs and db can inspect a local Container session by published po
       source: "sqlite-file",
       tables: [
         "sporades",
+        "sporades_auth_access_key_owners",
+        "sporades_auth_access_keys",
         "sporades_auth_identities",
         "sporades_auth_oauth_states",
         "sporades_auth_sessions",

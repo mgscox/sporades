@@ -1,0 +1,392 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+
+import { capsule, endpoint, mutation, query, requireAuth } from "../dist/server.js";
+import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
+import { openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+
+function linkedAuth(userId = "access-key-owner") {
+  return {
+    userId,
+    displayName: "Access Key Owner",
+    email: "owner@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+}
+
+async function requestEndpoint(database, pathName, options = {}) {
+  const headers = Object.fromEntries(Object.entries(options.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
+  const rawHeaders = Object.entries(options.headers ?? {}).flatMap(([name, value]) => [name, value]);
+  const request = {
+    url: pathName,
+    method: options.method ?? "GET",
+    headers,
+    rawHeaders,
+    socket: { remoteAddress: "127.0.0.1" },
+    async *[Symbol.asyncIterator]() {},
+  };
+  const responseHeaders = {};
+  const response = {
+    status: null,
+    body: "",
+    setHeader(name, value) { responseHeaders[name.toLowerCase()] = value; },
+    writeHead(status, nextHeaders = {}) {
+      this.status = status;
+      Object.assign(responseHeaders, Object.fromEntries(Object.entries(nextHeaders).map(([name, value]) => [name.toLowerCase(), value])));
+    },
+    end(body = "") { this.body = String(body); },
+  };
+  assert.equal(await routeEndpoint(database, request, response), true);
+  return {
+    status: response.status,
+    headers: { get: (name) => responseHeaders[name.toLowerCase()] ?? null },
+    json: async () => JSON.parse(response.body),
+  };
+}
+
+async function seedLinkedUser(database, auth = linkedAuth()) {
+  await database.adapter.insertAuthUser({
+    id: auth.userId,
+    createdAt: "2026-08-20T12:00:00.000Z",
+    displayName: auth.displayName,
+    email: auth.email,
+    picture: auth.picture,
+    isAuthenticated: 1,
+    isGuest: 0,
+    provider: auth.provider,
+  });
+  return auth;
+}
+
+test("a linked Session issues, lists, and revokes its own scoped Access key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-owner-"));
+  const definition = capsule({
+    name: "access-key-owner",
+    accessKeys: { scopes: ["requests:read", "requests:write", "profile:read"] },
+    queries: {
+      listKeys: query((ctx) => ctx.accessKeys.list()),
+    },
+    mutations: {
+      issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
+      revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
+    clock: { now: () => new Date("2026-08-20T12:00:00.000Z") },
+  });
+  try {
+    const auth = await seedLinkedUser(database);
+    const issued = await runMutation(database, auth, "issueKey", [{
+      name: "request-bot",
+      grants: ["requests:*", "profile:read"],
+      expiresAt: "2026-09-20T12:00:00.000Z",
+    }]);
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    assert.match(issued.data.token, /^spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}$/);
+    assert.deepEqual(issued.data.accessKey, {
+      id: issued.data.accessKey.id,
+      name: "request-bot",
+      grants: ["profile:read", "requests:*"],
+      effectiveScopes: ["profile:read", "requests:read", "requests:write"],
+      status: "active",
+      createdAt: "2026-08-20T12:00:00.000Z",
+      expiresAt: "2026-09-20T12:00:00.000Z",
+      rotatedAt: null,
+      revokedAt: null,
+      revocationCause: null,
+      lastUsedAt: null,
+      lifecycleRevision: 1,
+    });
+
+    const listed = await runQuery(database, auth, "listKeys");
+    assert.equal(listed.error, null, JSON.stringify(listed.error));
+    assert.equal(JSON.stringify(listed.data).includes(issued.data.token), false);
+    assert.deepEqual(listed.data, {
+      accessKeys: [issued.data.accessKey],
+      declaredScopes: ["profile:read", "requests:read", "requests:write"],
+      nextCursor: null,
+      totalCount: 1,
+    });
+
+    const revoked = await runMutation(database, auth, "revokeKey", [issued.data.accessKey.id]);
+    assert.equal(revoked.error, null, JSON.stringify(revoked.error));
+    assert.equal(revoked.data.accessKey.status, "revoked");
+    assert.equal(revoked.data.accessKey.revocationCause, "owner");
+    assert.equal(revoked.data.accessKey.lifecycleRevision, 2);
+    assert.equal(revoked.data.accessKey.revokedAt, "2026-08-20T12:00:00.000Z");
+
+    const after = await runQuery(database, auth, "listKeys");
+    assert.equal(after.data.accessKeys[0].status, "revoked");
+    assert.equal("token" in after.data.accessKeys[0], false);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access key", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-http-"));
+  const definition = capsule({
+    name: "access-key-http",
+    accessKeys: { scopes: ["requests:read", "requests:write"] },
+    mutations: {
+      issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
+      revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+    },
+    endpoints: {
+      read: endpoint(
+        { method: "GET", path: "/requests" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => ({
+          body: {
+            auth: ctx.auth,
+            credential: ctx.credential,
+            credentialFrozen: Object.isFrozen(ctx.credential),
+            authorizationVisible: "authorization" in ctx.request.headers,
+          },
+        })),
+      ),
+      write: endpoint(
+        { method: "POST", path: "/requests" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:write"] }, () => ({ body: { ok: true } })),
+      ),
+      unwrapped: endpoint({ method: "GET", path: "/webhook" }, (ctx) => ({
+        body: { provider: ctx.auth.provider, authorization: ctx.request.headers.authorization },
+      })),
+      ownerApiDenied: endpoint(
+        { method: "GET", path: "/owner-keys" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, async (ctx) => ({
+          body: await ctx.accessKeys.list(),
+        })),
+      ),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  try {
+    const auth = await seedLinkedUser(database);
+    const issued = await runMutation(database, auth, "issueKey", [{ name: "reader", grants: ["requests:read"] }]);
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    globalThis.__accessKeyMiddlewareObserved = [];
+    database.contextMiddleware = [`(ctx) => {
+      globalThis.__accessKeyMiddlewareObserved.push({
+        provider: ctx.auth.provider,
+        credential: ctx.credential,
+        authorizationVisible: "authorization" in ctx.request.headers,
+      });
+      return ctx;
+    }`];
+
+    const admitted = await requestEndpoint(database, "/requests", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(admitted.status, 200);
+    assert.equal(admitted.headers.get("cache-control"), "private, no-store");
+    const admittedBody = await admitted.json();
+    assert.deepEqual(admittedBody.auth, {
+      userId: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "access-key",
+    });
+    assert.deepEqual(admittedBody.credential, { kind: "access-key", id: issued.data.accessKey.id, name: "reader" });
+    assert.equal(admittedBody.credentialFrozen, true);
+    assert.equal(admittedBody.authorizationVisible, false);
+    assert.deepEqual(globalThis.__accessKeyMiddlewareObserved[0], {
+      provider: "access-key",
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: "reader" },
+      authorizationVisible: false,
+    });
+    const usedRow = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(issued.data.accessKey.id);
+    assert.match(usedRow.lastUsedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+    const ownerApiDenied = await requestEndpoint(database, "/owner-keys", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(ownerApiDenied.status, 403);
+    assert.equal((await ownerApiDenied.json()).error.code, "FORBIDDEN");
+
+    const insufficient = await requestEndpoint(database, "/requests", {
+      method: "POST",
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(insufficient.status, 403);
+    assert.equal(insufficient.headers.get("cache-control"), "no-store");
+    assert.equal((await insufficient.json()).error.code, "FORBIDDEN");
+
+    const missing = await requestEndpoint(database, "/requests");
+    assert.equal(missing.status, 401);
+    assert.equal(missing.headers.get("www-authenticate"), 'Bearer realm="sporades"');
+
+    const malformed = await requestEndpoint(database, "/requests", {
+      headers: { authorization: "Bearer definitely-not-a-sporades-key" },
+    });
+    assert.equal(malformed.status, 401);
+    assert.equal(malformed.headers.get("www-authenticate"), 'Bearer realm="sporades", error="invalid_token"');
+
+    const dual = await requestEndpoint(database, "/requests", {
+      headers: {
+        authorization: `Bearer ${issued.data.token}`,
+        "x-sporades-session-token": "simultaneous-session-credential",
+      },
+    });
+    assert.equal(dual.status, 401);
+    assert.equal((await dual.json()).error.code, "UNAUTHENTICATED");
+
+    await database.adapter.prepare(database.adapter.dialect.sql(
+      "UPDATE [sporades_auth_access_keys] SET [expiresAt] = ? WHERE [id] = ?",
+    )).run("2000-01-01T00:00:00.000Z", issued.data.accessKey.id);
+    const expired = await requestEndpoint(database, "/requests", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(expired.status, 401);
+    await database.adapter.prepare(database.adapter.dialect.sql(
+      "UPDATE [sporades_auth_access_keys] SET [expiresAt] = NULL WHERE [id] = ?",
+    )).run(issued.data.accessKey.id);
+
+    await database.adapter.updateAuthUserProfile({
+      id: auth.userId,
+      displayName: auth.displayName,
+      picture: null,
+      isAuthenticated: 1,
+      isGuest: 1,
+    });
+    const ineligibleOwner = await requestEndpoint(database, "/requests", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(ineligibleOwner.status, 401);
+    await database.adapter.updateAuthUserProfile({
+      id: auth.userId,
+      displayName: auth.displayName,
+      picture: null,
+      isAuthenticated: 1,
+      isGuest: 0,
+    });
+
+    const unknown = createAccessKeySecret();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const invalid = await requestEndpoint(database, "/requests", {
+        headers: { authorization: `Bearer ${unknown.token}` },
+      });
+      assert.equal(invalid.status, 401);
+    }
+    const limited = await requestEndpoint(database, "/requests", {
+      headers: { authorization: `Bearer ${unknown.token}` },
+    });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get("cache-control"), "no-store");
+    assert.equal((await limited.json()).error.code, "AUTH_RATE_LIMITED");
+
+    const unwrapped = await requestEndpoint(database, "/webhook", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(unwrapped.status, 200);
+    assert.deepEqual(await unwrapped.json(), { provider: "anonymous", authorization: `Bearer ${issued.data.token}` });
+
+    database.contextMiddleware = [];
+    const revoked = await runMutation(database, auth, "revokeKey", [issued.data.accessKey.id]);
+    assert.equal(revoked.error, null, JSON.stringify(revoked.error));
+    const denied = await requestEndpoint(database, "/requests", {
+      headers: { authorization: `Bearer ${issued.data.token}` },
+    });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.headers.get("www-authenticate"), 'Bearer realm="sporades", error="invalid_token"');
+    assert.equal(denied.headers.get("cache-control"), "no-store");
+    assert.equal((await denied.json()).error.code, "UNAUTHENTICATED");
+  } finally {
+    delete globalThis.__accessKeyMiddlewareObserved;
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the Access-key bearer parser accepts only the fixed bounded wire form", () => {
+  const secret = createAccessKeySecret();
+  assert.deepEqual(
+    readAccessKeyAuthorization({ rawHeaders: ["Authorization", `bearer ${secret.token}`] }),
+    { token: secret.token, selector: secret.selector, verifier: secret.verifier },
+  );
+  assert.equal(readAccessKeyAuthorization({ rawHeaders: [] }), null);
+  for (const value of [
+    `Bearer ${secret.token}, Bearer ${secret.token}`,
+    `Bearer ${secret.token}=`,
+    `Bearer ${secret.token}\n`,
+    `Bearer ${secret.token}_extra`,
+    `Bearer SPK_1_${secret.selector}_${secret.verifier}`,
+    `Basic ${secret.token}`,
+  ]) {
+    assert.throws(
+      () => readAccessKeyAuthorization({ rawHeaders: ["Authorization", value] }),
+      (error) => error.code === "UNAUTHENTICATED",
+    );
+  }
+  assert.throws(
+    () => readAccessKeyAuthorization({ rawHeaders: ["Authorization", `Bearer ${secret.token}`, "authorization", `Bearer ${secret.token}`] }),
+    (error) => error.code === "UNAUTHENTICATED",
+  );
+});
+
+test("owner operations validate immutable metadata, eligibility, and one-time secret storage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-invariants-"));
+  let now = new Date("2026-08-20T12:00:00.000Z");
+  const definition = capsule({
+    name: "access-key-invariants",
+    accessKeys: { scopes: ["requests:read", "requests:write"] },
+    mutations: { issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)) },
+    queries: { listKeys: query((ctx) => ctx.accessKeys.list()) },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
+    clock: { now: () => now },
+  });
+  try {
+    const auth = await seedLinkedUser(database);
+    const wildcard = await runMutation(database, auth, "issueKey", [{ name: "default-grants" }]);
+    assert.equal(wildcard.error, null, JSON.stringify(wildcard.error));
+    assert.deepEqual(wildcard.data.accessKey.grants, ["*"]);
+    assert.deepEqual(wildcard.data.accessKey.effectiveScopes, ["requests:read", "requests:write"]);
+
+    const stored = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT * FROM [sporades_auth_access_keys] WHERE [id] = ?",
+    )).get(wildcard.data.accessKey.id);
+    assert.equal(stored.selector.length, 22);
+    assert.match(stored.verifierDigest, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(stored).includes(wildcard.data.token), false);
+    assert.equal("token" in stored, false);
+    assert.equal("verifier" in stored, false);
+
+    const duplicate = await runMutation(database, auth, "issueKey", [{ name: "default-grants" }]);
+    assert.equal(duplicate.error.code, "ACCESS_KEY_NAME_CONFLICT");
+    const invalidGrant = await runMutation(database, auth, "issueKey", [{ name: "bad-grant", grants: ["undeclared:read"] }]);
+    assert.equal(invalidGrant.error.code, "INVALID_ACCESS_KEY_GRANTS");
+    const invalidExpiry = await runMutation(database, auth, "issueKey", [{ name: "bad-expiry", expiresAt: now.toISOString() }]);
+    assert.equal(invalidExpiry.error.code, "INVALID_ACCESS_KEY_EXPIRY");
+
+    const anonymous = await runMutation(database, {
+      ...auth,
+      userId: "anonymous-owner",
+      isAuthenticated: false,
+      isGuest: true,
+      provider: "anonymous",
+    }, "issueKey", [{ name: "anonymous-key" }]);
+    assert.equal(anonymous.error.code, "UNAUTHENTICATED");
+    const guest = await runMutation(database, { ...auth, isGuest: true, provider: "anonymous" }, "issueKey", [{ name: "guest-key" }]);
+    assert.equal(guest.error.code, "FORBIDDEN");
+
+    now = new Date("2026-08-20T13:00:00.000Z");
+    const listed = await runQuery(database, auth, "listKeys");
+    assert.equal(listed.error, null);
+    assert.equal(JSON.stringify(listed.data).includes(wildcard.data.token), false);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

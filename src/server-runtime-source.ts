@@ -58,10 +58,15 @@ import {
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import {
+  accessKeyGrantsSatisfyScopes,
   normalizeCapsuleAuthDefinition,
   readAuthRequirements,
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
+import {
+  createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
+  resolveAccessKeyCredential,
+} from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
 // index. The log sink in this file needs none of them: it reaches the same three through
@@ -637,6 +642,7 @@ export async function openDevDatabase(
     messages,
     jobs,
     schedules,
+    accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
@@ -2783,10 +2789,26 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   }
 
   try {
-    writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
+    const result = await runEndpoint(database, endpoint, requestUrl, request);
+    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || (request as LooseRecord).__sporadesSecretDisclosed) {
+      response.setHeader("cache-control", "private, no-store");
+      response.setHeader("pragma", "no-cache");
+    }
+    writeEndpointResult(response, result);
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
+    } else if (error?.sporadesAccessKeyFailure) {
+      emitAuthDeniedLog(database as LooseRecord, { data: {
+        requirement: "access-key",
+        reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+        handler: { kind: "endpoint", path: requestUrl.pathname },
+        actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
+      } });
+    }
+    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("pragma", "no-cache");
     }
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
@@ -2825,6 +2847,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
+  const requirements = readAuthRequirements(handler);
+  const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
+  if (requirements) delete endpointRequest.headers.authorization;
   const session = (endpoint as LooseRecord).runtimeOwnedEmailEvent
     ? { auth: {
         userId: privilegedAuthUserId(),
@@ -2835,21 +2860,47 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         isGuest: false,
         provider: "privileged-server-role",
       } }
-    : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+    : hasAuthorization
+      ? null
+      : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context: LooseRecord | undefined;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createEndpointContext(transactionDatabase, endpointRequest, session, {
+        const accessKeyAdmission = hasAuthorization
+          ? await resolveAccessKeyCredential(
+            transactionDatabase,
+            request,
+            readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
+          )
+          : null;
+        const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
+        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
           ordinaryCredential: !(endpoint as LooseRecord).runtimeOwnedEmailEvent,
+          credential: accessKeyAdmission?.credential,
+          accessKeyGrants: accessKeyAdmission?.grants,
         });
         if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
-          admitSessionHandler(handler, context.auth, "endpoint");
+          admitCredentialHandler(handler, context, "endpoint");
+          if (accessKeyAdmission) {
+            (request as LooseRecord).__sporadesAccessKeyAdmitted = true;
+            emitAccessKeyAdmittedAudit(transactionDatabase, { ...context, kind: "endpoint" }, accessKeyAdmission.record);
+            try {
+              const coalesceBefore = new Date(Date.parse(accessKeyAdmission.admittedAt) - 60 * 60_000).toISOString();
+              await transactionDatabase.adapter.touchAccessKeyLastUsed(
+                accessKeyAdmission.record.id,
+                accessKeyAdmission.admittedAt,
+                coalesceBefore,
+              );
+            } catch { }
+          }
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
-        return await handler(context);
+        const result = await handler(context);
+        if (context.__sporadesSecretDisclosed) (request as LooseRecord).__sporadesSecretDisclosed = true;
+        return result;
       } catch (error) {
         handlerFailed = true;
         throw error;
@@ -2949,7 +3000,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const auth = protectContextIdentity(session.auth);
   const context: LooseRecord = {
     auth,
-    ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
+    ...(options.ordinaryCredential === false ? {} : {
+      credential: protectContextIdentity(options.credential ?? { kind: "session" }),
+    }),
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
@@ -2965,6 +3018,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       body: endpointRequest.body,
     },
   };
+  if (options.accessKeyGrants) {
+    Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -2977,6 +3033,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -3126,23 +3183,47 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
   return context;
 }
 
-function admitSessionHandler(handler: unknown, auth: LooseRecord, kind: string) {
+function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: string) {
   const requirements = readAuthRequirements(handler);
   if (!requirements) {
     return;
   }
-  requireAuth({ auth, kind }, { linked: requirements.linked });
-  if (!requirements.credentials.includes("session")) {
-    const error = commandError(
+  const auth = context?.auth;
+  const credentialKind = context?.credential?.kind ?? "session";
+  if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
+    const error: LooseRecord = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+    if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
+    throw error;
+  }
+  if (!requirements.credentials.includes(credentialKind)) {
+    const error: LooseRecord = commandError(
       "Forbidden.",
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN",
     );
     error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
+      error.sporadesAccessKeyFailure = "forbidden";
+    }
     throw error;
   }
-  // A permitted Session satisfies declared scope requirements. Access-key
-  // grants are matched when Bearer admission is introduced.
+  if (
+    credentialKind === "access-key"
+    && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)
+  ) {
+    const error: LooseRecord = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+    error.sporadesAccessKeyFailure = "forbidden";
+    throw error;
+  }
+}
+
+function endpointHasAuthorization(request: LooseRecord) {
+  if (Array.isArray(request?.rawHeaders)) {
+    return request.rawHeaders.some((value: unknown, index: number) => index % 2 === 0 && String(value).toLowerCase() === "authorization");
+  }
+  return request?.headers?.authorization !== undefined;
 }
 
 function runContextMiddleware(middlewareSource: any, context: any) {
@@ -4820,7 +4901,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   let context;
   try {
     context = createMutationContext(database, auth);
-    if (queryHandler) admitSessionHandler(queryHandler, context.auth, "query");
+    if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
@@ -4975,7 +5056,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         context = createMutationContext(transactionDatabase, auth);
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-        if (mutationHandler) admitSessionHandler(mutationHandler, context.auth, "mutation");
+        if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
@@ -5088,7 +5169,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       assertJsonCompatible(data);
     }
     const messageHandler = materializeHandler(handler);
-    admitSessionHandler(messageHandler, auth, "message");
+    admitCredentialHandler(messageHandler, { auth, credential: { kind: "session" } }, "message");
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
@@ -5206,6 +5287,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     },
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);

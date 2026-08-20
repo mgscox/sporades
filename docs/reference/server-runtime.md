@@ -307,20 +307,63 @@ export default capsule({
 
 Omitting `credentials` admits any supported credential kind; omitting `scopes`
 requires no scope. Credential lists are OR requirements and scope lists are AND
-requirements. A permitted Session satisfies declared scope requirements. The
-current Session-only transport therefore admits `"session"` or an omitted
-credential list and returns `FORBIDDEN` for an `"access-key"`-only guard.
+requirements. A permitted Session satisfies declared scope requirements. A
+guarded Custom endpoint also accepts a scoped Access key through
+`Authorization: Bearer spk_1_<selector>_<verifier>` when `"access-key"` is an
+allowed credential kind. Queries, mutations, App messages, and unwrapped
+Custom endpoints retain their existing Session behavior; an unwrapped endpoint
+owns its own `Authorization` schemes and Sporades does not interpret them.
 
 Declare the Capsule's concrete, case-sensitive scope vocabulary once in
 `capsule({ accessKeys: { scopes } })`. Declarations cannot contain `*`. A guard
 may require only declared concrete scopes. Invalid, duplicate, wildcard, or
 undeclared values fail Capsule registration rather than weakening admission.
 
-Ordinary user contexts expose immutable identity and provenance separately:
-`ctx.auth` is the current user, while `ctx.credential` is currently
-`{ kind: "session" }`. The public provenance union also reserves
-`{ kind: "access-key", id, name }` for Access-key admission. Middleware and ACL
-rules may inspect these values but cannot replace or mutate them.
+Ordinary user contexts expose immutable identity and provenance separately.
+For interactive work `ctx.credential` is `{ kind: "session" }`. An admitted
+Access key receives the current owning user's `ctx.auth` with provider
+`"access-key"` and `{ kind: "access-key", id, name }` provenance. Middleware,
+table ACL, Team policy, and Capsule code therefore authorize the real owner and
+can separately attribute the named API access. They may inspect these values
+but cannot replace or mutate them.
+
+### Issue and revoke Access keys
+
+A linked, non-guest Session manages only its own keys through `ctx.accessKeys`:
+
+```ts
+mutations: {
+  issueAutomationKey: mutation((ctx) => ctx.accessKeys.issue({
+    name: "invoice-importer",
+    grants: ["projects:read"],
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  })),
+  revokeAutomationKey: mutation((ctx, id: string) => ctx.accessKeys.revoke(id)),
+},
+queries: {
+  myAutomationKeys: query((ctx) => ctx.accessKeys.list({ status: "active" })),
+},
+```
+
+`issue()` returns the complete token once. Persist it in the caller's secret
+store immediately; Sporades stores only an indexed selector and verifier
+digest. Later `list()` and `revoke()` results contain safe metadata, never the
+token. Names are unique among an owner's current keys. Owner, name, grants, and
+optional expiry are immutable; omitted grants default to `*`, meaning any
+scope declared by this Capsule. Grant wildcards are matched at request time, so
+`projects:*` satisfies both `projects:read` and `projects:delete`.
+
+Access keys cannot issue, inspect, or revoke keys. Neither can Anonymous or
+guest Sessions, Jobs, Schedules, lifecycle hooks, or Privileged work. A key
+authenticates its linked owner; it is not a synthetic user and grants never add
+authority the owner lacks.
+
+Bearer parsing is strict and applies only to guarded Custom endpoints. Invalid,
+malformed, expired, revoked, dual Session-plus-Bearer, or owner-ineligible
+credentials fail as opaque HTTP `401` responses without fallback. A valid key
+with a disallowed credential kind or insufficient scope fails as opaque `403`.
+Access-key failures carry a Bearer challenge where applicable and `no-store`;
+successful key-authenticated responses default to `private, no-store`.
 
 On success `requireUserAuth(ctx)` returns the context's `AuthContext`, so
 `userId` and profile fields remain available without copying `ctx.auth`. On

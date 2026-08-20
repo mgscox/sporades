@@ -258,6 +258,10 @@ var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBef
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;

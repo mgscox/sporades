@@ -596,6 +596,8 @@ export default capsule({
       ctx.db.notes.insert({ text, ownerId: auth.userId });
     }),
     guardedMutation: mutation(requireAuth((ctx) => ctx.credential)),
+    issueAccessKey: mutation((ctx) => ctx.accessKeys.issue({ name: "dev-reader", grants: ["requests:read"] })),
+    revokeAccessKey: mutation((ctx, id: string) => ctx.accessKeys.revoke(id)),
   },
 
   endpoints: {
@@ -607,9 +609,9 @@ export default capsule({
       status: 200,
       body: ctx.credential,
     }))),
-    accessKeyOnly: endpoint({ method: "GET", path: "/access-key-only" }, requireAuth({ credentials: ["access-key"] }, () => ({
+    accessKeyOnly: endpoint({ method: "GET", path: "/access-key-only" }, requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => ({
       status: 200,
-      body: "wrong",
+      body: { auth: ctx.auth, credential: ctx.credential, authorizationVisible: "authorization" in ctx.request.headers },
     }))),
   },
 
@@ -741,6 +743,39 @@ export default capsule({
       assert.equal(accessKeyOnlyEndpointResponse.status, 403);
       assert.equal((await accessKeyOnlyEndpointResponse.json()).error.code, "FORBIDDEN");
 
+      const issuedAccessKey = await sendAndWait(socket, {
+        id: "issue-access-key",
+        type: "mutation.run",
+        mutation: "issueAccessKey",
+        args: [],
+      });
+      assert.equal(issuedAccessKey.error, null, JSON.stringify(issuedAccessKey));
+      assert.match(issuedAccessKey.data.token, /^spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}$/);
+      const bearerResponse = await fetch(`${started.data.url}/access-key-only`, {
+        headers: { authorization: `Bearer ${issuedAccessKey.data.token}` },
+      });
+      assert.equal(bearerResponse.status, 200);
+      assert.equal(bearerResponse.headers.get("cache-control"), "private, no-store");
+      assert.deepEqual(await bearerResponse.json(), {
+        auth: { ...linkedAuthContext, provider: "access-key" },
+        credential: { kind: "access-key", id: issuedAccessKey.data.accessKey.id, name: "dev-reader" },
+        authorizationVisible: false,
+      });
+
+      const revokedAccessKey = await sendAndWait(socket, {
+        id: "revoke-access-key",
+        type: "mutation.run",
+        mutation: "revokeAccessKey",
+        args: [issuedAccessKey.data.accessKey.id],
+      });
+      assert.equal(revokedAccessKey.error, null, JSON.stringify(revokedAccessKey));
+      const revokedBearerResponse = await fetch(`${started.data.url}/access-key-only`, {
+        headers: { authorization: `Bearer ${issuedAccessKey.data.token}` },
+      });
+      assert.equal(revokedBearerResponse.status, 401);
+      assert.equal(revokedBearerResponse.headers.get("www-authenticate"), 'Bearer realm="sporades", error="invalid_token"');
+      assert.equal((await revokedBearerResponse.json()).error.code, "UNAUTHENTICATED");
+
       assert.deepEqual(await sendAndWait(socket, { id: "whoami-allowed", type: "app.send", message: "whoami" }), {
         id: "whoami-allowed",
         type: "app.result",
@@ -756,7 +791,7 @@ export default capsule({
       assert.equal(logs.ok, true);
       const denials = logs.data.entries.filter((entry) => entry.event === "auth.denied");
       assert.ok(denials.length >= 5, JSON.stringify(denials));
-      for (const denial of denials.filter((entry) => entry.data.requirement !== "credential")) {
+      for (const denial of denials.filter((entry) => ["authenticated", "linked"].includes(entry.data.requirement))) {
         assert.equal(denial.category, "platform");
         assert.equal(denial.level, "warn");
         assert.equal(denial.data.actor.userId, anonymousAuthResult.data.auth.userId);
@@ -770,8 +805,16 @@ export default capsule({
       assert.ok(requirements.has("authenticated"));
       assert.ok(requirements.has("linked"));
       assert.ok(requirements.has("credential"));
+      assert.ok(requirements.has("access-key"));
       assert.ok(denials.some((entry) => entry.data.handler.kind === "query" && entry.data.requirement === "authenticated"));
       assert.ok(denials.some((entry) => entry.data.handler.kind === "endpoint" && entry.data.requirement === "credential"));
+      const accessKeyEvents = logs.data.entries.filter((entry) => entry.event.startsWith("access-key."));
+      assert.ok(accessKeyEvents.some((entry) => entry.event === "access-key.issued"));
+      assert.ok(accessKeyEvents.some((entry) => entry.event === "access-key.admitted"));
+      assert.ok(accessKeyEvents.some((entry) => entry.event === "access-key.revoked"));
+      assert.equal(JSON.stringify(logs.data.entries).includes(issuedAccessKey.data.token), false);
+      assert.equal(JSON.stringify(accessKeyEvents).includes("verifierDigest"), false);
+      assert.equal(JSON.stringify(accessKeyEvents).includes("selector"), false);
     } finally {
       socket?.close();
       child.kill("SIGTERM");

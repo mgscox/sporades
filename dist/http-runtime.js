@@ -533,7 +533,17 @@ export function writeEndpointResult(response, result) {
     response.end(String(result ?? ""));
 }
 export function writeEndpointError(response, error) {
-    response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
+    const headers = { "content-type": "application/json; charset=utf-8" };
+    if (error?.code === "UNAUTHENTICATED") {
+        headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid"
+            ? 'Bearer realm="sporades", error="invalid_token"'
+            : 'Bearer realm="sporades"';
+    }
+    if (error?.sporadesAccessKeyFailure) {
+        headers["cache-control"] = "no-store";
+        headers.pragma = "no-cache";
+    }
+    response.writeHead(endpointErrorStatus(error), headers);
     response.end(`${JSON.stringify({
         ok: false,
         data: null,
@@ -561,6 +571,8 @@ function endpointErrorStatus(error) {
         return 401;
     if (error?.code === "FORBIDDEN")
         return 403;
+    if (error?.code === "AUTH_RATE_LIMITED")
+        return 429;
     if (isPayloadTooLargeError(error))
         return 413;
     if (isClientRequestError(error))

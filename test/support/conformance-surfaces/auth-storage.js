@@ -1012,6 +1012,75 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key lifecycle methods preserve owner, selector, and revocation invariants",
+    async run(adapter) {
+      const record = {
+        id: "access-key-conformance",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "conformance-reader",
+        reservedName: "conformance-reader",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "abcdefghijklmnopqrstuv",
+        verifierDigest: "ab".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.issueAccessKeyRecord(record), { status: "issued" });
+      assert.equal((await adapter.issueAccessKeyRecord({
+        ...record,
+        id: "access-key-name-collision",
+        selector: "bcdefghijklmnopqrstuvw",
+      })).status, "name-conflict");
+
+      const listed = await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id);
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].id, record.id);
+      assert.equal(listed[0].grantsJson, record.grantsJson);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 0);
+
+      const authenticated = await adapter.findAccessKeyAuthenticationRecord(record.selector);
+      assert.equal(authenticated.id, record.id);
+      assert.equal(authenticated.ownerDisplayName, SIGNED_IN_USER.displayName);
+      assert.equal(Number(authenticated.ownerIsAuthenticated), 1);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("unknown-selector-value"), null);
+      assert.equal((await adapter.touchAccessKeyLastUsed(record.id, LATER, NOW)).changes, 1);
+      assert.equal((await adapter.touchAccessKeyLastUsed(record.id, NEXT_MONTH, LATER)).changes, 0);
+
+      const revoked = await adapter.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: record.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+      });
+      assert.equal(revoked.revokedAt, LATER);
+      assert.equal(revoked.revocationCause, "owner");
+      assert.equal(Number(revoked.lifecycleRevision), 2);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      const idempotent = await adapter.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: record.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      });
+      assert.equal(idempotent.revokedAt, LATER);
+      assert.equal(Number(idempotent.lifecycleRevision), 2);
+      assert.equal(await adapter.revokeAccessKeyRecord({
+        ownerUserId: BYSTANDER_USER.id,
+        id: record.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }), null);
+
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(SIGNED_IN_USER.id);
+      assert.equal(Number(ledger.currentCount), 0);
+      assert.equal(Number(ledger.totalCount), 1);
+    },
+  },
+  {
     // A DDL method, so ADR-0034 lets the engines emit different statement text for it — Postgres
     // uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition probes
     // `PRAGMA table_info` first. What they may not differ on is what a Capsule boot finds
