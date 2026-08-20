@@ -98,7 +98,7 @@
 // appear in it. `Buffer` and `URL` are globals.
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
-import { accessKeyAuthenticationError, accessKeyCredentialLogAttribution, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
+import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { commandError } from "./runtime-errors.js";
 const CLIENT_REQUEST_ERROR_CODES = new Set([
@@ -440,8 +440,8 @@ export async function handleFileHttpRoute(database, request, response, websocket
                         requirement: "file-access-key-scopes",
                         handler: { kind: "file", path: requestUrl.pathname },
                         actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
-                        ...accessKeyCredentialLogAttribution({ credential }),
                     };
+                    error.sporadesAccessKeyFailure = "forbidden";
                     throw error;
                 }
                 emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);

@@ -102,7 +102,7 @@ import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import {
-  accessKeyAuthenticationError, accessKeyCredentialLogAttribution, emitAccessKeyAdmittedAudit,
+  accessKeyAuthenticationError, emitAccessKeyAdmittedAudit,
   recordAccessKeyUsage, resolveAccessKeyCredential,
 } from "./access-keys-runtime.js";
 import {
@@ -498,8 +498,8 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
             requirement: "file-access-key-scopes",
             handler: { kind: "file", path: requestUrl.pathname },
             actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
-            ...accessKeyCredentialLogAttribution({ credential }),
           };
+          error.sporadesAccessKeyFailure = "forbidden";
           throw error;
         }
         emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);

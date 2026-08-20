@@ -139,6 +139,12 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     assert.equal(scopeDenied.headers.get("www-authenticate"), null);
     assert.equal(scopeDenied.headers.get("cache-control"), "no-store");
     assert.equal(JSON.stringify(await scopeDenied.json()).includes("files:read"), false);
+    const scopeDenialLog = (await database.log.tail(20)).find((event) =>
+      event.event === "auth.denied" && event.data?.requirement === "file-access-key-scopes"
+    );
+    assert.equal("credential" in scopeDenialLog.data, false);
+    assert.equal(JSON.stringify(scopeDenialLog).includes(insufficient.accessKey.id), false);
+    assert.equal(JSON.stringify(scopeDenialLog).includes(insufficient.accessKey.name), false);
 
     const otherKey = await manage(database, other, "accessKeys.issue", {
       input: { name: "foreign-reader", grants: ["files:read"] },

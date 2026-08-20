@@ -9633,9 +9633,9 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
           error.sporadesAuthDenialLogData = {
             requirement: "file-access-key-scopes",
             handler: { kind: "file", path: requestUrl.pathname },
-            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
-            ...accessKeyCredentialLogAttribution({ credential })
+            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
           };
+          error.sporadesAccessKeyFailure = "forbidden";
           throw error;
         }
         emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
