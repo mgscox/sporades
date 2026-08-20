@@ -285,7 +285,7 @@ Every handler receives a runtime-owned context:
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
 | `ctx.mail` | Server-only provider-independent SMTP delivery. |
-| `ctx.request` | Custom endpoint request details, only for endpoint handlers. |
+| `ctx.request` | Custom endpoint request details, including parsed `body` and immutable exact `bodyBytes`, only for endpoint handlers. |
 
 Query, mutation, Custom endpoint, App message, context middleware, and mutation
 hook handlers may be synchronous or asynchronous. The runtime awaits async
@@ -295,6 +295,14 @@ mutation transactions, or refreshing query subscriptions.
 Custom endpoints are HTTP escape hatches for integrations such as webhooks.
 They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
+
+`ctx.request.body` and `ctx.request.bodyBytes` come from the same bounded
+request-body read. `body` retains the existing parsed JSON or text behavior;
+`bodyBytes` is an immutable iterable view of the exact received bytes for
+signature verification and other byte-sensitive integrations. Calling
+`bodyBytes.toUint8Array()` returns a mutable copy rather than runtime-owned
+storage. Exact bytes remain server-only and are never automatically logged or
+included in HTTP errors, CLI output, or client transport results.
 
 ## Client API
 

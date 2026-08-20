@@ -354,6 +354,17 @@ const app = capsule({
     ping: endpoint({ method: "GET", path: "/ping" }, async (ctx) => {
       await Promise.resolve();
       await ctx.mail.send({ to: "recipient@example.com", subject: "Ping", htmlBody: "<p>Ping</p>" });
+      const bodyBytes = ctx.request.bodyBytes;
+      const bodyCopy: Uint8Array = bodyBytes.toUint8Array();
+      bodyBytes.byteLength satisfies number;
+      bodyBytes.length satisfies number;
+      bodyBytes.at(0)?.toFixed();
+      for (const byte of bodyBytes) byte.toFixed();
+      bodyCopy.fill(0);
+      // @ts-expect-error endpoint body bytes expose no mutable indexed storage.
+      bodyBytes[0] = 0;
+      // @ts-expect-error endpoint body bytes expose no mutating typed-array methods.
+      bodyBytes.set([0]);
       return {
         path: ctx.request.path,
         userId: requireAuth(ctx).userId,

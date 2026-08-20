@@ -17456,12 +17456,13 @@ async function readEndpointRequest(database, requestUrl, request) {
     ])
   );
   const query = endpointQueryFromUrl(requestUrl);
+  const payload = await readEndpointPayload(request, headers, database);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    body: await readEndpointBody(request, headers, database)
+    ...payload
   };
 }
 function createEndpointContext(database, endpointRequest, session) {
@@ -17480,7 +17481,8 @@ function createEndpointContext(database, endpointRequest, session) {
       path: endpointRequest.path,
       headers: endpointRequest.headers,
       query: endpointRequest.query,
-      body: endpointRequest.body
+      body: endpointRequest.body,
+      bodyBytes: endpointRequest.bodyBytes
     }
   };
   const holder = createContextHolder(context);
@@ -17923,19 +17925,34 @@ function fieldValueForWrite(database, field, value) {
 function referenceExists(database, field, value) {
   return database.adapter.referenceExists(field, value);
 }
-async function readEndpointBody(request, headers, limitSource = null) {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  if (!raw) {
-    return null;
-  }
+async function readEndpointPayload(request, headers, limitSource = null) {
+  const raw = await readLimitedRequestBody(request, limitSource);
+  const bodyBytes = immutableEndpointBodyBytes(raw);
+  if (raw.byteLength === 0) return { body: null, bodyBytes };
+  const text2 = raw.toString("utf8");
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
     try {
-      return JSON.parse(raw);
+      return { body: JSON.parse(text2), bodyBytes };
     } catch {
       throw commandError2("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
     }
   }
-  return raw;
+  return { body: text2, bodyBytes };
+}
+function immutableEndpointBodyBytes(bytes) {
+  return Object.freeze({
+    byteLength: bytes.byteLength,
+    length: bytes.byteLength,
+    at(index) {
+      return bytes.at(index);
+    },
+    toUint8Array() {
+      return Uint8Array.from(bytes);
+    },
+    [Symbol.iterator]() {
+      return bytes.values();
+    }
+  });
 }
 function createEndpointLogger(database, context = {}) {
   return createRuntimeLogger(database, {

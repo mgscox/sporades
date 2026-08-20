@@ -2681,12 +2681,13 @@ async function readEndpointRequest(database, requestUrl, request) {
         Array.isArray(value) ? value.join(", ") : value,
     ]));
     const query = endpointQueryFromUrl(requestUrl);
+    const payload = await readEndpointPayload(request, headers, database);
     return {
         method: request.method,
         path: requestUrl.pathname,
         headers,
         query,
-        body: await readEndpointBody(request, headers, database),
+        ...payload,
     };
 }
 function createEndpointContext(database, endpointRequest, session) {
@@ -2706,6 +2707,7 @@ function createEndpointContext(database, endpointRequest, session) {
             headers: endpointRequest.headers,
             query: endpointRequest.query,
             body: endpointRequest.body,
+            bodyBytes: endpointRequest.bodyBytes,
         },
     };
     const holder = createContextHolder(context);
@@ -3126,20 +3128,36 @@ function referenceExists(database, field, value) {
 // batch 9 moved them to `stored-value-coding.ts`, beside the reading half they mirror.
 // `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
 // first two are imported back at the top of this file; the other three have no consumer here.
-async function readEndpointBody(request, headers, limitSource = null) {
-    const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-    if (!raw) {
-        return null;
-    }
+async function readEndpointPayload(request, headers, limitSource = null) {
+    const raw = await readLimitedRequestBody(request, limitSource);
+    const bodyBytes = immutableEndpointBodyBytes(raw);
+    if (raw.byteLength === 0)
+        return { body: null, bodyBytes };
+    const text = raw.toString("utf8");
     if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
         try {
-            return JSON.parse(raw);
+            return { body: JSON.parse(text), bodyBytes };
         }
         catch {
             throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
         }
     }
-    return raw;
+    return { body: text, bodyBytes };
+}
+function immutableEndpointBodyBytes(bytes) {
+    return Object.freeze({
+        byteLength: bytes.byteLength,
+        length: bytes.byteLength,
+        at(index) {
+            return bytes.at(index);
+        },
+        toUint8Array() {
+            return Uint8Array.from(bytes);
+        },
+        [Symbol.iterator]() {
+            return bytes.values();
+        },
+    });
 }
 function createEndpointLogger(database, context = {}) {
     return createRuntimeLogger(database, {

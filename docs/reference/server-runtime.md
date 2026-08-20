@@ -565,9 +565,10 @@ import { capsule, endpoint } from "sporades/server";
 export default capsule({
   endpoints: {
     webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
+      const signatureInput = ctx.request.bodyBytes.toUint8Array();
       ctx.log.info("Webhook received", {
         path: ctx.request.path,
-        body: ctx.request.body,
+        byteLength: ctx.request.bodyBytes.byteLength,
       });
 
       return {
@@ -585,4 +586,13 @@ export default capsule({
 
 Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
 `ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
-query parameters, and parsed body data.
+query parameters, parsed `body` data, and immutable exact `bodyBytes`.
+
+Both body representations come from the same bounded request-body read.
+`bodyBytes` preserves the bytes exactly as received, so JSON whitespace and key
+ordering remain available for signed-webhook verification even though `body`
+contains the parsed value. The byte view is iterable and supports `at()`;
+`toUint8Array()` returns a mutable copy without exposing runtime-owned storage.
+Exact bytes are server-only and never automatically logged or added to HTTP
+errors, CLI output, or client transport results. Do not log the copy merely
+because an integration library accepts it.

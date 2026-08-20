@@ -623,6 +623,15 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   teams: CurrentUserTeamsApi;
 };
 
+/** Immutable exact bytes from one bounded Custom endpoint request-body read. */
+export type EndpointBodyBytes = {
+  readonly byteLength: number;
+  readonly length: number;
+  at(index: number): number | undefined;
+  toUint8Array(): Uint8Array;
+  [Symbol.iterator](): IterableIterator<number>;
+};
+
 /** Request details available only inside Custom endpoint handlers. */
 export type EndpointRequest = {
   method: string;
@@ -630,6 +639,7 @@ export type EndpointRequest = {
   query: Record<string, string>;
   headers: Record<string, string>;
   body?: unknown;
+  readonly bodyBytes: EndpointBodyBytes;
 };
 
 export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> & {

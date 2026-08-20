@@ -109,6 +109,21 @@ test("the feature reference is split by lookup intent behind a compatible index"
   assert.match(operations, /Sporades Doctor/);
 });
 
+test("canonical endpoint docs preserve exact bounded request bytes without exposing mutable runtime storage", async () => {
+  const [prd, server] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+  ]);
+
+  for (const document of [prd, server]) {
+    assert.match(document, /bodyBytes/);
+    assert.match(document, /exact[\s\S]*bytes/i);
+    assert.match(document, /same bounded\s+request-body read/i);
+    assert.match(document, /toUint8Array\(\)[\s\S]*copy/i);
+    assert.match(document, /never automatically logged/i);
+  }
+});
+
 test("the idempotent insert example awaits both asynchronous database paths", async () => {
   const [server, tableApi] = await Promise.all([
     readProjectFile("docs/reference/server-runtime.md"),
