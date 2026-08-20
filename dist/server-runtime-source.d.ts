@@ -106,6 +106,59 @@ type TrustedRefreshTransport = {
     received(connectionId: string, sequence: number): void;
     disconnected(connectionId: string): void;
 };
+export declare function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord): Promise<{
+    data: {
+        accessKeys: {
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        }[];
+        declaredScopes: string[];
+        nextCursor: string | null;
+        totalCount: number;
+    } | {
+        accessKey: {
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        };
+    } | {
+        id: string;
+        deleted: boolean;
+    };
+    error: null;
+} | {
+    data: null;
+    error: {
+        hint?: any;
+        code: any;
+        message: any;
+    };
+} | {
+    data: null;
+    error: {
+        message: string;
+        hint: string;
+    };
+}>;
 export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null): {
     createConnectionToken(): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;

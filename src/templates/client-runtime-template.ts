@@ -801,6 +801,19 @@ function createConnection() {
     });
     socket.addEventListener("close", () => {
       stopJourneyCapture();
+      for (const [id, resolve] of pending) {
+        resolve({
+          id,
+          type: "error",
+          data: null,
+          error: {
+            code: "TRANSPORT_CLOSED",
+            message: "The Sporades connection closed before the operation completed.",
+            hint: "Reconnect and inspect current state before retrying a one-time operation.",
+          },
+        });
+      }
+      pending.clear();
       if (!pageRetired) setTimeout(open, 500);
     });
     return socket;

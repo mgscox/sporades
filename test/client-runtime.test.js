@@ -22,40 +22,62 @@ test("browser client runtime exposes no Privileged server role authority", async
 
 test("framework-neutral Access-key management uses request results without retaining one-time secrets", async () => {
   const calls = [];
-  const summary = {
+  let summary = {
     id: "key-1", name: "bot", grants: ["requests:*"], effectiveScopes: ["requests:read"], status: "active",
     createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null, rotatedAt: null, revokedAt: null,
     revocationCause: null, lastUsedAt: null, lifecycleRevision: 1,
   };
-  const handlers = Object.fromEntries(["list", "issue", "rotate", "revoke", "delete"].map((operation) => [
-    `accessKeys.${operation}`,
-    async (message) => {
+  let rotateCalls = 0;
+  const neverRespond = () => new Promise(() => {});
+  const handlers = {
+    "accessKeys.issue": async (message) => { calls.push(message); return neverRespond(); },
+    "accessKeys.list": async (message) => {
       calls.push(message);
-      const data = operation === "list"
-        ? { accessKeys: [summary], declaredScopes: ["requests:read"], nextCursor: null, totalCount: 1 }
-        : operation === "issue"
-          ? { accessKey: summary, token: "spk_1_issue-once" }
-          : operation === "rotate"
-            ? { accessKey: { ...summary, lifecycleRevision: 2 }, token: "spk_1_rotate-once" }
-            : operation === "revoke"
-              ? { accessKey: { ...summary, status: "revoked", revocationCause: "owner" } }
-              : { id: summary.id, deleted: true };
-      return { type: `accessKeys.${operation}.result`, data, error: null };
+      return { type: "accessKeys.list.result", data: { accessKeys: [summary], declaredScopes: ["requests:read"], nextCursor: null, totalCount: 1 }, error: null };
     },
-  ]));
+    "accessKeys.rotate": async (message) => {
+      calls.push(message);
+      rotateCalls += 1;
+      summary = { ...summary, lifecycleRevision: summary.lifecycleRevision + 1 };
+      if (rotateCalls === 1) return neverRespond();
+      return { type: "accessKeys.rotate.result", data: { accessKey: summary, token: "spk_1_recovered-rotation" }, error: null };
+    },
+    "accessKeys.revoke": async (message) => {
+      calls.push(message);
+      summary = { ...summary, status: "revoked", revocationCause: "owner" };
+      return { type: "accessKeys.revoke.result", data: { accessKey: summary }, error: null };
+    },
+    "accessKeys.delete": async (message) => {
+      calls.push(message);
+      return { type: "accessKeys.delete.result", data: { id: summary.id, deleted: true }, error: null };
+    },
+  };
   const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false }, { handlers });
   try {
     const runtime = await importClientRuntime();
     assert.deepEqual(Object.keys(runtime.accessKeys).sort(), ["delete", "issue", "list", "revoke", "rotate"]);
-    assert.equal((await runtime.accessKeys.issue({ name: "bot", grants: ["requests:*"] })).data.token, "spk_1_issue-once");
+    const lostIssue = runtime.accessKeys.issue({ name: "bot", grants: ["requests:*"] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets.at(-1).readyState = 3;
+    browser.sockets.at(-1).emit("close", {});
+    assert.equal((await lostIssue).error.code, "TRANSPORT_CLOSED");
     const listed = await runtime.accessKeys.list({ status: "active" });
-    assert.equal(JSON.stringify(listed).includes("issue-once"), false, "listing cannot recover a lost issue response");
-    assert.equal((await runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 1 })).data.token, "spk_1_rotate-once");
-    assert.equal(JSON.stringify(await runtime.accessKeys.list()).includes("rotate-once"), false, "listing cannot replay a rotation secret");
+    assert.equal(listed.data.accessKeys[0].id, summary.id, "a committed issue is recoverable as metadata after response loss");
+    const lostRotation = runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets.at(-1).readyState = 3;
+    browser.sockets.at(-1).emit("close", {});
+    assert.equal((await lostRotation).error.code, "TRANSPORT_CLOSED");
+    const afterLostRotation = await runtime.accessKeys.list();
+    assert.equal(afterLostRotation.data.accessKeys[0].lifecycleRevision, 2);
+    const recovered = await runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 2 });
+    assert.equal(recovered.data.token, "spk_1_recovered-rotation");
+    assert.equal(JSON.stringify(await runtime.accessKeys.list()).includes("recovered-rotation"), false);
     await runtime.accessKeys.revoke(summary.id);
     await runtime.accessKeys.delete(summary.id);
     assert.deepEqual(calls.map(({ type }) => type), [
-      "accessKeys.issue", "accessKeys.list", "accessKeys.rotate", "accessKeys.list", "accessKeys.revoke", "accessKeys.delete",
+      "accessKeys.issue", "accessKeys.list", "accessKeys.rotate", "accessKeys.list", "accessKeys.rotate", "accessKeys.list",
+      "accessKeys.revoke", "accessKeys.delete",
     ]);
     assert.deepEqual(calls[0].input, { name: "bot", grants: ["requests:*"] });
     assert.deepEqual(calls[1].options, { status: "active" });

@@ -17,6 +17,21 @@ export const ACCESS_KEY_RETAINED_LIMIT = 1000;
 export const ACCESS_KEY_GRANT_LIMIT = 128;
 export const ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
 export const ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+const PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = new Set([
+  "UNAUTHENTICATED", "FORBIDDEN", "ACCESS_KEY_DELETE_REQUIRES_REVOKED", "ACCESS_KEY_LIMIT_REACHED",
+  "ACCESS_KEY_NAME_CONFLICT", "ACCESS_KEY_NOT_ACTIVE", "ACCESS_KEY_NOT_FOUND", "ACCESS_KEY_REVISION_CONFLICT",
+  "ACCESS_KEY_SECRET_CONFLICT", "INVALID_ACCESS_KEY_EXPIRY", "INVALID_ACCESS_KEY_GRANTS",
+  "INVALID_ACCESS_KEY_LIST_OPTIONS", "INVALID_ACCESS_KEY_NAME",
+]);
+
+export function publicAccessKeyManagementError(error: LooseRecord) {
+  if (!PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES.has(error?.code)) return null;
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.hint ? { hint: error.hint } : {}),
+  };
+}
 
 export function createAccessKeyTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;

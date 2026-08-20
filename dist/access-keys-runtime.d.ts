@@ -4,6 +4,11 @@ export declare const ACCESS_KEY_RETAINED_LIMIT = 1000;
 export declare const ACCESS_KEY_GRANT_LIMIT = 128;
 export declare const ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
 export declare const ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT: number;
+export declare function publicAccessKeyManagementError(error: LooseRecord): {
+    hint?: any;
+    code: any;
+    message: any;
+} | null;
 export declare function createAccessKeyTables(adapter: LooseRecord): any;
 export declare function createCurrentUserAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord): {
     issue(input: unknown): Promise<{

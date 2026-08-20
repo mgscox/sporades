@@ -67,7 +67,7 @@ import {
   accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit,
   accessKeySecretWasDisclosed,
   dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
-  recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
+  publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
 } from "./access-keys-runtime.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
@@ -3728,6 +3728,44 @@ type TrustedRefreshTransport = {
   disconnected(connectionId: string): void;
 };
 
+export async function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
+  const context = { kind: "message", auth, credential: { kind: "session" } };
+  const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
+  const operation = message.type.slice("accessKeys.".length);
+  try {
+    const data = operation === "list"
+      ? await accessKeys.list(message.options)
+      : operation === "issue"
+        ? await accessKeys.issue(message.input)
+        : operation === "rotate"
+          ? await accessKeys.rotate(message.accessKeyId, message.options)
+          : operation === "revoke"
+            ? await accessKeys.revoke(message.accessKeyId)
+            : await accessKeys.delete(message.accessKeyId);
+    return { data, error: null };
+  } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    const publicError = publicAccessKeyManagementError(error);
+    if (publicError) return { data: null, error: publicError };
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.management.failed",
+        level: "error",
+        message: "Access-key browser management failed internally.",
+        data: { operation: `accessKeys.${operation}`, outcome: "failed" },
+      });
+    } catch { }
+    return {
+      data: null,
+      error: {
+        message: "Could not manage Access keys.",
+        hint: "Retry the Access-key operation.",
+      },
+    };
+  }
+}
+
 export function createWebSocketHub(getDatabase: () => any, trustedRefresh: TrustedRefreshTransport | null = null) {
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
@@ -4036,33 +4074,13 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-      const context = { kind: "message", auth: client.session.auth, credential: { kind: "session" } };
-      const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
-      try {
-        const operation = message.type.slice("accessKeys.".length);
-        const data = operation === "list"
-          ? await accessKeys.list(message.options)
-          : operation === "issue"
-            ? await accessKeys.issue(message.input)
-            : operation === "rotate"
-              ? await accessKeys.rotate(message.accessKeyId, message.options)
-              : operation === "revoke"
-                ? await accessKeys.revoke(message.accessKeyId)
-                : await accessKeys.delete(message.accessKeyId);
-        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
-      } catch (error: any) {
-        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
-        sendJson(client, {
-          id: message.id ?? null,
-          type: "error",
-          data: null,
-          error: {
-            ...(error?.code ? { code: error.code } : {}),
-            message: error?.message ?? "Could not manage Access keys.",
-            hint: error?.hint ?? "Sign in and retry the Access-key operation.",
-          },
-        });
-      }
+      const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.error ? "error" : `${message.type}.result`,
+        data: result.data,
+        error: result.error,
+      });
       return;
     }
 

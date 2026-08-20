@@ -824,6 +824,19 @@ function createConnection() {
     });
     socket.addEventListener("close", () => {
       stopJourneyCapture();
+      for (const [id, resolve] of pending) {
+        resolve({
+          id,
+          type: "error",
+          data: null,
+          error: {
+            code: "TRANSPORT_CLOSED",
+            message: "The Sporades connection closed before the operation completed.",
+            hint: "Reconnect and inspect current state before retrying a one-time operation.",
+          },
+        });
+      }
+      pending.clear();
       if (!pageRetired) setTimeout(open, 500);
     });
     return socket;
@@ -6939,6 +6952,29 @@ var ACCESS_KEY_RETAINED_LIMIT = 1e3;
 var ACCESS_KEY_GRANT_LIMIT = 128;
 var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
 var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = /* @__PURE__ */ new Set([
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  "ACCESS_KEY_DELETE_REQUIRES_REVOKED",
+  "ACCESS_KEY_LIMIT_REACHED",
+  "ACCESS_KEY_NAME_CONFLICT",
+  "ACCESS_KEY_NOT_ACTIVE",
+  "ACCESS_KEY_NOT_FOUND",
+  "ACCESS_KEY_REVISION_CONFLICT",
+  "ACCESS_KEY_SECRET_CONFLICT",
+  "INVALID_ACCESS_KEY_EXPIRY",
+  "INVALID_ACCESS_KEY_GRANTS",
+  "INVALID_ACCESS_KEY_LIST_OPTIONS",
+  "INVALID_ACCESS_KEY_NAME"
+]);
+function publicAccessKeyManagementError(error) {
+  if (!PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES.has(error?.code)) return null;
+  return {
+    code: error.code,
+    message: error.message,
+    ...error.hint ? { hint: error.hint } : {}
+  };
+}
 function createAccessKeyTables(adapter) {
   const sql = adapter.dialect.sql;
   return chainMaybePromise([
@@ -19211,6 +19247,36 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
+async function runClientAccessKeyOperation(database, auth, message) {
+  const context = { kind: "message", auth, credential: { kind: "session" } };
+  const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
+  const operation = message.type.slice("accessKeys.".length);
+  try {
+    const data = operation === "list" ? await accessKeys.list(message.options) : operation === "issue" ? await accessKeys.issue(message.input) : operation === "rotate" ? await accessKeys.rotate(message.accessKeyId, message.options) : operation === "revoke" ? await accessKeys.revoke(message.accessKeyId) : await accessKeys.delete(message.accessKeyId);
+    return { data, error: null };
+  } catch (error) {
+    if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    const publicError = publicAccessKeyManagementError(error);
+    if (publicError) return { data: null, error: publicError };
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.management.failed",
+        level: "error",
+        message: "Access-key browser management failed internally.",
+        data: { operation: `accessKeys.${operation}`, outcome: "failed" }
+      });
+    } catch {
+    }
+    return {
+      data: null,
+      error: {
+        message: "Could not manage Access keys.",
+        hint: "Retry the Access-key operation."
+      }
+    };
+  }
+}
 function createWebSocketHub(getDatabase, trustedRefresh = null) {
   const clients = /* @__PURE__ */ new Set();
   const journeys = /* @__PURE__ */ new Map();
@@ -19493,25 +19559,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-      const context = { kind: "message", auth: client.session.auth, credential: { kind: "session" } };
-      const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
-      try {
-        const operation = message.type.slice("accessKeys.".length);
-        const data = operation === "list" ? await accessKeys.list(message.options) : operation === "issue" ? await accessKeys.issue(message.input) : operation === "rotate" ? await accessKeys.rotate(message.accessKeyId, message.options) : operation === "revoke" ? await accessKeys.revoke(message.accessKeyId) : await accessKeys.delete(message.accessKeyId);
-        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
-      } catch (error) {
-        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
-        sendJson(client, {
-          id: message.id ?? null,
-          type: "error",
-          data: null,
-          error: {
-            ...error?.code ? { code: error.code } : {},
-            message: error?.message ?? "Could not manage Access keys.",
-            hint: error?.hint ?? "Sign in and retry the Access-key operation."
-          }
-        });
-      }
+      const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.error ? "error" : `${message.type}.result`,
+        data: result.data,
+        error: result.error
+      });
       return;
     }
     if (message.type === "auth.signOut") {

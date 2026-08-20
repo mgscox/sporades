@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
 import { deleteCurrentAuthUser, unlinkCurrentAuthUser } from "../dist/auth-runtime.js";
-import { openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { openDevDatabase, routeEndpoint, runClientAccessKeyOperation, runMutation, runQuery } from "../dist/server-runtime-source.js";
 
 function linkedAuth(userId = "access-key-owner") {
   return {
@@ -819,6 +819,31 @@ test("owner operations validate immutable metadata, eligibility, and one-time se
     const listed = await runQuery(database, auth, "listKeys");
     assert.equal(listed.error, null);
     assert.equal(JSON.stringify(listed.data).includes(wildcard.data.token), false);
+
+    const originalWithTransaction = database.adapter.withTransaction;
+    database.adapter.withTransaction = async () => {
+      throw new Error("storage password=secret-db-detail");
+    };
+    let redactedFailure;
+    try {
+      redactedFailure = await runClientAccessKeyOperation(database, auth, {
+        type: "accessKeys.issue",
+        input: { name: "redacted-failure" },
+      });
+    } finally {
+      database.adapter.withTransaction = originalWithTransaction;
+    }
+    assert.deepEqual(redactedFailure, {
+      data: null,
+      error: {
+        message: "Could not manage Access keys.",
+        hint: "Retry the Access-key operation.",
+      },
+    });
+    assert.equal(JSON.stringify(redactedFailure).includes("secret-db-detail"), false);
+    const failureEvent = (await database.log.tail(20)).find((event) => event.event === "access-key.management.failed");
+    assert.deepEqual(failureEvent.data, { operation: "accessKeys.issue", outcome: "failed" });
+    assert.equal(JSON.stringify(failureEvent).includes("secret-db-detail"), false);
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

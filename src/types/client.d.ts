@@ -1,6 +1,6 @@
 /** Structured error returned by Sporades client SDK operations. */
 export type SporadesError = {
-  message: string;
+  code?: string; message: string;
   hint?: string;
   [key: string]: unknown;
 };

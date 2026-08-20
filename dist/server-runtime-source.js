@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -3417,6 +3417,47 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
     return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
+export async function runClientAccessKeyOperation(database, auth, message) {
+    const context = { kind: "message", auth, credential: { kind: "session" } };
+    const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
+    const operation = message.type.slice("accessKeys.".length);
+    try {
+        const data = operation === "list"
+            ? await accessKeys.list(message.options)
+            : operation === "issue"
+                ? await accessKeys.issue(message.input)
+                : operation === "rotate"
+                    ? await accessKeys.rotate(message.accessKeyId, message.options)
+                    : operation === "revoke"
+                        ? await accessKeys.revoke(message.accessKeyId)
+                        : await accessKeys.delete(message.accessKeyId);
+        return { data, error: null };
+    }
+    catch (error) {
+        if (error?.sporadesAuthDenialLogData)
+            emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        const publicError = publicAccessKeyManagementError(error);
+        if (publicError)
+            return { data: null, error: publicError };
+        try {
+            await database.log?.emit?.({
+                category: "platform",
+                event: "access-key.management.failed",
+                level: "error",
+                message: "Access-key browser management failed internally.",
+                data: { operation: `accessKeys.${operation}`, outcome: "failed" },
+            });
+        }
+        catch { }
+        return {
+            data: null,
+            error: {
+                message: "Could not manage Access keys.",
+                hint: "Retry the Access-key operation.",
+            },
+        };
+    }
+}
 export function createWebSocketHub(getDatabase, trustedRefresh = null) {
     const clients = new Set();
     const journeys = new Map();
@@ -3713,35 +3754,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             return;
         }
         if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-            const context = { kind: "message", auth: client.session.auth, credential: { kind: "session" } };
-            const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
-            try {
-                const operation = message.type.slice("accessKeys.".length);
-                const data = operation === "list"
-                    ? await accessKeys.list(message.options)
-                    : operation === "issue"
-                        ? await accessKeys.issue(message.input)
-                        : operation === "rotate"
-                            ? await accessKeys.rotate(message.accessKeyId, message.options)
-                            : operation === "revoke"
-                                ? await accessKeys.revoke(message.accessKeyId)
-                                : await accessKeys.delete(message.accessKeyId);
-                sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
-            }
-            catch (error) {
-                if (error?.sporadesAuthDenialLogData)
-                    emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
-                sendJson(client, {
-                    id: message.id ?? null,
-                    type: "error",
-                    data: null,
-                    error: {
-                        ...(error?.code ? { code: error.code } : {}),
-                        message: error?.message ?? "Could not manage Access keys.",
-                        hint: error?.hint ?? "Sign in and retry the Access-key operation.",
-                    },
-                });
-            }
+            const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+            sendJson(client, {
+                id: message.id ?? null,
+                type: result.error ? "error" : `${message.type}.result`,
+                data: result.data,
+                error: result.error,
+            });
             return;
         }
         if (message.type === "auth.signOut") {
