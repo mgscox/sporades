@@ -35,6 +35,7 @@ import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
+import { createSqliteDatabaseAdapter } from "../dist/server-runtime-source.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -96,7 +97,7 @@ export default capsule({
   },
 
   jobs: {
-    tally: job((ctx) => ({ notes: ctx.db.notes.all().length })),
+    tally: job((ctx) => ({ notes: ctx.db.notes.all().length, auth: ctx.auth, credential: ctx.credential })),
   },
 
   schedules: {
@@ -1183,6 +1184,54 @@ test("the bundle answers the one-shot Job and Schedule inspection actions on SQL
       await booted.stop();
     }
     const bundlePath = path.join(dir, "server.mjs");
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data", "data.db"));
+    const accessKeyId = "bundle-access-key-id";
+    const accessKeyName = "bundle automation";
+    const actorUserId = "bundle-access-key-owner";
+    try {
+      const queued = adapter.prepare("SELECT id FROM sporades_jobs WHERE handler = 'tally'").get();
+      assert.ok(queued);
+      adapter.prepare(
+        "UPDATE sporades_jobs SET enqueuedByUserId = ?, actorUserId = ?, actorProvider = 'access-key', authSnapshotJson = ?, credentialJson = ?, status = 'queued', availableAt = ? WHERE id = ?",
+      ).run(
+        actorUserId,
+        actorUserId,
+        JSON.stringify({
+          userId: actorUserId,
+          displayName: "Bundle owner",
+          email: null,
+          picture: null,
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "access-key",
+        }),
+        JSON.stringify({ kind: "access-key", id: accessKeyId, name: accessKeyName }),
+        "2000-01-01T00:00:00.000Z",
+        queued.id,
+      );
+    } finally {
+      adapter.close();
+    }
+
+    const executor = await bootBundle({ source, dir });
+    try {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const state = JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout);
+        if (state.data?.jobs?.[0]?.status === "succeeded") break;
+        if (Date.now() > deadline) assert.fail(`generated Bundle did not execute retained Job: ${JSON.stringify(state)}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await executor.stop();
+    }
+    const resultAdapter = await createSqliteDatabaseAdapter(path.join(dir, "data", "data.db"));
+    let executedResult;
+    try {
+      executedResult = JSON.parse(resultAdapter.prepare("SELECT result FROM sporades_jobs WHERE handler = 'tally'").get().result);
+    } finally {
+      resultAdapter.close();
+    }
     const context = { literals: [[dir, "<dir>"]] };
     const jobs = normalize(JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout), context);
     const schedules = normalize(JSON.parse((await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir })).stdout), context);
@@ -1191,6 +1240,27 @@ test("the bundle answers the one-shot Job and Schedule inspection actions on SQL
     assert.equal(jobs.ok, true, JSON.stringify(jobs));
     assert.equal(jobs.data.jobs.length, 1, "expected the enqueued Job to be inspectable");
     assert.equal(jobs.data.jobs[0].handler, "tally");
+    assert.deepEqual(jobs.data.jobs[0].enqueuedBy, {
+      mode: "user",
+      userId: actorUserId,
+      credential: { kind: "access-key", id: accessKeyId, name: accessKeyName },
+    });
+    assert.deepEqual(executedResult, {
+      notes: 0,
+      auth: {
+        userId: actorUserId,
+        displayName: "Bundle owner",
+        email: null,
+        picture: null,
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "access-key",
+      },
+      credential: { kind: "access-key", id: accessKeyId, name: accessKeyName },
+    });
+    assert.equal(JSON.stringify(jobs).includes("Bearer "), false);
+    assert.equal(JSON.stringify(jobs).includes("selector"), false);
+    assert.equal(JSON.stringify(jobs).includes("verifier"), false);
     assert.equal(schedules.data.schedules.length, 1, "expected the declared Schedule to be inspectable");
     assert.equal(schedules.data.schedules[0].name, "tally");
 

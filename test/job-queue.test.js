@@ -7,8 +7,10 @@ import { test } from "node:test";
 
 import { createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase as openStoppedDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
 import { deleteCurrentAuthUser } from "../dist/auth-runtime.js";
+import { applyFileAcl } from "../dist/acl-runtime.js";
 import { Boolean as BooleanField, String, job, mutation, requireAuth, table } from "../dist/server.js";
 import { POSTGRES_SKIP_REASON, withPostgresAdapter } from "./support/database-adapter-engines.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
@@ -18,6 +20,16 @@ async function openDevDatabase(...args) {
   const database = await openStoppedDevDatabase(...args);
   await database.init();
   return database;
+}
+
+async function waitForJobCondition(read, message, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(message);
 }
 
 test("concurrent Postgres mutations converge one idempotent Job inside their handler transactions", {
@@ -418,27 +430,47 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
   };
   const seen = [];
   let parentAttempts = 0;
+  let database;
+  const teamId = randomUUID();
+  const fileRow = {
+    id: randomUUID(), ownerUserId: owner.userId, path: "/jobs/protected.txt", name: "protected.txt",
+    type: "text/plain", size: 9, status: "ready", version: 1,
+    createdAt: "2026-08-20T12:00:00.000Z", updatedAt: "2026-08-20T12:00:00.000Z",
+  };
   const definition = {
     accessKeys: { scopes: ["jobs:enqueue"] },
     schema: {
       visibleItems: table({ ownerId: String(), visible: BooleanField() }).acl({ read: ({ row }) => row.visible }),
+      teamItems: table({ teamId: String(), body: String() }).acl({ read: ({ row, ctx }) => ctx.acl.teams.isMember(row.teamId) }),
     },
+    files: { acl: { read: ({ ctx }) => ctx.acl.teams.isMember(teamId) } },
     jobs: {
       parent: job(async (ctx) => {
-        seen.push({ handler: "parent", auth: ctx.auth, credential: ctx.credential, visibleCount: (await ctx.db.visibleItems.all()).length });
+        seen.push({
+          handler: "parent", auth: ctx.auth, credential: ctx.credential,
+          visibleCount: (await ctx.db.visibleItems.all()).length,
+          teamCount: (await ctx.db.teamItems.all()).length,
+          fileAllowed: await applyFileAcl(database, "read", fileRow, ctx.auth, ctx.credential),
+        });
         ctx.log.info("durable parent");
         parentAttempts += 1;
         if (parentAttempts === 1) throw new Error("retry once");
         return await ctx.jobs.enqueue("child", null, { availableAt: "2999-01-01T00:00:00.000Z" });
       }),
       child: job(async (ctx) => {
-        seen.push({ handler: "child", auth: ctx.auth, credential: ctx.credential, visibleCount: (await ctx.db.visibleItems.all()).length });
+        seen.push({
+          handler: "child", auth: ctx.auth, credential: ctx.credential,
+          visibleCount: (await ctx.db.visibleItems.all()).length,
+          teamCount: (await ctx.db.teamItems.all()).length,
+          fileAllowed: await applyFileAcl(database, "read", fileRow, ctx.auth, ctx.credential),
+        });
         ctx.log.info("durable child");
         return null;
       }),
     },
     mutations: {
       createVisible: mutation((ctx) => ctx.db.visibleItems.insert({ ownerId: ctx.auth.userId, visible: true })),
+      createTeamItem: mutation((ctx) => ctx.db.teamItems.insert({ teamId, body: "current membership only" })),
       issue: mutation((ctx) => ctx.accessKeys.issue({ name: "automation", grants: ["jobs:enqueue"] })),
       revoke: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
       remove: mutation((ctx, id) => ctx.accessKeys.delete(id)),
@@ -449,7 +481,7 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
       availableAt: "2999-01-01T00:00:00.000Z",
       retry: { maxAttempts: 2, delayMs: 0 },
     }));
-  let database = await openDevDatabase(databasePath, "", {}, { name: "job-access-key" }, definition);
+  database = await openDevDatabase(databasePath, "", {}, { name: "job-access-key" }, definition);
   try {
     await database.adapter.insertAuthUser({
       id: owner.userId,
@@ -461,7 +493,12 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
       isGuest: 0,
       provider: owner.provider,
     });
+    database.adapter.prepare("INSERT INTO sporades_teams (id, name, createdAt, createdByUserId) VALUES (?, ?, ?, ?)")
+      .run(teamId, "Job authority team", "2026-08-20T12:00:00.000Z", owner.userId);
+    database.adapter.prepare("INSERT INTO sporades_team_memberships (teamId, userId, role, createdAt) VALUES (?, ?, 'member', ?)")
+      .run(teamId, owner.userId, "2026-08-20T12:00:00.000Z");
     await runMutation(database, owner, "createVisible", []);
+    await runMutation(database, owner, "createTeamItem", []);
     const issued = await runMutation(database, owner, "issue", []);
     assert.equal(issued.ok, true, JSON.stringify(issued));
     const admitted = await runEndpoint(database, { handler: endpointHandler }, new URL("http://capsule.test/jobs"), {
@@ -494,6 +531,7 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
     const replacement = await runMutation(database, owner, "issue", []);
     assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
     database.adapter.prepare("UPDATE visibleItems SET visible = 0 WHERE ownerId = ?").run(owner.userId);
+    database.adapter.prepare("DELETE FROM sporades_team_memberships WHERE teamId = ? AND userId = ?").run(teamId, owner.userId);
     await deleteCurrentAuthUser(database, { kind: "mutation", auth: owner, credential: { kind: "session" } });
     assert.equal(database.adapter.prepare("SELECT id FROM sporades_auth_users WHERE id = ?").get(owner.userId), undefined);
     database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
@@ -524,6 +562,8 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
         name: "automation",
       });
       assert.equal(entry.visibleCount, 0, "Job ACLs must read current resource state");
+      assert.equal(entry.teamCount, 0, "Job Team ACLs must read current membership state");
+      assert.equal(entry.fileAllowed, false, "Job File ACLs must read current membership state");
       assert.equal(Object.isFrozen(entry.auth), true);
       assert.equal(Object.isFrozen(entry.credential), true);
     }
@@ -538,6 +578,212 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
     }
   } finally {
     database?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("retained Job provenance must match its actor and fails terminally before handler claim", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-invalid-provenance-"));
+  let handlerCalls = 0;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "invalid-job-provenance" }, {
+    jobs: { work: job(() => { handlerCalls += 1; return null; }) },
+  });
+  try {
+    const now = new Date().toISOString();
+    const insert = database.adapter.prepare(
+      "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, authSnapshotJson, credentialJson, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory) " +
+      "VALUES (?, 'work', ?, ?, 'email', ?, ?, 'null', 'queued', ?, 0, ?, ?, '[]')",
+    );
+    insert.run(
+      "mismatched-actor", "actor-a", "actor-a",
+      JSON.stringify({ userId: "actor-b", displayName: "Actor B", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
+      JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }),
+    );
+    insert.run(
+      "malformed-credential", "actor-a", "actor-a",
+      JSON.stringify({ userId: "actor-a", displayName: "Actor A", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
+      JSON.stringify({ kind: "access-key", id: "key-a", name: "automation", token: "must-not-be-accepted" }),
+      now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }),
+    );
+
+    await runCurrentUserJobWorker(database);
+    assert.equal(handlerCalls, 0);
+    const rows = database.adapter.prepare("SELECT id, status, attempts, failure, attemptHistory FROM sporades_jobs ORDER BY id").all();
+    assert.deepEqual(rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      attempts: Number(row.attempts),
+      failure: JSON.parse(row.failure),
+      attemptHistory: JSON.parse(row.attemptHistory),
+    })), [
+      {
+        id: "malformed-credential", status: "failed", attempts: 0,
+        failure: { code: "JOB_CREDENTIAL_INVALID", message: "Stored Job Credential provenance is invalid." },
+        attemptHistory: [],
+      },
+      {
+        id: "mismatched-actor", status: "failed", attempts: 0,
+        failure: { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." },
+        attemptHistory: [],
+      },
+    ]);
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function proveAccessKeyJobLifecycleAcrossEngine({ databasePath, serverEnv = {}, config }) {
+  const owner = {
+    userId: `cross-engine-job-owner-${randomUUID()}`,
+    displayName: "Cross-engine owner",
+    email: null,
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const keyName = `automation-${randomUUID()}`;
+  const seen = [];
+  let parentAttempts = 0;
+  const definition = {
+    accessKeys: { scopes: ["jobs:enqueue"] },
+    jobs: {
+      parent: job(async (ctx) => {
+        seen.push({ handler: "parent", auth: ctx.auth, credential: ctx.credential });
+        parentAttempts += 1;
+        if (parentAttempts === 1) throw new Error("retry once");
+        return await ctx.jobs.enqueue("child", null, { availableAt: "2999-01-01T00:00:00.000Z" });
+      }),
+      child: job((ctx) => seen.push({ handler: "child", auth: ctx.auth, credential: ctx.credential })),
+    },
+    mutations: {
+      issue: mutation((ctx) => ctx.accessKeys.issue({ name: keyName, grants: ["jobs:enqueue"] })),
+      revoke: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+      remove: mutation((ctx, id) => ctx.accessKeys.delete(id)),
+      enqueueThenFail: mutation(async (ctx) => {
+        await ctx.jobs.enqueue("child", null, { idempotencyKey: "must-roll-back" });
+        throw new Error("roll back enqueue");
+      }),
+    },
+  };
+  const endpointHandler = requireAuth({ credentials: ["access-key"], scopes: ["jobs:enqueue"] }, (ctx) =>
+    ctx.jobs.enqueue("parent", null, {
+      availableAt: "2999-01-01T00:00:00.000Z",
+      retry: { maxAttempts: 2, delayMs: 0 },
+    }));
+  let database = await openDevDatabase(databasePath, "", serverEnv, config, definition);
+  try {
+    await database.adapter.insertAuthUser({
+      id: owner.userId,
+      createdAt: "2026-08-20T12:00:00.000Z",
+      displayName: owner.displayName,
+      email: owner.email,
+      picture: owner.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: owner.provider,
+    });
+    const rolledBack = await runMutation(database, owner, "enqueueThenFail", []);
+    assert.equal(rolledBack.ok, false);
+    assert.equal((await database.adapter.prepare("SELECT id FROM sporades_jobs WHERE idempotencyKey = ?").get("must-roll-back")) ?? null, null);
+
+    const issued = await runMutation(database, owner, "issue", []);
+    assert.equal(issued.ok, true, JSON.stringify(issued));
+    const admitted = await runEndpoint(database, { handler: endpointHandler }, new URL("http://capsule.test/jobs"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${issued.data.token}` },
+      async *[Symbol.asyncIterator]() {},
+    });
+    await runMutation(database, owner, "revoke", [issued.data.accessKey.id]);
+    await runMutation(database, owner, "remove", [issued.data.accessKey.id]);
+    const replacement = await runMutation(database, owner, "issue", []);
+    assert.equal(replacement.ok, true, JSON.stringify(replacement));
+    assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
+    await deleteCurrentAuthUser(database, { kind: "mutation", auth: owner, credential: { kind: "session" } });
+    await database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", admitted.id);
+
+    await database.close();
+    database = await openDevDatabase(databasePath, "", serverEnv, config, definition);
+    await runCurrentUserJobWorker(database);
+    await waitForJobCondition(async () => {
+      const parent = await database.adapter.prepare("SELECT status FROM sporades_jobs WHERE id = ?").get(admitted.id);
+      return parent?.status !== "running" ? parent : null;
+    }, "parent Job did not finish its first attempt");
+    let child = await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = 'child'").get();
+    if (!child) {
+      await runCurrentUserJobWorker(database);
+      child = await waitForJobCondition(
+        () => database.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = 'child'").get(),
+        "parent Job did not enqueue its child after retry",
+      );
+    }
+    assert.ok(child);
+
+    assert.equal(parentAttempts, 2);
+    assert.deepEqual(seen.map((entry) => entry.handler), ["parent", "parent"]);
+    for (const entry of seen) {
+      assert.deepEqual(entry.auth, { ...owner, provider: "access-key" });
+      assert.deepEqual(entry.credential, { kind: "access-key", id: issued.data.accessKey.id, name: keyName });
+    }
+    assert.deepEqual(JSON.parse(child.authSnapshotJson), { ...owner, provider: "access-key" });
+    assert.deepEqual(JSON.parse(child.credentialJson), {
+      kind: "access-key", id: issued.data.accessKey.id, name: keyName,
+    });
+    const inspected = (await inspectRuntimeJobs(database.adapter)).find((entry) => entry.id === admitted.id);
+    assert.deepEqual(inspected.enqueuedBy, {
+      mode: "user",
+      userId: owner.userId,
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: keyName },
+    });
+    assert.equal(JSON.stringify(inspected).includes(issued.data.token), false);
+    assert.equal(JSON.stringify(inspected).includes(replacement.data.token), false);
+  } finally {
+    await database?.close();
+  }
+}
+
+test("Access-key Job lifecycle is stable across SQLite restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-lifecycle-sqlite-"));
+  try {
+    await proveAccessKeyJobLifecycleAcrossEngine({
+      databasePath: path.join(dir, "data.db"),
+      config: { name: "job-lifecycle-sqlite" },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Access-key Job lifecycle is stable across service-backed libSQL restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-lifecycle-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "data.db"), {}, async ({ url }) => {
+      await proveAccessKeyJobLifecycleAcrossEngine({
+        databasePath: path.join(dir, "unused.db"),
+        serverEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url },
+        config: { name: "job-lifecycle-libsql", services: { database: { engine: "libsql" } } },
+      });
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Access-key Job lifecycle is stable across PostgreSQL restart", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-lifecycle-postgres-"));
+  try {
+    await withPostgresAdapter(async () => {});
+    await proveAccessKeyJobLifecycleAcrossEngine({
+      databasePath: path.join(dir, "unused.db"),
+      serverEnv: {
+        SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+        SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+      },
+      config: { name: "job-lifecycle-postgres", services: { database: { engine: "postgres" } } },
+    });
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

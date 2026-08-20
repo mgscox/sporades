@@ -767,11 +767,17 @@ export function legacyJobAuthFallback(userId: unknown, provider: unknown) {
 }
 
 export function readJobAuthSnapshot(row: LooseRecord) {
+  let snapshot;
   if (row?.authSnapshotJson) {
-    try { return canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson))); }
+    try { snapshot = canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson))); }
     catch { throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution."); }
+  } else {
+    snapshot = canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
   }
-  return canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+  if (snapshot.userId !== row?.actorUserId) {
+    throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair the mismatched Job actor snapshot before retrying execution.");
+  }
+  return snapshot;
 }
 
 export function readJobCredentialProvenance(row: LooseRecord) {

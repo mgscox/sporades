@@ -7385,14 +7385,20 @@ function legacyJobAuthFallback(userId, provider) {
   };
 }
 function readJobAuthSnapshot(row) {
+  let snapshot;
   if (row?.authSnapshotJson) {
     try {
-      return canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
+      snapshot = canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
     } catch {
       throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
     }
+  } else {
+    snapshot = canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
   }
-  return canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+  if (snapshot.userId !== row?.actorUserId) {
+    throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair the mismatched Job actor snapshot before retrying execution.");
+  }
+  return snapshot;
 }
 function readJobCredentialProvenance(row) {
   if (row?.credentialJson) {
@@ -17574,6 +17580,14 @@ async function recoverExpiredJobLeases(database) {
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
       continue;
     }
+    const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
+    if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
+      const ownership2 = jobClaimOwnership(row.claimToken);
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership2.predicate
+      )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership2.params);
+      continue;
+    }
     const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
     if (leaseExpiresAt > recoveredAt.getTime()) {
       earliestFutureLeaseAt = earliestFutureLeaseAt === null ? leaseExpiresAt : Math.min(earliestFutureLeaseAt, leaseExpiresAt);
@@ -17687,6 +17701,17 @@ function scheduleJobLeaseRecoveryTimer(database, dueAt) {
 }
 var RUNTIME_CLAIM_LEASE_MS = 3e4;
 function invalidStoredJobFailure(row, referenceInstant) {
+  if (!row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+    try {
+      readJobAuthSnapshot(row);
+      readJobCredentialProvenance(row);
+    } catch (error) {
+      if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(error?.code)) {
+        return { code: error.code, message: error.message };
+      }
+      throw error;
+    }
+  }
   if (!isCanonicalJobTimestamp(row.availableAt)) {
     return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time is invalid." };
   }
@@ -17725,7 +17750,7 @@ async function recoverInvalidRetainedJobState(database) {
   const failedAt = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql(
-    "SELECT [id], [status], [availableAt], [attempts], [retryJson] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')"
+    "SELECT * FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')"
   )).all();
   await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row) => String(row.id)) });
   for (const row of rows) {

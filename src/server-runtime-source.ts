@@ -1554,6 +1554,15 @@ async function recoverExpiredJobLeases(database: LooseRecord) {
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
       continue;
     }
+    const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
+    if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
+      const ownership = jobClaimOwnership(row.claimToken);
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+        "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
+      )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership.params);
+      continue;
+    }
     const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
     if (leaseExpiresAt > recoveredAt.getTime()) {
       earliestFutureLeaseAt = earliestFutureLeaseAt === null
@@ -1684,6 +1693,17 @@ function scheduleJobLeaseRecoveryTimer(database: LooseRecord, dueAt: number | nu
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 
 function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
+  if (!row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+    try {
+      readJobAuthSnapshot(row);
+      readJobCredentialProvenance(row);
+    } catch (error: any) {
+      if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(error?.code)) {
+        return { code: error.code, message: error.message };
+      }
+      throw error;
+    }
+  }
   if (!isCanonicalJobTimestamp(row.availableAt)) {
     return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time is invalid." };
   }
@@ -1733,7 +1753,7 @@ async function recoverInvalidRetainedJobState(database: LooseRecord) {
   const failedAt = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql(
-    "SELECT [id], [status], [availableAt], [attempts], [retryJson] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
+    "SELECT * FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
   )).all();
   await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row: LooseRecord) => String(row.id)) });
   for (const row of rows) {
