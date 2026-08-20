@@ -388,13 +388,17 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     }
     database.log?.emit?.(input);
 }
-export function flushAccessKeyLifecycleAuditEvents(database, context) {
+export async function flushAccessKeyLifecycleAuditEvents(database, context) {
     const events = context?.__accessKeyLifecycleAuditEvents;
     if (!Array.isArray(events) || !context)
         return;
     delete context.__accessKeyLifecycleAuditEvents;
-    for (const event of events)
-        database.log?.emit?.(event);
+    for (const event of events) {
+        try {
+            await database.log?.emit?.(event);
+        }
+        catch { }
+    }
 }
 export function dropAccessKeyLifecycleAuditEvents(context) {
     if (context)

@@ -93,7 +93,7 @@ export declare function createAccessKeySecret(): {
     token: string;
 };
 export declare function accessKeyVerifierDigest(selector: string, verifier: string): string;
-export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined): void;
+export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined): Promise<void>;
 export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined): void;
 export {};
 //# sourceMappingURL=access-keys-runtime.d.ts.map

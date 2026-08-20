@@ -7258,11 +7258,16 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
   }
   database.log?.emit?.(input);
 }
-function flushAccessKeyLifecycleAuditEvents(database, context) {
+async function flushAccessKeyLifecycleAuditEvents(database, context) {
   const events = context?.__accessKeyLifecycleAuditEvents;
   if (!Array.isArray(events) || !context) return;
   delete context.__accessKeyLifecycleAuditEvents;
-  for (const event of events) database.log?.emit?.(event);
+  for (const event of events) {
+    try {
+      await database.log?.emit?.(event);
+    } catch {
+    }
+  }
 }
 function dropAccessKeyLifecycleAuditEvents(context) {
   if (context) delete context.__accessKeyLifecycleAuditEvents;
@@ -18239,7 +18244,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
@@ -20245,7 +20250,7 @@ async function runMutation(database, auth, mutationName, args) {
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -20343,7 +20348,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;

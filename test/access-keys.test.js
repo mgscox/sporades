@@ -171,6 +171,21 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       credential: { kind: "session" },
       accessKey: { id: issued.data.accessKey.id, name: "request-bot" },
     });
+
+    const originalLogEmit = database.log.emit;
+    database.log.emit = () => { throw new Error("simulated post-commit audit failure"); };
+    let issuedDespiteAuditFailure;
+    try {
+      issuedDespiteAuditFailure = await runMutation(database, auth, "issueKey", [{ name: "audit-failure-key" }]);
+    } finally {
+      database.log.emit = originalLogEmit;
+    }
+    assert.equal(issuedDespiteAuditFailure.error, null, JSON.stringify(issuedDespiteAuditFailure.error));
+    assert.match(issuedDespiteAuditFailure.data.token, /^spk_1_/);
+    assert.equal(
+      (await runQuery(database, auth, "listKeys")).data.accessKeys.some((key) => key.id === issuedDespiteAuditFailure.data.accessKey.id),
+      true,
+    );
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

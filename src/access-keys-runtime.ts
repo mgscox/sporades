@@ -415,11 +415,15 @@ function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: 
   database.log?.emit?.(input);
 }
 
-export function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {
+export async function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {
   const events = context?.__accessKeyLifecycleAuditEvents;
   if (!Array.isArray(events) || !context) return;
   delete context.__accessKeyLifecycleAuditEvents;
-  for (const event of events) database.log?.emit?.(event);
+  for (const event of events) {
+    try {
+      await database.log?.emit?.(event);
+    } catch { }
+  }
 }
 
 export function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined) {

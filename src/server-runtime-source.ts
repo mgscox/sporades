@@ -2924,7 +2924,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
@@ -5114,7 +5114,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -5218,7 +5218,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       }
     });
     commitPendingJobCancellationAborts(context);
-    flushAccessKeyLifecycleAuditEvents(database, context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;

@@ -2689,7 +2689,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             }
         });
         commitPendingJobCancellationAborts(context);
-        flushAccessKeyLifecycleAuditEvents(database, context);
+        await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
         await dispatchPendingJobs(context);
         return result;
@@ -4758,7 +4758,7 @@ export async function runMutation(database, auth, mutationName, args) {
             }
         });
         commitPendingJobCancellationAborts(context);
-        flushAccessKeyLifecycleAuditEvents(database, context);
+        await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
         await dispatchPendingJobs(context);
         if (writeState.didWrite) {
@@ -4861,7 +4861,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
             }
         });
         commitPendingJobCancellationAborts(context);
-        flushAccessKeyLifecycleAuditEvents(database, context);
+        await flushAccessKeyLifecycleAuditEvents(database, context);
         flushTeamSecurityEvents(database, context);
         await dispatchPendingJobs(context);
         return response;
