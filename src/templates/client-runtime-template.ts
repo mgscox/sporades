@@ -186,6 +186,14 @@ export const auth = {
   },
 };
 
+export const accessKeys = {
+  list(options = {}) { return connect().accessKeysList(options); },
+  issue(input) { return connect().accessKeysIssue(input); },
+  rotate(id, options) { return connect().accessKeysRotate(id, options); },
+  revoke(id) { return connect().accessKeysRevoke(id); },
+  delete(id) { return connect().accessKeysDelete(id); },
+};
+
 export const files = {
   upload(fileOrFiles, options = {}) {
     return connect().upload(fileOrFiles, options);
@@ -890,6 +898,10 @@ function createConnection() {
     };
   }
 
+  function publicResult(message) {
+    return { data: message.data ?? null, error: message.error ?? null };
+  }
+
   function notifyAuthStateListeners(message) {
     for (const listener of authStateListeners) {
       listener(message);
@@ -1121,6 +1133,11 @@ function createConnection() {
     confirmPasswordReset(code, newPassword) {
       return request("auth.confirmPasswordReset", { code, newPassword });
     },
+    accessKeysList(options) { return request("accessKeys.list", { options }).then(publicResult); },
+    accessKeysIssue(input) { return request("accessKeys.issue", { input }).then(publicResult); },
+    accessKeysRotate(id, options) { return request("accessKeys.rotate", { accessKeyId: id, options }).then(publicResult); },
+    accessKeysRevoke(id) { return request("accessKeys.revoke", { accessKeyId: id }).then(publicResult); },
+    accessKeysDelete(id) { return request("accessKeys.delete", { accessKeyId: id }).then(publicResult); },
     subscribeNormalizedQuery(name, listener, args) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
       if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");

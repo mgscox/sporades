@@ -523,8 +523,59 @@ export type SporadesSvelteStores = {
   authStore(): SvelteAuthStore;
 };
 
+export type AccessKeyStatus = "active" | "expired" | "revoked";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted";
+export type AccessKeyErrorCode =
+  | "UNAUTHENTICATED"
+  | "FORBIDDEN"
+  | "ACCESS_KEY_DELETE_REQUIRES_REVOKED"
+  | "ACCESS_KEY_LIMIT_REACHED"
+  | "ACCESS_KEY_NAME_CONFLICT"
+  | "ACCESS_KEY_NOT_ACTIVE"
+  | "ACCESS_KEY_NOT_FOUND"
+  | "ACCESS_KEY_REVISION_CONFLICT"
+  | "ACCESS_KEY_SECRET_CONFLICT"
+  | "INVALID_ACCESS_KEY_EXPIRY"
+  | "INVALID_ACCESS_KEY_GRANTS"
+  | "INVALID_ACCESS_KEY_LIST_OPTIONS"
+  | "INVALID_ACCESS_KEY_NAME";
+export type AccessKeyError = SporadesError & { code: AccessKeyErrorCode };
+export type AccessKeySummary = {
+  id: string;
+  name: string;
+  grants: string[];
+  effectiveScopes: string[];
+  status: AccessKeyStatus;
+  createdAt: string;
+  expiresAt: string | null;
+  rotatedAt: string | null;
+  revokedAt: string | null;
+  revocationCause: AccessKeyRevocationCause | null;
+  lastUsedAt: string | null;
+  lifecycleRevision: number;
+};
+export type IssueAccessKeyInput = { name: string; grants?: string[]; expiresAt?: string | null };
+export type RotateAccessKeyOptions = { lifecycleRevision: number };
+export type ListAccessKeysOptions = { cursor?: string; limit?: number; status?: AccessKeyStatus };
+export type AccessKeyListPage = {
+  accessKeys: AccessKeySummary[];
+  declaredScopes: string[];
+  nextCursor: string | null;
+  totalCount: number;
+};
+export type AccessKeySecretResult = { accessKey: AccessKeySummary; token: string };
+export type AccessKeysApi = {
+  list(options?: ListAccessKeysOptions): Promise<SporadesResult<AccessKeyListPage>>;
+  issue(input: IssueAccessKeyInput): Promise<SporadesResult<AccessKeySecretResult>>;
+  rotate(id: string, options: RotateAccessKeyOptions): Promise<SporadesResult<AccessKeySecretResult>>;
+  revoke(id: string): Promise<SporadesResult<{ accessKey: AccessKeySummary }>>;
+  delete(id: string): Promise<SporadesResult<{ id: string; deleted: true }>>;
+};
+
 /** Auth commands for the current browser session. */
 export const auth: AuthApi;
+/** Session-only browser management for the current linked user's Access keys. */
+export const accessKeys: AccessKeysApi;
 /** File upload, URL, download, delete, and public URL commands. */
 export const files: FilesApi;
 /** Runtime-owned current-user preferences commands. */

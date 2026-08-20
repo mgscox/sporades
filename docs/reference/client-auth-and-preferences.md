@@ -544,6 +544,49 @@ sporades auth as email --email mira@example.com --client client-abc123 --json
 This is local identity simulation. It is useful for tests and development, but
 it is not OAuth and does not validate third-party tokens.
 
+## Access-key management
+
+`accessKeys` is the framework-neutral, Session-only browser surface for a
+Capsule-owned management page. It exposes exactly `list`, `issue`, `rotate`,
+`revoke`, and `delete`; Sporades derives status and effective scopes on the
+server, so UI code does not reproduce lifecycle or wildcard rules.
+
+Keep an issue or rotation secret only in transient component state:
+
+```ts
+import { accessKeys } from "sporades/client";
+
+let page = await accessKeys.list();
+let disclosedToken: string | null = null;
+
+async function issueBotKey() {
+  const result = await accessKeys.issue({
+    name: "invoice-importer",
+    grants: ["invoices:read"],
+  });
+  if (result.error) return showError(result.error);
+  disclosedToken = result.data.token; // render one copy action
+  page = await accessKeys.list();      // refresh safe metadata separately
+}
+
+function dismissDisclosure() {
+  disclosedToken = null;
+}
+```
+
+Do not put `disclosedToken` in durable browser storage, Auth state, a query
+subscription, logs, or a framework-wide store. The client runtime returns it
+only to the resolving `issue()` or `rotate()` call and does not cache or replay
+it. If that response is lost, list the safe metadata and rotate the same key;
+the original plaintext cannot be recovered. Refresh `list()` after each
+mutation, and clear the disclosure when it is copied, dismissed, or the page
+unmounts.
+
+Anonymous and guest Sessions are denied. Access-key-authenticated Custom
+endpoints also cannot reach this projection: owner management always requires
+the browser's live linked Session, never a client-supplied owner ID or
+Credential value.
+
 ## User Preferences
 
 Use the `preferences` API from `sporades/client` for durable per-user UI and

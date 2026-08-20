@@ -1,6 +1,7 @@
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);
 export const auth = runtime.auth;
+export const accessKeys = runtime.accessKeys;
 export const files = runtime.files;
 export const preferences = runtime.preferences;
 export const teams = runtime.teams;

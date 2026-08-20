@@ -20,6 +20,50 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("framework-neutral Access-key management uses request results without retaining one-time secrets", async () => {
+  const calls = [];
+  const summary = {
+    id: "key-1", name: "bot", grants: ["requests:*"], effectiveScopes: ["requests:read"], status: "active",
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null, rotatedAt: null, revokedAt: null,
+    revocationCause: null, lastUsedAt: null, lifecycleRevision: 1,
+  };
+  const handlers = Object.fromEntries(["list", "issue", "rotate", "revoke", "delete"].map((operation) => [
+    `accessKeys.${operation}`,
+    async (message) => {
+      calls.push(message);
+      const data = operation === "list"
+        ? { accessKeys: [summary], declaredScopes: ["requests:read"], nextCursor: null, totalCount: 1 }
+        : operation === "issue"
+          ? { accessKey: summary, token: "spk_1_issue-once" }
+          : operation === "rotate"
+            ? { accessKey: { ...summary, lifecycleRevision: 2 }, token: "spk_1_rotate-once" }
+            : operation === "revoke"
+              ? { accessKey: { ...summary, status: "revoked", revocationCause: "owner" } }
+              : { id: summary.id, deleted: true };
+      return { type: `accessKeys.${operation}.result`, data, error: null };
+    },
+  ]));
+  const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false }, { handlers });
+  try {
+    const runtime = await importClientRuntime();
+    assert.deepEqual(Object.keys(runtime.accessKeys).sort(), ["delete", "issue", "list", "revoke", "rotate"]);
+    assert.equal((await runtime.accessKeys.issue({ name: "bot", grants: ["requests:*"] })).data.token, "spk_1_issue-once");
+    const listed = await runtime.accessKeys.list({ status: "active" });
+    assert.equal(JSON.stringify(listed).includes("issue-once"), false, "listing cannot recover a lost issue response");
+    assert.equal((await runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 1 })).data.token, "spk_1_rotate-once");
+    assert.equal(JSON.stringify(await runtime.accessKeys.list()).includes("rotate-once"), false, "listing cannot replay a rotation secret");
+    await runtime.accessKeys.revoke(summary.id);
+    await runtime.accessKeys.delete(summary.id);
+    assert.deepEqual(calls.map(({ type }) => type), [
+      "accessKeys.issue", "accessKeys.list", "accessKeys.rotate", "accessKeys.list", "accessKeys.revoke", "accessKeys.delete",
+    ]);
+    assert.deepEqual(calls[0].input, { name: "bot", grants: ["requests:*"] });
+    assert.deepEqual(calls[1].options, { status: "active" });
+    assert.deepEqual(calls[2].options, { lifecycleRevision: 1 });
+    assert.equal(calls[2].accessKeyId, summary.id);
+  } finally { browser.cleanup(); }
+});
+
 test("framework-neutral query subscriptions structurally isolate argument tuples while sharing canonical equals", async () => {
   const frames = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {

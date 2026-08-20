@@ -633,6 +633,8 @@ export default capsule({
 
       const anonymousAuthResult = await sendAndWait(socket, { id: "auth-anon", type: "auth.get" });
       assert.equal(anonymousAuthResult.data.auth.provider, "anonymous");
+      const anonymousKeys = await sendAndWait(socket, { id: "keys-anon", type: "accessKeys.list", options: {} });
+      assert.equal(anonymousKeys.error.code, "UNAUTHENTICATED");
       assert.equal(anonymousAuthResult.data.auth.isAuthenticated, false);
 
       const deniedQuery = await sendAndWait(socket, { id: "notes-denied", type: "query.subscribe", query: "privateNotes" });
@@ -691,6 +693,35 @@ export default capsule({
       const linkedAuthContext = signUp.data.auth;
       assert.equal(linkedAuthContext.isAuthenticated, true);
       assert.equal(linkedAuthContext.isGuest, false);
+
+      const browserIssued = await sendAndWait(socket, {
+        id: "keys-issue",
+        type: "accessKeys.issue",
+        input: { name: "browser-bot", grants: ["requests:read"] },
+      });
+      assert.equal(browserIssued.error, null, JSON.stringify(browserIssued));
+      assert.match(browserIssued.data.token, /^spk_1_/);
+      const browserListed = await sendAndWait(socket, { id: "keys-list", type: "accessKeys.list", options: { status: "active" } });
+      assert.equal(browserListed.data.totalCount, 1);
+      assert.equal(JSON.stringify(browserListed).includes(browserIssued.data.token), false);
+      const browserRotated = await sendAndWait(socket, {
+        id: "keys-rotate",
+        type: "accessKeys.rotate",
+        accessKeyId: browserIssued.data.accessKey.id,
+        options: { lifecycleRevision: browserIssued.data.accessKey.lifecycleRevision },
+      });
+      assert.equal(browserRotated.data.accessKey.id, browserIssued.data.accessKey.id);
+      assert.notEqual(browserRotated.data.token, browserIssued.data.token);
+      assert.equal((await fetch(`${started.data.url}/access-key-only`, {
+        headers: { authorization: `Bearer ${browserIssued.data.token}` },
+      })).status, 401);
+      assert.equal((await fetch(`${started.data.url}/access-key-only`, {
+        headers: { authorization: `Bearer ${browserRotated.data.token}` },
+      })).status, 200);
+      const browserRevoked = await sendAndWait(socket, { id: "keys-revoke", type: "accessKeys.revoke", accessKeyId: browserIssued.data.accessKey.id });
+      assert.equal(browserRevoked.data.accessKey.status, "revoked");
+      const browserDeleted = await sendAndWait(socket, { id: "keys-delete", type: "accessKeys.delete", accessKeyId: browserIssued.data.accessKey.id });
+      assert.deepEqual(browserDeleted.data, { id: browserIssued.data.accessKey.id, deleted: true });
 
       assert.deepEqual(
         await sendAndWait(socket, { id: "create-allowed", type: "mutation.run", mutation: "createNote", args: ["mine"] }),

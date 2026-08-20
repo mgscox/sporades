@@ -209,6 +209,14 @@ export const auth = {
   },
 };
 
+export const accessKeys = {
+  list(options = {}) { return connect().accessKeysList(options); },
+  issue(input) { return connect().accessKeysIssue(input); },
+  rotate(id, options) { return connect().accessKeysRotate(id, options); },
+  revoke(id) { return connect().accessKeysRevoke(id); },
+  delete(id) { return connect().accessKeysDelete(id); },
+};
+
 export const files = {
   upload(fileOrFiles, options = {}) {
     return connect().upload(fileOrFiles, options);
@@ -913,6 +921,10 @@ function createConnection() {
     };
   }
 
+  function publicResult(message) {
+    return { data: message.data ?? null, error: message.error ?? null };
+  }
+
   function notifyAuthStateListeners(message) {
     for (const listener of authStateListeners) {
       listener(message);
@@ -1144,6 +1156,11 @@ function createConnection() {
     confirmPasswordReset(code, newPassword) {
       return request("auth.confirmPasswordReset", { code, newPassword });
     },
+    accessKeysList(options) { return request("accessKeys.list", { options }).then(publicResult); },
+    accessKeysIssue(input) { return request("accessKeys.issue", { input }).then(publicResult); },
+    accessKeysRotate(id, options) { return request("accessKeys.rotate", { accessKeyId: id, options }).then(publicResult); },
+    accessKeysRevoke(id) { return request("accessKeys.revoke", { accessKeyId: id }).then(publicResult); },
+    accessKeysDelete(id) { return request("accessKeys.delete", { accessKeyId: id }).then(publicResult); },
     subscribeNormalizedQuery(name, listener, args) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
       if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");
@@ -19473,6 +19490,28 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     client.session = resolvedSession;
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
+      return;
+    }
+    if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
+      const context = { kind: "message", auth: client.session.auth, credential: { kind: "session" } };
+      const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
+      try {
+        const operation = message.type.slice("accessKeys.".length);
+        const data = operation === "list" ? await accessKeys.list(message.options) : operation === "issue" ? await accessKeys.issue(message.input) : operation === "rotate" ? await accessKeys.rotate(message.accessKeyId, message.options) : operation === "revoke" ? await accessKeys.revoke(message.accessKeyId) : await accessKeys.delete(message.accessKeyId);
+        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
+      } catch (error) {
+        if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            ...error?.code ? { code: error.code } : {},
+            message: error?.message ?? "Could not manage Access keys.",
+            hint: error?.hint ?? "Sign in and retry the Access-key operation."
+          }
+        });
+      }
       return;
     }
     if (message.type === "auth.signOut") {

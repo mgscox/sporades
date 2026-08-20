@@ -1,4 +1,5 @@
 export declare const auth: any;
+export declare const accessKeys: any;
 export declare const files: any;
 export declare const preferences: any;
 export declare const teams: any;

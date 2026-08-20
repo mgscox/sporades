@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
-import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
+import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
 uniqueUsers.fields.email.kind.toUpperCase();
@@ -516,6 +516,13 @@ const authSubscription = auth.subscribe((state) => {
 });
 authSubscription.unsubscribe();
 auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" });
+accessKeys.issue({ name: "bot", grants: ["requests:*"] }).then((result) => result.data?.token.toUpperCase());
+accessKeys.list({ status: "active", limit: 20 }).then((result) => result.data?.accessKeys.map((key) => key.effectiveScopes));
+accessKeys.rotate("key-id", { lifecycleRevision: 1 });
+accessKeys.revoke("key-id");
+accessKeys.delete("key-id");
+const accessKeyErrorCode: AccessKeyErrorCode = "ACCESS_KEY_REVISION_CONFLICT";
+accessKeyErrorCode.toLowerCase();
 // @ts-expect-error browser auth API does not expose privileged server-role authority.
 auth.privileged;
 // @ts-expect-error browser file API cannot run privileged file operations.
