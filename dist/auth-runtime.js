@@ -173,7 +173,7 @@ function createUnauthenticatedError(logData = null) {
     }
     return error;
 }
-function createAuthDenialLogData(context, requirement) {
+export function createAuthDenialLogData(context, requirement) {
     return {
         requirement,
         handler: {

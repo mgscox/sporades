@@ -9030,6 +9030,7 @@ function writeEndpointError(response, error) {
 }
 function endpointErrorStatus(error) {
   if (error?.code === "UNAUTHENTICATED") return 401;
+  if (error?.code === "FORBIDDEN") return 403;
   if (isPayloadTooLargeError(error)) return 413;
   if (isClientRequestError(error)) return 400;
   return 500;
@@ -17839,13 +17840,19 @@ async function applyContextMiddleware(database, baseContext, kind) {
   }
   for (const middlewareSource of database.contextMiddleware) {
     const result = await runContextMiddleware(middlewareSource, context);
-    context = result ?? context;
-    if (!context || typeof context !== "object" || context.auth !== canonicalAuth || context.credential !== canonicalCredential) {
+    const middlewareContext = result ?? context;
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
       throw commandError(
         "Invalid Capsule context middleware result.",
         "Context middleware must preserve the runtime-owned Auth and Credential values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT"
       );
+    }
+    context = { ...middlewareContext, auth: canonicalAuth };
+    if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
+      context.credential = canonicalCredential;
+    } else {
+      delete context.credential;
     }
     holder.current = context;
     if (!context.__sporadesContextHolder) {
@@ -17868,11 +17875,13 @@ function admitSessionHandler(handler, auth, kind) {
   }
   requireAuth({ auth, kind }, { linked: requirements.linked });
   if (!requirements.credentials.includes("session")) {
-    throw commandError(
+    const error = commandError(
       "Forbidden.",
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN"
     );
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    throw error;
   }
 }
 function runContextMiddleware(middlewareSource, context) {
@@ -19410,6 +19419,9 @@ async function runQuery(database, auth, queryName, rawArgs = []) {
     if (queryHandler) admitSessionHandler(queryHandler, context.auth, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    }
     return {
       rows: null,
       error: {

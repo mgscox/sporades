@@ -917,33 +917,32 @@ export type DeclarativeRequireAuthOptions = {
   credentials?: readonly CredentialKind[];
   scopes?: readonly string[];
 };
-export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler & {
-  readonly __sporadesAuthGuardedHandler: true;
-};
+/** Type-preserving result of a declarative Auth guard. Runtime admission metadata is private. */
+export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler;
 /** Declaratively require an admitted credential before middleware and handler execution. */
-export function requireAuth<
-  Context extends CapsuleContext<any, CredentialProvenance>,
-  Args extends unknown[],
-  Result,
->(handler: (ctx: Context, ...args: Args) => Result): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
+export function requireAuth<Handler extends (...args: any[]) => any>(handler: Handler): AuthGuardedHandler<Handler>;
 /** A single literal credential kind narrows ctx.credential in the guarded handler. */
 export function requireAuth<
   const Kind extends CredentialKind,
-  Context extends CapsuleContext<any, Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance>,
-  Args extends unknown[],
-  Result,
+  Handler extends (...args: any[]) => any,
 >(
   options: DeclarativeRequireAuthOptions & { credentials: readonly [Kind] },
-  handler: (ctx: Context, ...args: Args) => Result,
-): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
-export function requireAuth<
-  Context extends CapsuleContext<any, CredentialProvenance>,
-  Args extends unknown[],
-  Result,
->(
+  handler: Handler extends (ctx: infer Context, ...args: infer Args) => infer Result
+    ? (ctx: Omit<Context, "credential"> & {
+        credential: Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance;
+      }, ...args: Args) => Result
+    : never,
+): AuthGuardedHandler<
+  Handler extends (ctx: infer Context, ...args: infer Args) => infer Result
+    ? (ctx: Omit<Context, "credential"> & {
+        credential: Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance;
+      }, ...args: Args) => Result
+    : never
+>;
+export function requireAuth<Handler extends (...args: any[]) => any>(
   options: DeclarativeRequireAuthOptions,
-  handler: (ctx: Context, ...args: Args) => Result,
-): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
+  handler: Handler,
+): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
 export function endpoint(options: EndpointOptions, handler: EndpointHandler): EndpointDefinition<EndpointHandler>;
 export function endpoint<Handler extends (...args: any[]) => any>(options: EndpointOptions, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>>;

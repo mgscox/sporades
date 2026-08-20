@@ -559,6 +559,8 @@ export function writeEndpointError(response, error) {
 function endpointErrorStatus(error) {
     if (error?.code === "UNAUTHENTICATED")
         return 401;
+    if (error?.code === "FORBIDDEN")
+        return 403;
     if (isPayloadTooLargeError(error))
         return 413;
     if (isClientRequestError(error))

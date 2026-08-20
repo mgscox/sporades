@@ -88,11 +88,27 @@ export function validateCapsuleAuthRequirements(definition) {
     return definition;
 }
 export function scopeGrantMatches(grant, requiredScope) {
-    let pattern = "^";
-    for (const character of grant) {
-        pattern += character === "*" ? ".*" : escapeRegularExpressionCharacter(character);
+    const parts = grant.split("*");
+    if (parts.length === 1)
+        return grant === requiredScope;
+    let offset = grant.startsWith("*") ? 0 : parts[0].length;
+    if (!grant.startsWith("*") && !requiredScope.startsWith(parts[0]))
+        return false;
+    const suffix = grant.endsWith("*") ? "" : parts.at(-1) ?? "";
+    const limit = requiredScope.length - suffix.length;
+    if (limit < offset || (suffix && !requiredScope.endsWith(suffix)))
+        return false;
+    const firstInterior = grant.startsWith("*") ? 0 : 1;
+    const lastInterior = grant.endsWith("*") ? parts.length : parts.length - 1;
+    for (const part of parts.slice(firstInterior, lastInterior)) {
+        if (!part)
+            continue;
+        const foundAt = requiredScope.indexOf(part, offset);
+        if (foundAt === -1 || foundAt + part.length > limit)
+            return false;
+        offset = foundAt + part.length;
     }
-    return new RegExp(`${pattern}$`, "u").test(requiredScope);
+    return true;
 }
 export function accessKeyGrantsSatisfyScopes(grants, requiredScopes) {
     return requiredScopes.every((requiredScope) => grants.some((grant) => scopeGrantMatches(grant, requiredScope)));
@@ -131,9 +147,6 @@ function normalizeConcreteScopes(value, options) {
         scopes.push(scope);
     }
     return scopes;
-}
-function escapeRegularExpressionCharacter(character) {
-    return /[\\^$.*+?()[\]{}|]/u.test(character) ? `\\${character}` : character;
 }
 function isPlainObject(value) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {

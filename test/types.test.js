@@ -381,6 +381,10 @@ const app = capsule({
         count: ctx.db.todos.all().length,
       };
     }),
+    guarded: endpoint({ method: "GET", path: "/guarded" }, requireAuth({ credentials: ["session"] }, (ctx) => ({
+      status: 200,
+      body: ctx.request.method + ":" + ctx.credential.kind,
+    }))),
   },
   messages: {
     typing: message(async (ctx, data) => {
@@ -417,6 +421,10 @@ const app = capsule({
     },
   },
 });
+
+const guarded = requireAuth((ctx) => ctx.credential.kind);
+// @ts-expect-error Auth guard branding is type-only and not a public runtime property.
+guarded.__sporadesAuthGuardedHandler;
 
 const hooks = createHooks({
   useState<State>(initial: State | (() => State)): [State, (nextState: State) => void] {

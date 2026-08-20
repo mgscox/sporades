@@ -217,7 +217,7 @@ function createUnauthenticatedError(logData: any = null) {
   return error;
 }
 
-function createAuthDenialLogData(context: LooseRecord, requirement: string) {
+export function createAuthDenialLogData(context: LooseRecord, requirement: string) {
   return {
     requirement,
     handler: {

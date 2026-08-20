@@ -20,7 +20,7 @@ import {
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
-  confirmPasswordReset, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
+  confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
   emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword,
   invalidEmailCredentialsError, isReservedAuthUserId, mailNotConfiguredError,
   normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
@@ -3097,13 +3097,19 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
   }
   for (const middlewareSource of database.contextMiddleware) {
     const result = await runContextMiddleware(middlewareSource, context);
-    context = result ?? context;
-    if (!context || typeof context !== "object" || context.auth !== canonicalAuth || context.credential !== canonicalCredential) {
+    const middlewareContext = result ?? context;
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
       throw commandError(
         "Invalid Capsule context middleware result.",
         "Context middleware must preserve the runtime-owned Auth and Credential values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT",
       );
+    }
+    context = { ...middlewareContext, auth: canonicalAuth };
+    if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
+      context.credential = canonicalCredential;
+    } else {
+      delete context.credential;
     }
     holder.current = context;
     if (!context.__sporadesContextHolder) {
@@ -3127,11 +3133,13 @@ function admitSessionHandler(handler: unknown, auth: LooseRecord, kind: string) 
   }
   requireAuth({ auth, kind }, { linked: requirements.linked });
   if (!requirements.credentials.includes("session")) {
-    throw commandError(
+    const error = commandError(
       "Forbidden.",
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN",
     );
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    throw error;
   }
   // A permitted Session satisfies declared scope requirements. Access-key
   // grants are matched when Bearer admission is introduced.
@@ -4815,6 +4823,9 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     if (queryHandler) admitSessionHandler(queryHandler, context.auth, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    }
     return {
       rows: null as any,
       error: {

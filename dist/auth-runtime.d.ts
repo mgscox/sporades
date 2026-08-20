@@ -30,6 +30,18 @@ export declare function readEndpointSessionToken(headers: {
 export declare function requireUserAuth(context: LooseRecord, options?: LooseRecord): any;
 /** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: LooseRecord, options?: LooseRecord): any;
+export declare function createAuthDenialLogData(context: LooseRecord, requirement: string): {
+    requirement: string;
+    handler: {
+        kind: any;
+    };
+    actor: {
+        userId: any;
+        provider: any;
+        isAuthenticated: any;
+        isGuest: any;
+    };
+};
 export declare function emitAuthDeniedLog(database: LooseRecord, details: LooseRecord): void;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function normalizeSimulatedText(value: null | undefined): string | null;

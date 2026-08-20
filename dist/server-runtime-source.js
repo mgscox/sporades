@@ -8,7 +8,7 @@ import { validateMailConfig } from "./mail-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
-import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
+import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, mailNotConfiguredError, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
 // the identity link; all three left this file for `auth-runtime.ts` in that batch, once user
 // preferences stopped holding them.
@@ -2854,9 +2854,16 @@ async function applyContextMiddleware(database, baseContext, kind) {
     }
     for (const middlewareSource of database.contextMiddleware) {
         const result = await runContextMiddleware(middlewareSource, context);
-        context = result ?? context;
-        if (!context || typeof context !== "object" || context.auth !== canonicalAuth || context.credential !== canonicalCredential) {
+        const middlewareContext = result ?? context;
+        if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
             throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth and Credential values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+        }
+        context = { ...middlewareContext, auth: canonicalAuth };
+        if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
+            context.credential = canonicalCredential;
+        }
+        else {
+            delete context.credential;
         }
         holder.current = context;
         if (!context.__sporadesContextHolder) {
@@ -2879,7 +2886,9 @@ function admitSessionHandler(handler, auth, kind) {
     }
     requireAuth({ auth, kind }, { linked: requirements.linked });
     if (!requirements.credentials.includes("session")) {
-        throw commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+        const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+        error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+        throw error;
     }
     // A permitted Session satisfies declared scope requirements. Access-key
     // grants are matched when Bearer admission is introduced.
@@ -4467,6 +4476,9 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
         context = await applyContextMiddleware(database, context, "query");
     }
     catch (error) {
+        if (error?.sporadesAuthDenialLogData) {
+            emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+        }
         return {
             rows: null,
             error: {

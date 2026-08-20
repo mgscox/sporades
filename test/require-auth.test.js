@@ -178,10 +178,19 @@ test("scope grants use case-sensitive whole-string wildcard matching", () => {
   assert.equal(scopeGrantMatches("requests:*", "requests:read"), true);
   assert.equal(scopeGrantMatches("r*", "requests:write"), true);
   assert.equal(scopeGrantMatches("*:read", "requests:read"), true);
+  assert.equal(scopeGrantMatches("*ab*ab", "ababab"), true);
+  assert.equal(scopeGrantMatches("ab*ab", "ababab"), true);
+  assert.equal(scopeGrantMatches("ab*ab", "zabab"), false);
   assert.equal(scopeGrantMatches("requests:*", "Requests:read"), false);
   assert.equal(scopeGrantMatches("requests:read", "requests:reader"), false);
   assert.equal(accessKeyGrantsSatisfyScopes(["requests:*", "profile:read"], ["requests:read", "profile:read"]), true);
   assert.equal(accessKeyGrantsSatisfyScopes(["requests:*"], ["requests:read", "profile:read"]), false);
+
+  const adversarialGrant = `${"*a".repeat(24)}*b`;
+  const adversarialScope = "a".repeat(48);
+  const startedAt = performance.now();
+  assert.equal(scopeGrantMatches(adversarialGrant, adversarialScope), false);
+  assert.ok(performance.now() - startedAt < 100, "wildcard matching must remain deterministic");
 });
 
 test("declarative Auth guards run before middleware and expose immutable Session provenance", async () => {
@@ -280,6 +289,19 @@ test("context middleware cannot replace canonical Auth or Credential values", as
       database.contextMiddleware = [`(ctx) => { ctx.credential.kind = "access-key"; return ctx; }`];
       const credentialMutation = await runQuery(database, linkedAuth(), "guarded");
       assert.equal(credentialMutation.error.code, "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+
+      database.contextMiddleware = [`(ctx) => {
+        let authReads = 0;
+        return new Proxy(ctx, {
+          get(target, property) {
+            if (property === "auth" && ++authReads > 1) return { ...target.auth, userId: "forged" };
+            return Reflect.get(target, property);
+          }
+        });
+      }`];
+      const statefulProxy = await runQuery(database, linkedAuth(), "guarded");
+      assert.notEqual(statefulProxy.data, "forged");
+      assert.equal(statefulProxy.error, null);
     } finally {
       await database.close();
     }
@@ -585,6 +607,10 @@ export default capsule({
       status: 200,
       body: ctx.credential,
     }))),
+    accessKeyOnly: endpoint({ method: "GET", path: "/access-key-only" }, requireAuth({ credentials: ["access-key"] }, () => ({
+      status: 200,
+      body: "wrong",
+    }))),
   },
 
   messages: {
@@ -709,6 +735,12 @@ export default capsule({
       assert.equal(guardedEndpointResponse.status, 200);
       assert.deepEqual(await guardedEndpointResponse.json(), { kind: "session" });
 
+      const accessKeyOnlyEndpointResponse = await fetch(`${started.data.url}/access-key-only`, {
+        headers: { "x-sporades-session-token": signUp.data.sessionToken },
+      });
+      assert.equal(accessKeyOnlyEndpointResponse.status, 403);
+      assert.equal((await accessKeyOnlyEndpointResponse.json()).error.code, "FORBIDDEN");
+
       assert.deepEqual(await sendAndWait(socket, { id: "whoami-allowed", type: "app.send", message: "whoami" }), {
         id: "whoami-allowed",
         type: "app.result",
@@ -724,7 +756,7 @@ export default capsule({
       assert.equal(logs.ok, true);
       const denials = logs.data.entries.filter((entry) => entry.event === "auth.denied");
       assert.ok(denials.length >= 5, JSON.stringify(denials));
-      for (const denial of denials) {
+      for (const denial of denials.filter((entry) => entry.data.requirement !== "credential")) {
         assert.equal(denial.category, "platform");
         assert.equal(denial.level, "warn");
         assert.equal(denial.data.actor.userId, anonymousAuthResult.data.auth.userId);
@@ -737,6 +769,9 @@ export default capsule({
       const requirements = new Set(denials.map((entry) => entry.data.requirement));
       assert.ok(requirements.has("authenticated"));
       assert.ok(requirements.has("linked"));
+      assert.ok(requirements.has("credential"));
+      assert.ok(denials.some((entry) => entry.data.handler.kind === "query" && entry.data.requirement === "authenticated"));
+      assert.ok(denials.some((entry) => entry.data.handler.kind === "endpoint" && entry.data.requirement === "credential"));
     } finally {
       socket?.close();
       child.kill("SIGTERM");
