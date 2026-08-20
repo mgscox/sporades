@@ -91,14 +91,24 @@ test("Access-key CLI interactive confirmation accepts exact consent and cancels 
 test("Access-key operator schemas reject aliases, nesting, error extras, and mismatched selectors", () => {
   const invalid = () => { throw new Error("invalid envelope"); };
   const input = { userId: "user-1", options: {} };
+  const bearer = `spk_1_${"A".repeat(22)}_${"B".repeat(43)}`;
   for (const hostile of [
     { ...envelope, data: { ...envelope.data, accessToken: "spk_1_secret" } },
     { ...envelope, data: { ...envelope.data, owner: { email: "private@example.com" } } },
     { ok: false, data: { retained: true }, error: { message: "failed", hint: "retry" } },
     { ok: false, data: null, error: { message: "failed", hint: "retry", detail: "adapter secret" } },
     { ...envelope, data: { ...envelope.data, accessKeys: [{ ...envelope.data.accessKeys[0], ownerUserId: "other-user" }] } },
+    { ...envelope, data: { ...envelope.data, accessKeys: [{ ...envelope.data.accessKeys[0], name: bearer }] } },
+    { ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: `failed ${bearer}`, hint: "retry" } },
   ]) assert.throws(() => sanitizeAccessKeyOperatorEnvelope(hostile, "access-keys.list", input, invalid), /invalid envelope/);
   assert.throws(() => validateAccessKeyOperatorActionInput("access-keys.list", { ...input, authorization: "Bearer secret" }, invalid), /invalid envelope/);
+  assert.deepEqual(sanitizeAccessKeyOperatorEnvelope({
+    ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: "remote adapter detail", hint: "private@example.com" },
+  }, "access-keys.list", input, invalid).error, {
+    code: "ACCESS_KEY_ACTION_FAILED",
+    message: "Access-key operator action failed.",
+    hint: "Check the Privileged audit events and retry the operation.",
+  });
 });
 
 test("Access-key CLI routes Container and Hosted actions through existing runtime seams", async () => {
@@ -162,6 +172,6 @@ test("Access-key CLI rejects stopped targets and hostile runtime envelopes", asy
       PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config,
     });
     assert.equal(stoppedHosted.status, 1);
-    assert.match(JSON.parse(stoppedHosted.stdout).error.hint, /host start/);
+    assert.match(JSON.parse(stoppedHosted.stdout).error.hint, /Start the Hosted Capsule/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

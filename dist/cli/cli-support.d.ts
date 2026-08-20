@@ -4,6 +4,7 @@ export type CommandError = Error & {
     diagnostics?: unknown;
 };
 export type HelperError = Error & {
+    code?: string;
     hint?: string;
     diagnostics?: unknown;
 };

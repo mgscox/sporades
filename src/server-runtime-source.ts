@@ -485,6 +485,7 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   }
   try {
     candidateDatabase.__preflightJobExecutionActivation?.();
+    await candidateDatabase.__publishAccessKeyScopes?.();
   } catch (preflightError) {
     try { await shutdownAndCloseDatabase(candidateDatabase); }
     catch (cleanupError) {
@@ -782,6 +783,10 @@ export async function openDevDatabase(
       preflightCurrentUserJobExecution(database);
     },
   };
+  database.__publishAccessKeyScopes = () => database.adapter.writeSystemMetadata(
+    "accessKeyScopes",
+    JSON.stringify(database.accessKeyScopes ?? []),
+  );
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
@@ -811,9 +816,9 @@ export async function openDevDatabase(
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
-      // The operator action runtime reads the last successfully published
-      // vocabulary. Candidate construction and failed init must not replace it.
-      await database.adapter.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
+      // A fresh initial runtime publishes here. Dev replacement candidates are
+      // deferred and publish only after activation preflight succeeds.
+      if (!database.__jobActivationDeferred) await database.__publishAccessKeyScopes();
       database.__runtimeInitialized = true;
     } catch (error) {
       database.__scheduleStopped = true;
@@ -1920,6 +1925,9 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
       }
 
       const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
+      const auditMetadataOwner = database.__rootDatabase ?? database;
+      auditMetadataOwner.__privilegedAuditMetadataByContext ??= new WeakMap();
+      auditMetadataOwner.__privilegedAuditMetadataByContext.set(privilegedContext, auditDetails.metadata);
       let callbackResult;
       let callbackError;
       let callbackSettled = false;
@@ -1976,6 +1984,7 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
               : undefined,
           );
         } finally {
+          auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
@@ -2035,9 +2044,6 @@ export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, a
   const boundedExecutionSource = ["operator-cli-dev", "operator-cli-container", "operator-cli-hosted"].includes(executionSource)
     ? executionSource
     : "runtime-action";
-  const keyTarget = typeof boundedInput.keyId === "string"
-    ? await database.adapter.findAccessKeyRecordById(boundedInput.keyId)
-    : null;
   const context = createMutationContext(database, {
     userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
     isAuthenticated: false, isGuest: false, provider: "operator",
@@ -2046,7 +2052,6 @@ export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, a
   const metadata = {
     executionSource: boundedExecutionSource,
     ...(typeof boundedInput.userId === "string" ? { ownerUserId: boundedInput.userId } : {}),
-    ...(keyTarget?.ownerUserId ? { ownerUserId: keyTarget.ownerUserId } : {}),
     ...(typeof boundedInput.keyId === "string" ? { accessKeyId: boundedInput.keyId } : {}),
   };
   try {

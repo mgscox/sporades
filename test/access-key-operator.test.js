@@ -52,6 +52,20 @@ test("Privileged Access-key controls expose only metadata and retirement", async
     }, "operator-cli-dev"), (error) => error.code === "INVALID_ACCESS_KEY_ACTION_INPUT");
     assert.equal((await database.adapter.readRecentLogEvents(100)).length, auditBeforeInvalidInput.length,
       "invalid operator input must fail before audit creation");
+    const originalFindById = database.adapter.findAccessKeyRecordById;
+    database.adapter.findAccessKeyRecordById = async () => { throw new Error("secret-adapter-detail"); };
+    try {
+      await assert.rejects(runRuntimeAccessKeyOperatorAction(database, "access-keys.inspect", {
+        keyId: first.data.accessKey.id,
+      }, "operator-cli-dev"), (error) => error.code === "PRIVILEGED_RUN_FAILED");
+    } finally { database.adapter.findAccessKeyRecordById = originalFindById; }
+    const failedLookupAudit = await database.adapter.readRecentLogEvents(100);
+    assert.ok(failedLookupAudit.some((event) => event.data?.operation === "access-keys.operator-dispatch"
+      && event.data?.outcome === "errored" && event.data?.metadata?.accessKeyId === first.data.accessKey.id));
+    assert.ok(failedLookupAudit.some((event) => event.data?.operation === "access-keys.inspect"
+      && event.data?.outcome === "errored" && event.data?.safeErrorCode === "UNKNOWN_ERROR"
+      && event.data?.metadata?.accessKeyId === first.data.accessKey.id));
+    assert.equal(JSON.stringify(failedLookupAudit).includes("secret-adapter-detail"), false);
 
     const listed = await runRuntimeAccessKeyOperatorAction(database, "access-keys.list", {
       userId: owner.userId,
@@ -121,6 +135,14 @@ test("failed runtime initialization does not publish its Access-key scope vocabu
     const actionDatabase = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, null, { runtimeActionOnly: true });
     try { assert.deepEqual(actionDatabase.accessKeyScopes, ["requests:read"]); }
     finally { await actionDatabase.close(); }
+    const preflightCandidate = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, {
+      accessKeys: { scopes: ["failed:preflight"] },
+    });
+    preflightCandidate.__preflightJobExecutionActivation = () => { throw new Error("candidate preflight failed"); };
+    await assert.rejects(replaceRuntimeDatabase(current, preflightCandidate), /candidate preflight failed/);
+    const afterPreflightFailure = await openDevDatabase(databasePath, "", {}, { name: "scope-publication" }, null, { runtimeActionOnly: true });
+    try { assert.deepEqual(afterPreflightFailure.accessKeyScopes, ["requests:read"]); }
+    finally { await afterPreflightFailure.close(); }
   } finally {
     await current.close();
     await rm(dir, { recursive: true, force: true });

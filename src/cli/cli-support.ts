@@ -1,7 +1,7 @@
 export type LooseRecord = Record<string, any>;
 
 export type CommandError = Error & { hint?: string; diagnostics?: unknown };
-export type HelperError = Error & { hint?: string; diagnostics?: unknown };
+export type HelperError = Error & { code?: string; hint?: string; diagnostics?: unknown };
 
 export function errorDetails(error: unknown): LooseRecord {
   if (error === null || error === undefined) {

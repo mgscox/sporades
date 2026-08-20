@@ -99,6 +99,7 @@ main().catch((error: HelperError) => {
       ok: false,
       data: null,
       error: {
+        ...(error.code ? { code: error.code } : {}),
         message: error.message,
         hint: error.hint ?? "Check the Host helper request and retry the command.",
         ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
@@ -219,13 +220,13 @@ function runCapsuleAccessKeyAction(request: HostHelperRequest) {
     || !exactKeys(request.host, ["alias", "domain", "scheme", "remoteRoot"])
     || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule)
     || !exactKeys(request.capsule, ["subname"])) {
-    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
   }
   const accessKeys = validateAccessKeyOperatorActionInput(request.action, request.accessKeys, () => {
-    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
   });
   inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, request.action, accessKeys, () => {
-    throw helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    throw Object.assign(helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."), { code: "HOSTED_ACCESS_KEY_RESPONSE_INVALID" });
   }), [
     "--sporades-action-input",
     Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url"),
@@ -235,14 +236,20 @@ function runCapsuleAccessKeyAction(request: HostHelperRequest) {
 function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label: string, sanitize: (envelope: LooseRecord) => LooseRecord = (envelope) => envelope, extraArgs: string[] = []) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
-    throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    if (label === "Access-key") error.code = "HOSTED_CAPSULE_NOT_RUNNING";
+    throw error;
   }
   const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
   let envelope: LooseRecord;
   try { envelope = JSON.parse(result.stdout.trim()); }
   catch { throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
   const bounded = sanitize(envelope);
-  if (!bounded.ok) throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  if (!bounded.ok) {
+    const error = helperError(bounded.error.message, bounded.error.hint);
+    if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
+    throw error;
+  }
   writeEnvelope(bounded);
 }
 

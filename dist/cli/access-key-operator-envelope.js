@@ -4,6 +4,28 @@ export const ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 const ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 const STATUSES = new Set(["active", "expired", "revoked"]);
+const SAFE_ERRORS = {
+    UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
+    FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
+    ACCESS_KEY_DELETE_REQUIRES_REVOKED: { message: "Access key must be revoked before deletion.", hint: "Revoke the key, then delete its history." },
+    ACCESS_KEY_LIMIT_REACHED: { message: "Access-key limit reached.", hint: "Retire an existing key before retrying." },
+    ACCESS_KEY_NAME_CONFLICT: { message: "Access-key name is already in use.", hint: "Choose a unique name." },
+    ACCESS_KEY_NOT_ACTIVE: { message: "Access key is not active.", hint: "Inspect current metadata before retrying." },
+    ACCESS_KEY_NOT_FOUND: { message: "Access key was not found.", hint: "Refresh metadata and use an exact immutable key ID." },
+    ACCESS_KEY_REVISION_CONFLICT: { message: "Access-key revision changed.", hint: "Refresh metadata and retry." },
+    ACCESS_KEY_SECRET_CONFLICT: { message: "Access-key generation conflicted.", hint: "Retry the operation." },
+    INVALID_ACCESS_KEY_EXPIRY: { message: "Access-key expiry is invalid.", hint: "Use a valid future expiry." },
+    INVALID_ACCESS_KEY_GRANTS: { message: "Access-key grants are invalid.", hint: "Use the Capsule's declared scope vocabulary." },
+    INVALID_ACCESS_KEY_LIST_OPTIONS: { message: "Access-key list options are invalid.", hint: "Use supported cursor, limit, and status filters." },
+    INVALID_ACCESS_KEY_NAME: { message: "Access-key name is invalid.", hint: "Use a valid unique name." },
+    INVALID_ACCESS_KEY_ACTION_INPUT: { message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+    ACCESS_KEY_ACTION_UNSUPPORTED: { message: "Unsupported Access-key operator action.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+    ACCESS_KEY_ACTION_FAILED: { message: "Access-key operator action failed.", hint: "Check the Privileged audit events and retry the operation." },
+    HOST_HELPER_UPGRADE_REQUIRED: { message: "The Host helper does not support this Access-key action.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." },
+    HOSTED_CAPSULE_NOT_RUNNING: { message: "The Hosted Capsule is not running.", hint: "Start the Hosted Capsule, then retry the operation." },
+    HOSTED_ACCESS_KEY_RESPONSE_INVALID: { message: "Hosted Access-key action returned an invalid response.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." },
+};
+const BEARER_VALUE_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
 export async function confirmAccessKeyOperatorAction(options, io = { input: process.stdin, output: process.stdout }) {
     if (options.yes || ["list", "inspect"].includes(options.subcommand))
         return;
@@ -146,22 +168,31 @@ function canonicalSuccessData(action, value, input, invalid) {
     return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
 }
 function canonicalError(value, invalid) {
-    if (!plain(value) || !exactKeys(value, ["message", "hint"], ["code"]) || !boundedString(value.message, 1024)
-        || !boundedString(value.hint, 1024) || (value.code !== undefined && !boundedString(value.code, 80)))
+    if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string"
+        || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024))
         return invalid();
-    return { ...(value.code === undefined ? {} : { code: value.code }), message: value.message, hint: value.hint };
+    return { code: value.code, ...SAFE_ERRORS[value.code] };
+}
+function containsBearerValue(value) {
+    if (typeof value === "string")
+        return BEARER_VALUE_PATTERN.test(value);
+    if (Array.isArray(value))
+        return value.some(containsBearerValue);
+    return plain(value) && Object.values(value).some(containsBearerValue);
 }
 export function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-    if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean")
+    if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || containsBearerValue(value) || typeof value.ok !== "boolean")
         return invalid();
     const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
     if (value.ok) {
         if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null)
             return invalid();
-        return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+        const bounded = { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+        return containsBearerValue(bounded) ? invalid() : bounded;
     }
     if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null)
         return invalid();
-    return { ok: false, data: null, error: canonicalError(value.error, invalid) };
+    const bounded = { ok: false, data: null, error: canonicalError(value.error, invalid) };
+    return containsBearerValue(bounded) ? invalid() : bounded;
 }
 //# sourceMappingURL=access-key-operator-envelope.js.map

@@ -281,6 +281,28 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+var SAFE_ERRORS = {
+  UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
+  FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
+  ACCESS_KEY_DELETE_REQUIRES_REVOKED: { message: "Access key must be revoked before deletion.", hint: "Revoke the key, then delete its history." },
+  ACCESS_KEY_LIMIT_REACHED: { message: "Access-key limit reached.", hint: "Retire an existing key before retrying." },
+  ACCESS_KEY_NAME_CONFLICT: { message: "Access-key name is already in use.", hint: "Choose a unique name." },
+  ACCESS_KEY_NOT_ACTIVE: { message: "Access key is not active.", hint: "Inspect current metadata before retrying." },
+  ACCESS_KEY_NOT_FOUND: { message: "Access key was not found.", hint: "Refresh metadata and use an exact immutable key ID." },
+  ACCESS_KEY_REVISION_CONFLICT: { message: "Access-key revision changed.", hint: "Refresh metadata and retry." },
+  ACCESS_KEY_SECRET_CONFLICT: { message: "Access-key generation conflicted.", hint: "Retry the operation." },
+  INVALID_ACCESS_KEY_EXPIRY: { message: "Access-key expiry is invalid.", hint: "Use a valid future expiry." },
+  INVALID_ACCESS_KEY_GRANTS: { message: "Access-key grants are invalid.", hint: "Use the Capsule's declared scope vocabulary." },
+  INVALID_ACCESS_KEY_LIST_OPTIONS: { message: "Access-key list options are invalid.", hint: "Use supported cursor, limit, and status filters." },
+  INVALID_ACCESS_KEY_NAME: { message: "Access-key name is invalid.", hint: "Use a valid unique name." },
+  INVALID_ACCESS_KEY_ACTION_INPUT: { message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_UNSUPPORTED: { message: "Unsupported Access-key operator action.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_FAILED: { message: "Access-key operator action failed.", hint: "Check the Privileged audit events and retry the operation." },
+  HOST_HELPER_UPGRADE_REQUIRED: { message: "The Host helper does not support this Access-key action.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." },
+  HOSTED_CAPSULE_NOT_RUNNING: { message: "The Hosted Capsule is not running.", hint: "Start the Hosted Capsule, then retry the operation." },
+  HOSTED_ACCESS_KEY_RESPONSE_INVALID: { message: "Hosted Access-key action returned an invalid response.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." }
+};
+var BEARER_VALUE_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
 function plain(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -380,18 +402,25 @@ function canonicalSuccessData(action, value, input, invalid) {
   return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
 }
 function canonicalError(value, invalid) {
-  if (!plain(value) || !exactKeys(value, ["message", "hint"], ["code"]) || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024) || value.code !== void 0 && !boundedString(value.code, 80)) return invalid();
-  return { ...value.code === void 0 ? {} : { code: value.code }, message: value.message, hint: value.hint };
+  if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid();
+  return { code: value.code, ...SAFE_ERRORS[value.code] };
+}
+function containsBearerValue(value) {
+  if (typeof value === "string") return BEARER_VALUE_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some(containsBearerValue);
+  return plain(value) && Object.values(value).some(containsBearerValue);
 }
 function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
+  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || containsBearerValue(value) || typeof value.ok !== "boolean") return invalid();
   const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
   if (value.ok) {
     if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
-    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+    const bounded2 = { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+    return containsBearerValue(bounded2) ? invalid() : bounded2;
   }
   if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid();
-  return { ok: false, data: null, error: canonicalError(value.error, invalid) };
+  const bounded = { ok: false, data: null, error: canonicalError(value.error, invalid) };
+  return containsBearerValue(bounded) ? invalid() : bounded;
 }
 
 // src/database-runtime.ts
@@ -1193,6 +1222,7 @@ main().catch((error) => {
       ok: false,
       data: null,
       error: {
+        ...error.code ? { code: error.code } : {},
         message: error.message,
         hint: error.hint ?? "Check the Host helper request and retry the command.",
         ...error.diagnostics ? { diagnostics: error.diagnostics } : {}
@@ -1303,13 +1333,13 @@ function inspectCapsuleSchedules(request) {
 function runCapsuleAccessKeyAction(request) {
   const exactKeys2 = (value, keys) => Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
   if (!exactKeys2(request, ["action", "host", "capsule", "accessKeys"]) || !request.host || typeof request.host !== "object" || Array.isArray(request.host) || !exactKeys2(request.host, ["alias", "domain", "scheme", "remoteRoot"]) || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule) || !exactKeys2(request.capsule, ["subname"])) {
-    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
   }
   const accessKeys = validateAccessKeyOperatorActionInput(request.action, request.accessKeys, () => {
-    throw helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together.");
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
   });
   inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, request.action, accessKeys, () => {
-    throw helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    throw Object.assign(helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."), { code: "HOSTED_ACCESS_KEY_RESPONSE_INVALID" });
   }), [
     "--sporades-action-input",
     Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url")
@@ -1318,7 +1348,9 @@ function runCapsuleAccessKeyAction(request) {
 function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = []) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
-    throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    if (label === "Access-key") error.code = "HOSTED_CAPSULE_NOT_RUNNING";
+    throw error;
   }
   const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
   let envelope;
@@ -1328,7 +1360,11 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
   }
   const bounded = sanitize(envelope);
-  if (!bounded.ok) throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  if (!bounded.ok) {
+    const error = helperError(bounded.error.message, bounded.error.hint);
+    if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
+    throw error;
+  }
   writeEnvelope(bounded);
 }
 function versionHost(request) {

@@ -6430,11 +6430,10 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
     async inspect(id) {
       const context = requireContext();
       requireId(id);
-      const row = await database.adapter.findAccessKeyRecordById(id);
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", {
-        accessKeyId: id,
-        ...row?.ownerUserId ? { ownerUserId: row.ownerUserId } : {}
-      }, async () => {
+      const target = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", target, async () => {
+        const row = await database.adapter.findAccessKeyRecordById(id);
+        if (row?.ownerUserId) target.ownerUserId = row.ownerUserId;
         if (!row) throw accessKeyNotFoundError();
         return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
       });
@@ -6442,11 +6441,10 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
     async revoke(id) {
       const context = requireContext();
       requireId(id);
-      const existing = await database.adapter.findAccessKeyRecordById(id);
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", {
-        accessKeyId: id,
-        ...existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}
-      }, async () => {
+      const target = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", target, async () => {
+        const existing = await database.adapter.findAccessKeyRecordById(id);
+        if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         if (!existing) throw accessKeyNotFoundError();
         const revokedAt = database.clock.now().toISOString();
         const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
@@ -6484,11 +6482,10 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
     async delete(id) {
       const context = requireContext();
       requireId(id);
-      const existing = await database.adapter.findAccessKeyRecordById(id);
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", {
-        accessKeyId: id,
-        ...existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}
-      }, async () => {
+      const target = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", target, async () => {
+        const existing = await database.adapter.findAccessKeyRecordById(id);
+        if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         if (!existing) throw accessKeyNotFoundError();
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
           ownerUserId: existing.ownerUserId,
@@ -6504,23 +6501,26 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
   };
 }
 async function runPrivilegedAccessKeyOperation(database, context, operation, target, callback) {
-  const details = {
+  const details = () => ({
     actorKind: "privileged-server-role",
     operation,
     surface: context.__accessKeyOperatorExecutionSource ?? context.kind ?? "server-handler",
     targetResourceKind: "access-key",
     source: "runtime",
     metadata: { ...target, actionOwned: true }
-  };
+  });
+  const outerMetadata = (database.__rootDatabase ?? database).__privilegedAuditMetadataByContext?.get(context);
   let result;
   try {
     result = await callback();
   } catch (error) {
+    if (outerMetadata) Object.assign(outerMetadata, target);
     const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
-    await database.audit.emit({ ...details, outcome: "errored", safeErrorCode: explicitCode });
+    await database.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
     throw error;
   }
-  await database.audit.emit({ ...details, outcome: "completed" });
+  if (outerMetadata) Object.assign(outerMetadata, target);
+  await database.audit.emit({ ...details(), outcome: "completed" });
   return result;
 }
 function readAccessKeyAuthorization(request) {
@@ -13915,6 +13915,28 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+var SAFE_ERRORS = {
+  UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
+  FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
+  ACCESS_KEY_DELETE_REQUIRES_REVOKED: { message: "Access key must be revoked before deletion.", hint: "Revoke the key, then delete its history." },
+  ACCESS_KEY_LIMIT_REACHED: { message: "Access-key limit reached.", hint: "Retire an existing key before retrying." },
+  ACCESS_KEY_NAME_CONFLICT: { message: "Access-key name is already in use.", hint: "Choose a unique name." },
+  ACCESS_KEY_NOT_ACTIVE: { message: "Access key is not active.", hint: "Inspect current metadata before retrying." },
+  ACCESS_KEY_NOT_FOUND: { message: "Access key was not found.", hint: "Refresh metadata and use an exact immutable key ID." },
+  ACCESS_KEY_REVISION_CONFLICT: { message: "Access-key revision changed.", hint: "Refresh metadata and retry." },
+  ACCESS_KEY_SECRET_CONFLICT: { message: "Access-key generation conflicted.", hint: "Retry the operation." },
+  INVALID_ACCESS_KEY_EXPIRY: { message: "Access-key expiry is invalid.", hint: "Use a valid future expiry." },
+  INVALID_ACCESS_KEY_GRANTS: { message: "Access-key grants are invalid.", hint: "Use the Capsule's declared scope vocabulary." },
+  INVALID_ACCESS_KEY_LIST_OPTIONS: { message: "Access-key list options are invalid.", hint: "Use supported cursor, limit, and status filters." },
+  INVALID_ACCESS_KEY_NAME: { message: "Access-key name is invalid.", hint: "Use a valid unique name." },
+  INVALID_ACCESS_KEY_ACTION_INPUT: { message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_UNSUPPORTED: { message: "Unsupported Access-key operator action.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_FAILED: { message: "Access-key operator action failed.", hint: "Check the Privileged audit events and retry the operation." },
+  HOST_HELPER_UPGRADE_REQUIRED: { message: "The Host helper does not support this Access-key action.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." },
+  HOSTED_CAPSULE_NOT_RUNNING: { message: "The Hosted Capsule is not running.", hint: "Start the Hosted Capsule, then retry the operation." },
+  HOSTED_ACCESS_KEY_RESPONSE_INVALID: { message: "Hosted Access-key action returned an invalid response.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." }
+};
+var BEARER_VALUE_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
 async function confirmAccessKeyOperatorAction(options, io = { input: process.stdin, output: process.stdout }) {
   if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
   if (!io.input?.isTTY || !io.output?.isTTY) {
@@ -14033,18 +14055,25 @@ function canonicalSuccessData(action, value, input, invalid) {
   return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
 }
 function canonicalError(value, invalid) {
-  if (!plain(value) || !exactKeys(value, ["message", "hint"], ["code"]) || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024) || value.code !== void 0 && !boundedString(value.code, 80)) return invalid();
-  return { ...value.code === void 0 ? {} : { code: value.code }, message: value.message, hint: value.hint };
+  if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid();
+  return { code: value.code, ...SAFE_ERRORS[value.code] };
+}
+function containsBearerValue(value) {
+  if (typeof value === "string") return BEARER_VALUE_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some(containsBearerValue);
+  return plain(value) && Object.values(value).some(containsBearerValue);
 }
 function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
+  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || containsBearerValue(value) || typeof value.ok !== "boolean") return invalid();
   const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
   if (value.ok) {
     if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
-    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+    const bounded2 = { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+    return containsBearerValue(bounded2) ? invalid() : bounded2;
   }
   if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid();
-  return { ok: false, data: null, error: canonicalError(value.error, invalid) };
+  const bounded = { ok: false, data: null, error: canonicalError(value.error, invalid) };
+  return containsBearerValue(bounded) ? invalid() : bounded;
 }
 
 // src/database-runtime.ts
@@ -16930,6 +16959,7 @@ async function replaceRuntimeDatabase(currentDatabase, candidateDatabase) {
   }
   try {
     candidateDatabase.__preflightJobExecutionActivation?.();
+    await candidateDatabase.__publishAccessKeyScopes?.();
   } catch (preflightError) {
     try {
       await shutdownAndCloseDatabase(candidateDatabase);
@@ -17198,6 +17228,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       preflightCurrentUserJobExecution(database);
     }
   };
+  database.__publishAccessKeyScopes = () => database.adapter.writeSystemMetadata(
+    "accessKeyScopes",
+    JSON.stringify(database.accessKeyScopes ?? [])
+  );
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
@@ -17221,7 +17255,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
-      await database.adapter.writeSystemMetadata("accessKeyScopes", JSON.stringify(database.accessKeyScopes ?? []));
+      if (!database.__jobActivationDeferred) await database.__publishAccessKeyScopes();
       database.__runtimeInitialized = true;
     } catch (error) {
       database.__scheduleStopped = true;
@@ -18161,6 +18195,9 @@ function createContextPrivilegedApi(database, contextGetter) {
         throw createPrivilegedAuditEmissionPublicError(error);
       }
       const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
+      const auditMetadataOwner = database.__rootDatabase ?? database;
+      auditMetadataOwner.__privilegedAuditMetadataByContext ??= /* @__PURE__ */ new WeakMap();
+      auditMetadataOwner.__privilegedAuditMetadataByContext.set(privilegedContext, auditDetails.metadata);
       let callbackResult;
       let callbackError;
       let callbackSettled = false;
@@ -18208,6 +18245,7 @@ function createContextPrivilegedApi(database, contextGetter) {
             callbackSettled ? callbackError ? { callbackError } : { callbackResult } : void 0
           );
         } finally {
+          auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }

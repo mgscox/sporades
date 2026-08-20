@@ -193,10 +193,11 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
         async inspect(id) {
             const context = requireContext();
             requireId(id);
-            const row = await database.adapter.findAccessKeyRecordById(id);
-            return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", {
-                accessKeyId: id, ...(row?.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
-            }, async () => {
+            const target = { accessKeyId: id };
+            return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", target, async () => {
+                const row = await database.adapter.findAccessKeyRecordById(id);
+                if (row?.ownerUserId)
+                    target.ownerUserId = row.ownerUserId;
                 if (!row)
                     throw accessKeyNotFoundError();
                 return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
@@ -205,10 +206,11 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
         async revoke(id) {
             const context = requireContext();
             requireId(id);
-            const existing = await database.adapter.findAccessKeyRecordById(id);
-            return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", {
-                accessKeyId: id, ...(existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}),
-            }, async () => {
+            const target = { accessKeyId: id };
+            return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", target, async () => {
+                const existing = await database.adapter.findAccessKeyRecordById(id);
+                if (existing?.ownerUserId)
+                    target.ownerUserId = existing.ownerUserId;
                 if (!existing)
                     throw accessKeyNotFoundError();
                 const revokedAt = database.clock.now().toISOString();
@@ -243,10 +245,11 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
         async delete(id) {
             const context = requireContext();
             requireId(id);
-            const existing = await database.adapter.findAccessKeyRecordById(id);
-            return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", {
-                accessKeyId: id, ...(existing?.ownerUserId ? { ownerUserId: existing.ownerUserId } : {}),
-            }, async () => {
+            const target = { accessKeyId: id };
+            return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", target, async () => {
+                const existing = await database.adapter.findAccessKeyRecordById(id);
+                if (existing?.ownerUserId)
+                    target.ownerUserId = existing.ownerUserId;
                 if (!existing)
                     throw accessKeyNotFoundError();
                 const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
@@ -263,24 +266,29 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
     };
 }
 async function runPrivilegedAccessKeyOperation(database, context, operation, target, callback) {
-    const details = {
+    const details = () => ({
         actorKind: "privileged-server-role",
         operation,
         surface: context.__accessKeyOperatorExecutionSource ?? context.kind ?? "server-handler",
         targetResourceKind: "access-key",
         source: "runtime",
         metadata: { ...target, actionOwned: true },
-    };
+    });
+    const outerMetadata = (database.__rootDatabase ?? database).__privilegedAuditMetadataByContext?.get(context);
     let result;
     try {
         result = await callback();
     }
     catch (error) {
+        if (outerMetadata)
+            Object.assign(outerMetadata, target);
         const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
-        await database.audit.emit({ ...details, outcome: "errored", safeErrorCode: explicitCode });
+        await database.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
         throw error;
     }
-    await database.audit.emit({ ...details, outcome: "completed" });
+    if (outerMetadata)
+        Object.assign(outerMetadata, target);
+    await database.audit.emit({ ...details(), outcome: "completed" });
     return result;
 }
 export function readAccessKeyAuthorization(request) {
