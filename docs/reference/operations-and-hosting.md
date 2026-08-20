@@ -149,6 +149,28 @@ Errors use the same envelope and exit with code `1`:
 Use `--json` for scripts and agents. Use plain output when you are working by
 hand.
 
+### Inspect and retire Access keys
+
+Authorized operators use the running Capsule's Privileged projection; the CLI
+and Host helper never open Auth tables directly:
+
+```sh
+sporades access-keys list --user-id <user-id> --session dev
+sporades access-keys inspect <key-id> --session container
+sporades access-keys revoke <key-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys revoke-all --user-id <user-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys delete <key-id> --session dev --yes
+```
+
+Only these five commands exist; operators cannot issue or rotate keys and never
+receive plaintext. List and inspect are read-only. Revoke and delete require a
+typed confirmation or `--yes`; bulk revocation requires the exact owner ID.
+`--json` never implies consent. Every route rejects a stopped Capsule rather
+than opening a partial runtime, uses immutable IDs rather than email/display
+name selectors, validates a strict bounded action envelope, and emits
+runtime-owned exact-target Privileged audits. Dev, Container, and Hosted source
+attribution comes from the running runtime session, not caller input.
+
 ## Try a Container Session
 
 When the Capsule works locally, test it in Docker:

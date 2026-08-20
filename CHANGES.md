@@ -7,6 +7,9 @@ Changes since v0.8.6.
 ### 🚀 Features
 
 - Add transaction-bound trusted reads (9d23493).
+- Add user-owned scoped Access keys with explicit Bearer admission, immutable
+  Credential provenance, Session-only browser management, private-File and
+  durable-Job integration, and audited operator retirement.
 
 ### 🐛 Bug Fixes
 
@@ -63,4 +66,3 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-

@@ -43,6 +43,7 @@ Tables, queries, mutations, authorization, Server env, mail, middleware, actors,
 #### [Read With Queries](../reference/server-runtime.md#read-with-queries) {#read-with-queries}
 #### [Change Data With Mutations](../reference/server-runtime.md#change-data-with-mutations) {#change-data-with-mutations}
 #### [Gate Handlers With requireAuth](../reference/server-runtime.md#gate-handlers-with-requireauth) {#gate-handlers-with-requireauth}
+#### [Manage Access keys](../reference/server-runtime.md#manage-access-keys) {#manage-access-keys}
 #### [Use Sealed Server Env](../reference/server-runtime.md#use-sealed-server-env) {#use-sealed-server-env}
 ##### [Create and Import Values](../reference/server-runtime.md#create-and-import-values) {#create-and-import-values}
 ##### [Read Values in Server Code](../reference/server-runtime.md#read-values-in-server-code) {#read-values-in-server-code}
@@ -92,6 +93,7 @@ Subscribed client state, authentication workflows, provider configuration, and c
 #### [Use Email Auth](../reference/client-auth-and-preferences.md#use-email-auth) {#use-email-auth}
 #### [Reset or Change an Email Password](../reference/client-auth-and-preferences.md#reset-or-change-an-email-password) {#reset-or-change-an-email-password}
 #### [Simulate Local Identities](../reference/client-auth-and-preferences.md#simulate-local-identities) {#simulate-local-identities}
+### [Access-key management](../reference/client-auth-and-preferences.md#access-key-management) {#access-key-management}
 ### [User Preferences](../reference/client-auth-and-preferences.md#user-preferences) {#user-preferences}
 
 ## Files and Realtime
@@ -112,6 +114,7 @@ Logs, database inspection, Container sessions, Hosted Capsules, Doctor, workflow
 #### [Fatal Runtime Restart Policy](../reference/operations-and-hosting.md#fatal-runtime-restart-policy) {#fatal-runtime-restart-policy}
 #### [Database](../reference/operations-and-hosting.md#database) {#database}
 #### [JSON Output](../reference/operations-and-hosting.md#json-output) {#json-output}
+#### [Inspect and retire Access keys](../reference/operations-and-hosting.md#inspect-and-retire-access-keys) {#inspect-and-retire-access-keys}
 ### [Try a Container Session](../reference/operations-and-hosting.md#try-a-container-session) {#try-a-container-session}
 ### [Local Container Sessions](../reference/operations-and-hosting.md#local-container-sessions) {#local-container-sessions}
 ### [Container SSH Access](../reference/operations-and-hosting.md#container-ssh-access) {#container-ssh-access}

@@ -9,9 +9,15 @@ user guide explains how to build a Capsule, run a Dev session, add auth, work
 with files, and deploy locally or to a Host server.
 
 Conceptual docs should use Sporades terms consistently: Capsule, Dev session,
-Container session, Hosted Capsule, App message, File path, and Anonymous
-session. They should explain when and why to use an API, not enumerate every
-property in the SDK.
+Container session, Hosted Capsule, App message, File path, Anonymous session,
+Session, Access key, scope, and Credential provenance. They should explain when
+and why to use an API, not enumerate every property in the SDK.
+
+For Access-key work, use the Auth guide for the model, the server reference for
+declarations and admission, the client reference for owner management, the
+Files and Jobs references for authority at those boundaries, and operations
+for the operator CLI. The generated API reference is the signature lookup; it
+does not replace those security contracts.
 
 ## Generated API Reference
 
