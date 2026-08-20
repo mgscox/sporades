@@ -17701,7 +17701,7 @@ function scheduleJobLeaseRecoveryTimer(database, dueAt) {
 }
 var RUNTIME_CLAIM_LEASE_MS = 3e4;
 function invalidStoredJobFailure(row, referenceInstant) {
-  if (row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+  if (row.scheduleName !== null && row.scheduleName !== void 0 && row.actorUserId !== privilegedAuthUserId()) {
     return { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." };
   }
   if (row.actorUserId !== privilegedAuthUserId()) {

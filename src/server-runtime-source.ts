@@ -1693,7 +1693,7 @@ function scheduleJobLeaseRecoveryTimer(database: LooseRecord, dueAt: number | nu
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 
 function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
-  if (row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+  if (row.scheduleName !== null && row.scheduleName !== undefined && row.actorUserId !== privilegedAuthUserId()) {
     return { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." };
   }
   if (row.actorUserId !== privilegedAuthUserId()) {
