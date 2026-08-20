@@ -86,7 +86,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
         if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
         const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
         context.__sporadesSecretDisclosed = true;
-        emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+        await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
         return { accessKey, token: secret.token };
       }
       throw commandError(
@@ -109,7 +109,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
         adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
       if (!outcome) throw accessKeyNotFoundError();
       const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
-      emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+      await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
       return { accessKey };
     },
   };
@@ -387,7 +387,7 @@ function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: Lo
     : database.adapter.withTransaction(operation);
 }
 
-function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: LooseRecord, accessKey: LooseRecord) {
+async function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: LooseRecord, accessKey: LooseRecord) {
   const issued = event === "access-key.issued";
   const input = {
     category: "platform",
@@ -412,7 +412,9 @@ function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: 
     context.__accessKeyLifecycleAuditEvents.push(input);
     return;
   }
-  database.log?.emit?.(input);
+  try {
+    await database.log?.emit?.(input);
+  } catch { }
 }
 
 export async function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {

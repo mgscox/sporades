@@ -71,6 +71,7 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     accessKeys: { scopes: ["requests:read", "requests:write", "profile:read"] },
     queries: {
       listKeys: query((ctx) => ctx.accessKeys.list()),
+      issueKeyFromQuery: query((ctx) => ctx.accessKeys.issue({ name: "query-audit-failure-key" })),
     },
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
@@ -87,6 +88,12 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
         { operation: "access-keys.inspect-projection", targetResourceKind: "access-key" },
         (privilegedCtx) => ({ hasAccessKeys: "accessKeys" in privilegedCtx }),
       )),
+    },
+    endpoints: {
+      middlewareIssue: endpoint(
+        { method: "GET", path: "/middleware-issue" },
+        requireAuth({ credentials: ["session"] }, (ctx) => ({ body: { token: ctx.issuedToken } })),
+      ),
     },
   });
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
@@ -184,6 +191,43 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     assert.match(issuedDespiteAuditFailure.data.token, /^spk_1_/);
     assert.equal(
       (await runQuery(database, auth, "listKeys")).data.accessKeys.some((key) => key.id === issuedDespiteAuditFailure.data.accessKey.id),
+      true,
+    );
+
+    database.log.emit = async () => { throw new Error("simulated async direct audit failure"); };
+    let queryIssuedDespiteAuditFailure;
+    try {
+      queryIssuedDespiteAuditFailure = await runQuery(database, auth, "issueKeyFromQuery");
+    } finally {
+      database.log.emit = originalLogEmit;
+    }
+    assert.equal(queryIssuedDespiteAuditFailure.error, null, JSON.stringify(queryIssuedDespiteAuditFailure.error));
+    assert.match(queryIssuedDespiteAuditFailure.data.token, /^spk_1_/);
+    assert.equal(
+      (await runQuery(database, auth, "listKeys")).data.accessKeys.some((key) => key.id === queryIssuedDespiteAuditFailure.data.accessKey.id),
+      true,
+    );
+
+    await database.adapter.insertAuthSession({
+      token: "middleware-session",
+      userId: auth.userId,
+      provider: "email",
+      createdAt: "2026-08-20T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    database.contextMiddleware = [`async (ctx) => {
+      const issued = await ctx.accessKeys.issue({ name: "middleware-issued-key" });
+      return { auth: ctx.auth, credential: ctx.credential, issuedToken: issued.token };
+    }`];
+    const middlewareIssued = await requestEndpoint(database, "/middleware-issue", {
+      headers: { "x-sporades-session-token": "middleware-session" },
+    });
+    database.contextMiddleware = [];
+    assert.equal(middlewareIssued.status, 200);
+    assert.equal(middlewareIssued.headers.get("cache-control"), "private, no-store");
+    assert.match((await middlewareIssued.json()).token, /^spk_1_/);
+    assert.equal(
+      (await database.log.tail(50)).some((event) => event.event === "access-key.issued" && event.data?.accessKey?.name === "middleware-issued-key"),
       true,
     );
   } finally {

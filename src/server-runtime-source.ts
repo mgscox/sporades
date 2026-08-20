@@ -3177,6 +3177,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     });
   }
   for (const middlewareSource of database.contextMiddleware) {
+    const previousContext = context;
     const result = await runContextMiddleware(middlewareSource, context);
     const middlewareContext = result ?? context;
     if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
@@ -3200,11 +3201,14 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
         configurable: true,
       });
     }
-    if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = baseContext.__pendingAclWrites;
+    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
+      context.__pendingAclWrites = previousContext.__pendingAclWrites;
     }
-    if (baseContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
-      context.__accessKeyLifecycleAuditEvents = baseContext.__accessKeyLifecycleAuditEvents;
+    if (previousContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
+      context.__accessKeyLifecycleAuditEvents = previousContext.__accessKeyLifecycleAuditEvents;
+    }
+    if (previousContext.__sporadesSecretDisclosed) {
+      context.__sporadesSecretDisclosed = true;
     }
   }
   return context;

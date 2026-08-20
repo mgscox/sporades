@@ -71,7 +71,7 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                     throwAccessKeyIssueError(outcome.status);
                 const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
                 context.__sporadesSecretDisclosed = true;
-                emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+                await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
                 return { accessKey, token: secret.token };
             }
             throw commandError("Could not generate a unique Access key.", "Retry Access-key issuance.", "ACCESS_KEY_SECRET_CONFLICT");
@@ -91,7 +91,7 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
             if (!outcome)
                 throw accessKeyNotFoundError();
             const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
-            emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+            await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
             return { accessKey };
         },
     };
@@ -361,7 +361,7 @@ function withAccessKeyTransaction(database, operation) {
         ? operation(database.adapter)
         : database.adapter.withTransaction(operation);
 }
-function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
+async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     const issued = event === "access-key.issued";
     const input = {
         category: "platform",
@@ -386,7 +386,10 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
         context.__accessKeyLifecycleAuditEvents.push(input);
         return;
     }
-    database.log?.emit?.(input);
+    try {
+        await database.log?.emit?.(input);
+    }
+    catch { }
 }
 export async function flushAccessKeyLifecycleAuditEvents(database, context) {
     const events = context?.__accessKeyLifecycleAuditEvents;

@@ -6965,7 +6965,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
         if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
         const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
         context.__sporadesSecretDisclosed = true;
-        emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+        await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
         return { accessKey, token: secret.token };
       }
       throw commandError(
@@ -6987,7 +6987,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
       if (!outcome) throw accessKeyNotFoundError();
       const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
-      emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+      await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
       return { accessKey };
     }
   };
@@ -7231,7 +7231,7 @@ function accessKeySummary(row, declaredScopes, now) {
 function withAccessKeyTransaction(database, operation) {
   return database.__transactionActive ? operation(database.adapter) : database.adapter.withTransaction(operation);
 }
-function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
+async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
   const issued = event === "access-key.issued";
   const input = {
     category: "platform",
@@ -7256,7 +7256,10 @@ function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     context.__accessKeyLifecycleAuditEvents.push(input);
     return;
   }
-  database.log?.emit?.(input);
+  try {
+    await database.log?.emit?.(input);
+  } catch {
+  }
 }
 async function flushAccessKeyLifecycleAuditEvents(database, context) {
   const events = context?.__accessKeyLifecycleAuditEvents;
@@ -18481,6 +18484,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     });
   }
   for (const middlewareSource of database.contextMiddleware) {
+    const previousContext = context;
     const result = await runContextMiddleware(middlewareSource, context);
     const middlewareContext = result ?? context;
     if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
@@ -18504,11 +18508,14 @@ async function applyContextMiddleware(database, baseContext, kind) {
         configurable: true
       });
     }
-    if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = baseContext.__pendingAclWrites;
+    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
+      context.__pendingAclWrites = previousContext.__pendingAclWrites;
     }
-    if (baseContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
-      context.__accessKeyLifecycleAuditEvents = baseContext.__accessKeyLifecycleAuditEvents;
+    if (previousContext.__accessKeyLifecycleAuditEvents && !context.__accessKeyLifecycleAuditEvents) {
+      context.__accessKeyLifecycleAuditEvents = previousContext.__accessKeyLifecycleAuditEvents;
+    }
+    if (previousContext.__sporadesSecretDisclosed) {
+      context.__sporadesSecretDisclosed = true;
     }
   }
   return context;
