@@ -238,12 +238,15 @@ reports pending, succeeded, or safely failed progress, validates the returned
 Stripe-hosted URL, and redirects only after success. It is not imported into the
 blank UI automatically.
 
-To activate one-time Checkout, define Capsule product keys in the server-owned
-Price catalogue, make an explicit billing decision in
+To activate Checkout, define Capsule product keys in the server-owned Price
+catalogue with an explicit `payment` or `subscription` mode, matching Stripe
+Price identity, and maximum quantity. Then make an explicit billing decision in
 `authorizeStripeCheckout`, enable the complete configuration, and seal both
 named credentials. Browser input contains only an opaque intent ID, Capsule
-product key, and bounded quantity. The linked-user mutation atomically persists
-the intent and enqueues a durable Job. Network I/O starts after commit. Capsule,
+product key, and bounded quantity; it cannot select the Stripe Price, Customer,
+mode, metadata, idempotency namespace, or return origins. The linked-user
+mutation atomically persists the selected mode with the intent and enqueues the
+same durable Checkout Job for one-time and recurring work. Network I/O starts after commit. Capsule,
 operation, actor, and intent identity form the stable Stripe and Job idempotency
 key, so retries and repeated mutation calls converge on the same work. Transient
 provider failures retry within the declared Job policy; permanent rejection is
@@ -255,6 +258,11 @@ seam, and deriving the business reference in server code. That opt-in grants no
 Customer Portal or Team billing authority. The callback path is configuration
 only until webhook admission is implemented; it is not registered by this
 Checkout slice.
+
+Subscription Checkout begins provider billing; it does not grant local access.
+Verified events and Capsule policy determine any subscription, entitlement,
+seat, order, billing-holder, or access consequences. Sporades creates none of
+those Capsule records automatically.
 
 Sporades owns Stripe transport, retries, compatibility, redirect validation,
 and safe provider-error translation behind `sporades/server/stripe`. The Capsule owns

@@ -205,6 +205,9 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(payments, /from "sporades\/server\/stripe"/);
     assert.match(payments, /createStripePaymentIntegration\(\{ enabled: false \}\)/);
     assert.match(payments, /stripePrices[^=]*=\s*Object\.freeze\(\{\}\)/);
+    assert.match(payments, /type CheckoutMode = "payment" \| "subscription"/);
+    assert.match(payments, /mode: product\.mode/);
+    assert.match(payments, /mode: Text\(\)/);
     assert.match(payments, /stripeCheckout/);
     assert.match(payments, /stripeCustomerPortal/);
     assert.match(payments, /startStripeCheckout/);
@@ -221,6 +224,8 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(paymentClient, /status: "pending"/);
     assert.match(paymentClient, /status: "succeeded"/);
     assert.match(paymentClient, /status: "failed"/);
+    assert.match(paymentClient, /CheckoutInput = Readonly<\{ intentId: string; productKey: string; quantity: number \}>/);
+    assert.doesNotMatch(paymentClient, /CheckoutInput[^;]+(?:priceId|customerId|mode|metadata|idempotencyKey|successPath|cancelPath)/);
     assert.match(paymentClient, /checkout\.stripe\.com/);
     assert.match(paymentClient, /\/c\/pay\//);
     assert.match(paymentClient, /\/pay\//);
@@ -229,9 +234,13 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(readme, /Sealed Server env/);
     assert.match(readme, /Anonymous Checkout requires an explicit Capsule opt-in/);
     assert.match(readme, /client\/payments\.ts/);
+    assert.match(readme, /one-time[\s\S]{0,100}subscription/i);
+    assert.match(readme, /verified events[\s\S]{0,100}Capsule policy/i);
     assert.match(agents, /Sporades owns Stripe transport/i);
+    assert.match(agents, /Checkout begins provider billing[\s\S]{0,120}local[\s\S]{0,80}access/i);
     assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
     assert.equal(packageJson.dependencies.stripe, undefined);
+    assert.doesNotMatch(payments, /subscriptions:\s*table|entitlements:\s*table|invoices:\s*table|seats:\s*table|orders:\s*table/);
 
     const generated = [serverEntry, payments, paymentClient, shared, readme, agents, await readFile(path.join(projectDir, ".env.sporades.server"), "utf8")].join("\n");
     assert.doesNotMatch(generated, /sk_(?:live|test)_|whsec_|price_[A-Za-z0-9]|cus_[A-Za-z0-9]|https:\/\/checkout\.stripe\.com/i);

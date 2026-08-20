@@ -150,9 +150,10 @@ Sporades currently includes:
   foundation: server-owned wiring, named payment Jobs, shared Job state, an
   empty Price catalogue, and no credentials, payment UI, callback route, or
   browser Stripe SDK. Complete activation supports an authorized, idempotent
-  one-time Checkout through a durable Job, actor-scoped progress, safe retries,
-  and a validated Stripe-hosted redirect. Existing and non-blank Capsules
-  remain unchanged.
+  one-time or recurring subscription Checkout through the same durable Job,
+  actor-scoped progress, safe retries, and a validated Stripe-hosted redirect.
+  The catalogue owns each Price mode; browser input owns neither mode nor Stripe
+  identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage. Every admitted
   esbuild/Vite pair uses the same acknowledged Sporades full-page refresh

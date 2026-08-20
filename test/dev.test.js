@@ -1986,7 +1986,7 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
   });
 });
 
-test("a generated activated blank Capsule starts one idempotent Checkout through its durable Job", { timeout: 120_000 }, async () => {
+test("a generated activated blank Capsule starts one-time and subscription Checkout through one durable Job", { timeout: 120_000 }, async () => {
   await withTempDir(async (dir) => {
     const providerRequests = [];
     const provider = createServer(async (request, response) => {
@@ -1994,6 +1994,13 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       for await (const chunk of request) body += chunk;
       const params = new URLSearchParams(body);
       providerRequests.push({ headers: request.headers, body: params });
+      const priceId = params.get("line_items[0][price]");
+      const mode = params.get("mode");
+      if ((priceId === "price_server_owned" && mode !== "payment") || (priceId === "price_recurring_server_owned" && mode !== "subscription")) {
+        response.writeHead(400, { "content-type": "application/json", "request-id": "req_price_mode_mismatch" });
+        response.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Price mode mismatch" } }));
+        return;
+      }
       const retryRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === "intent-retry-1");
       if (params.get("client_reference_id") === "intent-retry-1" && retryRequests.length === 1) {
         response.writeHead(500, { "content-type": "application/json", "request-id": "req_retry_once" });
@@ -2001,12 +2008,14 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
         return;
       }
       response.writeHead(200, { "content-type": "application/json", "request-id": "req_generated_checkout" });
+      const subscription = mode === "subscription";
+      const sessionId = subscription ? "cs_test_generated_subscription" : "cs_test_generated_checkout";
       response.end(JSON.stringify({
-        id: "cs_test_generated_checkout",
+        id: sessionId,
         object: "checkout.session",
         livemode: false,
-        mode: "payment",
-        url: "https://checkout.stripe.com/c/pay/cs_test_generated_checkout#fixture",
+        mode,
+        url: `https://checkout.stripe.com/c/pay/${sessionId}#fixture`,
       }));
     });
     await new Promise((resolve, reject) => {
@@ -2052,7 +2061,7 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       await writeFile(
         paymentsPath,
         paymentSource
-          .replace("Object.freeze({})", 'Object.freeze({ starter: { priceId: "price_server_owned", maxQuantity: 3 } })')
+          .replace("Object.freeze({})", 'Object.freeze({ starter: { mode: "payment", priceId: "price_server_owned", maxQuantity: 3 }, pro: { mode: "subscription", priceId: "price_recurring_server_owned", maxQuantity: 5 } })')
           .replace("  return false;", "  return true;")
           .replaceAll("signal: ctx.signal })", `signal: ctx.signal, apiBaseUrl: ${JSON.stringify(apiBaseUrl)} })`),
       );
@@ -2069,7 +2078,8 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
         return await response;
       };
       const checkoutInput = { intentId: "intent-generated-1", productKey: "starter", quantity: 2 };
-      const anonymous = await send(socket, { id: "anonymous-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      const subscriptionInput = { intentId: "intent-subscription-1", productKey: "pro", quantity: 4 };
+      const anonymous = await send(socket, { id: "anonymous-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
       assert.ok(anonymous.error);
       assert.equal(providerRequests.length, 0);
 
@@ -2082,8 +2092,20 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       assert.equal(signup.error, null);
       assert.equal(signup.data.auth.isGuest, false);
 
-      const injected = await send(socket, { id: "injected", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...checkoutInput, priceId: "price_browser_supplied" }] });
-      assert.ok(injected.error);
+      for (const [field, value] of Object.entries({
+        priceId: "price_browser_supplied",
+        customerId: "cus_browser_supplied",
+        mode: "payment",
+        metadata: { role: "admin" },
+        idempotencyKey: "browser-owned",
+        successPath: "https://browser.example/success",
+        cancelPath: "https://browser.example/cancel",
+      })) {
+        const injected = await send(socket, { id: `injected-${field}`, type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...subscriptionInput, [field]: value }] });
+        assert.ok(injected.error, field);
+      }
+      const excessiveQuantity = await send(socket, { id: "excessive-quantity", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...subscriptionInput, quantity: 6 }] });
+      assert.ok(excessiveQuantity.error);
       const unknown = await send(socket, { id: "unknown", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...checkoutInput, intentId: "intent-unknown-1", productKey: "unknown" }] });
       assert.ok(unknown.error);
       assert.equal(providerRequests.length, 0);
@@ -2101,6 +2123,7 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       });
       assert.equal(providerRequests.length, 1);
       assert.equal(providerRequests[0].headers["idempotency-key"], `sporades:checkout-blank:stripe:checkout:${signup.data.auth.userId}:intent-generated-1`);
+      assert.equal(providerRequests[0].body.get("mode"), "payment");
       assert.equal(providerRequests[0].body.get("line_items[0][price]"), "price_server_owned");
 
       const repeated = await send(socket, { id: "checkout-repeat", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
@@ -2109,7 +2132,30 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(providerRequests.length, 1);
 
-      const retryInput = { intentId: "intent-retry-1", productKey: "starter", quantity: 1 };
+      const startedSubscription = await send(socket, { id: "subscription", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
+      assert.equal(startedSubscription.error, null, JSON.stringify(startedSubscription));
+      const subscriptionJobId = startedSubscription.data.jobId;
+      const subscriptionSucceededPromise = waitForSocketMessage(socket, (message) => message.id === "subscription-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "subscription-state", type: "query.subscribe", query: "paymentJob", args: [subscriptionJobId] }));
+      const subscriptionSucceeded = await subscriptionSucceededPromise;
+      assert.deepEqual(subscriptionSucceeded.data.result, {
+        ok: true,
+        sessionId: "cs_test_generated_subscription",
+        url: "https://checkout.stripe.com/c/pay/cs_test_generated_subscription#fixture",
+      });
+      assert.equal(providerRequests.length, 2);
+      assert.equal(providerRequests[1].headers["idempotency-key"], `sporades:checkout-blank:stripe:checkout:${signup.data.auth.userId}:intent-subscription-1`);
+      assert.equal(providerRequests[1].body.get("mode"), "subscription");
+      assert.equal(providerRequests[1].body.get("line_items[0][price]"), "price_recurring_server_owned");
+      assert.equal(providerRequests[1].body.get("line_items[0][quantity]"), "4");
+
+      const repeatedSubscription = await send(socket, { id: "subscription-repeat", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
+      assert.equal(repeatedSubscription.error, null);
+      assert.equal(repeatedSubscription.data.jobId, subscriptionJobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.length, 2);
+
+      const retryInput = { intentId: "intent-retry-1", productKey: "pro", quantity: 1 };
       const retryStarted = await send(socket, { id: "checkout-retry", type: "mutation.run", mutation: "startStripeCheckout", args: [retryInput] });
       assert.equal(retryStarted.error, null, JSON.stringify(retryStarted));
       const retrySucceededPromise = waitForSocketMessage(socket, (message) => message.id === "payment-retry-state" && message.data?.status === "succeeded");
@@ -2122,7 +2168,7 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
       assert.match(retryRequests[0].headers["idempotency-key"], /:intent-retry-1$/);
 
       foreignSocket = await openSocket(started.data.url);
-      const foreign = await send(foreignSocket, { id: "foreign-state", type: "query.subscribe", query: "paymentJob", args: [jobId] });
+      const foreign = await send(foreignSocket, { id: "foreign-state", type: "query.subscribe", query: "paymentJob", args: [subscriptionJobId] });
       assert.equal(foreign.data ?? null, null);
       assert.equal(foreign.error ?? null, null);
 

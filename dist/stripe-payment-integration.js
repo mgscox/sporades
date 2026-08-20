@@ -11,7 +11,7 @@ const DISABLED_RESULT = Object.freeze({
 /**
  * Creates the server-only Stripe integration used by generated Capsule wiring.
  * Dormant use receives no provider authority. Complete activation admits only
- * the narrow validated one-time Checkout operation implemented here.
+ * one narrow validated Checkout operation for one-time and recurring Prices.
  */
 export function createStripePaymentIntegration(options) {
     if (options?.enabled !== false && options?.enabled !== true) {
@@ -41,7 +41,7 @@ export function createStripePaymentIntegration(options) {
                 let session;
                 try {
                     session = await waitForStripeRequest(stripe.checkout.sessions.create({
-                        mode: "payment",
+                        mode: checkout.mode,
                         line_items: [{ price: checkout.priceId, quantity: checkout.quantity }],
                         success_url: checkout.successUrl,
                         cancel_url: checkout.cancelUrl,
@@ -62,7 +62,7 @@ export function createStripePaymentIntegration(options) {
                         : paymentError("STRIPE_CHECKOUT_REJECTED", "Stripe rejected the Checkout request.", "Check the server-owned Price, account mode, and Stripe configuration before retrying.", false);
                 }
                 throwIfAborted(options.signal);
-                if (session.mode !== "payment" || session.livemode !== enabledConfig.livemode || !validCheckoutSessionId(session.id) || !validCheckoutUrl(session.url, session.id)) {
+                if (session.mode !== checkout.mode || session.livemode !== enabledConfig.livemode || !validCheckoutSessionId(session.id) || !validCheckoutUrl(session.url, session.id)) {
                     throw paymentError("STRIPE_CHECKOUT_RESPONSE_INVALID", "Stripe returned an invalid Checkout Session.", "Retry later or check the configured Stripe account mode.", false);
                 }
                 return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
@@ -88,9 +88,12 @@ export function createStripePaymentIntegration(options) {
     });
 }
 function validateCheckoutInput(input, publicOrigin) {
-    const keys = ["businessReference", "cancelPath", "idempotencyKey", "priceId", "quantity", "successPath"];
+    const keys = ["businessReference", "cancelPath", "idempotencyKey", "mode", "priceId", "quantity", "successPath"];
     if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== keys.join("\0")) {
-        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout input.", "Pass only the server-owned Price, quantity, return paths, idempotency key, and business reference.", false);
+        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout input.", "Pass only the server-owned Checkout mode, Price, quantity, return paths, idempotency key, and business reference.", false);
+    }
+    if (input.mode !== "payment" && input.mode !== "subscription") {
+        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout mode.", "Use the explicit mode attached to the server-owned Capsule product.", false);
     }
     if (typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,120}$/.test(input.priceId)) {
         throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid server-owned Stripe Price.", "Map a Capsule product key to one configured Stripe Price before calling the integration.", false);
@@ -105,6 +108,7 @@ function validateCheckoutInput(input, publicOrigin) {
         throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout business reference.", "Use a stable opaque business intent reference from 8 through 128 characters.", false);
     }
     return {
+        mode: input.mode,
         priceId: input.priceId,
         quantity: input.quantity,
         idempotencyKey: input.idempotencyKey,

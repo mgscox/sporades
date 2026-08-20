@@ -32,6 +32,8 @@ export type StripePaymentsDisabledResult = Readonly<{
 }>;
 
 export type StripeCheckoutSessionInput = Readonly<{
+  /** Explicit server-owned mode derived from the Capsule Price catalogue. */
+  mode: "payment" | "subscription";
   priceId: string;
   quantity: number;
   successPath: string;

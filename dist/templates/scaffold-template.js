@@ -1269,7 +1269,7 @@ export default capsule({
     };
 }
 function blankPaymentReadme(name, introduction) {
-    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define the server-owned Price catalogue and replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity. The mutation atomically persists the intent and enqueues an idempotent durable Job; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
+    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. The configured callback path is not registered until webhook support is implemented. Sporades owns Stripe transport, retries, compatibility, redirect validation, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
 }
 function blankPaymentSupportFiles(capsuleName) {
     return {
@@ -1279,14 +1279,15 @@ import type { CapsuleContext } from "sporades/server";
 import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
 import type { PaymentJobState } from "../shared/payments.js";
 
-type CheckoutProduct = Readonly<{ priceId: string; maxQuantity: number }>;
+type CheckoutMode = "payment" | "subscription";
+type CheckoutProduct = Readonly<{ mode: CheckoutMode; priceId: string; maxQuantity: number }>;
 type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
 
 // Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
 export const stripePrices: Readonly<Record<string, CheckoutProduct>> = Object.freeze({});
 
 export const paymentSchema = {
-  paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), quantity: Numeric(), status: Text() })
+  paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), mode: Text(), quantity: Numeric(), status: Text() })
     .unique("ownerId", "intentId")
     .acl({
       read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
@@ -1320,12 +1321,13 @@ export const paymentMutations = {
     if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before starting Checkout.");
     if (!await authorizeStripeCheckout(ctx, input)) throw checkoutError("PAYMENT_CHECKOUT_FORBIDDEN", "Checkout is not authorized.", "Ask a Capsule billing administrator to review this payment action.");
 
-    const inserted = await ctx.db.paymentIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, productKey: input.productKey, quantity: input.quantity, status: "queued" }, "ownerId", "intentId");
+    const inserted = await ctx.db.paymentIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, productKey: input.productKey, mode: product.mode, quantity: input.quantity, status: "queued" }, "ownerId", "intentId");
     const intent = inserted ?? await ctx.db.paymentIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
-    if (!intent || intent.productKey !== input.productKey || intent.quantity !== input.quantity) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different product or quantity.");
+    if (!intent || intent.productKey !== input.productKey || intent.mode !== product.mode || intent.quantity !== input.quantity) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different product, mode, or quantity.");
 
     const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:checkout:`)} + actor.userId + ":" + input.intentId;
     const queued = await ctx.jobs.enqueue("stripeCheckout", {
+      mode: product.mode,
       priceId: product.priceId,
       quantity: input.quantity,
       successPath: "/payments/success",
@@ -1347,7 +1349,7 @@ function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
 }
 
 function validPrice(product: CheckoutProduct) {
-  return /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
+  return (product.mode === "payment" || product.mode === "subscription") && /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
 }
 
 function checkoutError(code: string, message: string, hint: string) {
@@ -2854,8 +2856,10 @@ ${template === "blank" ? `
 
 - The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and matching Sealed Server env are ready.
 - Define product-key to Price mappings only in \`server/payments.ts\`; browser input must never carry a provider Price identity.
+- Give every catalogue entry an explicit \`payment\` or \`subscription\` mode and matching Stripe Price; never infer or accept the mode from browser input.
 - Keep \`authorizeStripeCheckout\` deny-by-default until the Capsule makes an explicit linked-user or Team billing decision.
 - Start Checkout in the mutation, observe its actor-scoped durable Job, and redirect only through the validator in \`client/payments.ts\`.
+- Checkout begins provider billing; verified events and Capsule policy determine local subscription, entitlement, and access consequences.
 - Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
 - Sporades owns Stripe transport, compatibility, redirect validation, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.

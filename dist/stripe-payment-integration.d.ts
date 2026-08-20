@@ -3,7 +3,7 @@ export type { StripePaymentIntegration, StripePaymentIntegrationOptions, StripeP
 /**
  * Creates the server-only Stripe integration used by generated Capsule wiring.
  * Dormant use receives no provider authority. Complete activation admits only
- * the narrow validated one-time Checkout operation implemented here.
+ * one narrow validated Checkout operation for one-time and recurring Prices.
  */
 export declare function createStripePaymentIntegration(options: StripePaymentIntegrationOptions): StripePaymentIntegration;
 //# sourceMappingURL=stripe-payment-integration.d.ts.map

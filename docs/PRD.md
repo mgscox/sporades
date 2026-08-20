@@ -43,9 +43,12 @@ The repository currently includes:
   validates named Sealed Server credentials and trusted return authority before
   publication. A linked actor can then pass a Capsule product key through an
   explicit deny-by-default policy seam to atomically persist an intent and
-  enqueue an idempotent durable Job. The Job performs one-time Stripe Checkout
-  after commit, exposes bounded actor-scoped progress, retries transient failure,
+  enqueue an idempotent durable Job. The same Job performs Stripe Checkout in
+  the explicit server-owned one-time or recurring subscription mode after
+  commit, exposes bounded actor-scoped progress, retries transient failure,
   redacts permanent failure, and returns only a validated Stripe-hosted redirect.
+  Checkout starts provider billing; verified events and Capsule policy determine
+  local subscription, entitlement, and access consequences.
   No callback route or Customer Portal authority is active yet, and existing and
   non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,

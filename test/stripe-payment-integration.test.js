@@ -22,6 +22,7 @@ const enabledConfig = {
 
 function checkoutInput(intent = "intent-protocol-1") {
   return {
+    mode: "payment",
     priceId: "price_server_owned",
     quantity: 1,
     successPath: "/payments/success",
@@ -117,6 +118,7 @@ test("one-time Checkout sends only server-owned authority and returns a narrow v
       apiBaseUrl,
     });
     assert.deepEqual(await integration.createCheckoutSession({
+      mode: "payment",
       priceId: "price_server_owned",
       quantity: 2,
       successPath: "/payments/success",
@@ -145,6 +147,108 @@ test("one-time Checkout sends only server-owned authority and returns a narrow v
   assert.equal(request.body.get("client_reference_id"), "intent-1");
 });
 
+test("subscription Checkout uses the same narrow operation with explicit server-owned mode", async () => {
+  let providerRequest;
+  await withStripeFake(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    providerRequest = { url: request.url, body: new URLSearchParams(body) };
+    response.writeHead(200, { "content-type": "application/json", "request-id": "req_subscription" });
+    response.end(JSON.stringify({
+      id: "cs_test_subscription_123",
+      object: "checkout.session",
+      livemode: false,
+      mode: "subscription",
+      url: "https://checkout.stripe.com/c/pay/cs_test_subscription_123#fixture",
+    }));
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+    });
+    assert.deepEqual(await integration.createCheckoutSession({
+      mode: "subscription",
+      priceId: "price_recurring_server_owned",
+      quantity: 3,
+      successPath: "/payments/success",
+      cancelPath: "/payments/cancelled",
+      idempotencyKey: "capsule:checkout:user-1:intent-subscription-1",
+      businessReference: "intent-subscription-1",
+    }), {
+      ok: true,
+      sessionId: "cs_test_subscription_123",
+      url: "https://checkout.stripe.com/c/pay/cs_test_subscription_123#fixture",
+    });
+  });
+
+  assert.equal(providerRequest.url, "/v1/checkout/sessions");
+  assert.equal(providerRequest.body.get("mode"), "subscription");
+  assert.equal(providerRequest.body.get("line_items[0][price]"), "price_recurring_server_owned");
+  assert.equal(providerRequest.body.get("line_items[0][quantity]"), "3");
+  assert.equal(providerRequest.body.get("customer"), null);
+  assert.equal(providerRequest.body.get("metadata"), null);
+});
+
+test("mismatched recurring Price mode is a safe permanent rejection", async () => {
+  await withStripeFake(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const params = new URLSearchParams(body);
+    assert.equal(params.get("mode"), "payment");
+    assert.equal(params.get("line_items[0][price]"), "price_recurring_server_owned");
+    response.writeHead(400, { "content-type": "application/json", "request-id": "req_mode_mismatch" });
+    response.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Recurring Price requires subscription mode: price_recurring_server_owned" } }));
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+    });
+    await assert.rejects(integration.createCheckoutSession({
+      ...checkoutInput("intent-mode-mismatch"),
+      priceId: "price_recurring_server_owned",
+    }), (error) => {
+      assert.equal(error.code, "STRIPE_CHECKOUT_REJECTED");
+      assert.equal(error.retryable, false);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /mode_mismatch|price_recurring_server_owned/);
+      return true;
+    });
+  });
+});
+
+test("a provider response cannot silently change subscription Checkout into one-time mode", async () => {
+  await withStripeFake(async (_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      id: "cs_test_wrong_mode",
+      object: "checkout.session",
+      livemode: false,
+      mode: "payment",
+      url: "https://checkout.stripe.com/c/pay/cs_test_wrong_mode",
+    }));
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({
+      enabled: true,
+      config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+      apiBaseUrl,
+    });
+    await assert.rejects(integration.createCheckoutSession({
+      ...checkoutInput("intent-response-mode"),
+      mode: "subscription",
+      priceId: "price_recurring_server_owned",
+    }), (error) => {
+      assert.equal(error.code, "STRIPE_CHECKOUT_RESPONSE_INVALID");
+      assert.equal(error.retryable, false);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /wrong_mode/);
+      return true;
+    });
+  });
+});
+
 test("permanent Stripe rejection becomes bounded redacted non-retryable failure", async () => {
   await withStripeFake(async (_request, response) => {
     response.writeHead(400, { "content-type": "application/json", "request-id": "req_rejected" });
@@ -165,6 +269,7 @@ test("permanent Stripe rejection becomes bounded redacted non-retryable failure"
     });
     await assert.rejects(
       integration.createCheckoutSession({
+        mode: "payment",
         priceId: "price_server_owned",
         quantity: 1,
         successPath: "/payments/success",
@@ -215,7 +320,7 @@ test("Checkout cancellation stops waiting and unexpected redirect authority fail
   await withStripeFake(async (_request, response) => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ id: "cs_test_cancelled", object: "checkout.session", livemode: false, mode: "payment", url: "https://checkout.stripe.com/c/pay/cs_test_cancelled" }));
+    response.end(JSON.stringify({ id: "cs_test_cancelled", object: "checkout.session", livemode: false, mode: "subscription", url: "https://checkout.stripe.com/c/pay/cs_test_cancelled" }));
   }, async (apiBaseUrl) => {
     const controller = new AbortController();
     const integration = createStripePaymentIntegration({
@@ -225,7 +330,7 @@ test("Checkout cancellation stops waiting and unexpected redirect authority fail
       apiBaseUrl,
       signal: controller.signal,
     });
-    const pending = integration.createCheckoutSession(checkoutInput("intent-cancelled"));
+    const pending = integration.createCheckoutSession({ ...checkoutInput("intent-cancelled"), mode: "subscription", priceId: "price_recurring_server_owned" });
     setTimeout(() => controller.abort(), 20);
     await assert.rejects(pending, (error) => error.name === "AbortError" && error.code === "ABORT_ERR");
   });

@@ -473,10 +473,12 @@ authority.
 
 Complete `enabled: true` options contain the validated project configuration,
 the runtime's Sealed Server env view, and the durable Job AbortSignal. The
-enabled `createCheckoutSession` accepts only a server-owned Price ID, bounded
-quantity, trusted same-origin return paths, stable business idempotency key,
-and opaque business reference. It always requests one-time payment mode and
-returns only `{ ok: true, sessionId, url }` after validating Stripe's mode,
+enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
+or `subscription` mode, server-owned Price ID, bounded quantity, trusted
+same-origin return paths, stable business idempotency key, and opaque business
+reference. Both modes use the same provider operation and durable Job; there is
+no parallel subscription transport. It returns only
+`{ ok: true, sessionId, url }` after validating Stripe's matching mode,
 account mode, Session identity, and exact `https://checkout.stripe.com` host.
 Transient failures are retryable by the durable Job; permanent rejection and
 invalid responses are bounded, redacted, and non-retryable. Customer Portal

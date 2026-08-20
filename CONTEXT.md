@@ -107,7 +107,7 @@ A runtime context, not just a set of exports. Internally manages the SQLite conn
 _Avoid_: server module, server library (it's a living context, not a static library)
 
 **Stripe payment integration**:
-The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. A dormant integration returns `STRIPE_PAYMENTS_DISABLED`; complete activation admits only validated Sealed Server credentials and lets a durable Job create a one-time Stripe-hosted Checkout Session with a stable business idempotency key and bounded safe result.
+The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. A dormant integration returns `STRIPE_PAYMENTS_DISABLED`; complete activation admits only validated Sealed Server credentials and lets a durable Job create a Stripe-hosted Checkout Session in an explicit server-owned one-time `payment` or recurring `subscription` mode with a stable business idempotency key and bounded safe result.
 _Avoid_: Stripe client, payment proxy, browser Stripe SDK
 
 **Built-in payment foundation**:
@@ -115,7 +115,7 @@ The ordinary payment scaffolding generated into every new blank Capsule. It star
 _Avoid_: payment template, Stripe demo, billing feature
 
 **Price catalogue**:
-The Capsule-owned server declaration that maps stable application Price names to provider Price identities after deliberate activation. The generated catalogue is empty, contains no live identities, and never belongs in browser code.
+The Capsule-owned server declaration that maps stable application Price names to an explicit one-time or subscription mode, a provider Price identity, and a maximum quantity after deliberate activation. The generated catalogue is empty, contains no live identities, and never belongs in browser code.
 _Avoid_: product list, Stripe Prices API, client price map
 
 **capsule()**:

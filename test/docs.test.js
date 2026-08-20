@@ -1194,8 +1194,8 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
   }
 });
 
-test("public docs agree on dormant and activated one-time Stripe Checkout", async () => {
-  const [context, prd, readme, projects, server, blankGuide, apiModule] = await Promise.all([
+test("public docs agree on one Checkout interface for one-time and subscription modes", async () => {
+  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("README.md"),
@@ -1203,6 +1203,7 @@ test("public docs agree on dormant and activated one-time Stripe Checkout", asyn
     readProjectFile("docs/reference/server-runtime.md"),
     readProjectFile("docs/guide/projects.md"),
     readProjectFile("docs/api/modules/stripe.html"),
+    readProjectFile("docs/api/types/stripe.StripeCheckoutSessionInput.html"),
   ]);
 
   for (const contents of [context, prd, readme, projects, server, blankGuide]) {
@@ -1213,10 +1214,18 @@ test("public docs agree on dormant and activated one-time Stripe Checkout", asyn
   assert.match(projects, /authorizeStripeCheckout/);
   assert.match(projects, /idempotency/i);
   assert.match(projects, /Anonymous Checkout remains off by default/i);
+  assert.match(projects, /(?:one-time|`payment`)/i);
+  assert.match(projects, /subscription/i);
+  assert.match(projects, /verified events[\s\S]{0,120}Capsule policy/i);
   assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
   assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
   assert.match(server, /checkout\.stripe\.com/);
+  assert.match(server, /payment[\s\S]{0,80}subscription[\s\S]{0,80}mode/i);
   assert.match(server, /non-retryable/i);
   assert.match(apiModule, /createStripePaymentIntegration/);
   assert.match(apiModule, /StripePaymentsDisabledResult/);
+  assert.match(apiModule, /StripeCheckoutSessionInput/);
+  assert.match(apiCheckoutInput, /mode/);
+  assert.match(apiCheckoutInput, /payment/);
+  assert.match(apiCheckoutInput, /subscription/);
 });
