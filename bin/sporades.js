@@ -6991,6 +6991,46 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
       await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
       return { accessKey };
+    },
+    async rotate(id, options) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      if (!isPlainObject2(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+        throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
+      }
+      const rotatedAt = database.clock.now().toISOString();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
+          ownerUserId: context.auth.userId,
+          id,
+          lifecycleRevision: options.lifecycleRevision,
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          rotatedAt
+        }));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
+        if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
+        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
+        accessKeySecretDisclosedContexts.add(context);
+        await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
+    },
+    async delete(id) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
+      if (outcome.status === "not-found") throw accessKeyNotFoundError();
+      if (outcome.status === "requires-revoked") {
+        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+      }
+      await emitOwnerAccessKeyAudit(database, "access-key.deleted", context, { id, name: outcome.record.name, grants: [] });
+      return { id, deleted: true };
     }
   };
 }
@@ -7235,21 +7275,23 @@ function withAccessKeyTransaction(database, operation) {
 }
 async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
   const issued = event === "access-key.issued";
+  const rotated = event === "access-key.rotated";
+  const deleted = event === "access-key.deleted";
   const input = {
     category: "platform",
     event,
     level: "info",
-    message: issued ? "Access key issued by its owner." : "Access key revoked by its owner.",
+    message: issued ? "Access key issued by its owner." : rotated ? "Access key rotated by its owner." : deleted ? "Access-key history deleted by its owner." : "Access key revoked by its owner.",
     data: {
-      operation: issued ? "accessKeys.issue" : "accessKeys.revoke",
+      operation: issued ? "accessKeys.issue" : rotated ? "accessKeys.rotate" : deleted ? "accessKeys.delete" : "accessKeys.revoke",
       executionSource: "server-context",
       outcome: "succeeded",
       actor: { userId: context.auth.userId },
       credential: { kind: "session" },
       accessKey: {
         id: accessKey.id,
-        name: accessKey.name,
-        ...issued ? { grants: [...accessKey.grants] } : {}
+        ...accessKey.name ? { name: accessKey.name } : {},
+        ...issued || rotated ? { grants: [...accessKey.grants] } : {}
       }
     }
   };
@@ -7292,6 +7334,28 @@ function transferAccessKeyRuntimeState(previousContext, nextContext) {
 }
 function accessKeySecretWasDisclosed(context) {
   return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+async function emitAccessKeyOwnerTransitionAudits(database, input) {
+  for (const record of input.records ?? []) {
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.revoked",
+        level: "info",
+        message: "Access key retired by an owner security transition.",
+        data: {
+          operation: input.operation,
+          executionSource: "auth-runtime",
+          outcome: "succeeded",
+          actor: { userId: input.ownerUserId },
+          credential: { kind: "session" },
+          accessKey: { id: record.id, name: record.name },
+          revocationCause: input.revocationCause
+        }
+      });
+    } catch {
+    }
+  }
 }
 function protectAccessKeyValue(value) {
   const target = Object.freeze({ ...value });
@@ -12432,7 +12496,7 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
     return { ok: false, error: invalidPasswordResetCodeError() };
   }
   const password = hashEmailPassword(newPassword);
-  return await database.adapter.withTransaction(async (tx) => {
+  const outcome = await database.adapter.withTransaction(async (tx) => {
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -12444,8 +12508,21 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
     await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
     await tx.deletePasswordResetCodesForUser(row.userId);
     await tx.deleteAuthSessionsForUser(row.userId);
-    return { ok: true };
+    const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
+      ownerUserId: row.userId,
+      revokedAt: database.clock.now().toISOString(),
+      revocationCause: "password-reset"
+    });
+    return { ok: true, revokedAccessKeys };
   });
+  if (!outcome.ok) return outcome;
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: "auth.confirmPasswordReset",
+    ownerUserId: preflight.userId,
+    revocationCause: "password-reset",
+    records: outcome.revokedAccessKeys.records
+  });
+  return { ok: true };
 }
 function passwordResetMailBody(link) {
   return {
@@ -14552,6 +14629,95 @@ function createSharedDatabaseAdapterMethods(dialect) {
         })
       ]);
       return thenIfPromise(sequence, () => existing);
+    },
+    rotateAccessKeyRecord(input) {
+      let existing = null;
+      let status = "not-found";
+      const sequence = chainMaybePromise([
+        () => this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+        )).run(input.ownerUserId),
+        () => thenIfPromise(this.prepare(
+          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+        ).get(input.ownerUserId, input.id), (row) => {
+          existing = row ?? null;
+          if (!existing) status = "not-found";
+          else if (existing.revokedAt || existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(input.rotatedAt)) status = "not-active";
+          else if (Number(existing.lifecycleRevision) !== Number(input.lifecycleRevision)) status = "revision-conflict";
+          else status = "ready";
+        }),
+        () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(
+          sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [secretVersion] = ? AND [selector] = ?")
+        ).get(input.secretVersion, input.selector), (collision) => {
+          if (collision) status = "selector-conflict";
+        }),
+        () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(sql(
+          "UPDATE [sporades_auth_access_keys] SET [secretVersion] = ?, [selector] = ?, [verifierDigest] = ?, [rotatedAt] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL"
+        )).run(
+          input.secretVersion,
+          input.selector,
+          input.verifierDigest,
+          input.rotatedAt,
+          input.ownerUserId,
+          input.id,
+          input.lifecycleRevision
+        ), (result) => {
+          status = result.changes === 1 ? "rotated" : "revision-conflict";
+        }),
+        () => status !== "rotated" ? void 0 : thenIfPromise(this.prepare(
+          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+        ).get(input.ownerUserId, input.id), (row) => {
+          existing = row ?? null;
+        })
+      ]);
+      return thenIfPromise(sequence, () => ({ status, record: existing }));
+    },
+    deleteRevokedAccessKeyRecord(input) {
+      let existing = null;
+      let status = "not-found";
+      const sequence = chainMaybePromise([
+        () => this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+        )).run(input.ownerUserId),
+        () => thenIfPromise(this.prepare(
+          sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
+        ).get(input.ownerUserId, input.id), (row) => {
+          existing = row ?? null;
+          status = !existing ? "not-found" : existing.revokedAt ? "ready" : "requires-revoked";
+        }),
+        () => status !== "ready" ? void 0 : thenIfPromise(this.prepare(
+          sql("DELETE FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NOT NULL")
+        ).run(input.ownerUserId, input.id), (result) => {
+          status = result.changes === 1 ? "deleted" : "not-found";
+        }),
+        () => status !== "deleted" ? void 0 : this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_owners] SET [totalCount] = [totalCount] - 1 WHERE [ownerUserId] = ?"
+        )).run(input.ownerUserId)
+      ]);
+      return thenIfPromise(sequence, () => ({ status, id: status === "deleted" ? input.id : null, record: existing }));
+    },
+    bulkRevokeAccessKeysForOwner(input) {
+      let revokedCount = 0;
+      let records = [];
+      const sequence = chainMaybePromise([
+        () => this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+        )).run(input.ownerUserId),
+        () => thenIfPromise(this.prepare(sql(
+          "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [revokedAt] IS NULL ORDER BY [createdAt] DESC, [id] DESC"
+        )).all(input.ownerUserId), (rows) => {
+          records = rows;
+        }),
+        () => thenIfPromise(this.prepare(sql(
+          "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [revokedAt] IS NULL"
+        )).run(input.revokedAt, input.revocationCause, input.ownerUserId), (result) => {
+          revokedCount = Number(result.changes ?? 0);
+        }),
+        () => revokedCount === 0 ? void 0 : this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?"
+        )).run(input.ownerUserId)
+      ]);
+      return thenIfPromise(sequence, () => ({ revokedCount, records }));
     },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);

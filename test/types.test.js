@@ -307,6 +307,10 @@ const app = capsule({
       listed.declaredScopes.map((scope) => scope.toUpperCase());
       listed.nextCursor?.toUpperCase();
       const revoked = await ctx.accessKeys.revoke(issued.accessKey.id);
+      const rotated = await ctx.accessKeys.rotate(issued.accessKey.id, { lifecycleRevision: issued.accessKey.lifecycleRevision });
+      rotated.token.toUpperCase();
+      const deleted = await ctx.accessKeys.delete(revoked.accessKey.id);
+      deleted.deleted satisfies true;
       revoked.accessKey.lifecycleRevision.valueOf();
       revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | null;
       // @ts-expect-error Access-key grants are immutable after issuance.

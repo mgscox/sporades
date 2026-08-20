@@ -324,6 +324,10 @@ export type IssueAccessKeyInput = {
   expiresAt?: string | null;
 };
 
+export type RotateAccessKeyOptions = {
+  lifecycleRevision: number;
+};
+
 export type ListAccessKeysOptions = {
   cursor?: string;
   limit?: number;
@@ -332,6 +336,7 @@ export type ListAccessKeysOptions = {
 
 export type CurrentUserAccessKeysApi = {
   issue(input: IssueAccessKeyInput): Promise<{ accessKey: AccessKeySummary; token: string }>;
+  rotate(id: string, options: RotateAccessKeyOptions): Promise<{ accessKey: AccessKeySummary; token: string }>;
   list(options?: ListAccessKeysOptions): Promise<{
     accessKeys: AccessKeySummary[];
     declaredScopes: string[];
@@ -339,6 +344,7 @@ export type CurrentUserAccessKeysApi = {
     totalCount: number;
   }>;
   revoke(id: string): Promise<{ accessKey: AccessKeySummary }>;
+  delete(id: string): Promise<{ id: string; deleted: true }>;
 };
 
 export type RequireAuthOptions = {

@@ -545,6 +545,111 @@ test("Access-key admission and coalesced best-effort usage telemetry stay outsid
   }
 });
 
+test("owners rotate, expire, revoke, delete, paginate, and recover immutable Access keys", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-lifecycle-"));
+  let now = new Date("2026-08-20T12:00:00.000Z");
+  const definition = capsule({
+    name: "access-key-lifecycle",
+    accessKeys: { scopes: ["requests:read"] },
+    queries: { listKeys: query((ctx, options) => ctx.accessKeys.list(options)) },
+    mutations: {
+      issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
+      rotateKey: mutation((ctx, id, options) => ctx.accessKeys.rotate(id, options)),
+      revokeKey: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+      deleteKey: mutation((ctx, id) => ctx.accessKeys.delete(id)),
+    },
+    endpoints: {
+      read: endpoint(
+        { method: "GET", path: "/read" },
+        requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, () => ({ body: { ok: true } })),
+      ),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
+    clock: { now: () => now },
+  });
+  try {
+    const owner = await seedLinkedUser(database, linkedAuth("lifecycle-owner"));
+    const other = await seedLinkedUser(database, { ...linkedAuth("lifecycle-other"), email: "other@example.com" });
+    const issued = await runMutation(database, owner, "issueKey", [{
+      name: "recoverable-key",
+      grants: ["requests:read"],
+      expiresAt: "2026-08-21T12:00:00.000Z",
+    }]);
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+
+    now = new Date("2026-08-20T13:00:00.000Z");
+    const rotated = await runMutation(database, owner, "rotateKey", [issued.data.accessKey.id, { lifecycleRevision: 1 }]);
+    assert.equal(rotated.error, null, JSON.stringify(rotated.error));
+    assert.notEqual(rotated.data.token, issued.data.token);
+    assert.deepEqual(rotated.data.accessKey, {
+      ...issued.data.accessKey,
+      rotatedAt: now.toISOString(),
+      lifecycleRevision: 2,
+    });
+    assert.equal((await requestEndpoint(database, "/read", { headers: { authorization: `Bearer ${issued.data.token}` } })).status, 401);
+    assert.equal((await requestEndpoint(database, "/read", { headers: { authorization: `Bearer ${rotated.data.token}` } })).status, 200);
+
+    const recoveredMetadata = await runQuery(database, owner, "listKeys", []);
+    const recoveredRotation = await runMutation(database, owner, "rotateKey", [
+      issued.data.accessKey.id,
+      { lifecycleRevision: recoveredMetadata.data.accessKeys[0].lifecycleRevision },
+    ]);
+    assert.equal(recoveredRotation.error, null, JSON.stringify(recoveredRotation.error));
+    assert.equal(recoveredRotation.data.accessKey.lifecycleRevision, 3);
+    assert.equal((await requestEndpoint(database, "/read", { headers: { authorization: `Bearer ${rotated.data.token}` } })).status, 401);
+    assert.equal((await requestEndpoint(database, "/read", { headers: { authorization: `Bearer ${recoveredRotation.data.token}` } })).status, 200);
+
+    const stale = await runMutation(database, owner, "rotateKey", [issued.data.accessKey.id, { lifecycleRevision: 1 }]);
+    assert.equal(stale.error.code, "ACCESS_KEY_REVISION_CONFLICT");
+    const otherOwner = await runMutation(database, other, "rotateKey", [issued.data.accessKey.id, { lifecycleRevision: 3 }]);
+    assert.equal(otherOwner.error.code, "ACCESS_KEY_NOT_FOUND");
+    const activeDelete = await runMutation(database, owner, "deleteKey", [issued.data.accessKey.id]);
+    assert.equal(activeDelete.error.code, "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+
+    now = new Date("2026-08-21T12:00:00.000Z");
+    const expiredList = await runQuery(database, owner, "listKeys", [{ status: "expired" }]);
+    assert.equal(expiredList.data.totalCount, 1);
+    assert.equal(expiredList.data.accessKeys[0].status, "expired");
+    const expiredRotate = await runMutation(database, owner, "rotateKey", [issued.data.accessKey.id, { lifecycleRevision: 3 }]);
+    assert.equal(expiredRotate.error.code, "ACCESS_KEY_NOT_ACTIVE");
+    const duplicateExpiredName = await runMutation(database, owner, "issueKey", [{ name: "recoverable-key" }]);
+    assert.equal(duplicateExpiredName.error.code, "ACCESS_KEY_NAME_CONFLICT");
+
+    const revoked = await runMutation(database, owner, "revokeKey", [issued.data.accessKey.id]);
+    assert.equal(revoked.data.accessKey.lifecycleRevision, 4);
+    const revokedAgain = await runMutation(database, owner, "revokeKey", [issued.data.accessKey.id]);
+    assert.deepEqual(revokedAgain.data, revoked.data);
+    const reused = await runMutation(database, owner, "issueKey", [{ name: "recoverable-key" }]);
+    assert.equal(reused.error, null, JSON.stringify(reused.error));
+
+    now = new Date("2026-08-21T13:00:00.000Z");
+    const second = await runMutation(database, owner, "issueKey", [{ name: "second-key" }]);
+    now = new Date("2026-08-21T14:00:00.000Z");
+    const third = await runMutation(database, owner, "issueKey", [{ name: "third-key" }]);
+    const firstPage = await runQuery(database, owner, "listKeys", [{ limit: 2 }]);
+    assert.equal(firstPage.data.accessKeys.length, 2);
+    assert.equal(firstPage.data.totalCount, 4);
+    assert.ok(firstPage.data.nextCursor);
+    const secondPage = await runQuery(database, owner, "listKeys", [{ limit: 2, cursor: firstPage.data.nextCursor }]);
+    assert.equal(secondPage.data.accessKeys.length, 2);
+    assert.equal(new Set([...firstPage.data.accessKeys, ...secondPage.data.accessKeys].map((key) => key.id)).size, 4);
+
+    const deleted = await runMutation(database, owner, "deleteKey", [issued.data.accessKey.id]);
+    assert.deepEqual(deleted.data, { id: issued.data.accessKey.id, deleted: true });
+    assert.equal((await runQuery(database, owner, "listKeys", [])).data.accessKeys.some((key) => key.id === issued.data.accessKey.id), false);
+    assert.equal((await runMutation(database, other, "deleteKey", [reused.data.accessKey.id])).error.code, "ACCESS_KEY_NOT_FOUND");
+    assert.ok(second.data.token && third.data.token);
+    const lifecycleAudits = await database.log.tail(100);
+    assert.equal(lifecycleAudits.filter((event) => event.event === "access-key.rotated" && event.data?.accessKey?.id === issued.data.accessKey.id).length, 2);
+    assert.equal(lifecycleAudits.some((event) => event.event === "access-key.deleted" && event.data?.accessKey?.id === issued.data.accessKey.id), true);
+    assert.equal(JSON.stringify(lifecycleAudits).includes(recoveredRotation.data.token), false);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the Access-key bearer parser accepts only the fixed bounded wire form", () => {
   const secret = createAccessKeySecret();
   assert.deepEqual(

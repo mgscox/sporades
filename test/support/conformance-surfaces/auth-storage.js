@@ -1142,6 +1142,104 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key rotation CAS, bulk retirement, and revoked-history deletion preserve lifecycle invariants",
+    async run(adapter) {
+      const record = {
+        id: "access-key-complete-lifecycle",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "complete-lifecycle",
+        reservedName: "complete-lifecycle",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "hijklmnopqrstuvwxyzabc",
+        verifierDigest: "ac".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.issueAccessKeyRecord(record), { status: "issued" });
+      const rotated = await adapter.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "ijklmnopqrstuvwxyzabcd",
+        verifierDigest: "bd".repeat(32),
+        rotatedAt: LATER,
+      });
+      assert.equal(rotated.status, "rotated");
+      assert.equal(Number(rotated.record.lifecycleRevision), 2);
+      assert.equal(rotated.record.name, record.name);
+      assert.equal(rotated.record.grantsJson, record.grantsJson);
+      assert.equal(rotated.record.expiresAt, record.expiresAt);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord("ijklmnopqrstuvwxyzabcd")).id, record.id);
+      assert.equal((await adapter.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "jklmnopqrstuvwxyzabcde",
+        verifierDigest: "ce".repeat(32),
+        rotatedAt: "2026-08-01T10:00:00.000Z",
+      })).status, "revision-conflict");
+
+      const bulk = await adapter.bulkRevokeAccessKeysForOwner({
+        ownerUserId: record.ownerUserId,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner-unlinked",
+      });
+      assert.ok(bulk.revokedCount >= 1);
+      const retired = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId)).find((row) => row.id === record.id);
+      assert.equal(retired.revocationCause, "owner-unlinked");
+      assert.equal(Number(retired.lifecycleRevision), 3);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("ijklmnopqrstuvwxyzabcd"), null);
+      const deleted = await adapter.deleteRevokedAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+      });
+      assert.deepEqual({ status: deleted.status, id: deleted.id }, { status: "deleted", id: record.id });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId)).some((row) => row.id === record.id), false);
+
+      const competing = {
+        ...record,
+        id: "access-key-competing-rotation",
+        name: "competing-rotation",
+        reservedName: "competing-rotation",
+        selector: "klmnopqrstuvwxyzabcdef",
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(competing)), { status: "issued" });
+      const rotations = await Promise.all([
+        adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+          ownerUserId: competing.ownerUserId,
+          id: competing.id,
+          lifecycleRevision: 1,
+          secretVersion: 1,
+          selector: "lmnopqrstuvwxyzabcdefg",
+          verifierDigest: "df".repeat(32),
+          rotatedAt: LATER,
+        })),
+        adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+          ownerUserId: competing.ownerUserId,
+          id: competing.id,
+          lifecycleRevision: 1,
+          secretVersion: 1,
+          selector: "mnopqrstuvwxyzabcdefgh",
+          verifierDigest: "e1".repeat(32),
+          rotatedAt: LATER,
+        })),
+      ]);
+      assert.deepEqual(rotations.map((outcome) => outcome.status).sort(), ["revision-conflict", "rotated"]);
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: competing.ownerUserId,
+        id: competing.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+      await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({ ownerUserId: competing.ownerUserId, id: competing.id }));
+    },
+  },
+  {
     name: "Access-key current quota rejects the next issue without corrupting owner counters",
     async run(adapter) {
       for (let index = 0; index < 100; index += 1) {

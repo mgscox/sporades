@@ -96,6 +96,53 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
             await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
             return { accessKey };
         },
+        async rotate(id, options) {
+            const context = requireOwnerSessionContext(contextGetter());
+            if (typeof id !== "string" || !id)
+                throw accessKeyNotFoundError();
+            if (!isPlainObject(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+                throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
+            }
+            const rotatedAt = database.clock.now().toISOString();
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                const secret = createAccessKeySecret();
+                const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
+                    ownerUserId: context.auth.userId,
+                    id,
+                    lifecycleRevision: options.lifecycleRevision,
+                    secretVersion: 1,
+                    selector: secret.selector,
+                    verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+                    rotatedAt,
+                }));
+                if (outcome.status === "selector-conflict")
+                    continue;
+                if (outcome.status === "not-found")
+                    throw accessKeyNotFoundError();
+                if (outcome.status === "not-active")
+                    throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
+                if (outcome.status === "revision-conflict")
+                    throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
+                const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
+                accessKeySecretDisclosedContexts.add(context);
+                await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
+                return { accessKey, token: secret.token };
+            }
+            throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
+        },
+        async delete(id) {
+            const context = requireOwnerSessionContext(contextGetter());
+            if (typeof id !== "string" || !id)
+                throw accessKeyNotFoundError();
+            const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
+            if (outcome.status === "not-found")
+                throw accessKeyNotFoundError();
+            if (outcome.status === "requires-revoked") {
+                throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+            }
+            await emitOwnerAccessKeyAudit(database, "access-key.deleted", context, { id, name: outcome.record.name, grants: [] });
+            return { id, deleted: true };
+        },
     };
 }
 export function readAccessKeyAuthorization(request) {
@@ -365,21 +412,23 @@ function withAccessKeyTransaction(database, operation) {
 }
 async function emitOwnerAccessKeyAudit(database, event, context, accessKey) {
     const issued = event === "access-key.issued";
+    const rotated = event === "access-key.rotated";
+    const deleted = event === "access-key.deleted";
     const input = {
         category: "platform",
         event,
         level: "info",
-        message: issued ? "Access key issued by its owner." : "Access key revoked by its owner.",
+        message: issued ? "Access key issued by its owner." : rotated ? "Access key rotated by its owner." : deleted ? "Access-key history deleted by its owner." : "Access key revoked by its owner.",
         data: {
-            operation: issued ? "accessKeys.issue" : "accessKeys.revoke",
+            operation: issued ? "accessKeys.issue" : rotated ? "accessKeys.rotate" : deleted ? "accessKeys.delete" : "accessKeys.revoke",
             executionSource: "server-context",
             outcome: "succeeded",
             actor: { userId: context.auth.userId },
             credential: { kind: "session" },
             accessKey: {
                 id: accessKey.id,
-                name: accessKey.name,
-                ...(issued ? { grants: [...accessKey.grants] } : {}),
+                ...(accessKey.name ? { name: accessKey.name } : {}),
+                ...(issued || rotated ? { grants: [...accessKey.grants] } : {}),
             },
         },
     };
@@ -426,6 +475,28 @@ export function transferAccessKeyRuntimeState(previousContext, nextContext) {
 }
 export function accessKeySecretWasDisclosed(context) {
     return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+export async function emitAccessKeyOwnerTransitionAudits(database, input) {
+    for (const record of input.records ?? []) {
+        try {
+            await database.log?.emit?.({
+                category: "platform",
+                event: "access-key.revoked",
+                level: "info",
+                message: "Access key retired by an owner security transition.",
+                data: {
+                    operation: input.operation,
+                    executionSource: "auth-runtime",
+                    outcome: "succeeded",
+                    actor: { userId: input.ownerUserId },
+                    credential: { kind: "session" },
+                    accessKey: { id: record.id, name: record.name },
+                    revocationCause: input.revocationCause,
+                },
+            });
+        }
+        catch { }
+    }
 }
 function protectAccessKeyValue(value) {
     const target = Object.freeze({ ...value });

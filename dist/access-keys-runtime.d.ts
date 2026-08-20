@@ -58,6 +58,27 @@ export declare function createCurrentUserAccessKeysApi(database: LooseRecord, co
             lifecycleRevision: number;
         };
     }>;
+    rotate(id: unknown, options: unknown): Promise<{
+        accessKey: {
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        };
+        token: string;
+    }>;
+    delete(id: unknown): Promise<{
+        id: string;
+        deleted: boolean;
+    }>;
 };
 export declare function readAccessKeyAuthorization(request: LooseRecord): {
     token: string;
@@ -97,5 +118,6 @@ export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord
 export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined): void;
 export declare function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
+export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
 export {};
 //# sourceMappingURL=access-keys-runtime.d.ts.map

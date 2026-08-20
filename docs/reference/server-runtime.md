@@ -327,7 +327,7 @@ table ACL, Team policy, and Capsule code therefore authorize the real owner and
 can separately attribute the named API access. They may inspect these values
 but cannot replace or mutate them.
 
-### Issue and revoke Access keys
+### Manage Access keys
 
 A linked, non-guest Session manages only its own keys through `ctx.accessKeys`:
 
@@ -339,6 +339,9 @@ mutations: {
     expiresAt: "2027-01-01T00:00:00.000Z",
   })),
   revokeAutomationKey: mutation((ctx, id: string) => ctx.accessKeys.revoke(id)),
+  rotateAutomationKey: mutation((ctx, id: string, lifecycleRevision: number) =>
+    ctx.accessKeys.rotate(id, { lifecycleRevision })),
+  deleteAutomationKeyHistory: mutation((ctx, id: string) => ctx.accessKeys.delete(id)),
 },
 queries: {
   myAutomationKeys: query((ctx) => ctx.accessKeys.list({ status: "active" })),
@@ -352,6 +355,19 @@ token. Names are unique among an owner's current keys. Owner, name, grants, and
 optional expiry are immutable; omitted grants default to `*`, meaning any
 scope declared by this Capsule. Grant wildcards are matched at request time, so
 `projects:*` satisfies both `projects:read` and `projects:delete`.
+
+`rotate()` compare-and-swaps the listed `lifecycleRevision`, preserves the
+key's ID, owner, name, grants, and expiry, and returns a replacement token once.
+The previous token stops authenticating after rotation commits. Refresh the
+list and rotate again if an issue or rotation response is lost; Sporades never
+stores plaintext for replay. Revocation is irreversible and idempotent. Only a
+revoked historical key may be deleted; active and expired keys continue to
+reserve their names until revoked.
+
+Password-reset confirmation retires every current key for that owner in the
+same Auth transaction that changes the password and revokes Sessions. Ordinary
+password changes do not retire keys, and a later relink cannot revive a
+retired credential.
 
 Access keys cannot issue, inspect, or revoke keys. Neither can Anonymous or
 guest Sessions, Jobs, Schedules, lifecycle hooks, or Privileged work. A key

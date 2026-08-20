@@ -83,7 +83,7 @@ import { chainMaybePromise } from "./maybe-promise.js";
 // module initialization. See `http-runtime.ts`'s header.
 import { normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError, } from "./http-runtime.js";
 import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, createAccessKeyTables } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, createAccessKeyTables, emitAccessKeyOwnerTransitionAudits } from "./access-keys-runtime.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
 // the emitted-list bundle splices into a deployed Capsule.
@@ -1945,7 +1945,7 @@ export async function confirmPasswordReset(database, _session, code, newPassword
     // credential write. A second contender can have passed the preflight before
     // the first transaction commits, so its deletion result decides whether it
     // may continue.
-    return await database.adapter.withTransaction(async (tx) => {
+    const outcome = await database.adapter.withTransaction(async (tx) => {
         const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
         if (!row) {
             return { ok: false, error: invalidPasswordResetCodeError() };
@@ -1961,8 +1961,22 @@ export async function confirmPasswordReset(database, _session, code, newPassword
         // Evicting every Session for the account is the point of the reset: an
         // attacker holding a live Session must not outlive the password change.
         await tx.deleteAuthSessionsForUser(row.userId);
-        return { ok: true };
+        const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
+            ownerUserId: row.userId,
+            revokedAt: database.clock.now().toISOString(),
+            revocationCause: "password-reset",
+        });
+        return { ok: true, revokedAccessKeys };
     });
+    if (!outcome.ok)
+        return outcome;
+    await emitAccessKeyOwnerTransitionAudits(database, {
+        operation: "auth.confirmPasswordReset",
+        ownerUserId: preflight.userId,
+        revocationCause: "password-reset",
+        records: outcome.revokedAccessKeys.records,
+    });
+    return { ok: true };
 }
 export function passwordResetMailBody(link) {
     return {
