@@ -2142,6 +2142,36 @@ test("a generated activated blank Capsule starts one idempotent Checkout through
   });
 });
 
+test("activated Stripe rejects legacy plaintext server env before publishing a Bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "sealed-stripe", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "sealed-stripe");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.payments.stripe = {
+      enabled: true,
+      secretKeyEnv: "STRIPE_SECRET_KEY",
+      webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+      publicOrigin: "https://payments.example.test",
+      callbackPath: "/__sporades/stripe/webhook",
+      apiVersion: "2026-07-29.dahlia",
+      livemode: false,
+      requestTimeoutMs: 10_000,
+    };
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "STRIPE_SECRET_KEY=sk_test_plaintext_fixture\nSTRIPE_WEBHOOK_SECRET=whsec_plaintext_fixture\n");
+
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.code, "INVALID_STRIPE_PAYMENTS_CONFIG");
+      assert.match(error.hint, /sporades env set/i);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /plaintext_fixture/);
+      return true;
+    });
+    await assert.rejects(access(path.join(projectDir, ".sporades", "build", "server.mjs")), (error) => error.code === "ENOENT");
+  });
+});
+
 test("sporades dev builds and safely serves the normalized public tree", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "public-island", "--no-install", "--no-git", "--json"], {

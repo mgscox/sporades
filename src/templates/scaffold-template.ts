@@ -1355,21 +1355,16 @@ export async function authorizeStripeCheckout(_ctx: CapsuleContext, _input: Chec
   return false;
 }
 
+function stripeForContext(ctx: CapsuleContext) {
+  const config = ctx.payments?.stripe;
+  return config?.enabled
+    ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+    : createStripePaymentIntegration({ enabled: false });
+}
+
 export const paymentJobs = {
-  stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => {
-    const config = ctx.payments?.stripe;
-    const stripe = config?.enabled
-      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
-      : createStripePaymentIntegration({ enabled: false });
-    return stripe.createCheckoutSession(input);
-  }),
-  stripeCustomerPortal: job((ctx, input) => {
-    const config = ctx.payments?.stripe;
-    const stripe = config?.enabled
-      ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
-      : createStripePaymentIntegration({ enabled: false });
-    return stripe.createCustomerPortalSession(input);
-  }),
+  stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => stripeForContext(ctx).createCheckoutSession(input)),
+  stripeCustomerPortal: job((ctx, input) => stripeForContext(ctx).createCustomerPortalSession(input)),
 };
 
 export const paymentMutations = {
@@ -1479,7 +1474,8 @@ function validCheckoutResult(value: unknown): PaymentCheckoutResult | null {
   if (result.ok !== true || typeof result.sessionId !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(result.sessionId) || typeof result.url !== "string") return null;
   try {
     const url = new URL(result.url);
-    if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || url.username || url.password || url.port) return null;
+    const validPath = url.pathname === \`/c/pay/\${result.sessionId}\` || url.pathname === \`/pay/\${result.sessionId}\`;
+    if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || !validPath || url.username || url.password || url.port) return null;
   } catch { return null; }
   return result as PaymentCheckoutResult;
 }

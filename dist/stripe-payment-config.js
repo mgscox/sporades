@@ -88,6 +88,13 @@ export function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
     }
     return normalized;
 }
+export function validateStripePaymentsSealedServerEnv(payments, hasSealedEnvelope) {
+    const normalized = validatePaymentsConfig(payments);
+    if (normalized?.stripe.enabled && !hasSealedEnvelope) {
+        fail("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
+    }
+    return normalized;
+}
 function isPlainRecord(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         return false;

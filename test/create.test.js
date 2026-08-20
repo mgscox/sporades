@@ -222,6 +222,8 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(paymentClient, /status: "succeeded"/);
     assert.match(paymentClient, /status: "failed"/);
     assert.match(paymentClient, /checkout\.stripe\.com/);
+    assert.match(paymentClient, /\/c\/pay\//);
+    assert.match(paymentClient, /\/pay\//);
     assert.match(paymentClient, /window\.location\.assign/);
     assert.match(readme, /payments\.stripe\.enabled/);
     assert.match(readme, /Sealed Server env/);

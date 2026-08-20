@@ -3,7 +3,7 @@ export declare const STRIPE_API_VERSION: "2026-07-29.dahlia";
 export type DormantStripePaymentsConfig = Readonly<{
     enabled: false;
 }>;
-export type EnabledStripePaymentsConfig = Readonly<{
+export type StripeEnabledPaymentsConfig = Readonly<{
     enabled: true;
     secretKeyEnv: string;
     webhookSecretEnv: string;
@@ -13,11 +13,12 @@ export type EnabledStripePaymentsConfig = Readonly<{
     livemode: boolean;
     requestTimeoutMs: number;
 }>;
-export type StripePaymentsConfig = DormantStripePaymentsConfig | EnabledStripePaymentsConfig;
+export type StripePaymentsConfig = DormantStripePaymentsConfig | StripeEnabledPaymentsConfig;
 export type PaymentsConfig = Readonly<{
     stripe: StripePaymentsConfig;
 }>;
 export declare function validatePaymentsConfig(payments: unknown): PaymentsConfig | undefined;
 export declare function validateStripePaymentsRuntimeConfig(payments: unknown, serverEnv: LooseRecord): PaymentsConfig | undefined;
+export declare function validateStripePaymentsSealedServerEnv(payments: unknown, hasSealedEnvelope: boolean): PaymentsConfig | undefined;
 export {};
 //# sourceMappingURL=stripe-payment-config.d.ts.map

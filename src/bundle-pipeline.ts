@@ -10,7 +10,7 @@ import { createServerBundleModuleSource } from "./templates/server-bundle-module
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
-import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
+import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -85,6 +85,7 @@ export async function createBundle(
 
   const sealedPaths = sealedServerEnvPaths(projectDir);
   const sealedEnvelope = await readSealedServerEnv(sealedPaths);
+  validateStripePaymentsSealedServerEnv(config.payments, sealedEnvelope !== null);
   const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
   const serverEnv = sealedEnvelope
     ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)

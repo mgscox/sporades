@@ -230,21 +230,26 @@ test("Checkout cancellation stops waiting and unexpected redirect authority fail
     await assert.rejects(pending, (error) => error.name === "AbortError" && error.code === "ABORT_ERR");
   });
 
-  await withStripeFake(async (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ id: "cs_test_wrong_host", object: "checkout.session", livemode: false, mode: "payment", url: "https://checkout.stripe.example/c/pay/cs_test_wrong_host" }));
-  }, async (apiBaseUrl) => {
-    const integration = createStripePaymentIntegration({
-      enabled: true,
-      config: enabledConfig,
-      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
-      apiBaseUrl,
+  for (const [reference, url] of [
+    ["intent-wrong-host", "https://checkout.stripe.example/c/pay/cs_test_wrong_host"],
+    ["intent-wrong-path", "https://checkout.stripe.com/account/cs_test_wrong_path"],
+  ]) {
+    await withStripeFake(async (_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: `cs_test_${reference.slice("intent-".length).replaceAll("-", "_")}`, object: "checkout.session", livemode: false, mode: "payment", url }));
+    }, async (apiBaseUrl) => {
+      const integration = createStripePaymentIntegration({
+        enabled: true,
+        config: enabledConfig,
+        env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" },
+        apiBaseUrl,
+      });
+      await assert.rejects(integration.createCheckoutSession(checkoutInput(reference)), (error) => {
+        assert.equal(error.code, "STRIPE_CHECKOUT_RESPONSE_INVALID");
+        assert.equal(error.retryable, false);
+        assert.doesNotMatch(`${error.message}\n${error.hint}`, /stripe\.example|wrong_host|wrong_path/);
+        return true;
+      });
     });
-    await assert.rejects(integration.createCheckoutSession(checkoutInput("intent-wrong-host")), (error) => {
-      assert.equal(error.code, "STRIPE_CHECKOUT_RESPONSE_INVALID");
-      assert.equal(error.retryable, false);
-      assert.doesNotMatch(`${error.message}\n${error.hint}`, /stripe\.example|cs_test_wrong_host/);
-      return true;
-    });
-  });
+  }
 });

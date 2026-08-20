@@ -62,7 +62,7 @@ export function createStripePaymentIntegration(options) {
                         : paymentError("STRIPE_CHECKOUT_REJECTED", "Stripe rejected the Checkout request.", "Check the server-owned Price, account mode, and Stripe configuration before retrying.", false);
                 }
                 throwIfAborted(options.signal);
-                if (session.mode !== "payment" || session.livemode !== enabledConfig.livemode || !validCheckoutSessionId(session.id) || !validCheckoutUrl(session.url)) {
+                if (session.mode !== "payment" || session.livemode !== enabledConfig.livemode || !validCheckoutSessionId(session.id) || !validCheckoutUrl(session.url, session.id)) {
                     throw paymentError("STRIPE_CHECKOUT_RESPONSE_INVALID", "Stripe returned an invalid Checkout Session.", "Retry later or check the configured Stripe account mode.", false);
                 }
                 return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
@@ -122,12 +122,13 @@ function resolveReturnUrl(publicOrigin, path, label) {
 function validCheckoutSessionId(value) {
     return typeof value === "string" && /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(value);
 }
-function validCheckoutUrl(value) {
+function validCheckoutUrl(value, sessionId) {
     if (typeof value !== "string")
         return false;
     try {
         const url = new URL(value);
-        return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && !url.username && !url.password && !url.port;
+        const validPath = url.pathname === `/c/pay/${sessionId}` || url.pathname === `/pay/${sessionId}`;
+        return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && validPath && !url.username && !url.password && !url.port;
     }
     catch {
         return false;

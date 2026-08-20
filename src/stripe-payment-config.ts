@@ -3,7 +3,7 @@ type LooseRecord = Record<string, any>;
 export const STRIPE_API_VERSION = "2026-07-29.dahlia" as const;
 
 export type DormantStripePaymentsConfig = Readonly<{ enabled: false }>;
-export type EnabledStripePaymentsConfig = Readonly<{
+export type StripeEnabledPaymentsConfig = Readonly<{
   enabled: true;
   secretKeyEnv: string;
   webhookSecretEnv: string;
@@ -13,7 +13,7 @@ export type EnabledStripePaymentsConfig = Readonly<{
   livemode: boolean;
   requestTimeoutMs: number;
 }>;
-export type StripePaymentsConfig = DormantStripePaymentsConfig | EnabledStripePaymentsConfig;
+export type StripePaymentsConfig = DormantStripePaymentsConfig | StripeEnabledPaymentsConfig;
 export type PaymentsConfig = Readonly<{ stripe: StripePaymentsConfig }>;
 
 const ENABLED_KEYS = [
@@ -102,6 +102,14 @@ export function validateStripePaymentsRuntimeConfig(payments: unknown, serverEnv
   }
   if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
     fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  return normalized;
+}
+
+export function validateStripePaymentsSealedServerEnv(payments: unknown, hasSealedEnvelope: boolean): PaymentsConfig | undefined {
+  const normalized = validatePaymentsConfig(payments);
+  if (normalized?.stripe.enabled && !hasSealedEnvelope) {
+    fail("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
   }
   return normalized;
 }
