@@ -610,6 +610,11 @@ test("retained Job provenance must match its actor and fails terminally before h
       JSON.stringify({ userId: "actor-b", displayName: "Actor B", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
       JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }), "forged-schedule",
     );
+    insert.run(
+      "ordinary-scheduled-actor", "actor-a", "actor-a",
+      JSON.stringify({ userId: "actor-a", displayName: "Actor A", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
+      JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }), "forged-schedule",
+    );
 
     await runCurrentUserJobWorker(database);
     assert.equal(handlerCalls, 0);
@@ -633,6 +638,11 @@ test("retained Job provenance must match its actor and fails terminally before h
       },
       {
         id: "mismatched-scheduled-actor", status: "failed", attempts: 0,
+        failure: { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." },
+        attemptHistory: [],
+      },
+      {
+        id: "ordinary-scheduled-actor", status: "failed", attempts: 0,
         failure: { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." },
         attemptHistory: [],
       },
