@@ -202,6 +202,11 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
 
     assert.match(serverEntry, /jobs:\s*paymentJobs/);
     assert.match(serverEntry, /queries:\s*paymentQueries/);
+    assert.match(serverEntry, /stripeEvents:\s*paymentStripeEvents/);
+    assert.match(payments, /stripeEvent/);
+    assert.match(payments, /paymentStripeEvents\s*=\s*stripeEvent/);
+    assert.match(payments, /switch\s*\(event\.type\)/);
+    assert.match(payments, /default:[\s\S]{0,120}return/);
     assert.match(payments, /from "sporades\/server\/stripe"/);
     assert.match(payments, /createStripePaymentIntegration\(\{ enabled: false \}\)/);
     assert.match(payments, /stripePrices[^=]*=\s*Object\.freeze\(\{\}\)/);
@@ -254,6 +259,9 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(readme, /verified events[\s\S]{0,100}Capsule policy/i);
     assert.match(readme, /exact signed bytes[\s\S]{0,160}idempotent Privileged Job/i);
     assert.match(readme, /admission performs no Capsule billing consequence/i);
+    assert.match(readme, /Stripe event policy[\s\S]{0,80}server\/payments\.ts/i);
+    assert.match(readme, /idempotent[\s\S]{0,120}order-independent/i);
+    assert.match(readme, /raw provider value[\s\S]{0,160}(?:log|persist)/i);
     assert.match(readme, /Customer Portal is the preferred surface/i);
     assert.match(readme, /Unknown, deleted, and unauthorized holders/);
     assert.match(agents, /Sporades owns Stripe transport/i);
@@ -261,6 +269,9 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(agents, /enabled callback path is runtime-owned/i);
     assert.match(agents, /verified provider values as sensitive/i);
     assert.match(agents, /Never enqueue `_sporades\.stripe-event`/i);
+    assert.match(agents, /paymentStripeEvents/);
+    assert.match(agents, /later-arriving older event/i);
+    assert.match(agents, /unknown event types/i);
     assert.match(agents, /authorizeStripeCustomerPortal/);
     assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
     assert.equal(packageJson.dependencies.stripe, undefined);

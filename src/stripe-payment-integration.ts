@@ -8,6 +8,7 @@ import type {
   VerifiedStripeEvent,
 } from "./types/stripe.js";
 import Stripe from "stripe";
+import { deepFreezeVerifiedJson } from "./stripe-events-runtime.js";
 
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 
@@ -167,7 +168,7 @@ function verifyStripeWebhookEvent(
     const objectId = typeof raw.data.object.id === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(raw.data.object.id)
       ? raw.data.object.id
       : null;
-    const frozenRaw = deepFreezeJson(raw);
+    const frozenRaw = deepFreezeVerifiedJson(raw);
     return Object.freeze({
       provider: "stripe" as const,
       providerEventId: raw.id,
@@ -191,12 +192,6 @@ function isPlainJsonRecord(value: unknown): value is Record<string, any> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-function deepFreezeJson<T>(value: T): T {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
-  for (const child of Object.values(value as Record<string, unknown>)) deepFreezeJson(child);
-  return Object.freeze(value);
 }
 
 function validateCustomerPortalInput(input: any, publicOrigin: string) {

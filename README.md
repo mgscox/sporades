@@ -160,7 +160,12 @@ Sporades currently includes:
   cancellations, and supported subscription changes. Complete activation also
   registers one collision-checked callback path. Signed exact bytes are admitted
   into one idempotent Privileged Job per Stripe Event before acknowledgment;
-  retries converge and no Capsule billing state changes automatically.
+  retries converge and no Capsule billing state changes automatically. The Job
+  delivers one Verified Stripe event to the blank Capsule's single
+  `stripeEvents: stripeEvent(...)` policy seam under the userless Privileged
+  audit lifecycle. Generated policy ignores unknown events and tells authors to
+  make deliberate consequences idempotent and order-independent, reject stale
+  later-arriving observations, and avoid logging or retaining raw provider data.
   The catalogue owns each Price mode; browser input owns neither mode nor Stripe
   identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,

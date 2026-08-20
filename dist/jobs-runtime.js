@@ -529,11 +529,7 @@ export function runtimeOwnedJobHandlers(runtime) {
     return [
         {
             name: STRIPE_EVENT_JOB,
-            handler: async (_ctx, event) => ({
-                admitted: true,
-                providerEventId: event.providerEventId,
-                type: event.type,
-            }),
+            handler: runtime.dispatchStripeEvent,
         },
         {
             name: PASSWORD_RESET_MAIL_JOB,

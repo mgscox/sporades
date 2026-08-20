@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { deepFreezeVerifiedJson } from "./stripe-events-runtime.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 const DISABLED_RESULT = Object.freeze({
     ok: false,
@@ -132,7 +133,7 @@ function verifyStripeWebhookEvent(stripe, config, secret, input) {
         const objectId = typeof raw.data.object.id === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(raw.data.object.id)
             ? raw.data.object.id
             : null;
-        const frozenRaw = deepFreezeJson(raw);
+        const frozenRaw = deepFreezeVerifiedJson(raw);
         return Object.freeze({
             provider: "stripe",
             providerEventId: raw.id,
@@ -152,13 +153,6 @@ function isPlainJsonRecord(value) {
         return false;
     const prototype = Object.getPrototypeOf(value);
     return prototype === Object.prototype || prototype === null;
-}
-function deepFreezeJson(value) {
-    if (!value || typeof value !== "object" || Object.isFrozen(value))
-        return value;
-    for (const child of Object.values(value))
-        deepFreezeJson(child);
-    return Object.freeze(value);
 }
 function validateCustomerPortalInput(input, publicOrigin) {
     const keys = ["customerId", "idempotencyKey", "returnPath"];

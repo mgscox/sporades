@@ -1987,7 +1987,7 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
   });
 });
 
-test("a generated activated blank Capsule runs Checkout, Customer Portal, and signed callback admission through durable Jobs", { timeout: 120_000 }, async () => {
+test("a generated activated blank Capsule runs Checkout, Customer Portal, and signed callback delivery through durable Jobs", { timeout: 120_000 }, async () => {
   await withTempDir(async (dir) => {
     const providerRequests = [];
     const provider = createServer(async (request, response) => {
@@ -2093,6 +2093,7 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
           .replace("  return false;", "  return true;")
           .replace('export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<boolean> {\n  return false;\n}', 'export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, input: PortalInput): Promise<boolean> {\n  return input.billingHolderKey !== "forbidden";\n}')
           .replace('export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {\n  return null;\n}', 'const portalResolutionCalls = new Map<string, number>();\nexport async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, input: PortalInput): Promise<string | null> {\n  const calls = (portalResolutionCalls.get(input.intentId) ?? 0) + 1;\n  portalResolutionCalls.set(input.intentId, calls);\n  if (input.billingHolderKey === "revoked") return calls === 1 ? "cus_server_revoked" : null;\n  return input.billingHolderKey === "personal" ? "cus_server_resolved" : input.billingHolderKey === "retry" ? "cus_server_retry" : input.billingHolderKey === "rejected" ? "cus_server_rejected" : null;\n}')
+          .replace('export const paymentStripeEvents = stripeEvent((_ctx, event) => {', 'export const paymentStripeEvents = stripeEvent((ctx, event) => {\n  ctx.log.info("generated.stripe-event", { providerEventId: event.providerEventId, type: event.type });')
           .replaceAll("signal: ctx.signal })", `signal: ctx.signal, apiBaseUrl: ${JSON.stringify(apiBaseUrl)} })`),
       );
       await installFakeReact(projectDir);
@@ -2295,9 +2296,24 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
       const firstAdmission = await firstCallback.json();
       const duplicateAdmission = await duplicateCallback.json();
       assert.equal(firstAdmission.jobId, duplicateAdmission.jobId);
-      const admittedJobs = JSON.parse((await runCli(["jobs"], { cwd: projectDir })).stdout).data.jobs;
+      let admittedJobs = [];
+      const deliveryDeadline = Date.now() + 5_000;
+      do {
+        admittedJobs = JSON.parse((await runCli(["jobs"], { cwd: projectDir })).stdout).data.jobs;
+        if (admittedJobs.some((candidate) => candidate.id === firstAdmission.jobId && candidate.status === "succeeded")) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      } while (Date.now() < deliveryDeadline);
       assert.equal(admittedJobs.filter((candidate) => candidate.id === firstAdmission.jobId && candidate.handler === "_sporades.stripe-event").length, 1);
+      assert.equal(admittedJobs.find((candidate) => candidate.id === firstAdmission.jobId)?.status, "succeeded");
       assert.doesNotMatch(JSON.stringify(admittedJobs), /obj_future_1|pending_webhooks|whsec_generated_fixture|stripe-signature/i);
+      const completedDuplicate = await postStripeEvent();
+      assert.equal(completedDuplicate.status, 200);
+      assert.equal((await completedDuplicate.json()).jobId, firstAdmission.jobId);
+      const paymentLogs = JSON.parse((await runCli(["logs", "--json"], { cwd: projectDir })).stdout).data.entries;
+      const deliveredLogs = paymentLogs.filter((event) => event.message === "generated.stripe-event" && event.data?.providerEventId === "evt_generated_callback_1");
+      assert.equal(deliveredLogs.length, 1);
+      assert.equal(deliveredLogs[0].data.type, "future.billing.reconciled");
+      assert.doesNotMatch(JSON.stringify(paymentLogs), /obj_future_1|pending_webhooks|whsec_generated_fixture|stripe-signature/i);
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
       assert.doesNotMatch(serverBundle, /sk_test_generated_fixture|whsec_generated_fixture/);
       assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);

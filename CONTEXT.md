@@ -114,6 +114,10 @@ _Avoid_: Stripe client, payment proxy, browser Stripe SDK
 A bounded server-only value produced only after the official Stripe verifier accepts the exact callback bytes and `Stripe-Signature` header within its five-minute tolerance. It preserves the stable provider Event identity, type, creation time, live/test mode, relevant object identity, and frozen verified provider value. Admission stores it only as one idempotent runtime-owned Privileged Job payload; it grants no user, Session, Team, Capsule role, or browser authority and does not itself change Capsule billing state.
 _Avoid_: webhook request, payment notification, trusted billing state
 
+**Stripe-event subscription**:
+The optional single Capsule policy handler declared with `stripeEvents: stripeEvent(handler)`. The runtime-owned Stripe Event Job invokes it with a Verified Stripe event under the userless Privileged server role and its existing audit, retry, cancellation, and revocation lifecycle. The handler owns idempotent, order-independent Capsule consequences; unknown event types may be ignored and no subscription, entitlement, access, invoice, Customer, Team, order, export, erasure, or retention state is created automatically.
+_Avoid_: Stripe webhook handler, callback endpoint, billing-state synchronizer
+
 **Built-in payment foundation**:
 The ordinary payment scaffolding generated into every new blank Capsule. It starts dormant and includes `server/payments.ts`, `client/payments.ts`, shared payment Job state, named Checkout and Customer Portal Jobs, a bounded known-Job query, an empty server-owned Price catalogue, deny-by-default billing policy seams, a Capsule-owned Customer resolver, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
 _Avoid_: payment template, Stripe demo, billing feature

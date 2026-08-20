@@ -539,15 +539,14 @@ export function createControllableRuntimeClock(initialInstant: string | number |
 
 // Jobs the runtime enqueues for itself. They live in the reserved `_sporades`
 // namespace, which Capsule definitions cannot claim.
-export function runtimeOwnedJobHandlers(runtime: { prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null> }) {
+export function runtimeOwnedJobHandlers(runtime: {
+  prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+  dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) => Promise<LooseRecord>;
+}) {
   return [
     {
       name: STRIPE_EVENT_JOB,
-      handler: async (_ctx: LooseRecord, event: LooseRecord) => ({
-        admitted: true,
-        providerEventId: event.providerEventId,
-        type: event.type,
-      }),
+      handler: runtime.dispatchStripeEvent,
     },
     {
       name: PASSWORD_RESET_MAIL_JOB,

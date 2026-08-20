@@ -242,7 +242,8 @@ The generated `server/payments.ts` contains an empty server-owned Price
 catalogue, deny-by-default `authorizeStripeCheckout` and
 `authorizeStripeCustomerPortal` policy seams, a Capsule-owned
 `resolveStripeCustomerForPortal` seam, named
-Checkout and Customer Portal Jobs, and a query that exposes only bounded state
+Checkout and Customer Portal Jobs, one `paymentStripeEvents` policy declaration,
+and a query that exposes only bounded state
 for a known payment Job owned by the current actor. `shared/payments.ts`
 contains the serializable Job-state shape. `client/payments.ts` starts Checkout or Customer Portal,
 reports pending, succeeded, or safely failed progress, validates the returned
@@ -288,6 +289,22 @@ parsing. Each accepted provider Event identity commits one idempotent Privileged
 Job before the route returns `200`; retries receive the same Job identity.
 Admission does not wait for or perform Capsule subscription, entitlement, or
 access consequences.
+
+The admitted Job is the only delivery path into Capsule policy. The blank
+Capsule registers `stripeEvents: paymentStripeEvents`, where
+`paymentStripeEvents` is declared with `stripeEvent(handler)` in
+`server/payments.ts`. The handler receives the Verified Stripe event—not an HTTP
+request, signature, or unverified body—inside the Job's userless Privileged
+server-role attempt. Existing Job retry and cancellation keep the same Job
+identity, and Privileged authority is revoked when each audited attempt settles.
+
+Provider deliveries are duplicated and may be out of order. Make every Capsule
+consequence idempotent and order-independent. Compare provider creation time or
+authoritative provider state so a later-arriving older event cannot roll back
+newer state. Unknown event types are forward-compatible and safe to ignore. The
+verified raw provider value is sensitive: do not log or persist it by default;
+store only bounded fields required by deliberate Capsule policy. Sporades stores
+no second raw-event history and routine Job inspection omits the durable payload.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

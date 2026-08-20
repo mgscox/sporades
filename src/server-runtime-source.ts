@@ -104,6 +104,7 @@ import {
   STRIPE_EVENT_JOB,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
+import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
@@ -632,6 +633,8 @@ export async function openDevDatabase(
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
       prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+    dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) =>
+      dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -5495,6 +5498,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
       try {
+        const jobPayload = JSON.parse(row.payload);
         // Cancellation may commit after the durable claim but before its
         // in-memory controller is registered. Reconcile the exact owned claim
         // before crossing the handler boundary so that window cannot lose the
@@ -5512,10 +5516,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
-            try { return await handler.handler(privilegedCtx, JSON.parse(row.payload)); }
+            try { return await handler.handler(privilegedCtx, jobPayload); }
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
           });
         } else {
@@ -5542,7 +5546,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           const context = createMutationContext(database, auth); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
-          try { result = await handler.handler(context, JSON.parse(row.payload)); }
+          try { result = await handler.handler(context, jobPayload); }
           finally { database.__runtimeJobAttempts.delete(context); }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");

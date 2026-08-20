@@ -195,6 +195,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // public Checkout operations keep the module otherwise reachable.
   { file: "stripe-payment-integration.js", atLeast: 12, sentinel: "verifyStripeWebhookEvent" },
   { file: "stripe-webhook-runtime.js", atLeast: 0, sentinel: "createStripeCallbackEndpoint" },
+  // Verified provider events cross into Capsule policy through this single
+  // runtime dispatcher; keeping it in the census prevents that authority seam
+  // from silently leaving the deployed-module guards.
+  { file: "stripe-events-runtime.js", atLeast: 0, sentinel: "dispatchVerifiedStripeEvent" },
   // Batch 3, and the largest subject added here: 104 functions, 51 of them private. The sentinel is
   // private for the third time running, and this one is worth naming. `passwordResetCodeParts` mints
   // the reset selector and verifier and is exported from nothing and registered in nothing — under

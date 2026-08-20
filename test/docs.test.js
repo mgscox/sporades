@@ -1194,8 +1194,8 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
   }
 });
 
-test("public docs agree on narrow Checkout, Customer Portal, and callback admission interfaces", async () => {
-  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput, apiWebhookInput, apiVerifiedEvent] = await Promise.all([
+test("public docs agree on narrow Checkout, Customer Portal, callback admission, and Stripe event policy interfaces", async () => {
+  const [context, prd, readme, projects, server, blankGuide, apiModule, apiCheckoutInput, apiPortalInput, apiWebhookInput, apiVerifiedEvent, apiStripeEvent, apiStripeEventHandler] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("README.md"),
@@ -1207,6 +1207,8 @@ test("public docs agree on narrow Checkout, Customer Portal, and callback admiss
     readProjectFile("docs/api/types/stripe.StripeCustomerPortalSessionInput.html"),
     readProjectFile("docs/api/types/stripe.StripeWebhookVerificationInput.html"),
     readProjectFile("docs/api/types/stripe.VerifiedStripeEvent.html"),
+    readProjectFile("docs/api/functions/server.stripeEvent.html"),
+    readProjectFile("docs/api/types/server.StripeEventHandler.html"),
   ]);
 
   for (const contents of [context, prd, readme, projects, server, blankGuide]) {
@@ -1230,6 +1232,18 @@ test("public docs agree on narrow Checkout, Customer Portal, and callback admiss
   assert.match(projects, /idempotent Privileged[\s\S]{0,120}before the route returns `200`/i);
   assert.match(context, /Verified Stripe event/);
   assert.match(context, /grants no user, Session, Team, Capsule role, or browser authority/);
+  assert.match(context, /Stripe-event subscription/);
+  assert.match(context, /stripeEvents:\s*stripeEvent/);
+  assert.match(prd, /durable Job[\s\S]{0,180}single[\s\S]{0,80}stripeEvents:\s*stripeEvent/i);
+  assert.match(prd, /started[\s\S]{0,80}(?:completed|errored)[\s\S]{0,80}finished/);
+  assert.match(projects, /paymentStripeEvents/);
+  assert.match(projects, /idempotent[\s\S]{0,120}order-independent/i);
+  assert.match(projects, /later-arriving older event/i);
+  assert.match(projects, /unknown event types[\s\S]{0,120}ignore/i);
+  assert.match(projects, /raw provider value[\s\S]{0,160}(?:log|persist)/i);
+  assert.match(server, /Stripe event handler[\s\S]{0,160}Privileged server role/i);
+  assert.match(server, /no[\s\S]{0,100}(?:subscription|entitlement)[\s\S]{0,100}automatically/i);
+  assert.match(server, /operator Job[\s\S]{0,30}inspection[\s\S]{0,120}(?:omits|does not expose)[\s\S]{0,80}payload/i);
   assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
   assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
   assert.match(server, /checkout\.stripe\.com/);
@@ -1255,4 +1269,7 @@ test("public docs agree on narrow Checkout, Customer Portal, and callback admiss
   assert.match(apiVerifiedEvent, /occurredAt/);
   assert.match(apiVerifiedEvent, /objectId/);
   assert.match(apiVerifiedEvent, /raw/);
+  assert.match(apiStripeEvent, /single verified Stripe-event subscription/);
+  assert.match(apiStripeEventHandler, /VerifiedStripeEvent/);
+  assert.match(apiStripeEventHandler, /PrivilegedContext/);
 });

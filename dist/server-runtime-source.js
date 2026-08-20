@@ -43,6 +43,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, STRIPE_EVENT_JOB, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
+import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
@@ -547,6 +548,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     let database;
     const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
             prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+            dispatchStripeEvent: (context, event) => dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -5216,6 +5218,7 @@ export async function runCurrentUserJobWorker(database) {
             database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
             let handlerStarted = false;
             try {
+                const jobPayload = JSON.parse(row.payload);
                 // Cancellation may commit after the durable claim but before its
                 // in-memory controller is registered. Reconcile the exact owned claim
                 // before crossing the handler boundary so that window cannot lose the
@@ -5234,11 +5237,11 @@ export async function runCurrentUserJobWorker(database) {
                 let result;
                 if (row.actorUserId === privilegedAuthUserId()) {
                     const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
+                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
                         handlerStarted = true;
                         database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
                         try {
-                            return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+                            return await handler.handler(privilegedCtx, jobPayload);
                         }
                         finally {
                             database.__runtimeJobAttempts.delete(privilegedCtx);
@@ -5268,7 +5271,7 @@ export async function runCurrentUserJobWorker(database) {
                     handlerStarted = true;
                     database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
                     try {
-                        result = await handler.handler(context, JSON.parse(row.payload));
+                        result = await handler.handler(context, jobPayload);
                     }
                     finally {
                         database.__runtimeJobAttempts.delete(context);

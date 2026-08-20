@@ -2203,6 +2203,13 @@ export function emailEvent(handler) {
   };
 }
 
+export function stripeEvent(handler) {
+  return {
+    kind: "stripeEvent",
+    handler,
+  };
+}
+
 export function query(handler) {
   return {
     kind: "query",
@@ -6452,11 +6459,7 @@ function runtimeOwnedJobHandlers(runtime) {
   return [
     {
       name: STRIPE_EVENT_JOB,
-      handler: async (_ctx, event) => ({
-        admitted: true,
-        providerEventId: event.providerEventId,
-        type: event.type
-      })
+      handler: runtime.dispatchStripeEvent
     },
     {
       name: PASSWORD_RESET_MAIL_JOB,
@@ -15470,6 +15473,24 @@ function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
+// src/stripe-events-runtime.ts
+function deepFreezeVerifiedJson(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeVerifiedJson(child);
+  return Object.freeze(value);
+}
+async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
+  const deliveredEvent = Object.freeze({
+    ...event,
+    raw: deepFreezeVerifiedJson(event.raw)
+  });
+  if (subscription?.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
+    return Object.freeze({ delivered: false, ignored: true, providerEventId: event.providerEventId, type: event.type });
+  }
+  await subscription.handler(ctx, deliveredEvent);
+  return Object.freeze({ delivered: true, providerEventId: event.providerEventId, type: event.type });
+}
+
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
@@ -15668,7 +15689,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const messages = extractMessageHandlers(serverSource);
   let database;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
-    prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1)
+    prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+    dispatchStripeEvent: (context, event) => dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents)
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -20055,6 +20077,7 @@ async function runCurrentUserJobWorker(database) {
       database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
       try {
+        const jobPayload = JSON.parse(row.payload);
         const claimedState = await database.adapter.prepare(sql(
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken);
@@ -20068,11 +20091,11 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try {
-              return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+              return await handler.handler(privilegedCtx, jobPayload);
             } finally {
               database.__runtimeJobAttempts.delete(privilegedCtx);
             }
@@ -20102,7 +20125,7 @@ async function runCurrentUserJobWorker(database) {
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try {
-            result = await handler.handler(context, JSON.parse(row.payload));
+            result = await handler.handler(context, jobPayload);
           } finally {
             database.__runtimeJobAttempts.delete(context);
           }
@@ -21727,7 +21750,7 @@ function blankTemplateFiles(options) {
   return {
     "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
     "server/index.ts": `import { capsule } from "sporades/server";
-import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -21735,6 +21758,7 @@ export default capsule({
   queries: paymentQueries,
   mutations: paymentMutations,
   jobs: paymentJobs,
+  stripeEvents: paymentStripeEvents,
 });
 `,
     ...blankPaymentSupportFiles(options.name),
@@ -21758,12 +21782,14 @@ Start in \`server/payments.ts\`: define each server-owned Price catalogue entry 
 
 Customer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.
 
+Implement Stripe event policy in \`server/payments.ts\` at \`paymentStripeEvents\`. The generated handler deliberately ignores every event until the Capsule defines its own Team ownership, billing-holder, subscription, entitlement, notification, retention, export, and erasure decisions. Treat delivery as duplicated and out of order: make every consequence idempotent and order-independent, compare provider creation time or authoritative provider state, and reject a later-arriving older observation. Unknown event types should remain safe to ignore. The verified raw provider value is forward-compatible but sensitive; never log or persist it by default. Persist only the bounded fields the Capsule deliberately needs.
+
 Anonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. Complete activation registers the configured callback path outside reserved runtime namespaces. Sporades verifies exact signed bytes and admits one idempotent Privileged Job per Stripe Event before acknowledging; this admission performs no Capsule billing consequence. Sporades owns Stripe transport, retries, compatibility, redirect validation, callback verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
 `;
 }
 function blankPaymentSupportFiles(capsuleName) {
   return {
-    "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, table } from "sporades/server";
+    "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, stripeEvent, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
 import type { CapsuleContext } from "sporades/server";
 import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripeCustomerPortalSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
@@ -21808,6 +21834,17 @@ export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input
 export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {
   return null;
 }
+
+// Capsule policy seam. Delivery is durable, duplicated, and potentially out of order.
+// Ratchet from authoritative provider state or reject stale observations before writing.
+// The verified raw provider value is sensitive and is not safe to log or persist by default.
+export const paymentStripeEvents = stripeEvent((_ctx, event) => {
+  switch (event.type) {
+    default:
+      // Unknown event types are forward-compatible and safe to ignore.
+      return;
+  }
+});
 
 function stripeForContext(ctx: CapsuleContext) {
   const config = ctx.payments?.stripe;
@@ -23452,6 +23489,9 @@ ${template === "blank" ? `
 - An enabled callback path is runtime-owned: do not shadow it with a Custom endpoint or parse and verify Stripe requests in Capsule code.
 - Treat verified provider values as sensitive. Callback admission creates one userless Privileged Job per Stripe Event but performs no billing or access consequence automatically.
 - Never enqueue \`_sporades.stripe-event\`; reserved runtime Job names are not a Capsule authoring seam, even inside \`ctx.privileged.run(...)\`.
+- Implement Capsule consequences only in \`paymentStripeEvents\`; keep the runtime-owned callback route and reserved Job out of app code.
+- Make each event consequence idempotent and order-independent. A later-arriving older event must not roll back newer provider or Capsule state.
+- Keep unknown event types safe to ignore, and never log or persist the verified raw provider value by default.
 - Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
 - Sporades owns Stripe transport, compatibility, redirect validation, callback verification, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.

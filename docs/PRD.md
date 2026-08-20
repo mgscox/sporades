@@ -58,7 +58,14 @@ The repository currently includes:
   bounded bytes before parsing and atomically admits each provider Event identity
   into one idempotent Privileged Job before acknowledging. Provider retries
   converge on that Job; admission grants no user or Team authority and performs
-  no Capsule billing consequence. Existing and non-blank Capsules remain unchanged.
+  no Capsule billing consequence. That durable Job invokes the Capsule's single
+  `stripeEvents: stripeEvent(...)` policy seam with the Verified Stripe event.
+  Every attempt uses the existing Privileged `started`, then `completed` or
+  `errored`, then `finished` audit lifecycle; ordinary Job retry, cancellation,
+  and revocation semantics remain in force. Capsule policy must make consequences
+  idempotent and order-independent, may ignore unknown types, and alone owns any
+  Team, billing-holder, subscription, entitlement, notification, retention,
+  export, or erasure state. Existing and non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

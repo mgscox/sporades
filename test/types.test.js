@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
@@ -179,6 +179,22 @@ const app = capsule({
     JSON.stringify(event.raw);
     // @ts-expect-error Provider-specific payload fields stay under raw.
     event.Message_GUID;
+  }),
+  stripeEvents: stripeEvent(async (ctx, event) => {
+    const verified: VerifiedStripeEvent = event;
+    verified.provider satisfies "stripe";
+    verified.providerEventId.toUpperCase();
+    verified.type.toUpperCase();
+    verified.occurredAt.toUpperCase();
+    verified.livemode.valueOf();
+    verified.objectId?.toUpperCase();
+    JSON.stringify(verified.raw);
+    ctx.auth.userId satisfies "__privileged__";
+    ctx.signal.throwIfAborted();
+    // @ts-expect-error Verified Stripe event handlers receive no HTTP request.
+    ctx.request.body;
+    // @ts-expect-error Privileged Stripe event work cannot infer a current user's Team list.
+    ctx.teams.list();
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {

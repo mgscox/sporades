@@ -1,4 +1,4 @@
-import type { StripeEnabledPaymentsConfig } from "./stripe.js";
+import type { StripeEnabledPaymentsConfig, VerifiedStripeEvent } from "./stripe.js";
 
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 
@@ -681,6 +681,12 @@ export type EmailEventHandler<Schema extends SchemaDefinition = SchemaDefinition
   event: VerifiedEmailEvent,
 ) => MaybePromise<void>;
 
+/** Handler for a Capsule's single verified Stripe-event subscription. */
+export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinition> = (
+  ctx: PrivilegedContext<Schema>,
+  event: VerifiedStripeEvent,
+) => MaybePromise<void>;
+
 /** Handler for a named query exposed over the Sporades client transport. */
 export type QueryHandler<
   Schema extends SchemaDefinition = SchemaDefinition,
@@ -783,6 +789,11 @@ export type EmailEventDefinition<Handler = EmailEventHandler> = {
   handler: Handler;
 };
 
+export type StripeEventDefinition<Handler = StripeEventHandler> = {
+  kind: "stripeEvent";
+  handler: Handler;
+};
+
 export type MessageDefinition<Handler = MessageHandler> = {
   kind: "message";
   handler: Handler;
@@ -875,6 +886,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   mutations?: Record<string, MutationDefinition<any>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
+  stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition<any>>;
   schedules?: Record<string, ScheduleDefinition>;
@@ -920,6 +932,8 @@ export function endpoint<Handler extends EndpointHandler>(options: EndpointOptio
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
+/** Declare the single verified Stripe-event subscription for a Capsule. */
+export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,

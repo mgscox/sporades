@@ -1253,7 +1253,7 @@ function blankTemplateFiles(options) {
     return {
         "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
         "server/index.ts": `import { capsule } from "sporades/server";
-import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -1261,6 +1261,7 @@ export default capsule({
   queries: paymentQueries,
   mutations: paymentMutations,
   jobs: paymentJobs,
+  stripeEvents: paymentStripeEvents,
 });
 `,
         ...blankPaymentSupportFiles(options.name),
@@ -1269,11 +1270,11 @@ export default capsule({
     };
 }
 function blankPaymentReadme(name, introduction) {
-    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nCustomer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. Complete activation registers the configured callback path outside reserved runtime namespaces. Sporades verifies exact signed bytes and admits one idempotent Privileged Job per Stripe Event before acknowledging; this admission performs no Capsule billing consequence. Sporades owns Stripe transport, retries, compatibility, redirect validation, callback verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
+    return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nActivation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.\n\nStart in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.\n\nCustomer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.\n\nImplement Stripe event policy in \`server/payments.ts\` at \`paymentStripeEvents\`. The generated handler deliberately ignores every event until the Capsule defines its own Team ownership, billing-holder, subscription, entitlement, notification, retention, export, and erasure decisions. Treat delivery as duplicated and out of order: make every consequence idempotent and order-independent, compare provider creation time or authoritative provider state, and reject a later-arriving older observation. Unknown event types should remain safe to ignore. The verified raw provider value is forward-compatible but sensitive; never log or persist it by default. Persist only the bounded fields the Capsule deliberately needs.\n\nAnonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. Complete activation registers the configured callback path outside reserved runtime namespaces. Sporades verifies exact signed bytes and admits one idempotent Privileged Job per Stripe Event before acknowledging; this admission performs no Capsule billing consequence. Sporades owns Stripe transport, retries, compatibility, redirect validation, callback verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
 }
 function blankPaymentSupportFiles(capsuleName) {
     return {
-        "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, table } from "sporades/server";
+        "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, stripeEvent, table } from "sporades/server";
 import { createStripePaymentIntegration } from "sporades/server/stripe";
 import type { CapsuleContext } from "sporades/server";
 import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripeCustomerPortalSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
@@ -1318,6 +1319,17 @@ export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input
 export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {
   return null;
 }
+
+// Capsule policy seam. Delivery is durable, duplicated, and potentially out of order.
+// Ratchet from authoritative provider state or reject stale observations before writing.
+// The verified raw provider value is sensitive and is not safe to log or persist by default.
+export const paymentStripeEvents = stripeEvent((_ctx, event) => {
+  switch (event.type) {
+    default:
+      // Unknown event types are forward-compatible and safe to ignore.
+      return;
+  }
+});
 
 function stripeForContext(ctx: CapsuleContext) {
   const config = ctx.payments?.stripe;
@@ -2959,6 +2971,9 @@ ${template === "blank" ? `
 - An enabled callback path is runtime-owned: do not shadow it with a Custom endpoint or parse and verify Stripe requests in Capsule code.
 - Treat verified provider values as sensitive. Callback admission creates one userless Privileged Job per Stripe Event but performs no billing or access consequence automatically.
 - Never enqueue \`_sporades.stripe-event\`; reserved runtime Job names are not a Capsule authoring seam, even inside \`ctx.privileged.run(...)\`.
+- Implement Capsule consequences only in \`paymentStripeEvents\`; keep the runtime-owned callback route and reserved Job out of app code.
+- Make each event consequence idempotent and order-independent. A later-arriving older event must not roll back newer provider or Capsule state.
+- Keep unknown event types safe to ignore, and never log or persist the verified raw provider value by default.
 - Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
 - Sporades owns Stripe transport, compatibility, redirect validation, callback verification, retries, provider timeouts, and safe provider errors.
 - The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.

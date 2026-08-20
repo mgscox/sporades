@@ -513,6 +513,44 @@ Capsule code cannot enqueue the reserved handler by name, including from
 `ctx.privileged.run(...)`; only the active verified callback context receives
 the runtime-owned enqueue capability.
 
+Declare the Capsule's single Stripe event handler with the normal server
+authoring API; do not define or shadow the provider HTTP route:
+
+```ts
+import { capsule, stripeEvent } from "sporades/server";
+
+export default capsule({
+  name: "Billing-aware Capsule",
+  stripeEvents: stripeEvent(async (ctx, event) => {
+    switch (event.type) {
+      case "checkout.session.completed":
+        // Apply idempotent, order-independent Capsule policy through ctx.db.
+        return;
+      default:
+        // Unknown verified types remain safe to ignore.
+        return;
+    }
+  }),
+});
+```
+
+The Stripe event handler runs only from the durable runtime-owned Job under the
+userless Privileged server role. Every attempt emits the existing `started`,
+then `completed` or `errored`, then `finished` audit lifecycle. Thrown failures
+follow the Job's bounded retry policy under the same identity; committed
+cancellation reaches `ctx.signal`, and callback-scoped Privileged APIs fail once
+the attempt settles or aborts. No current user or Team membership is invented.
+
+The handler receives the same bounded `VerifiedStripeEvent` contract returned
+by verification. Its `raw` provider value is forward-compatible but sensitive;
+do not log or persist it by default. Sporades creates no subscription,
+entitlement, invoice, access, Customer, Team, order, export, erasure, or
+retention record automatically. Capsule writes use the ordinary Database
+adapter and Privileged semantics. Duplicate provider delivery converges on the
+completed Job, unknown event types may be ignored, and policy must reject stale
+later-arriving observations rather than trusting callback order. Operator Job
+inspection omits the payload and does not expose raw provider history.
+
 ### Send SMTP mail
 
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
