@@ -10,6 +10,7 @@
       "scripts/write-cli-version.mjs",
       "scripts/write-generated-source-manifest.mjs",
       "src/acl-runtime.ts",
+      "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
       "src/bundle-pipeline.ts",
@@ -72,7 +73,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "96ca2fcebccb665ea2ad662f163c22a5cc8236ae4116806469d4e43e066ec38a"
+    "digest": "cbf6cde4b1fdd3d8e3fdd9f09ccb79bb48a1f559fade772eacd8e09314349c26"
   },
   "outputs": {
     "files": [
@@ -82,6 +83,10 @@
       "dist/acl-runtime.d.ts.map",
       "dist/acl-runtime.js",
       "dist/acl-runtime.js.map",
+      "dist/auth-admission.d.ts",
+      "dist/auth-admission.d.ts.map",
+      "dist/auth-admission.js",
+      "dist/auth-admission.js.map",
       "dist/auth-runtime.d.ts",
       "dist/auth-runtime.d.ts.map",
       "dist/auth-runtime.js",
@@ -311,6 +316,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "62263e7b89768db33ceb9a9fef2d703508b4003a3de96f9718ce59dc4e358d7e"
+    "digest": "9bbbb22ce0324b02b442dd5288ceefa021a064c95529b06249251660dc2f43d4"
   }
 }

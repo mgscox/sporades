@@ -27,6 +27,7 @@ import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, crea
 import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, resolveOAuthRequestOrigin, resolveRuntimeSecurityPolicy, websocketOriginAllowed, writeEndpointError, writeEndpointResult, } from "./http-runtime.js";
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+import { normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
 // transaction scope. The runtime reaches engine behavior through those two names rather than
@@ -479,6 +480,10 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
     catch { }
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+    if (capsuleDefinition) {
+        capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
+        validateCapsuleAuthRequirements(capsuleDefinition);
+    }
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
         throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
     }
@@ -530,14 +535,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     const mutations = (capsuleDefinition
         ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
         : extractMutationHandlers(serverSource));
-    const messages = extractMessageHandlers(serverSource);
+    const messages = capsuleDefinition
+        ? handlersFromCapsuleDefinition(capsuleDefinition.messages, "message")
+        : extractMessageHandlers(serverSource);
     let database;
     const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
             prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
-    const contextMiddleware = extractContextMiddleware(serverSource);
+    const contextMiddleware = capsuleDefinition?.middleware?.map((middleware) => middleware.toString())
+        ?? extractContextMiddleware(serverSource);
     const mutationHooks = extractMutationHooks(serverSource);
     const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
     const rowCache = new Map();
@@ -705,7 +713,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             if (database.lifecycleHooks.init !== undefined) {
                 if (typeof database.lifecycleHooks.init !== "function")
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-                await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+                await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
             }
             database.__scheduleTimers = new Set();
             database.__activeScheduleOccurrences = new Set();
@@ -776,7 +784,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
                     if (typeof database.lifecycleHooks.shutdown !== "function")
                         throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-                    await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+                    await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
                 }
             }
             catch (error) {
@@ -1416,7 +1424,7 @@ export async function enqueueScheduledOccurrence(database, definition, occurrenc
 }
 function createScheduleMutationContext(database, definition, scheduledFor) {
     const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
-    return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+    return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" }, { ordinaryCredential: false });
 }
 async function enqueueResolvedScheduledOccurrence(database, definition, scheduledFor, payload, context) {
     const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
@@ -1839,7 +1847,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
         __privilegedRunActive: true,
         __jobEnqueuedBy: context.auth?.userId ?? null,
         __jobParentContext: context,
-        auth: {
+        auth: Object.freeze({
             userId: privilegedAuthUserId(),
             displayName: "Privileged server role",
             email: null,
@@ -1847,11 +1855,12 @@ function createPrivilegedHandlerContext(database, context, signal) {
             isAuthenticated: false,
             isGuest: false,
             provider: "privileged-server-role",
-        },
+        }),
     };
     // User-scoped and mutating Team operations remain unavailable. This is the
     // separate userless inspection projection, not inherited Team authority.
     delete privilegedContext.teams;
+    delete privilegedContext.credential;
     const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
     const scheduleProvenance = provenanceStore?.get(context);
     if (scheduleProvenance)
@@ -2288,6 +2297,11 @@ function handlersFromCapsuleDefinition(definitions, kind) {
         handler: definition.handler,
     }));
 }
+function materializeHandler(handler) {
+    return typeof handler.handler === "function"
+        ? handler.handler
+        : new Function(`return (${handler.handlerSource});`)();
+}
 function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) {
     const sourceHandlers = new Map(extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]));
     return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter((handler) => shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)));
@@ -2596,8 +2610,11 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
             try {
-                context = createEndpointContext(transactionDatabase, endpointRequest, session);
+                context = createEndpointContext(transactionDatabase, endpointRequest, session, {
+                    ordinaryCredential: !endpoint.runtimeOwnedEmailEvent,
+                });
                 if (!endpoint.runtimeOwnedEmailEvent) {
+                    admitSessionHandler(handler, context.auth, "endpoint");
                     context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                 }
                 return await handler(context);
@@ -2689,10 +2706,11 @@ async function readEndpointRequest(database, requestUrl, request) {
         body: await readEndpointBody(request, headers, database),
     };
 }
-function createEndpointContext(database, endpointRequest, session) {
-    const auth = session.auth;
+function createEndpointContext(database, endpointRequest, session, options = {}) {
+    const auth = protectContextIdentity(session.auth);
     const context = {
         auth,
+        ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
         env: database.serverEnv,
         log: createEndpointLogger(database, {
             request: {
@@ -2751,6 +2769,18 @@ function createEndpointContext(database, endpointRequest, session) {
     };
     return context;
 }
+function protectContextIdentity(value) {
+    const target = Object.freeze({ ...value });
+    const tampered = () => {
+        throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+    };
+    return new Proxy(target, {
+        set: tampered,
+        defineProperty: tampered,
+        deleteProperty: tampered,
+        setPrototypeOf: tampered,
+    });
+}
 function createContextHolder(context) {
     const holder = { current: context };
     Object.defineProperty(context, "__sporadesContextHolder", {
@@ -2807,6 +2837,8 @@ async function drainPendingLogWrites(database) {
     }
 }
 async function applyContextMiddleware(database, baseContext, kind) {
+    const canonicalAuth = baseContext.auth;
+    const canonicalCredential = baseContext.credential;
     let context = {
         ...baseContext,
         kind,
@@ -2823,6 +2855,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
     for (const middlewareSource of database.contextMiddleware) {
         const result = await runContextMiddleware(middlewareSource, context);
         context = result ?? context;
+        if (!context || typeof context !== "object" || context.auth !== canonicalAuth || context.credential !== canonicalCredential) {
+            throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth and Credential values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+        }
         holder.current = context;
         if (!context.__sporadesContextHolder) {
             Object.defineProperty(context, "__sporadesContextHolder", {
@@ -2836,6 +2871,18 @@ async function applyContextMiddleware(database, baseContext, kind) {
         }
     }
     return context;
+}
+function admitSessionHandler(handler, auth, kind) {
+    const requirements = readAuthRequirements(handler);
+    if (!requirements) {
+        return;
+    }
+    requireAuth({ auth, kind }, { linked: requirements.linked });
+    if (!requirements.credentials.includes("session")) {
+        throw commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+    }
+    // A permitted Session satisfies declared scope requirements. Access-key
+    // grants are matched when Bearer admission is introduced.
 }
 function runContextMiddleware(middlewareSource, context) {
     const createMiddleware = new Function(`return (${middlewareSource});`);
@@ -4410,14 +4457,20 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
     catch {
         return { rows: null, data: null, error: invalidQueryArgumentsError() };
     }
+    const customHandler = database.queries.find((candidate) => candidate.name === queryName);
+    const queryHandler = customHandler ? materializeHandler(customHandler) : null;
     let context;
     try {
-        context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
+        context = createMutationContext(database, auth);
+        if (queryHandler)
+            admitSessionHandler(queryHandler, context.auth, "query");
+        context = await applyContextMiddleware(database, context, "query");
     }
     catch (error) {
         return {
             rows: null,
             error: {
+                ...(error?.code ? { code: error.code } : {}),
                 message: error.message,
                 hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
             },
@@ -4428,7 +4481,7 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
             return { rows: null, data: null, error: invalidQueryArgumentsError() };
         return { data: context.env, error: null };
     }
-    const customResult = await runCustomQuery(database, context, queryName, args);
+    const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
     if (customResult) {
         return customResult;
     }
@@ -4458,15 +4511,13 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
     const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
     return { rows, error: null };
 }
-async function runCustomQuery(database, context, queryName, args) {
+async function runCustomQuery(database, context, queryName, args, resolvedHandler = null) {
     const handler = database.queries.find((candidate) => candidate.name === queryName);
     if (!handler) {
         return null;
     }
     try {
-        const queryHandler = typeof handler.handler === "function"
-            ? handler.handler
-            : new Function(`return (${handler.handlerSource});`)();
+        const queryHandler = resolvedHandler ?? materializeHandler(handler);
         const data = await queryHandler(context, ...args);
         assertJsonCompatible(data);
         return { data, error: null };
@@ -4562,11 +4613,15 @@ export async function runMutation(database, auth, mutationName, args) {
             let handlerFailed = false;
             try {
                 context = createMutationContext(transactionDatabase, auth);
+                const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
+                const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+                if (mutationHandler)
+                    admitSessionHandler(mutationHandler, context.auth, "mutation");
                 context = await applyContextMiddleware(transactionDatabase, context, "mutation");
                 for (const hookSource of database.mutationHooks.beforeMutation) {
                     await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
                 }
-                result = await runCustomMutation(transactionDatabase, context, mutationName, args);
+                result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
                 if (!result) {
                     result = mutationName.startsWith("update")
                         ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
@@ -4613,14 +4668,12 @@ export async function runMutation(database, auth, mutationName, args) {
         return createHookErrorResult(error);
     }
 }
-async function runCustomMutation(database, context, mutationName, args) {
+async function runCustomMutation(database, context, mutationName, args, resolvedHandler = null) {
     const handler = database.mutations.find((candidate) => candidate.name === mutationName);
     if (!handler) {
         return null;
     }
-    const mutationHandler = typeof handler.handler === "function"
-        ? handler.handler
-        : new Function(`return (${handler.handlerSource});`)();
+    const mutationHandler = resolvedHandler ?? materializeHandler(handler);
     let result;
     try {
         result = await mutationHandler(context, ...args);
@@ -4670,14 +4723,15 @@ export async function runAppMessage(database, auth, messageName, data, options =
         if (data !== undefined) {
             assertJsonCompatible(data);
         }
-        const createHandler = new Function(`return (${handler.handlerSource});`);
+        const messageHandler = materializeHandler(handler);
+        admitSessionHandler(messageHandler, auth, "message");
         const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
             try {
                 context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
                 context = await applyContextMiddleware(transactionDatabase, context, "message");
-                const result = await createHandler()(context, data);
+                const result = await messageHandler(context, data);
                 if (result !== undefined) {
                     assertJsonCompatible(result);
                 }
@@ -4756,9 +4810,11 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
         await drainPendingAclWrites(context);
     }
 }
-function createMutationContext(database, auth) {
+function createMutationContext(database, auth, options = {}) {
+    auth = protectContextIdentity(auth);
     const context = {
         auth,
+        ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
         env: database.serverEnv,
         log: createEndpointLogger(database),
         __pendingAclWrites: [],
@@ -5186,7 +5242,7 @@ export async function runCurrentUserJobWorker(database) {
                     throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
                 let result;
                 if (row.actorUserId === privilegedAuthUserId()) {
-                    const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
+                    const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
                     result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
                         handlerStarted = true;
                         database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);

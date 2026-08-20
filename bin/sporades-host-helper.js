@@ -255,6 +255,9 @@ var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
 var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
 var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
+// src/auth-admission.ts
+var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;

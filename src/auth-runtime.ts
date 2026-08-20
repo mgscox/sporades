@@ -92,6 +92,7 @@ import { chainMaybePromise } from "./maybe-promise.js";
 import {
   normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError,
 } from "./http-runtime.js";
+import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
 
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
@@ -188,13 +189,24 @@ export function readEndpointSessionToken(headers: { [x: string]: any; }, query: 
   return headers["x-sporades-session-token"] ?? null;
 }
 
-export function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
-  const linked = options?.linked === true;
+export function requireUserAuth(context: LooseRecord, options: LooseRecord = {}) {
+  const linked = normalizeRequireUserAuthOptions(options).linked;
   const auth = context?.auth;
   if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
     return auth;
   }
   throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
+}
+
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
+export function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
+  if (typeof context === "function") {
+    return decorateRequireAuth({}, context);
+  }
+  if (typeof options === "function") {
+    return decorateRequireAuth(context, options);
+  }
+  return requireUserAuth(context, options);
 }
 
 function createUnauthenticatedError(logData: any = null) {

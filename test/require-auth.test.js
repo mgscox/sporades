@@ -6,12 +6,23 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { requireAuth } from "../dist/server.js";
+import { capsule, endpoint, message, mutation, query, requireAuth, requireUserAuth } from "../dist/server.js";
+import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "../dist/auth-admission.js";
 // The runtime's own `requireAuth`, which this file compares against the public one above. A named
 // import since batch 3 moved it into `auth-runtime.ts`: the `SERVER_RUNTIME_SOURCE_FUNCTIONS.find`
 // spelling it had returns `undefined` rather than failing when a domain leaves the emitted list, and
 // every comparison below would then have been against `undefined`.
-import { requireAuth as runtimeRequireAuth } from "../dist/server-runtime-source.js";
+import {
+  openDevDatabase,
+  createFileAclContext,
+  createTableAclContext,
+  requireAuth as runtimeRequireAuth,
+  requireUserAuth as runtimeRequireUserAuth,
+  runAppMessage,
+  runEndpoint,
+  runMutation,
+  runQuery,
+} from "../dist/server-runtime-source.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -87,6 +98,241 @@ for (const [flavor, helper] of [
     assert.throws(() => helper({}), assertUnauthenticatedError);
   });
 }
+
+for (const [flavor, legacyHelper, preferredHelper] of [
+  ["sporades/server module", requireAuth, requireUserAuth],
+  ["capsule server runtime", runtimeRequireAuth, runtimeRequireUserAuth],
+]) {
+  test(`requireUserAuth is the preferred name for the unchanged inline Session check (${flavor})`, () => {
+    const auth = linkedAuth();
+    assert.deepEqual(preferredHelper({ auth, kind: "query" }), auth);
+    assert.deepEqual(preferredHelper({ auth, kind: "query" }, { linked: true }), auth);
+    assert.deepEqual(legacyHelper({ auth, kind: "query" }), preferredHelper({ auth, kind: "query" }));
+    assert.throws(() => preferredHelper({ auth: anonymousAuth(), kind: "query" }), assertUnauthenticatedError);
+    assert.throws(() => preferredHelper({ auth }, { scopes: ["not-inline"] }), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+    assert.throws(() => legacyHelper({ auth }, { credentials: ["session"] }), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  });
+}
+
+test("capsule registration freezes a copied scope vocabulary and declarative Auth requirements", () => {
+  const scopes = ["requests:read", "requests:write"];
+  const credentials = ["session"];
+  const requiredScopes = ["requests:read"];
+  const handler = requireAuth({ credentials, scopes: requiredScopes }, (ctx) => ctx.credential);
+  const definition = capsule({
+    name: "auth-declarations",
+    accessKeys: { scopes },
+    queries: { guarded: query(handler) },
+    mutations: { guarded: mutation(handler) },
+    endpoints: { guarded: endpoint({ method: "GET", path: "/guarded" }, handler) },
+    messages: { guarded: message(handler) },
+  });
+
+  scopes[0] = "changed";
+  credentials[0] = "access-key";
+  requiredScopes[0] = "requests:write";
+  assert.deepEqual(definition.accessKeys.scopes, ["requests:read", "requests:write"]);
+  assert.equal(Object.isFrozen(definition.accessKeys), true);
+  assert.equal(Object.isFrozen(definition.accessKeys.scopes), true);
+  assert.equal(handler({ credential: { kind: "session" } }).kind, "session");
+  assert.deepEqual(capsule({ name: "explicit-empty", accessKeys: { scopes: [] } }).accessKeys.scopes, []);
+  assert.equal("accessKeys" in capsule({ name: "omitted-empty" }), false);
+});
+
+test("capsule registration fails closed for invalid scope and guard declarations", () => {
+  const plainHandler = () => null;
+  for (const definition of [
+    { name: "unknown-access-key-field", accessKeys: { scopes: [], extra: true } },
+    { name: "wildcard-scope", accessKeys: { scopes: ["requests:*"] } },
+    { name: "duplicate-scope", accessKeys: { scopes: ["requests:read", "requests:read"] } },
+    { name: "oversized-scope", accessKeys: { scopes: ["x".repeat(257)] } },
+    { name: "too-many-scopes", accessKeys: { scopes: Array.from({ length: 1025 }, (_, index) => `scope-${index}`) } },
+  ]) {
+    assert.throws(() => capsule(definition), (error) => error.code === "INVALID_ACCESS_KEY_DECLARATION" || error.code === "INVALID_ACCESS_KEY_SCOPE");
+  }
+
+  assert.throws(
+    () => capsule({
+      name: "undeclared-required-scope",
+      accessKeys: { scopes: ["requests:read"] },
+      endpoints: {
+        guarded: endpoint(
+          { method: "GET", path: "/guarded" },
+          requireAuth({ scopes: ["requests:write"] }, plainHandler),
+        ),
+      },
+    }),
+    (error) => error.code === "INVALID_AUTH_REQUIREMENTS",
+  );
+  assert.throws(() => requireAuth({ credentials: [] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth({ scopes: ["requests:*"] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth({ scopes: [] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth({ scopes: ["requests:read", "requests:read"] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth({ credentials: ["session", "session"] }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth({ unknown: true }, plainHandler), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+  assert.throws(() => requireAuth(requireAuth(plainHandler)), (error) => error.code === "INVALID_AUTH_REQUIREMENTS");
+});
+
+test("scope grants use case-sensitive whole-string wildcard matching", () => {
+  assert.equal(scopeGrantMatches("*", "requests:read"), true);
+  assert.equal(scopeGrantMatches("requests:*", "requests:read"), true);
+  assert.equal(scopeGrantMatches("r*", "requests:write"), true);
+  assert.equal(scopeGrantMatches("*:read", "requests:read"), true);
+  assert.equal(scopeGrantMatches("requests:*", "Requests:read"), false);
+  assert.equal(scopeGrantMatches("requests:read", "requests:reader"), false);
+  assert.equal(accessKeyGrantsSatisfyScopes(["requests:*", "profile:read"], ["requests:read", "profile:read"]), true);
+  assert.equal(accessKeyGrantsSatisfyScopes(["requests:*"], ["requests:read", "profile:read"]), false);
+});
+
+test("declarative Auth guards run before middleware and expose immutable Session provenance", async () => {
+  await withTempDir(async (dir) => {
+    const observed = [];
+    globalThis.__observeSessionCredential = (kind, credential, auth) => {
+      observed.push({ kind, credential, auth });
+    };
+    const guarded = (kind) => requireAuth(
+      { credentials: ["session"], scopes: ["requests:read"] },
+      (ctx) => ({
+        kind,
+        credential: ctx.credential,
+        credentialFrozen: Object.isFrozen(ctx.credential),
+        authFrozen: Object.isFrozen(ctx.auth),
+      }),
+    );
+    const definition = capsule({
+      name: "declarative-session-auth",
+      accessKeys: { scopes: ["requests:read"] },
+      queries: {
+        guarded: query(guarded("query")),
+        accessKeyOnly: query(requireAuth({ credentials: ["access-key"] }, () => "wrong")),
+      },
+      mutations: { guarded: mutation(guarded("mutation")) },
+      endpoints: { guarded: endpoint({ method: "GET", path: "/guarded" }, guarded("endpoint")) },
+      messages: { guarded: message(guarded("message")) },
+    });
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      {},
+      { name: definition.name },
+      definition,
+    );
+    database.contextMiddleware = [
+      `(ctx) => {
+        globalThis.__observeSessionCredential(ctx.kind, ctx.credential, ctx.auth);
+        return ctx;
+      }`,
+    ];
+    const auth = linkedAuth();
+    try {
+      assert.deepEqual((await runQuery(database, auth, "guarded")).data, {
+        kind: "query",
+        credential: { kind: "session" },
+        credentialFrozen: true,
+        authFrozen: true,
+      });
+      assert.deepEqual((await runMutation(database, auth, "guarded", [])).data.kind, "mutation");
+      assert.deepEqual((await runAppMessage(database, auth, "guarded", null)).data.kind, "message");
+      assert.equal(observed.length, 3);
+      assert.equal(observed.every((entry) => entry.credential.kind === "session"), true);
+
+      const wrongKind = await runQuery(database, auth, "accessKeyOnly");
+      assert.equal(wrongKind.error.code, "FORBIDDEN");
+      assert.equal(observed.length, 3, "a denied declarative guard does not run middleware");
+
+      await assert.rejects(
+        runEndpoint(
+          database,
+          database.endpoints.find((candidate) => candidate.path === "/guarded"),
+          new URL("http://capsule.test/guarded"),
+          { method: "GET", headers: {}, async *[Symbol.asyncIterator]() {} },
+        ),
+        (error) => error.code === "UNAUTHENTICATED",
+      );
+      assert.equal(observed.length, 3, "an unauthenticated endpoint guard does not run middleware");
+    } finally {
+      delete globalThis.__observeSessionCredential;
+      await database.close();
+    }
+  });
+});
+
+test("context middleware cannot replace canonical Auth or Credential values", async () => {
+  await withTempDir(async (dir) => {
+    const definition = capsule({
+      name: "auth-middleware-tampering",
+      queries: { guarded: query(requireAuth((ctx) => ctx.auth.userId)) },
+    });
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+    try {
+      database.contextMiddleware = [`(ctx) => ({ ...ctx, credential: { kind: "session" } })`];
+      const credentialTamper = await runQuery(database, linkedAuth(), "guarded");
+      assert.equal(credentialTamper.error.code, "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+
+      database.contextMiddleware = [`(ctx) => ({ ...ctx, auth: { ...ctx.auth } })`];
+      const authTamper = await runQuery(database, linkedAuth(), "guarded");
+      assert.equal(authTamper.error.code, "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+
+      database.contextMiddleware = [`(ctx) => { ctx.auth.userId = "replacement"; return ctx; }`];
+      const authMutation = await runQuery(database, linkedAuth(), "guarded");
+      assert.equal(authMutation.error.code, "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+
+      database.contextMiddleware = [`(ctx) => { ctx.credential.kind = "access-key"; return ctx; }`];
+      const credentialMutation = await runQuery(database, linkedAuth(), "guarded");
+      assert.equal(credentialMutation.error.code, "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+    } finally {
+      await database.close();
+    }
+  });
+});
+
+test("ordinary Session provenance reaches ACL contexts without leaking into non-user contexts", async () => {
+  await withTempDir(async (dir) => {
+    let lifecycleCredentialPresent = null;
+    const definition = capsule({
+      name: "credential-context-boundaries",
+      queries: {
+        inspect: query(async (ctx) => ({
+          current: ctx.credential,
+          privileged: await ctx.privileged.run(
+            { operation: "auth.inspect", targetResourceKind: "capsule-db" },
+            (privilegedCtx) => ({
+              credentialPresent: "credential" in privilegedCtx,
+              authFrozen: Object.isFrozen(privilegedCtx.auth),
+            }),
+          ),
+        })),
+      },
+      hooks: {
+        init: (ctx) => {
+          lifecycleCredentialPresent = "credential" in ctx;
+        },
+      },
+    });
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+    try {
+      await database.init();
+      assert.equal(lifecycleCredentialPresent, false);
+      assert.deepEqual((await runQuery(database, linkedAuth(), "inspect")).data, {
+        current: { kind: "session" },
+        privileged: { credentialPresent: false, authFrozen: true },
+      });
+
+      const auth = Object.freeze({ ...linkedAuth() });
+      const credential = Object.freeze({ kind: "session" });
+      const tableAcl = createTableAclContext({ auth, credential }, database);
+      assert.equal(tableAcl.auth, auth);
+      assert.equal(tableAcl.credential, credential);
+
+      const fileAcl = createFileAclContext(auth, database);
+      assert.deepEqual(fileAcl.credential, { kind: "session" });
+      assert.equal(Object.isFrozen(fileAcl.auth), true);
+      assert.equal(Object.isFrozen(fileAcl.credential), true);
+    } finally {
+      await database.close();
+    }
+  });
+});
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-require-auth-"));
@@ -299,6 +545,7 @@ test("requireAuth gates queries, mutations, endpoints, and app messages in a Dev
 
 export default capsule({
   name: "auth-gate-island",
+  accessKeys: { scopes: ["requests:read"] },
 
   schema: {
     notes: table({
@@ -313,6 +560,12 @@ export default capsule({
       return ctx.db.notes.where("ownerId", auth.userId).orderBy("createdAt", "desc").all();
     }),
     linkedProfile: query((ctx) => requireAuth(ctx, { linked: true })),
+    guardedCredential: query(requireAuth({ scopes: ["requests:read"] }, (ctx) => ({
+      credential: ctx.credential,
+      authFrozen: Object.isFrozen(ctx.auth),
+      credentialFrozen: Object.isFrozen(ctx.credential),
+    }))),
+    accessKeyOnly: query(requireAuth({ credentials: ["access-key"] }, () => "wrong")),
   },
 
   mutations: {
@@ -320,6 +573,7 @@ export default capsule({
       const auth = requireAuth(ctx);
       ctx.db.notes.insert({ text, ownerId: auth.userId });
     }),
+    guardedMutation: mutation(requireAuth((ctx) => ctx.credential)),
   },
 
   endpoints: {
@@ -327,10 +581,15 @@ export default capsule({
       status: 200,
       body: requireAuth(ctx),
     })),
+    guarded: endpoint({ method: "GET", path: "/guarded" }, requireAuth((ctx) => ({
+      status: 200,
+      body: ctx.credential,
+    }))),
   },
 
   messages: {
     whoami: message((ctx) => ({ userId: requireAuth(ctx).userId })),
+    guarded: message(requireAuth((ctx) => ctx.credential)),
   },
 });
 `,
@@ -356,6 +615,9 @@ export default capsule({
 
       const deniedLinkedQuery = await sendAndWait(socket, { id: "linked-denied", type: "query.subscribe", query: "linkedProfile" });
       assert.deepEqual(deniedLinkedQuery.error, expectedDenialError);
+
+      const deniedGuardedQuery = await sendAndWait(socket, { id: "guarded-denied", type: "query.subscribe", query: "guardedCredential" });
+      assert.deepEqual(deniedGuardedQuery.error, expectedDenialError);
 
       assert.deepEqual(
         await sendAndWait(socket, { id: "create-denied", type: "mutation.run", mutation: "createNote", args: ["nope"] }),
@@ -385,6 +647,7 @@ export default capsule({
         data: null,
         error: expectedDenialError,
       });
+      assert.deepEqual((await sendAndWait(socket, { id: "guarded-message-denied", type: "app.send", message: "guarded" })).error, expectedDenialError);
 
       const signUp = await sendAndWait(socket, {
         id: "signup",
@@ -422,11 +685,29 @@ export default capsule({
       assert.equal(allowedLinkedQuery.error, null);
       assert.deepEqual(allowedLinkedQuery.data, linkedAuthContext);
 
+      const allowedGuardedQuery = await sendAndWait(socket, { id: "guarded-allowed", type: "query.subscribe", query: "guardedCredential" });
+      assert.deepEqual(allowedGuardedQuery.data, {
+        credential: { kind: "session" },
+        authFrozen: true,
+        credentialFrozen: true,
+      });
+      const accessKeyOnly = await sendAndWait(socket, { id: "access-key-only", type: "query.subscribe", query: "accessKeyOnly" });
+      assert.equal(accessKeyOnly.error.code, "FORBIDDEN");
+
+      const guardedMutation = await sendAndWait(socket, { id: "guarded-mutation", type: "mutation.run", mutation: "guardedMutation", args: [] });
+      assert.deepEqual(guardedMutation.data, { kind: "session" });
+
       const allowedEndpointResponse = await fetch(`${started.data.url}/profile`, {
         headers: { "x-sporades-session-token": signUp.data.sessionToken },
       });
       assert.equal(allowedEndpointResponse.status, 200);
       assert.deepEqual(await allowedEndpointResponse.json(), linkedAuthContext);
+
+      const guardedEndpointResponse = await fetch(`${started.data.url}/guarded`, {
+        headers: { "x-sporades-session-token": signUp.data.sessionToken },
+      });
+      assert.equal(guardedEndpointResponse.status, 200);
+      assert.deepEqual(await guardedEndpointResponse.json(), { kind: "session" });
 
       assert.deepEqual(await sendAndWait(socket, { id: "whoami-allowed", type: "app.send", message: "whoami" }), {
         id: "whoami-allowed",
@@ -435,6 +716,7 @@ export default capsule({
         data: { userId: linkedAuthContext.userId },
         error: null,
       });
+      assert.deepEqual((await sendAndWait(socket, { id: "guarded-message-allowed", type: "app.send", message: "guarded" })).data, { kind: "session" });
 
       const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
       assert.equal(logsResult.code, 0, logsResult.stderr);

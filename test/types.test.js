@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
 
 const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
@@ -115,6 +115,7 @@ typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
 const app = capsule({
   name: "typed island",
+  accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
     admitJoin: async (ctx, input) => {
@@ -154,6 +155,9 @@ const app = capsule({
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {
+      // @ts-expect-error A Job may run as the Privileged server role, which has no ordinary Credential provenance.
+      ctx.credential.kind;
+      if ("credential" in ctx) ctx.credential.kind satisfies "session" | "access-key";
       const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";
       await ctx.mail.send({ to: "recipient@example.com", subject: "Job report", textBody: text || "empty" });
       const queued = await ctx.jobs.enqueue("summarise", { text }, { idempotencyKey: text });
@@ -237,6 +241,22 @@ const app = capsule({
     },
   ],
   queries: {
+    sessionGuarded: query(requireAuth({ credentials: ["session"], scopes: ["todos:read"] }, (ctx) => {
+      ctx.credential.kind satisfies "session";
+      // @ts-expect-error Session provenance has no Access-key attribution ID.
+      ctx.credential.id;
+      return ctx.auth.userId;
+    })),
+    accessKeyGuarded: query(requireAuth({ credentials: ["access-key"] }, (ctx) => {
+      ctx.credential.kind satisfies "access-key";
+      ctx.credential.id.toUpperCase();
+      ctx.credential.name.toUpperCase();
+      return ctx.auth.userId;
+    })),
+    anyCredentialGuarded: query(requireAuth((ctx) => {
+      ctx.credential.kind satisfies "session" | "access-key";
+      return ctx.auth.userId;
+    })),
     todos: query(async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Query", textBody: "Query" });
       return ctx.db.todos
@@ -329,6 +349,7 @@ const app = capsule({
       await Promise.resolve();
       const me = requireAuth(ctx);
       me.userId.toUpperCase();
+      requireUserAuth(ctx).userId.toUpperCase();
       const linkedUser = requireAuth(ctx, { linked: true });
       linkedUser.isGuest.valueOf();
       // @ts-expect-error requireAuth options accept a boolean linked flag only.

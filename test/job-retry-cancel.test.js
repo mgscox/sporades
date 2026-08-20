@@ -75,7 +75,7 @@ test("committed running cancellation survives context middleware replacement", a
   db.contextMiddleware=[async context=>{
    if(context.kind!=="mutation"||!globalThis.__sporadesCancellationMiddlewareTarget) return context;
    await context.jobs.cancel(globalThis.__sporadesCancellationMiddlewareTarget);
-   return {auth:context.auth,kind:context.kind};
+   return {auth:context.auth,credential:context.credential,kind:context.kind};
   }];
   const began=new Promise(resolve=>{started=resolve;});
   const queued=await runMutation(db,auth,"enqueue",[]);const draining=clock.runDueTimers();await began;
@@ -115,7 +115,7 @@ test("App-message cancellation aborts on commit and stays inert on rollback", as
   db.contextMiddleware=[async context=>{
    if(context.kind!=="message"||!globalThis.__sporadesMessageCancellationMiddlewareTarget) return context;
    await context.jobs.cancel(globalThis.__sporadesMessageCancellationMiddlewareTarget);
-   return {auth:context.auth,kind:context.kind};
+   return {auth:context.auth,credential:context.credential,kind:context.kind};
   }];
   db.messages=[{name:"cancel",handlerSource:`async (_ctx, data) => { if (data.rollback) throw new Error("roll back message cancellation"); return true; }`}];
 
@@ -142,7 +142,7 @@ test("Custom-endpoint cancellation aborts on commit and stays inert on rollback"
   db.contextMiddleware=[async context=>{
    if(context.kind!=="endpoint"||!globalThis.__sporadesEndpointCancellationMiddlewareTarget) return context;
    await context.jobs.cancel(globalThis.__sporadesEndpointCancellationMiddlewareTarget);
-   return {auth:context.auth,kind:context.kind,request:context.request};
+   return {auth:context.auth,credential:context.credential,kind:context.kind,request:context.request};
   }];
   const request={method:"POST",headers:{"x-sporades-session-token":session.token},async *[Symbol.asyncIterator]() {}};
 

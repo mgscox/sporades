@@ -161,6 +161,9 @@ const MIGRATED_RUNTIME_MODULES = [
   // entry until this ticket — so finding it here is the evidence that deleting that list did not
   // quietly narrow this census to the file's exports. The floor is 80 against 107 declarations.
   { file: "server-runtime-source.js", atLeast: 80, sentinel: "sendJsonWithCompletion" },
+  // Auth admission is carried as a complete runtime module so the public and
+  // deployed scope/guard validation paths share one matcher and one marker.
+  { file: "auth-admission.js", atLeast: 10, sentinel: "scopeGrantMatches" },
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
   // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it

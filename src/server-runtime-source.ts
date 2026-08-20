@@ -57,6 +57,11 @@ import {
 } from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+import {
+  normalizeCapsuleAuthDefinition,
+  readAuthRequirements,
+  validateCapsuleAuthRequirements,
+} from "./auth-admission.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
 // index. The log sink in this file needs none of them: it reaches the same three through
@@ -549,6 +554,10 @@ export async function openDevDatabase(
   capsuleDefinition: any = null,
   options: LooseRecord = {},
 ) {
+  if (capsuleDefinition) {
+    capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
+    validateCapsuleAuthRequirements(capsuleDefinition);
+  }
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
@@ -604,7 +613,9 @@ export async function openDevDatabase(
   const mutations: any[] = (capsuleDefinition
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
     : extractMutationHandlers(serverSource)) as any[];
-  const messages = extractMessageHandlers(serverSource);
+  const messages = capsuleDefinition
+    ? handlersFromCapsuleDefinition(capsuleDefinition.messages, "message")
+    : extractMessageHandlers(serverSource);
   let database: LooseRecord;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
@@ -612,7 +623,8 @@ export async function openDevDatabase(
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
-  const contextMiddleware = extractContextMiddleware(serverSource);
+  const contextMiddleware = capsuleDefinition?.middleware?.map((middleware: Function) => middleware.toString())
+    ?? extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
   const rowCache = new Map();
@@ -762,7 +774,7 @@ export async function openDevDatabase(
     try {
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
       }
       database.__scheduleTimers = new Set();
       database.__activeScheduleOccurrences = new Set();
@@ -827,7 +839,7 @@ export async function openDevDatabase(
         await settleActiveScheduleWork(database);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
         }
       } catch (error) {
         shutdownRejected = true;
@@ -1487,7 +1499,7 @@ export async function enqueueScheduledOccurrence(database: LooseRecord, definiti
 
 function createScheduleMutationContext(database: LooseRecord, definition: any, scheduledFor: string) {
   const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
-  return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+  return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" }, { ordinaryCredential: false });
 }
 
 async function enqueueResolvedScheduledOccurrence(database: LooseRecord, definition: any, scheduledFor: string, payload: any, context: LooseRecord) {
@@ -1922,7 +1934,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
     __privilegedRunActive: true,
     __jobEnqueuedBy: context.auth?.userId ?? null,
     __jobParentContext: context,
-    auth: {
+    auth: Object.freeze({
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
       email: null,
@@ -1930,11 +1942,12 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       isAuthenticated: false,
       isGuest: false,
       provider: "privileged-server-role",
-    },
+    }),
   };
   // User-scoped and mutating Team operations remain unavailable. This is the
   // separate userless inspection projection, not inherited Team authority.
   delete privilegedContext.teams;
+  delete privilegedContext.credential;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -2454,6 +2467,12 @@ function handlersFromCapsuleDefinition(definitions: any, kind: string) {
     }));
 }
 
+function materializeHandler(handler: LooseRecord): Function {
+  return typeof handler.handler === "function"
+    ? handler.handler
+    : new Function(`return (${handler.handlerSource});`)();
+}
+
 function mutationHandlersFromCapsuleDefinition(serverSource: any, capsuleDefinition: any) {
   const sourceHandlers = new Map(
     extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]),
@@ -2823,8 +2842,11 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createEndpointContext(transactionDatabase, endpointRequest, session);
+        context = createEndpointContext(transactionDatabase, endpointRequest, session, {
+          ordinaryCredential: !(endpoint as LooseRecord).runtimeOwnedEmailEvent,
+        });
         if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
+          admitSessionHandler(handler, context.auth, "endpoint");
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
         return await handler(context);
@@ -2923,10 +2945,11 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
   };
 }
 
-function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord) {
-  const auth = session.auth;
+function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord, options: LooseRecord = {}) {
+  const auth = protectContextIdentity(session.auth);
   const context: LooseRecord = {
     auth,
+    ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
@@ -2979,6 +3002,23 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   return context;
+}
+
+function protectContextIdentity(value: LooseRecord) {
+  const target = Object.freeze({ ...value });
+  const tampered = () => {
+    throw commandError(
+      "Invalid Capsule context middleware result.",
+      "Runtime-owned Auth and Credential values are immutable.",
+      "INVALID_CONTEXT_MIDDLEWARE_RESULT",
+    );
+  };
+  return new Proxy(target, {
+    set: tampered,
+    defineProperty: tampered,
+    deleteProperty: tampered,
+    setPrototypeOf: tampered,
+  });
 }
 
 function createContextHolder(context: LooseRecord) {
@@ -3040,6 +3080,8 @@ async function drainPendingLogWrites(database: LooseRecord) {
 }
 
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
+  const canonicalAuth = baseContext.auth;
+  const canonicalCredential = baseContext.credential;
   let context: LooseRecord = {
     ...baseContext,
     kind,
@@ -3056,6 +3098,13 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
   for (const middlewareSource of database.contextMiddleware) {
     const result = await runContextMiddleware(middlewareSource, context);
     context = result ?? context;
+    if (!context || typeof context !== "object" || context.auth !== canonicalAuth || context.credential !== canonicalCredential) {
+      throw commandError(
+        "Invalid Capsule context middleware result.",
+        "Context middleware must preserve the runtime-owned Auth and Credential values.",
+        "INVALID_CONTEXT_MIDDLEWARE_RESULT",
+      );
+    }
     holder.current = context;
     if (!context.__sporadesContextHolder) {
       Object.defineProperty(context, "__sporadesContextHolder", {
@@ -3069,6 +3118,23 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     }
   }
   return context;
+}
+
+function admitSessionHandler(handler: unknown, auth: LooseRecord, kind: string) {
+  const requirements = readAuthRequirements(handler);
+  if (!requirements) {
+    return;
+  }
+  requireAuth({ auth, kind }, { linked: requirements.linked });
+  if (!requirements.credentials.includes("session")) {
+    throw commandError(
+      "Forbidden.",
+      "The authenticated credential is not permitted for this operation.",
+      "FORBIDDEN",
+    );
+  }
+  // A permitted Session satisfies declared scope requirements. Access-key
+  // grants are matched when Bearer admission is introduced.
 }
 
 function runContextMiddleware(middlewareSource: any, context: any) {
@@ -4741,13 +4807,18 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   } catch {
     return { rows: null, data: null, error: invalidQueryArgumentsError() };
   }
+  const customHandler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
+  const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
   try {
-    context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
+    context = createMutationContext(database, auth);
+    if (queryHandler) admitSessionHandler(queryHandler, context.auth, "query");
+    context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
     return {
       rows: null as any,
       error: {
+        ...(error?.code ? { code: error.code } : {}),
         message: error.message,
         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
       },
@@ -4759,7 +4830,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     return { data: context.env, error: null };
   }
 
-  const customResult = await runCustomQuery(database, context, queryName, args);
+  const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
   if (customResult) {
     return customResult;
   }
@@ -4793,17 +4864,14 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
 }
 
-async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[]) {
+async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[], resolvedHandler: Function | null = null) {
   const handler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   if (!handler) {
     return null;
   }
 
   try {
-    const queryHandler =
-      typeof handler.handler === "function"
-        ? handler.handler
-        : new Function(`return (${handler.handlerSource});`)();
+    const queryHandler = resolvedHandler ?? materializeHandler(handler);
     const data = await queryHandler(context, ...args);
     assertJsonCompatible(data);
     return { data, error: null as any };
@@ -4894,13 +4962,16 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       let handlerFailed = false;
       try {
         context = createMutationContext(transactionDatabase, auth);
+        const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
+        const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+        if (mutationHandler) admitSessionHandler(mutationHandler, context.auth, "mutation");
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
         }
 
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args);
+        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
         if (!result) {
           result = mutationName.startsWith("update")
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
@@ -4947,16 +5018,13 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   }
 }
 
-async function runCustomMutation(database: LooseRecord, context: any, mutationName: any, args: any): Promise<any> {
+async function runCustomMutation(database: LooseRecord, context: any, mutationName: any, args: any, resolvedHandler: Function | null = null): Promise<any> {
   const handler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
   if (!handler) {
     return null;
   }
 
-  const mutationHandler =
-    typeof handler.handler === "function"
-      ? handler.handler
-      : new Function(`return (${handler.handlerSource});`)();
+  const mutationHandler = resolvedHandler ?? materializeHandler(handler);
   let result;
   try {
     result = await mutationHandler(context, ...args);
@@ -5008,14 +5076,15 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     if (data !== undefined) {
       assertJsonCompatible(data);
     }
-    const createHandler = new Function(`return (${handler.handlerSource});`);
+    const messageHandler = materializeHandler(handler);
+    admitSessionHandler(messageHandler, auth, "message");
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
         context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
         context = await applyContextMiddleware(transactionDatabase, context, "message");
-        const result = await createHandler()(context, data);
+        const result = await messageHandler(context, data);
         if (result !== undefined) {
           assertJsonCompatible(result);
         }
@@ -5105,9 +5174,11 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: {
   }
 }
 
-function createMutationContext(database: LooseRecord, auth: any) {
+function createMutationContext(database: LooseRecord, auth: any, options: LooseRecord = {}) {
+  auth = protectContextIdentity(auth);
   const context: LooseRecord = {
     auth,
+    ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
     __pendingAclWrites: [],
@@ -5447,7 +5518,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
-          const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
+          const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);

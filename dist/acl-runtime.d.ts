@@ -99,6 +99,9 @@ export declare function createFileAclContext(auth: LooseRecord, database: LooseR
     auth: Readonly<{
         [x: string]: any;
     }>;
+    credential: Readonly<{
+        kind: "session";
+    }>;
     acl: Readonly<{
         db: Readonly<{
             get(tableName: any, id: any): {

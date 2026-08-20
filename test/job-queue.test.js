@@ -262,7 +262,12 @@ test("Jobs capture enqueue-time Session provider provenance across later provide
   const capsule = {
     jobs: {
       recordProvider: job((ctx) => {
-        seen.push(ctx.auth.provider);
+        seen.push({
+          provider: ctx.auth.provider,
+          credential: ctx.credential,
+          credentialFrozen: Object.isFrozen(ctx.credential),
+          authFrozen: Object.isFrozen(ctx.auth),
+        });
         if (seen.length === 1) throw new Error("retry once");
         return ctx.auth.provider;
       }),
@@ -304,7 +309,10 @@ test("Jobs capture enqueue-time Session provider provenance across later provide
       .run("2000-01-01T00:00:00.000Z", enqueued.data.id);
     await runCurrentUserJobWorker(database);
 
-    assert.deepEqual(seen, ["google", "google"]);
+    assert.deepEqual(seen, [
+      { provider: "google", credential: { kind: "session" }, credentialFrozen: true, authFrozen: true },
+      { provider: "google", credential: { kind: "session" }, credentialFrozen: true, authFrozen: true },
+    ]);
     assert.equal(database.adapter.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "google");
   } finally {
     database.close();

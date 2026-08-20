@@ -582,9 +582,13 @@ export function createFileAclContext(auth: LooseRecord, database: LooseRecord) {
   // same constrained, read-only ACL decisions as a table rule, but only the
   // authenticated actor: no db API, mutable Teams API, request, or privileged
   // capability can cross this boundary.
-  const context = { auth: Object.freeze({ ...auth }) };
+  const context = {
+    auth: Object.freeze({ ...auth }),
+    credential: Object.freeze({ kind: "session" }),
+  };
   return Object.freeze({
     auth: context.auth,
+    credential: context.credential,
     acl: createAclHelpers(database, context),
   });
 }

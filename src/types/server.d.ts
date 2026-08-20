@@ -113,6 +113,7 @@ export type AclHelpers = {
 /** Runtime context available while evaluating table ACL rules. */
 export type TableAclContext = {
   auth: AuthContext;
+  credential: CredentialProvenance;
   acl: AclHelpers;
   [key: string]: unknown;
 };
@@ -149,6 +150,7 @@ export type FileAclOperation = "read" | "publicUrl" | "delete";
  */
 export type FileAclContext = {
   auth: AuthContext;
+  credential: CredentialProvenance;
   acl: AclHelpers;
 };
 
@@ -292,6 +294,11 @@ export type AuthContext = {
   isGuest: boolean;
   provider: string;
 };
+
+export type SessionCredentialProvenance = Readonly<{ kind: "session" }>;
+export type AccessKeyCredentialProvenance = Readonly<{ kind: "access-key"; id: string; name: string }>;
+export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCredentialProvenance;
+export type CredentialKind = CredentialProvenance["kind"];
 
 export type RequireAuthOptions = {
   /** Require a linked account instead of allowing an Anonymous session. */
@@ -579,7 +586,7 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "privileged" | "teams"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
@@ -606,9 +613,13 @@ export type PrivilegedApi<Schema extends SchemaDefinition = SchemaDefinition> = 
  * Runtime-owned context passed to queries, mutations, endpoints, messages,
  * middleware, and hooks.
  */
-export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> = {
+export type CapsuleContext<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Credential extends CredentialProvenance = CredentialProvenance,
+> = {
   db: DatabaseFromSchema<Schema>;
   auth: AuthContext;
+  credential: Credential;
   env: Record<string, string>;
   log: Logger;
   messages: MessageApi;
@@ -632,7 +643,10 @@ export type EndpointRequest = {
   body?: unknown;
 };
 
-export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> & {
+export type EndpointContext<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Credential extends CredentialProvenance = CredentialProvenance,
+> = CapsuleContext<Schema, Credential> & {
   request: EndpointRequest;
 };
 
@@ -734,8 +748,8 @@ export type MutationHook<Schema extends SchemaDefinition = SchemaDefinition, Res
 
 /** Capsule lifecycle hooks around named mutations. */
 export type CapsuleHooks<Schema extends SchemaDefinition = SchemaDefinition> = {
-  init?: (ctx: CapsuleContext<Schema>) => MaybePromise<void>;
-  shutdown?: (ctx: CapsuleContext<Schema>) => MaybePromise<void>;
+  init?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
+  shutdown?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
   beforeMutation?: MutationHook<Schema>[];
   afterMutation?: MutationHook<Schema>[];
 };
@@ -797,7 +811,8 @@ export type JobApi = {
   get(id: string): Promise<JobState | null>;
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
-export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+export type JobHandlerContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> | PrivilegedContext<Schema>;
+export type JobDefinition<Handler = (ctx: JobHandlerContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
 export type ScheduleLatestOccurrence =
   | { scheduledFor: string; outcome: "enqueued"; jobId: string }
   | { scheduledFor: string; outcome: "payload-failed"; errorCode: string };
@@ -854,12 +869,13 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
+  accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
-  queries?: Record<string, QueryDefinition<QueryHandler<Schema, any>>>;
-  mutations?: Record<string, MutationDefinition>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
+  queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
+  mutations?: Record<string, MutationDefinition<MutationHandler | AuthGuardedHandler<(...args: any[]) => any>>>;
+  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
-  messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
+  messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
@@ -892,15 +908,45 @@ export function capsule<const Schema extends SchemaDefinition, const Definition 
   definition: Definition & { schema?: Schema },
 ): Capsule<Definition>;
 
-/**
- * Require the current request to have a valid Sporades session.
- *
- * By default Anonymous sessions are accepted. Pass `{ linked: true }` when the
- * operation must require email, Google, or another linked provider.
- */
+/** Synchronously require an authenticated user from an already-admitted context. */
+export function requireUserAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export function requireAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
+export type DeclarativeRequireAuthOptions = {
+  linked?: boolean;
+  credentials?: readonly CredentialKind[];
+  scopes?: readonly string[];
+};
+export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler & {
+  readonly __sporadesAuthGuardedHandler: true;
+};
+/** Declaratively require an admitted credential before middleware and handler execution. */
+export function requireAuth<
+  Context extends CapsuleContext<any, CredentialProvenance>,
+  Args extends unknown[],
+  Result,
+>(handler: (ctx: Context, ...args: Args) => Result): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
+/** A single literal credential kind narrows ctx.credential in the guarded handler. */
+export function requireAuth<
+  const Kind extends CredentialKind,
+  Context extends CapsuleContext<any, Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance>,
+  Args extends unknown[],
+  Result,
+>(
+  options: DeclarativeRequireAuthOptions & { credentials: readonly [Kind] },
+  handler: (ctx: Context, ...args: Args) => Result,
+): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
+export function requireAuth<
+  Context extends CapsuleContext<any, CredentialProvenance>,
+  Args extends unknown[],
+  Result,
+>(
+  options: DeclarativeRequireAuthOptions,
+  handler: (ctx: Context, ...args: Args) => Result,
+): AuthGuardedHandler<(ctx: Context, ...args: Args) => Result>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
-export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
+export function endpoint(options: EndpointOptions, handler: EndpointHandler): EndpointDefinition<EndpointHandler>;
+export function endpoint<Handler extends (...args: any[]) => any>(options: EndpointOptions, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>>;
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
@@ -908,16 +954,19 @@ export function emailEvent<Handler extends EmailEventHandler>(handler: Handler):
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): QueryDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
+export function query<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): QueryDefinition<AuthGuardedHandler<Handler>>;
 /** Define a named mutation for client-initiated writes or commands. */
 export function mutation<const Args extends unknown[] = string[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): MutationDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
+export function mutation<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MutationDefinition<AuthGuardedHandler<Handler>>;
 /** Define a server-mediated App message handler. */
-export function message<Handler extends MessageHandler>(handler: Handler): MessageDefinition<Handler>;
+export function message(handler: MessageHandler): MessageDefinition<MessageHandler>;
+export function message<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MessageDefinition<AuthGuardedHandler<Handler>>;
 /** Declare a named server-only Job handler in `capsule({ jobs })`. */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
-  handler: (ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>,
-): JobDefinition<(ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>>;
+  handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,
+): JobDefinition<(ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>>;
 /**
  * Declare a named server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use

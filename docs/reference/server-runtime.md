@@ -265,42 +265,67 @@ error-on-conflict behavior.
 
 ### Gate Handlers With requireAuth
 
-`requireAuth` is the canonical way to gate a handler on authentication. Call it
-at the top of any query, mutation, endpoint, or app message handler instead of
-hand-writing `ctx.auth` checks:
+Use declarative `requireAuth(handler)` when a query, mutation, Custom endpoint,
+or App message must reject an Anonymous Session before Capsule middleware or
+handler work begins. Use `requireUserAuth(ctx)` for a synchronous check at a
+specific point inside already-admitted work:
 
 ```ts
-import { capsule, endpoint, mutation, query, requireAuth } from "sporades/server";
+import { capsule, endpoint, mutation, query, requireAuth, requireUserAuth } from "sporades/server";
 
 export default capsule({
+  accessKeys: {
+    scopes: ["projects:read", "projects:delete"],
+  },
   queries: {
-    myProjects: query((ctx) => {
-      const auth = requireAuth(ctx);
+    myProjects: query(requireAuth({ scopes: ["projects:read"] }, (ctx) => {
+      const auth = requireUserAuth(ctx);
       return ctx.db.projects.where("ownerId", auth.userId).all();
-    }),
+    })),
   },
   mutations: {
-    deleteAccountData: mutation((ctx) => {
+    deleteAccountData: mutation(requireAuth({
+      linked: true,
+      credentials: ["session"],
+      scopes: ["projects:delete"],
+    }, (ctx) => {
       // Reject guest sessions too: require a linked (non-guest) user.
-      const auth = requireAuth(ctx, { linked: true });
+      const auth = requireUserAuth(ctx, { linked: true });
       ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
         ctx.db.projects.delete(project.id);
       });
-    }),
+    })),
   },
   endpoints: {
-    profile: endpoint({ method: "GET", path: "/profile" }, (ctx) => ({
+    profile: endpoint({ method: "GET", path: "/profile" }, requireAuth((ctx) => ({
       status: 200,
-      body: requireAuth(ctx),
-    })),
+      body: { auth: ctx.auth, credential: ctx.credential },
+    }))),
   },
 });
 ```
 
-On success `requireAuth(ctx)` returns the session's `AuthContext`, so `userId`
-and profile fields are available without re-reading `ctx.auth`. On failure it
-throws a structured auth error that reaches the client through the normal
-handler error pipeline with the stable `UNAUTHENTICATED` code:
+Omitting `credentials` admits any supported credential kind; omitting `scopes`
+requires no scope. Credential lists are OR requirements and scope lists are AND
+requirements. A permitted Session satisfies declared scope requirements. The
+current Session-only transport therefore admits `"session"` or an omitted
+credential list and returns `FORBIDDEN` for an `"access-key"`-only guard.
+
+Declare the Capsule's concrete, case-sensitive scope vocabulary once in
+`capsule({ accessKeys: { scopes } })`. Declarations cannot contain `*`. A guard
+may require only declared concrete scopes. Invalid, duplicate, wildcard, or
+undeclared values fail Capsule registration rather than weakening admission.
+
+Ordinary user contexts expose immutable identity and provenance separately:
+`ctx.auth` is the current user, while `ctx.credential` is currently
+`{ kind: "session" }`. The public provenance union also reserves
+`{ kind: "access-key", id, name }` for Access-key admission. Middleware and ACL
+rules may inspect these values but cannot replace or mutate them.
+
+On success `requireUserAuth(ctx)` returns the context's `AuthContext`, so
+`userId` and profile fields remain available without copying `ctx.auth`. On
+failure it throws a structured auth error with the stable `UNAUTHENTICATED`
+code:
 
 ```json
 { "ok": false, "error": { "code": "UNAUTHENTICATED", "message": "Unauthenticated.", "hint": "Sign in and retry the request." } }
@@ -309,8 +334,10 @@ handler error pipeline with the stable `UNAUTHENTICATED` code:
 Custom endpoints reply with HTTP `401` and the same structured error body.
 Clients can route users to sign-in on the `UNAUTHENTICATED` code alone.
 
-`requireAuth(ctx, { linked: true })` additionally requires a linked, non-guest
-user, so Anonymous-session guests cannot perform account-level actions.
+`requireUserAuth(ctx, { linked: true })` additionally requires a linked,
+non-guest user. The older inline spelling `requireAuth(ctx, { linked: true })`
+remains indefinitely compatible, but is deprecated by name so it is not
+confused with declarative credential admission.
 
 The public denial text stays opaque about server internals. Each denial also
 emits a structured `auth.denied` platform log entry with diagnostic context

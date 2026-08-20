@@ -27,6 +27,8 @@ export declare function readEndpointSessionToken(headers: {
     [x: string]: any;
     sessionToken?: any;
 }): any;
+export declare function requireUserAuth(context: LooseRecord, options?: LooseRecord): any;
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: LooseRecord, options?: LooseRecord): any;
 export declare function emitAuthDeniedLog(database: LooseRecord, details: LooseRecord): void;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;

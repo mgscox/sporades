@@ -19,7 +19,7 @@ internal auth database.</p>
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">ServerAuthApi</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-call-signature" href="#confirmpasswordreset-1">confirmPasswordReset</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">code</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span> <span class="tsd-kind-parameter">newPassword</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#createemailpasswordresetlink-1">createEmailPasswordResetLink</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">email</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.PasswordResetLink.html" class="tsd-signature-type tsd-kind-type-alias">PasswordResetLink</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#sendemailpasswordresetlink-1">sendEmailPasswordResetLink</a><span class="tsd-signature-symbol">(</span><br/>        <span class="tsd-kind-parameter">email</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span><br/>        <span class="tsd-kind-parameter">options</span><span class="tsd-signature-symbol">?:</span> <a href="server.PasswordResetMailOptions.html" class="tsd-signature-type tsd-kind-type-alias">PasswordResetMailOptions</a><span class="tsd-signature-symbol">,</span><br/>    <span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#setemailpassword-1">setEmailPassword</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">email</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span> <span class="tsd-kind-parameter">newPassword</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#verifypasswordresetcode-1">verifyPasswordResetCode</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">code</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">email</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L355">server.d.ts:355</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L362">server.d.ts:362</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -52,7 +52,7 @@ user and does not create a new one.</p>
 <li><span><span class="tsd-kind-parameter">newPassword</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L381">server.d.ts:381</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L388">server.d.ts:388</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="createemailpasswordresetlink"><span>create<wbr/>Email<wbr/>Password<wbr/>Reset<wbr/>Link</span><a href="#createemailpasswordresetlink" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -71,7 +71,7 @@ its result to an unauthenticated caller reintroduces account enumeration.</p>
 <li><span><span class="tsd-kind-parameter">email</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.PasswordResetLink.html" class="tsd-signature-type tsd-kind-type-alias">PasswordResetLink</a><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L374">server.d.ts:374</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L381">server.d.ts:381</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="sendemailpasswordresetlink"><span>send<wbr/>Email<wbr/>Password<wbr/>Reset<wbr/>Link</span><a href="#sendemailpasswordresetlink" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -90,7 +90,7 @@ email auth is disabled.</p>
 <li><span><code class="tsd-tag">Optional</code><span class="tsd-kind-parameter">options</span>: <a href="server.PasswordResetMailOptions.html" class="tsd-signature-type tsd-kind-type-alias">PasswordResetMailOptions</a></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L365">server.d.ts:365</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L372">server.d.ts:372</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="setemailpassword"><span>set<wbr/>Email<wbr/>Password</span><a href="#setemailpassword" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -106,7 +106,7 @@ email auth is disabled.</p>
 <li><span><span class="tsd-kind-parameter">newPassword</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">void</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L357">server.d.ts:357</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L364">server.d.ts:364</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="verifypasswordresetcode"><span>verify<wbr/>Password<wbr/>Reset<wbr/>Code</span><a href="#verifypasswordresetcode" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -121,7 +121,7 @@ email auth is disabled.</p>
 <li><span><span class="tsd-kind-parameter">code</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">email</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L376">server.d.ts:376</a></li></ul></aside></div></li></ul></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L383">server.d.ts:383</a></li></ul></aside></div></li></ul></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

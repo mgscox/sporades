@@ -3,6 +3,9 @@ export type UnknownRecord = Record<string, unknown>;
 export type Handler<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
 export type CapsuleDefinition = UnknownRecord & {
     name: string;
+    accessKeys?: {
+        scopes: readonly string[];
+    };
 };
 export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = Definition & {
     kind: "capsule";
@@ -107,11 +110,30 @@ export type AuthContext = {
 export type RequireAuthOptions = {
     linked?: boolean;
 };
+export type CredentialKind = "session" | "access-key";
+export type SessionCredentialProvenance = Readonly<{
+    kind: "session";
+}>;
+export type AccessKeyCredentialProvenance = Readonly<{
+    kind: "access-key";
+    id: string;
+    name: string;
+}>;
+export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCredentialProvenance;
+export type DeclarativeRequireAuthOptions = {
+    linked?: boolean;
+    credentials?: readonly CredentialKind[];
+    scopes?: readonly string[];
+};
 export type RequireAuthContext = {
     auth: AuthContext;
     [key: string]: unknown;
 };
+export declare function requireUserAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
+export declare function requireAuth<HandlerType extends Handler>(handler: HandlerType): HandlerType;
+export declare function requireAuth<HandlerType extends Handler>(options: DeclarativeRequireAuthOptions, handler: HandlerType): HandlerType;
 export declare function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition>;
 export declare function endpoint<const HandlerType extends Handler>(options: EndpointOptions, handler: HandlerType): EndpointDefinition<HandlerType>;
 /** Declare the single provider-neutral email-event subscription for a Capsule. */

@@ -4730,7 +4730,11 @@ export default capsule({
   endpoints: {
     authState: endpoint({ method: "GET", path: "/integrations/auth" }, (ctx) => ({
       status: 200,
-      body: ctx.auth,
+      body: {
+        auth: ctx.auth,
+        credential: ctx.credential,
+        authorization: ctx.request.headers.authorization ?? null,
+      },
     })),
   },
 });
@@ -4749,19 +4753,28 @@ export default capsule({
 
       const missingTokenResponse = await fetch(`${started.data.url}/integrations/auth`);
       assert.equal(missingTokenResponse.status, 200);
-      const missingTokenAuth = await missingTokenResponse.json();
+      const missingTokenResult = await missingTokenResponse.json();
+      const missingTokenAuth = missingTokenResult.auth;
       assert.equal(missingTokenAuth.provider, "anonymous");
       assert.equal(missingTokenAuth.isGuest, true);
       assert.notEqual(missingTokenAuth.userId, existingAuth.userId);
+      assert.deepEqual(missingTokenResult.credential, { kind: "session" });
+      assert.equal(missingTokenResult.authorization, null);
 
       const invalidTokenResponse = await fetch(`${started.data.url}/integrations/auth`, {
-        headers: { "x-sporades-session-token": "not-a-real-session" },
+        headers: {
+          authorization: "Bearer capsule-owned-value",
+          "x-sporades-session-token": "not-a-real-session",
+        },
       });
       assert.equal(invalidTokenResponse.status, 200);
-      const invalidTokenAuth = await invalidTokenResponse.json();
+      const invalidTokenResult = await invalidTokenResponse.json();
+      const invalidTokenAuth = invalidTokenResult.auth;
       assert.equal(invalidTokenAuth.provider, "anonymous");
       assert.equal(invalidTokenAuth.isGuest, true);
       assert.notEqual(invalidTokenAuth.userId, existingAuth.userId);
+      assert.deepEqual(invalidTokenResult.credential, { kind: "session" });
+      assert.equal(invalidTokenResult.authorization, "Bearer capsule-owned-value");
     } finally {
       socket?.close();
       child.kill("SIGTERM");
