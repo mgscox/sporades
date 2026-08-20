@@ -2233,12 +2233,13 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
       revokedAt: database.clock.now().toISOString(),
       revocationCause: "password-reset",
     });
-    return { ok: true, revokedAccessKeys };
+    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
   });
   if (!outcome.ok) return outcome;
   await emitAccessKeyOwnerTransitionAudits(database, {
     operation: "auth.confirmPasswordReset",
-    ownerUserId: preflight.userId,
+    ownerUserId: outcome.ownerUserId,
+    actor: { kind: "password-reset-code" },
     revocationCause: "password-reset",
     records: outcome.revokedAccessKeys.records,
   });

@@ -60,6 +60,15 @@ export function createAccessKeyTables(adapter: LooseRecord) {
       "[operationRevision] INTEGER NOT NULL" +
       ")",
     )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] (" +
+      "[name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL" +
+      ")",
+    )),
+    () => adapter.prepare(sql(
+      "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) " +
+      "ON CONFLICT ([name]) DO NOTHING",
+    )).run("selector", 0),
   ]);
 }
 
@@ -507,14 +516,41 @@ export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, 
           operation: input.operation,
           executionSource: "auth-runtime",
           outcome: "succeeded",
-          actor: { userId: input.ownerUserId },
-          credential: { kind: "session" },
+          actor: input.actor,
+          target: { ownerUserId: input.ownerUserId },
           accessKey: { id: record.id, name: record.name },
           revocationCause: input.revocationCause,
         },
       });
     } catch { }
   }
+}
+
+export async function runAccessKeyOwnerSecurityTransition(
+  database: LooseRecord,
+  input: LooseRecord,
+  transition: (adapter: LooseRecord) => any,
+) {
+  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted") {
+    throw new TypeError("An owner security transition requires owner-unlinked or owner-deleted.");
+  }
+  const outcome = await database.adapter.withTransaction(async (adapter: LooseRecord) => {
+    const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
+      ownerUserId: input.ownerUserId,
+      revokedAt: database.clock.now().toISOString(),
+      revocationCause: input.revocationCause,
+    });
+    const result = await transition(adapter);
+    return { result, revokedAccessKeys };
+  });
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: input.operation,
+    ownerUserId: input.ownerUserId,
+    actor: input.actor,
+    revocationCause: input.revocationCause,
+    records: outcome.revokedAccessKeys.records,
+  });
+  return outcome.result;
 }
 
 function protectAccessKeyValue(value: LooseRecord) {

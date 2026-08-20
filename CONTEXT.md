@@ -257,7 +257,7 @@ A short-lived, single-use runtime record binding one provider authorization requ
 _Avoid_: reusable state, client OAuth session
 
 **Reset code**:
-A short-lived, single-use runtime record binding one email credential to one password reset attempt. The code is a selector/verifier pair; the runtime stores the selector and only a hash of the verifier. Verification is repeatable and does not spend the code; confirming a new password spends it, deletes the user's other outstanding Reset codes, and revokes that user's Sessions.
+A short-lived, single-use runtime record binding one email credential to one password reset attempt. The code is a selector/verifier pair; the runtime stores the selector and only a hash of the verifier. Verification is repeatable and does not spend the code; confirming a new password spends it, deletes the user's other outstanding Reset codes, and atomically revokes that user's Sessions and all current Access keys.
 _Avoid_: reset token, oobCode, magic link (it authorizes a password change, not a sign-in)
 
 **Session provenance**:

@@ -429,8 +429,8 @@ export type ServerAuthApi = {
   /** Report which account a Reset code belongs to. Does not spend the code. */
   verifyPasswordResetCode(code: string): Promise<{ email: string }>;
   /**
-   * Spend a Reset code and set the new password. Revokes every Session for that
-   * user and does not create a new one.
+   * Spend a Reset code and set the new password. Atomically revokes every
+   * Session and current Access key for that user and does not create a new one.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };

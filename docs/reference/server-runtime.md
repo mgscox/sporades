@@ -366,8 +366,9 @@ reserve their names until revoked.
 
 Password-reset confirmation retires every current key for that owner in the
 same Auth transaction that changes the password and revokes Sessions. Ordinary
-password changes do not retire keys, and a later relink cannot revive a
-retired credential.
+password changes do not retire keys. Losing linked status or deleting the
+owner retires every current key in the same owner-security transaction with a
+distinct cause, and a later relink cannot revive a retired credential.
 
 Access keys cannot issue, inspect, or revoke keys. Neither can Anonymous or
 guest Sessions, Jobs, Schedules, lifecycle hooks, or Privileged work. A key

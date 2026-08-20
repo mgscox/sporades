@@ -295,6 +295,9 @@ test("confirming a reset revokes every existing Session for that account", async
     const retirementAudit = (await database.log.tail(50)).find((event) =>
       event.event === "access-key.revoked" && event.data?.accessKey?.id === "password-reset-access-key");
     assert.equal(retirementAudit.data.operation, "auth.confirmPasswordReset");
+    assert.deepEqual(retirementAudit.data.actor, { kind: "password-reset-code" });
+    assert.deepEqual(retirementAudit.data.target, { ownerUserId: registered.auth.userId });
+    assert.equal("credential" in retirementAudit.data, false);
     assert.equal(retirementAudit.data.revocationCause, "password-reset");
     assert.equal(retirementAudit.data.accessKey.name, "reset-retired-key");
   });

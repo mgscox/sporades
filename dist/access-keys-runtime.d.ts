@@ -119,5 +119,6 @@ export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord |
 export declare function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
 export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
+export declare function runAccessKeyOwnerSecurityTransition(database: LooseRecord, input: LooseRecord, transition: (adapter: LooseRecord) => any): Promise<any>;
 export {};
 //# sourceMappingURL=access-keys-runtime.d.ts.map

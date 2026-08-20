@@ -6939,7 +6939,13 @@ function createAccessKeyTables(adapter) {
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] ([ownerUserId] TEXT PRIMARY KEY, [currentCount] INTEGER NOT NULL, [totalCount] INTEGER NOT NULL, [operationRevision] INTEGER NOT NULL)"
-    ))
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] ([name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL)"
+    )),
+    () => adapter.prepare(sql(
+      "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) ON CONFLICT ([name]) DO NOTHING"
+    )).run("selector", 0)
   ]);
 }
 function createCurrentUserAccessKeysApi(database, contextGetter) {
@@ -7347,8 +7353,8 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
           operation: input.operation,
           executionSource: "auth-runtime",
           outcome: "succeeded",
-          actor: { userId: input.ownerUserId },
-          credential: { kind: "session" },
+          actor: input.actor,
+          target: { ownerUserId: input.ownerUserId },
           accessKey: { id: record.id, name: record.name },
           revocationCause: input.revocationCause
         }
@@ -12513,12 +12519,13 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
       revokedAt: database.clock.now().toISOString(),
       revocationCause: "password-reset"
     });
-    return { ok: true, revokedAccessKeys };
+    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
   });
   if (!outcome.ok) return outcome;
   await emitAccessKeyOwnerTransitionAudits(database, {
     operation: "auth.confirmPasswordReset",
-    ownerUserId: preflight.userId,
+    ownerUserId: outcome.ownerUserId,
+    actor: { kind: "password-reset-code" },
     revocationCause: "password-reset",
     records: outcome.revokedAccessKeys.records
   });
@@ -14523,25 +14530,32 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     issueAccessKeyRecord(row) {
       let outcome = null;
+      let reserved = false;
       const sequence = chainMaybePromise([
+        // Secret-bearing writes share one narrow lock so a rotation UPDATE can
+        // never lose a cross-owner selector race by aborting its transaction.
+        () => this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?"
+        )).run("selector"),
+        () => this.prepare(
+          sql(
+            "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
+          )
+        ).run(row.ownerUserId, 0, 0, 0),
         () => thenIfPromise(this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] + 1, [totalCount] = [totalCount] + 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ? AND [currentCount] < ? AND [totalCount] < ?"
+          )
+        ).run(row.ownerUserId, ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT), (result) => {
+          reserved = result.changes !== 0;
+          if (!reserved) outcome = { status: "limit" };
+        }),
+        () => outcome ?? thenIfPromise(this.prepare(
           sql(
             "SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = ? AND [isGuest] = ?"
           )
         ).get(row.ownerUserId, 1, 0), (owner) => {
           if (!owner) outcome = { status: "owner-ineligible" };
-        }),
-        () => outcome ?? this.prepare(
-          sql(
-            "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
-          )
-        ).run(row.ownerUserId, 0, 0, 0),
-        () => outcome ?? thenIfPromise(this.prepare(
-          sql(
-            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] + 1, [totalCount] = [totalCount] + 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ? AND [currentCount] < ? AND [totalCount] < ?"
-          )
-        ).run(row.ownerUserId, ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT), (reserved) => {
-          if (reserved.changes === 0) outcome = { status: "limit" };
         }),
         () => outcome ?? thenIfPromise(this.prepare(
           sql(
@@ -14562,16 +14576,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
         ), (inserted) => {
           if (inserted.changes !== 0) outcome = { status: "issued" };
         }),
-        () => outcome ?? this.prepare(
-          sql(
-            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, [totalCount] = [totalCount] - 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
-          )
-        ).run(row.ownerUserId),
         () => outcome ?? thenIfPromise(this.prepare(
           sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [reservedName] = ?")
         ).get(row.ownerUserId, row.reservedName), (nameCollision) => {
           outcome = { status: nameCollision ? "name-conflict" : "selector-conflict" };
-        })
+        }),
+        () => !reserved || outcome?.status === "issued" ? void 0 : this.prepare(
+          sql(
+            "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1, [totalCount] = [totalCount] - 1, [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
+          )
+        ).run(row.ownerUserId)
       ]);
       return thenIfPromise(sequence, () => outcome);
     },
@@ -14634,6 +14648,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let existing = null;
       let status = "not-found";
       const sequence = chainMaybePromise([
+        () => this.prepare(sql(
+          "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?"
+        )).run("selector"),
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),

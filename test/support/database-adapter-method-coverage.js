@@ -131,9 +131,16 @@ export function recordDirectAdapterCalls(adapter, calledMethodNames) {
         if (depth === 0) {
           calledMethodNames.add(property);
         }
+        const callArgs = property === "withTransaction" && typeof args[0] === "function"
+          ? [
+              (transactionAdapter, ...callbackArgs) =>
+                args[0](recordDirectAdapterCalls(transactionAdapter, calledMethodNames), ...callbackArgs),
+              ...args.slice(1),
+            ]
+          : args;
         depth += 1;
         try {
-          return value.apply(this === recording ? receiver : this, args);
+          return value.apply(this === recording ? receiver : this, callArgs);
         } finally {
           depth -= 1;
         }
