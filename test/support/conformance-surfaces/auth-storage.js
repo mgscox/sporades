@@ -1088,6 +1088,14 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal(listed[0].grantsJson, record.grantsJson);
       assert.equal((await adapter.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 0);
 
+      const inspected = await adapter.findAccessKeyRecordById(record.id);
+      assert.equal(inspected.id, record.id);
+      assert.equal(inspected.ownerUserId, SIGNED_IN_USER.id);
+      assert.equal(inspected.grantsJson, record.grantsJson);
+      assert.equal(inspected.selector, undefined);
+      assert.equal(inspected.verifierDigest, undefined);
+      assert.equal(await adapter.findAccessKeyRecordById("unknown-access-key-id"), null);
+
       const authenticated = await adapter.findAccessKeyAuthenticationRecord(record.selector);
       assert.equal(authenticated.id, record.id);
       assert.equal(authenticated.ownerDisplayName, SIGNED_IN_USER.displayName);

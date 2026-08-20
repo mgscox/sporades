@@ -716,7 +716,9 @@ async function proveAccessKeyJobLifecycleAcrossEngine({ databasePath, serverEnv 
     });
     const rolledBack = await runMutation(database, owner, "enqueueThenFail", []);
     assert.equal(rolledBack.ok, false);
-    assert.equal((await database.adapter.prepare("SELECT id FROM sporades_jobs WHERE idempotencyKey = ?").get("must-roll-back")) ?? null, null);
+    assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [idempotencyKey] = ?",
+    )).get("must-roll-back")) ?? null, null);
 
     const issued = await runMutation(database, owner, "issue", []);
     assert.equal(issued.ok, true, JSON.stringify(issued));
@@ -731,7 +733,9 @@ async function proveAccessKeyJobLifecycleAcrossEngine({ databasePath, serverEnv 
     assert.equal(replacement.ok, true, JSON.stringify(replacement));
     assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
     await deleteCurrentAuthUser(database, { kind: "mutation", auth: owner, credential: { kind: "session" } });
-    await database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+    await database.adapter.prepare(database.adapter.dialect.sql(
+      "UPDATE [sporades_jobs] SET [availableAt] = ?, [status] = 'queued' WHERE [id] = ?",
+    ))
       .run("2000-01-01T00:00:00.000Z", admitted.id);
 
     await database.close();
