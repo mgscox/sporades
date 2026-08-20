@@ -27,6 +27,10 @@ README.md
 package.json
 ```
 
+Blank Capsules additionally contain `server/payments.ts` and
+`shared/payments.ts`. They are ordinary blank-template source: there is no
+separate payment template or post-generation codemod.
+
 Useful create options:
 
 ```sh
@@ -108,7 +112,8 @@ entry as a write-free preflight error and never rewrites the source shell.
 ### Project Files
 
 `server/index.ts` defines the Capsule: schema, queries, mutations, endpoints,
-messages, middleware, and server-side behavior.
+messages, Jobs, middleware, and server-side behavior. A blank Capsule imports
+its dormant payment Jobs and known-Job query from `server/payments.ts`.
 
 `client/index.tsx` is the browser entry. It imports the configured framework and
 `sporades/client`.
@@ -122,7 +127,7 @@ Vue/Vite loads `/client/index.ts`. Released HTML references only transformed
 hashed assets.
 
 `sporades.json` configures the Capsule name, template, client framework and
-toolchain, auth, and default ports. Omitting `client.toolchain` preserves the
+toolchain, auth, optional payments, and default ports. Omitting `client.toolchain` preserves the
 esbuild default for existing React and Preact Capsules. Vue defaults to Vite.
 
 Sealed Server env stores server-only values in `.sporades/sealed-server-env/`
@@ -176,6 +181,42 @@ A typical `sporades.json` looks like this:
 ```
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
+
+### Dormant Stripe payments in blank Capsules
+
+Every newly generated blank Capsule includes this credential-free project
+configuration:
+
+```json
+{
+  "payments": {
+    "stripe": {
+      "enabled": false
+    }
+  }
+}
+```
+
+`payments` remains optional so existing Capsules and non-blank demonstration
+templates retain their current behavior. Ticket 02 accepts only the exact
+dormant Stripe shape above. Setting `enabled` to `true`, adding unknown payment
+providers, or adding undeclared Stripe options fails configuration validation
+with `INVALID_STRIPE_PAYMENTS_CONFIG`; activation is not partial.
+
+The generated `server/payments.ts` contains an empty server-owned Price
+catalogue, named Checkout and Customer Portal Jobs, and a query that exposes
+only bounded state for a known payment Job. `shared/payments.ts` contains the
+serializable Job-state shape. No Stripe UI, credentials, Customer identity,
+live Price identity, webhook secret, provider URL, or callback route is
+generated.
+
+Sporades owns Stripe transport, retries, callback verification, and safe
+provider-error translation behind `sporades/server/stripe`. The Capsule owns
+Prices, Customers, Teams, billing authority, subscriptions, entitlements,
+notifications, retention, export, and erasure. Before a later payment ticket
+enables the integration, define those policies in server code and put
+credentials only in Sealed Server env. Do not place secrets or provider
+identities in `sporades.json`, shared code, or browser code.
 
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.

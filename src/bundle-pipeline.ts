@@ -9,6 +9,7 @@ import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
+import { resolveSporadesPackageRoot } from "./package-root.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -704,6 +705,9 @@ function sporadesServerPlugin(): import("esbuild").Plugin {
       build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
         loader: "js",
         contents: serverRuntimeModuleSource(),
+      }));
+      build.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
+        path: path.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js"),
       }));
     },
   };

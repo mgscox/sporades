@@ -68,7 +68,18 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, table, type TableApi, type TableDefinition } from "sporades/server";
+import { createStripePaymentIntegration, type StripePaymentsDisabledResult } from "sporades/server/stripe";
 import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
+
+const dormantStripe = createStripePaymentIntegration({ enabled: false });
+const disabledCheckout: Promise<StripePaymentsDisabledResult> = dormantStripe.createCheckoutSession({});
+void disabledCheckout;
+// @ts-expect-error Ticket 02 exposes only the dormant integration state.
+createStripePaymentIntegration({ enabled: true });
+// @ts-expect-error The narrow payment boundary does not expose Stripe's generic request surface.
+dormantStripe.request("GET", "/v1/customers");
+// @ts-expect-error The narrow payment boundary does not expose the underlying Stripe client.
+dormantStripe.client;
 
 const uniqueUsers = table({ email: String(), teamId: String() }).unique("email").unique("teamId", "email");
 uniqueUsers.fields.email.kind.toUpperCase();

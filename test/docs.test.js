@@ -1193,3 +1193,25 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
     assert(importIndex < pushIndex);
   }
 });
+
+test("public docs agree on the dormant built-in Stripe foundation", async () => {
+  const [context, prd, readme, projects, server, blankGuide, apiModule] = await Promise.all([
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("README.md"),
+    readProjectFile("docs/reference/projects-and-configuration.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/guide/projects.md"),
+    readProjectFile("docs/api/modules/stripe.html"),
+  ]);
+
+  for (const contents of [context, prd, readme, projects, server, blankGuide]) {
+    assert.match(contents, /built-in[\s\S]{0,160}(?:disabled|dormant)|dormant[\s\S]{0,160}(?:Stripe|payment foundation)/i);
+  }
+  assert.match(projects, /payments[\s\S]{0,80}stripe[\s\S]{0,80}enabled[\s\S]{0,80}false/i);
+  assert.match(projects, /Existing Capsules[\s\S]{0,120}retain their current behavior/i);
+  assert.match(server, /STRIPE_PAYMENTS_DISABLED/);
+  assert.match(server, /does not expose a[\s\S]{0,80}generic provider request/i);
+  assert.match(apiModule, /createStripePaymentIntegration/);
+  assert.match(apiModule, /StripePaymentsDisabledResult/);
+});

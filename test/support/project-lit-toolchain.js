@@ -22,6 +22,7 @@ export async function installProjectLitToolchain(projectDir, repoRoot) {
   await Promise.all([
     cp(path.join(repoRoot, "src/types/client.d.ts"), path.join(sporades, "client.d.ts")),
     cp(path.join(repoRoot, "src/types/server.d.ts"), path.join(sporades, "server.d.ts")),
-    writeFile(path.join(sporades, "package.json"), `${JSON.stringify({ name: "sporades", type: "module", exports: { "./client": { types: "./client.d.ts" }, "./server": { types: "./server.d.ts" } } }, null, 2)}\n`),
+    cp(path.join(repoRoot, "src/types/stripe.d.ts"), path.join(sporades, "stripe.d.ts")),
+    writeFile(path.join(sporades, "package.json"), `${JSON.stringify({ name: "sporades", type: "module", exports: { "./client": { types: "./client.d.ts" }, "./server": { types: "./server.d.ts" }, "./server/stripe": { types: "./stripe.d.ts" } } }, null, 2)}\n`),
   ]);
 }

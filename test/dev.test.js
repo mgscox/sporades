@@ -171,6 +171,28 @@ function runCli(args, options = {}) {
   });
 }
 
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 function startCli(args, options = {}) {
   return spawn(process.execPath, [cliPath, ...args], {
     cwd: options.cwd,
@@ -503,6 +525,37 @@ async function installFakePreact(projectDir) {
     },
   );
 }
+
+test("client toolchains reject the server-only Stripe integration boundary", async () => {
+  for (const toolchain of ["esbuild", "vite"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `stripe-client-${toolchain}`, "--framework", "react", "--toolchain", toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `stripe-client-${toolchain}`);
+      await installFakeReact(projectDir);
+      const clientSourcePath = path.join(projectDir, "client", "index.tsx");
+      const clientSource = `import { createStripePaymentIntegration } from "sporades/server/stripe";\nvoid createStripePaymentIntegration;\n${await readFile(clientSourcePath, "utf8")}`;
+      await writeFile(clientSourcePath, clientSource);
+      const indexHtmlPath = path.join(projectDir, "index.html");
+
+      await assert.rejects(
+        buildClientToolchain({
+          projectDir,
+          frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+          toolchain,
+          clientSource,
+          clientSourcePath,
+          indexHtml: await readFile(indexHtmlPath, "utf8"),
+          indexHtmlPath,
+        }),
+        (error) => {
+          assert.match(error.message, /client code cannot import server-only Sporades modules/i);
+          return true;
+        },
+      );
+    });
+  }
+});
 
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
@@ -1822,10 +1875,11 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
     await installFakeReact(projectDir);
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
     try {
       const started = await waitForJsonLine(child);
 
-      assert.equal(started.ok, true);
+      assert.equal(started.ok, true, JSON.stringify(started));
       assert.equal(started.data.event, "started");
 
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
@@ -1833,11 +1887,99 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
       assert.match(serverBundle, /blank-island/);
       assert.match(clientBundle, /Blank Sporades Capsule/);
       assert.doesNotMatch(clientBundle, /Sporades Todos|useQuery|useMutation/);
+      assert.doesNotMatch(clientBundle, /stripe/i);
+
+      socket = await openWebSocket(started.data.url.replace("http://", "ws://") + "/__sporades/ws");
+      socket.send(JSON.stringify({ id: "payment-job", type: "query.subscribe", query: "paymentJob", args: ["not-a-known-job"] }));
+      const paymentJob = await waitForSocketMessage(socket, (message) => message.type === "query.result" && message.id === "payment-job");
+      assert.ok(paymentJob.data == null);
+      assert.ok(paymentJob.error == null);
+
+      const dormantCallback = await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" });
+      assert.equal(dormantCallback.status, 404);
 
       const html = await (await fetch(`${started.data.url}/`)).text();
       assert.match(html, /<div id="app"><\/div>/);
     } finally {
+      await closeSocketGracefully(socket);
       child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("a packed credential-free blank Capsule installs, typechecks, builds, and boots", { timeout: 120_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const packed = await runCommand(
+      "npm",
+      ["pack", "--json", "--ignore-scripts", "--pack-destination", dir],
+      { cwd: repoRoot },
+    );
+    assert.equal(packed.code, 0, packed.stderr);
+    const tarballName = JSON.parse(packed.stdout)[0]?.filename;
+    assert.equal(typeof tarballName, "string", packed.stdout);
+
+    const createResult = await runCli(
+      ["create", "packed-blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "packed-blank");
+    const packagePath = path.join(projectDir, "package.json");
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    packageJson.devDependencies.sporades = `file:${path.join(dir, tarballName)}`;
+    await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+    const installed = await runCommand(
+      "npm",
+      ["install", "--offline", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+      { cwd: projectDir },
+    );
+    assert.equal(installed.code, 0, installed.stderr);
+
+    const typechecked = await runCommand(
+      process.execPath,
+      [
+        path.join(projectDir, "node_modules", "typescript", "bin", "tsc"),
+        "--noEmit",
+        "--strict",
+        "--target", "ES2022",
+        "--module", "ESNext",
+        "--moduleResolution", "Bundler",
+        "--lib", "ES2022,DOM,DOM.Iterable",
+        "--skipLibCheck",
+        "server/index.ts",
+        "server/payments.ts",
+        "shared/payments.ts",
+        "shared/types.ts",
+        "client/index.ts",
+      ],
+      { cwd: projectDir },
+    );
+    assert.equal(typechecked.code, 0, typechecked.stderr || typechecked.stdout);
+
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const installedCliPath = path.join(projectDir, "node_modules", "sporades", "bin", "sporades.js");
+    const child = spawn(process.execPath, [installedCliPath, "dev", "--json"], {
+      cwd: projectDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(started.data.event, "started");
+      assert.equal((await fetch(started.data.url)).status, 200);
+      await access(path.join(projectDir, ".sporades", "build", "server.mjs"));
+      assert.equal((await fetch(`${started.data.url}/__sporades/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
     }
   });
 });

@@ -68,6 +68,7 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
         template: options.template,
         client: { framework, toolchain },
         auth: templateOptions.auth,
+        ...(options.template === "blank" ? { payments: { stripe: { enabled: false } } } : {}),
         security: {
           cors: {
             allowedOrigins: [],
@@ -1176,25 +1177,30 @@ function viteTemplateFiles(files: Record<string, string>, framework: string) {
   };
 }
 
-function vanillaTemplateFiles(options: { name: any; framework: any; }) {
+function vanillaTemplateFiles(options: { name: any; framework: any; template?: any; }) {
+  const payments = options.template === "blank";
   return {
-    "README.md": `# ${options.name}\n\nA framework-neutral Vanilla TypeScript Sporades capsule.\n`,
-    "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";
+    "README.md": payments
+      ? blankPaymentReadme(options.name, "A framework-neutral Vanilla TypeScript Sporades capsule.")
+      : `# ${options.name}\n\nA framework-neutral Vanilla TypeScript Sporades capsule.\n`,
+    "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
+import { paymentJobs, paymentQueries } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
   journey: { enabled: true },
   schema: { notes: table({ text: String(), ownerId: String() }) },
-  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()) },
+  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all())${payments ? ", ...paymentQueries" : ""} },
   mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
-  }) },
+  }) },${payments ? "\n  jobs: paymentJobs," : ""}
 });
 `,
     "client/index.ts": vanillaClientTemplate(),
     "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };\n`,
+    ...(payments ? blankPaymentSupportFiles() : {}),
   };
 }
 
@@ -1299,18 +1305,68 @@ function resolveTemplateOptions(template: any) {
 
 function blankTemplateFiles(options: { name: any; framework: any; }) {
   return {
-    "README.md": `# ${options.name}\n\nA blank Sporades capsule.\n`,
+    "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
     "server/index.ts": `import { capsule } from "sporades/server";
+import { paymentJobs, paymentQueries } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
   schema: {},
-  queries: {},
+  queries: paymentQueries,
   mutations: {},
+  jobs: paymentJobs,
 });
 `,
+    ...blankPaymentSupportFiles(),
     "client/index.tsx": blankClientTemplate(options.framework),
-    "shared/types.ts": `export {};
+    "shared/types.ts": `export {};\n`,
+  };
+}
+
+function blankPaymentReadme(name: string, introduction: string) {
+  return `# ${name}\n\n${introduction}\n\n## Built-in payments\n\nThis blank Capsule includes a dormant Stripe payment foundation. It remains disabled at \`payments.stripe.enabled\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.\n\nStart in \`server/payments.ts\`: define the server-owned Price catalogue and replace the policy placeholders only after deciding which users or Teams may act. Sporades owns Stripe transport, retries, signature verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.\n`;
+}
+
+function blankPaymentSupportFiles() {
+  return {
+    "server/payments.ts": `import { job, query } from "sporades/server";
+import { createStripePaymentIntegration } from "sporades/server/stripe";
+import type { PaymentJobState } from "../shared/payments.js";
+
+// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
+export const stripePrices = Object.freeze({});
+
+// Dormant by default. Activation requires complete project configuration and Sealed Server env.
+const stripe = createStripePaymentIntegration({ enabled: false });
+
+export const paymentJobs = {
+  stripeCheckout: job((_ctx, input) => stripe.createCheckoutSession(input)),
+  stripeCustomerPortal: job((_ctx, input) => stripe.createCustomerPortalSession(input)),
+};
+
+const paymentJobHandlers = new Set(Object.keys(paymentJobs));
+
+export const paymentQueries = {
+  paymentJob: query(async (ctx, jobId: string): Promise<PaymentJobState | null> => {
+    const state = await ctx.jobs.get(jobId);
+    if (!state || !paymentJobHandlers.has(state.handler)) return null;
+    return {
+      id: state.id,
+      status: state.status,
+      attempts: state.attempts,
+      result: state.result ?? null,
+      failure: state.failure ?? null,
+    };
+  }),
+};
+`,
+    "shared/payments.ts": `export type PaymentJobState = {
+  id: string;
+  status: "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
+  attempts: number;
+  result: unknown | null;
+  failure: { code: string; message: string } | null;
+};
 `,
   };
 }
@@ -2742,6 +2798,14 @@ Client toolchain: ${toolchain}
 - Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : inferno ? "`authAdapter(this)` in a native Inferno class component" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
+${template === "blank" ? `
+## Built-in Stripe payments
+
+- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and Sealed Server env are ready.
+- Sporades owns Stripe transport, signature verification, retries, provider timeouts, and safe provider errors.
+- The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
+- Keep provider identities and credentials out of client and shared code. Browser input may choose only Capsule-defined product keys.
+` : ""}
 
 ## Commands
 
@@ -2756,6 +2820,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
+${template === "blank" ? "- `server/payments.ts` - dormant payment Jobs, known-Job query, and server-owned Price catalogue\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
 - \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}

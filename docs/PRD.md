@@ -35,6 +35,13 @@ The repository currently includes:
   with native class-component lifecycle and no React compatibility dependency,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
+- A built-in, credential-free Stripe payment foundation in every new blank
+  Capsule: disabled `payments.stripe` configuration, server-owned payment
+  wiring and empty Price catalogue, named payment Jobs, bounded known-Job
+  state, shared types, and activation guidance. Stripe mechanics remain behind
+  the narrow server-only `sporades/server/stripe` export; Ticket 02 grants no
+  provider authority, registers no callback route, and leaves existing and
+  non-blank Capsules unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

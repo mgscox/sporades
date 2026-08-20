@@ -448,6 +448,33 @@ Recovery is achieved by re-sealing known values:
   sealed values cannot be recovered. Regenerate the real provider secrets, add
   them back to Server env, import, and push a new Host-encrypted release.
 
+### Use the dormant Stripe payment boundary
+
+The blank template imports `createStripePaymentIntegration` from the separate
+server-only export:
+
+```ts
+import { createStripePaymentIntegration } from "sporades/server/stripe";
+
+const stripe = createStripePaymentIntegration({ enabled: false });
+const result = await stripe.createCheckoutSession({});
+// result.error.code === "STRIPE_PAYMENTS_DISABLED"
+```
+
+The Ticket 02 boundary exposes only `createCheckoutSession`,
+`createCustomerPortalSession`, and `verifyWebhookEvent`. It does not expose a
+generic provider request function or the underlying Stripe client. While
+disabled, every operation returns a stable `STRIPE_PAYMENTS_DISABLED` result
+with an activation hint, performs no provider request, and receives no payment
+authority. Passing `enabled: true` fails with
+`STRIPE_PAYMENTS_NOT_CONFIGURED`; complete activation belongs to later narrow
+payment contracts.
+
+The official server Stripe SDK is a Sporades dependency and is not copied into
+generated projects or browser Bundles. Keep provider credentials in Sealed
+Server env and provider identities in Capsule-owned server code. The dormant
+foundation registers no Stripe callback route.
+
 ### Send SMTP mail
 
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,

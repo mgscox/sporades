@@ -149,12 +149,14 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(config.client.framework, "react");
     assert.equal(config.client.toolchain, "esbuild");
     assert.equal(config.auth.mode, "anonymous");
+    assert.deepEqual(config.payments, { stripe: { enabled: false } });
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /capsule\(/);
     assert.match(serverEntry, /schema: \{\}/);
-    assert.match(serverEntry, /queries: \{\}/);
+    assert.match(serverEntry, /queries: paymentQueries/);
     assert.match(serverEntry, /mutations: \{\}/);
+    assert.match(serverEntry, /jobs: paymentJobs/);
     assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
 
     const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
@@ -178,6 +180,58 @@ test("sporades create writes a runnable React blank scaffold by default", async 
       esbuild: true,
       fsevents: true,
     });
+  });
+});
+
+test("sporades create writes the dormant built-in Stripe foundation into every blank Capsule", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "payments-island", "--template", "blank", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+
+    const projectDir = path.join(dir, "payments-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.deepEqual(config.payments, { stripe: { enabled: false } });
+
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    const payments = await readFile(path.join(projectDir, "server", "payments.ts"), "utf8");
+    const shared = await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8");
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+
+    assert.match(serverEntry, /jobs:\s*paymentJobs/);
+    assert.match(serverEntry, /queries:\s*paymentQueries/);
+    assert.match(payments, /from "sporades\/server\/stripe"/);
+    assert.match(payments, /createStripePaymentIntegration\(\{ enabled: false \}\)/);
+    assert.match(payments, /stripePrices\s*=\s*Object\.freeze\(\{\}\)/);
+    assert.match(payments, /stripeCheckout/);
+    assert.match(payments, /stripeCustomerPortal/);
+    assert.match(payments, /ctx\.jobs\.get\(jobId\)/);
+    assert.match(shared, /export type PaymentJobState/);
+    assert.match(readme, /payments\.stripe\.enabled/);
+    assert.match(readme, /Sealed Server env/);
+    assert.match(agents, /Sporades owns Stripe transport/i);
+    assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
+    assert.equal(packageJson.dependencies.stripe, undefined);
+
+    const generated = [serverEntry, payments, shared, readme, agents, await readFile(path.join(projectDir, ".env.sporades.server"), "utf8")].join("\n");
+    assert.doesNotMatch(generated, /sk_(?:live|test)_|whsec_|price_[A-Za-z0-9]|cus_[A-Za-z0-9]|https:\/\/checkout\.stripe\.com/i);
+  });
+});
+
+test("every supported blank framework receives the same dormant payment foundation", async () => {
+  await withTempDir(async (dir) => {
+    for (const framework of ["vanilla", "react", "preact", "inferno", "lit", "solid", "vue", "svelte"]) {
+      const name = `payments-${framework}`;
+      const result = await runCli(["create", name, "--template", "blank", "--framework", framework, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, `${framework}: ${result.stderr}`);
+      const projectDir = path.join(dir, name);
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      assert.deepEqual(config.payments, { stripe: { enabled: false } }, framework);
+      assert.match(await readFile(path.join(projectDir, "server", "payments.ts"), "utf8"), /createStripePaymentIntegration/, framework);
+      assert.match(await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8"), /PaymentJobState/, framework);
+      assert.match(await readFile(path.join(projectDir, "server", "index.ts"), "utf8"), /paymentJobs/, framework);
+    }
   });
 });
 
@@ -230,10 +284,12 @@ test("sporades create writes a runnable React todo scaffold when requested", asy
 
     const projectDir = path.join(dir, "todo-island");
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.payments, undefined);
     assert.equal(config.name, "todo-island");
     assert.equal(config.template, "todo");
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    await assert.rejects(readFile(path.join(projectDir, "server", "payments.ts"), "utf8"), { code: "ENOENT" });
     assert.match(serverEntry, /todos: table\(/);
     assert.match(serverEntry, /String\(\)/);
     assert.match(serverEntry, /Boolean\(\)\.default\(false\)/);

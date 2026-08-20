@@ -106,6 +106,18 @@ _Avoid_: cert folder, SSL directory
 A runtime context, not just a set of exports. Internally manages the SQLite connection, runtime-owned auth storage, env vars, row-level cache, endpoint routing, file metadata, and app-message fan-out. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations, endpoints, messages) against this runtime. The user never touches the runtime directly.
 _Avoid_: server module, server library (it's a living context, not a static library)
 
+**Stripe payment integration**:
+The separately exported server-only `sporades/server/stripe` boundary for Sporades-owned Stripe mechanics. Its public contract consists of named payment operations rather than a generic provider request or raw Stripe client. The Ticket 02 foundation admits only `enabled: false`; every operation returns `STRIPE_PAYMENTS_DISABLED`, and premature activation fails before receiving provider authority.
+_Avoid_: Stripe client, payment proxy, browser Stripe SDK
+
+**Built-in payment foundation**:
+The ordinary, dormant payment scaffolding generated into every new blank Capsule. It includes `server/payments.ts`, shared payment Job state, named payment Jobs, a bounded known-Job query, an empty server-owned Price catalogue, and disabled `payments.stripe` project configuration. It is the basis for derived work, not a dedicated payment template, and it neither installs payment UI nor changes non-blank demonstration templates.
+_Avoid_: payment template, Stripe demo, billing feature
+
+**Price catalogue**:
+The Capsule-owned server declaration that maps stable application Price names to provider Price identities after deliberate activation. The generated catalogue is empty, contains no live identities, and never belongs in browser code.
+_Avoid_: product list, Stripe Prices API, client price map
+
 **capsule()**:
 The initialisation function. Called with the app definition. Registers the schema with SQLite, applies supported schema migrations, configures runtime-owned auth, wires the table API, and registers custom endpoints and message handlers. This is where app bootstrap happens - not an identity function.
 _Avoid_: app definition (that's the argument, not the function), config function
@@ -421,8 +433,12 @@ _Avoid_: audit log, security log, admin log
 ## Configuration
 
 **sporades.json**:
-The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, deploy port, optional dev port override.
+The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, optional payment configuration, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)
+
+**Stripe payment configuration**:
+The optional `payments.stripe` project configuration. Ticket 02 accepts only the credential-free dormant shape `{ "enabled": false }`; absence preserves existing Capsules, and `true` is rejected until the complete Server env and Price contract exists.
+_Avoid_: Stripe credentials, payment settings, provider payload
 
 **Scheduling policy**:
 The `sporades.json` configuration for Capsule-wide Job Scheduling runtime limits, such as payload-factory timeout. It controls scheduler operation rather than defining individual Schedules.

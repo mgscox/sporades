@@ -17,6 +17,8 @@ export declare function scaffoldFiles(options: {
     ".env.sporades.server": string;
     "index.html": string;
 } | {
+    "server/payments.ts"?: string | undefined;
+    "shared/payments.ts"?: string | undefined;
     "README.md": string;
     "server/index.ts": string;
     "client/index.ts": string;
