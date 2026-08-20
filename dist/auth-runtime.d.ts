@@ -291,6 +291,6 @@ export declare function resolvePasswordResetConfig(config: LooseRecord): {
     origin: string;
     ttlMs: number;
 };
-export declare function createAnonymousAuthTables(sqlite: LooseRecord, authConfig?: LooseRecord | null): any;
+export declare function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig?: LooseRecord | null): any;
 export {};
 //# sourceMappingURL=auth-runtime.d.ts.map

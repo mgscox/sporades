@@ -13411,7 +13411,7 @@ function resolvePasswordResetConfig(config) {
     ttlMs
   };
 }
-function createAnonymousAuthTables(sqlite, authConfig = null) {
+function createAnonymousAuthTables(sqlite, _authConfig = null) {
   const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     () => sqlite.exec(
@@ -13428,18 +13428,16 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
     () => createProviderIdentityTables(sqlite),
-    ...authConfig?.providers?.email?.enabled ? [
-      () => sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-        )
-      ),
-      () => sqlite.exec(
-        sql(
-          "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
-        )
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] ([email] TEXT PRIMARY KEY, [userId] TEXT NOT NULL, [passwordHash] TEXT NOT NULL, [passwordSalt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
       )
-    ] : [],
+    ),
+    () => sqlite.exec(
+      sql(
+        "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] ([selector] TEXT PRIMARY KEY, [verifierHash] TEXT NOT NULL, [email] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL)"
+      )
+    ),
     () => sqlite.exec(
       sql(
         "CREATE TABLE IF NOT EXISTS [sporades_auth_oauth_states] ([state] TEXT PRIMARY KEY, [provider] TEXT NOT NULL, [sessionToken] TEXT NOT NULL, [returnTo] TEXT NOT NULL, [redirectUri] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [nonce] TEXT, [pkceVerifier] TEXT)"

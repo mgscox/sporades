@@ -84,7 +84,10 @@ function storedAccessKey(ownerUserId, id, name, selector) {
 test("owner unlink and deletion retire keys atomically and relinking never revives them", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-owner-transition-"));
   const definition = capsule({ name: "access-key-owner-transition", accessKeys: { scopes: ["requests:read"] } });
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+    name: definition.name,
+    auth: { providers: { email: { enabled: true } } },
+  }, definition, {
     clock: { now: () => new Date("2026-08-20T12:00:00.000Z") },
   });
   try {
@@ -92,11 +95,41 @@ test("owner unlink and deletion retire keys atomically and relinking never reviv
     const first = storedAccessKey(auth.userId, "transition-key-unlinked", "unlink-key", "unlinkselector000000000");
     assert.deepEqual(await database.adapter.withTransaction((tx) => tx.issueAccessKeyRecord(first)), { status: "issued" });
 
-    const ownerContext = { auth, credential: { kind: "session" } };
+    for (const deniedContext of [
+      { kind: "mutation", auth, credential: { kind: "access-key", id: first.id, name: first.name } },
+      { kind: "mutation", auth },
+      { kind: "job", auth, credential: { kind: "session" } },
+      { kind: "lifecycle", auth, credential: { kind: "session" } },
+    ]) {
+      await assert.rejects(unlinkCurrentAuthUser(database, deniedContext), (error) => error.code === "FORBIDDEN");
+      await assert.rejects(deleteCurrentAuthUser(database, deniedContext), (error) => error.code === "FORBIDDEN");
+      assert.equal((await database.adapter.findAccessKeyAuthenticationRecord(first.selector)).id, first.id);
+    }
+
+    await database.adapter.insertEmailCredential({
+      email: auth.email,
+      userId: auth.userId,
+      passwordHash: "dormant-hash",
+      passwordSalt: "dormant-salt",
+      createdAt: "2026-08-20T12:00:00.000Z",
+    });
+    await database.adapter.insertPasswordResetCode({
+      selector: "dormant-reset-code",
+      verifierHash: "dormant-reset-hash",
+      email: auth.email,
+      userId: auth.userId,
+      createdAt: "2026-08-20T12:00:00.000Z",
+      expiresAt: "2026-08-20T13:00:00.000Z",
+    });
+    database.authConfig.providers.email.enabled = false;
+
+    const ownerContext = { kind: "mutation", auth, credential: { kind: "session" } };
     await unlinkCurrentAuthUser(database, ownerContext);
     const unlinked = (await database.adapter.listAccessKeyRecordsForOwner(auth.userId))[0];
     assert.equal(unlinked.revocationCause, "owner-unlinked");
     assert.equal(await database.adapter.findAccessKeyAuthenticationRecord(first.selector), null);
+    assert.equal(await database.adapter.emailCredentialExists(auth.email), false);
+    assert.equal(await database.adapter.findPasswordResetCode("dormant-reset-code"), null);
 
     await database.adapter.linkAuthUser({ ...auth, id: auth.userId, isAuthenticated: 1, isGuest: 0 });
     const stillRetired = (await database.adapter.listAccessKeyRecordsForOwner(auth.userId))[0];
