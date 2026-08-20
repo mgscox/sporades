@@ -7234,10 +7234,36 @@ async function ensureJobStorage(sqlite) {
   await sqlite.exec(
     sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
   await sqlite.exec(
     sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
   );
+  const legacyRows = await sqlite.prepare(sqlite.dialect.sql(
+    "SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)"
+  )).all(privilegedAuthUserId());
+  for (const row of legacyRows) {
+    let user = null;
+    try {
+      user = await sqlite.prepare(sqlite.dialect.sql(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(row.actorUserId);
+    } catch (error) {
+      if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
+    }
+    const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
+    const authSnapshot = canonicalJobAuthSnapshot(user ? {
+      userId: user.id,
+      displayName: user.displayName,
+      email: user.email,
+      picture: user.picture,
+      isAuthenticated: Boolean(user.isAuthenticated),
+      isGuest: Boolean(user.isGuest),
+      provider
+    } : legacyJobAuthFallback(row.actorUserId, provider));
+    await sqlite.prepare(sqlite.dialect.sql(
+      "UPDATE [sporades_jobs] SET [authSnapshotJson] = COALESCE([authSnapshotJson], ?), [credentialJson] = COALESCE([credentialJson], ?) WHERE [id] = ?"
+    )).run(JSON.stringify(authSnapshot), JSON.stringify({ kind: "session" }), row.id);
+  }
 }
 async function scheduleSummary(sqlite, row) {
   const invalid = (field) => {
@@ -7308,9 +7334,79 @@ function boundedJobJson(value, limit, code, label) {
   if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
   return serialized;
 }
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+function boundedJobIdentityString(value, field, maximum, nullable = false) {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length > maximum) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", `Keep ${field} within its runtime-owned bound.`);
+  }
+  return value;
+}
+function canonicalJobAuthSnapshot(auth) {
+  const snapshot = {
+    userId: boundedJobIdentityString(auth?.userId, "userId", 256),
+    displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
+    email: boundedJobIdentityString(auth?.email, "email", 320, true),
+    picture: boundedJobIdentityString(auth?.picture, "picture", 4096, true),
+    isAuthenticated: auth?.isAuthenticated,
+    isGuest: auth?.isGuest,
+    provider: boundedJobIdentityString(auth?.provider, "provider", 64)
+  };
+  if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
+  }
+  return snapshot;
+}
+function canonicalJobCredentialProvenance(credential) {
+  if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind")) return { kind: "session" };
+  if (credential?.kind === "access-key" && Object.keys(credential).every((key) => ["kind", "id", "name"].includes(key))) {
+    return {
+      kind: "access-key",
+      id: boundedJobIdentityString(credential.id, "credential.id", 256),
+      name: boundedJobIdentityString(credential.name, "credential.name", 256)
+    };
+  }
+  throw jobError("INVALID_JOB_CREDENTIAL", "Job Credential provenance is invalid.", "Enqueue from a runtime-issued Session or Access-key context.");
+}
+function legacyJobAuthFallback(userId, provider) {
+  const normalizedProvider = jobActorProvider({ provider, isGuest: provider === "anonymous" });
+  return {
+    userId: boundedJobIdentityString(userId, "userId", 256),
+    displayName: "Job enqueuer",
+    email: null,
+    picture: null,
+    isAuthenticated: normalizedProvider !== "anonymous",
+    isGuest: normalizedProvider === "anonymous",
+    provider: normalizedProvider
+  };
+}
+function readJobAuthSnapshot(row) {
+  if (row?.authSnapshotJson) {
+    try {
+      return canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
+    } catch {
+      throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+    }
+  }
+  return canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+}
+function readJobCredentialProvenance(row) {
+  if (row?.credentialJson) {
+    try {
+      return canonicalJobCredentialProvenance(JSON.parse(String(row.credentialJson)));
+    } catch {
+      throw jobError("JOB_CREDENTIAL_INVALID", "Stored Job Credential provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+    }
+  }
+  return { kind: "session" };
+}
 function jobState(row, includeDetail) {
   const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId, credential: readJobCredentialProvenance(row) };
   const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
   if (includeDetail && row.result) state.result = JSON.parse(row.result);
   if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
@@ -20857,11 +20953,17 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
 }
 function createMutationContext(database, auth, options = {}) {
   auth = protectContextIdentity(auth);
+  const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context = {
     auth,
-    ...options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) },
+    ...credential ? { credential } : {},
     env: database.serverEnv,
-    log: createEndpointLogger(database),
+    log: createEndpointLogger(database, credential ? {
+      attribution: {
+        actor: { userId: auth.userId },
+        credential: credential.kind === "access-key" ? { kind: credential.kind, id: credential.id, name: credential.name } : { kind: "session" }
+      }
+    } : {}),
     __pendingAclWrites: []
   };
   const holder = createContextHolder(context);
@@ -20960,11 +21062,14 @@ function createCurrentUserJobApi(database, contextGetter) {
       if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts, Boolean(scheduleProvenance && retry.maxAttempts === 1))) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
+      const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobAuthSnapshot(provenanceContext.auth));
+      const credentialJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
-          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
-        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) {
@@ -21249,26 +21354,13 @@ async function runCurrentUserJobWorker(database) {
             }
           });
         } else {
-          const user = await database.adapter.prepare(
-            sql(
-              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?"
-            )
-          ).get(row.actorUserId);
+          const auth = readJobAuthSnapshot(row);
+          const credential = readJobCredentialProvenance(row);
           if (database.__jobStopped) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
-          const auth = {
-            userId: user.id,
-            displayName: user.displayName,
-            email: user.email,
-            picture: user.picture,
-            isAuthenticated: Boolean(user.isAuthenticated),
-            isGuest: Boolean(user.isGuest),
-            provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) })
-          };
-          const context = createMutationContext(database, auth);
+          const context = createMutationContext(database, auth, { credential });
           context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);

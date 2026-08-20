@@ -610,9 +610,12 @@ is the live Sporades session behind the request or App message, including
 Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
 file ownership, and authorization checks.
 
-The Job Queue uses a captured user identity for background work that should stay
-accountable to the user who authorized it after the original request ends. That
-is different from system-owned work.
+The Job Queue uses the bounded Auth and Credential snapshot captured when
+enqueue commits for background work that should stay accountable to the user
+and named access method that authorized it after the original request ends.
+Retries and child Jobs preserve that historical attribution even after key or
+owner lifecycle changes; current ACL and Team state still decides resource
+authority. That is different from system-owned work.
 
 Use the Privileged server role only for trusted userless work that must run
 inside the Capsule without pretending to be a Sporades user:

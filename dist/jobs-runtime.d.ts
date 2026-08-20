@@ -82,6 +82,53 @@ export declare function scheduleCursorStateIsConsistent(enabled: any, exhausted:
 export declare function assertJobScheduleProvenance(row: any, expected: any): void;
 export declare function jobError(code: string, message: string, hint: string): any;
 export declare function boundedJobJson(value: any, limit: number, code: string, label: string): string;
+/** Canonical bounded AuthContext persisted at the successful enqueue boundary. */
+export declare function canonicalJobAuthSnapshot(auth: LooseRecord): {
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
+};
+/** Canonical Credential provenance; secret material and granted scopes have no accepted field. */
+export declare function canonicalJobCredentialProvenance(credential: LooseRecord): {
+    kind: string;
+    id?: undefined;
+    name?: undefined;
+} | {
+    kind: string;
+    id: string | null;
+    name: string | null;
+};
+export declare function legacyJobAuthFallback(userId: unknown, provider: unknown): {
+    userId: string | null;
+    displayName: string;
+    email: null;
+    picture: null;
+    isAuthenticated: boolean;
+    isGuest: boolean;
+    provider: string;
+};
+export declare function readJobAuthSnapshot(row: LooseRecord): {
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
+};
+export declare function readJobCredentialProvenance(row: LooseRecord): {
+    kind: string;
+    id?: undefined;
+    name?: undefined;
+} | {
+    kind: string;
+    id: string | null;
+    name: string | null;
+};
 export declare function jobState(row: any, includeDetail: boolean): any;
 export declare function jobActorProvider(auth: LooseRecord): string;
 /** Read the bounded operator view of every Job in one adapter snapshot. */

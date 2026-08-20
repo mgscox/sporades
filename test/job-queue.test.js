@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, openDevDatabase as openStoppedDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
-import { String, job, mutation, table } from "../dist/server.js";
+import { createControllableRuntimeClock, inspectRuntimeJobs, openDevDatabase as openStoppedDevDatabase, runAppMessage, runCurrentUserJobWorker, runEndpoint, runMutation } from "../dist/server-runtime-source.js";
+import { deleteCurrentAuthUser } from "../dist/auth-runtime.js";
+import { Boolean as BooleanField, String, job, mutation, requireAuth, table } from "../dist/server.js";
 import { POSTGRES_SKIP_REASON, withPostgresAdapter } from "./support/database-adapter-engines.js";
 
 function auth(userId) {
@@ -403,6 +404,144 @@ test("legacy Jobs migrate to bounded anonymous provider provenance", async () =>
   }
 });
 
+test("Access-key Jobs preserve bounded admission provenance through deletion, retry, restart, and child enqueue", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-access-key-"));
+  const databasePath = path.join(dir, "data.db");
+  const owner = {
+    userId: "job-key-owner",
+    displayName: "Original Owner",
+    email: "owner@example.com",
+    picture: "https://example.com/original.png",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const seen = [];
+  let parentAttempts = 0;
+  const definition = {
+    accessKeys: { scopes: ["jobs:enqueue"] },
+    schema: {
+      visibleItems: table({ ownerId: String(), visible: BooleanField() }).acl({ read: ({ row }) => row.visible }),
+    },
+    jobs: {
+      parent: job(async (ctx) => {
+        seen.push({ handler: "parent", auth: ctx.auth, credential: ctx.credential, visibleCount: (await ctx.db.visibleItems.all()).length });
+        ctx.log.info("durable parent");
+        parentAttempts += 1;
+        if (parentAttempts === 1) throw new Error("retry once");
+        return await ctx.jobs.enqueue("child", null, { availableAt: "2999-01-01T00:00:00.000Z" });
+      }),
+      child: job(async (ctx) => {
+        seen.push({ handler: "child", auth: ctx.auth, credential: ctx.credential, visibleCount: (await ctx.db.visibleItems.all()).length });
+        ctx.log.info("durable child");
+        return null;
+      }),
+    },
+    mutations: {
+      createVisible: mutation((ctx) => ctx.db.visibleItems.insert({ ownerId: ctx.auth.userId, visible: true })),
+      issue: mutation((ctx) => ctx.accessKeys.issue({ name: "automation", grants: ["jobs:enqueue"] })),
+      revoke: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+      remove: mutation((ctx, id) => ctx.accessKeys.delete(id)),
+    },
+  };
+  const endpointHandler = requireAuth({ credentials: ["access-key"], scopes: ["jobs:enqueue"] }, (ctx) =>
+    ctx.jobs.enqueue("parent", null, {
+      availableAt: "2999-01-01T00:00:00.000Z",
+      retry: { maxAttempts: 2, delayMs: 0 },
+    }));
+  let database = await openDevDatabase(databasePath, "", {}, { name: "job-access-key" }, definition);
+  try {
+    await database.adapter.insertAuthUser({
+      id: owner.userId,
+      createdAt: "2026-08-20T12:00:00.000Z",
+      displayName: owner.displayName,
+      email: owner.email,
+      picture: owner.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: owner.provider,
+    });
+    await runMutation(database, owner, "createVisible", []);
+    const issued = await runMutation(database, owner, "issue", []);
+    assert.equal(issued.ok, true, JSON.stringify(issued));
+    const admitted = await runEndpoint(database, { handler: endpointHandler }, new URL("http://capsule.test/jobs"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${issued.data.token}` },
+      async *[Symbol.asyncIterator]() {},
+    });
+    assert.deepEqual(admitted.enqueuedBy, {
+      mode: "user",
+      userId: owner.userId,
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: "automation" },
+    });
+    const operatorState = (await inspectRuntimeJobs(database.adapter)).find((jobState) => jobState.id === admitted.id);
+    assert.deepEqual(operatorState.enqueuedBy, admitted.enqueuedBy);
+    assert.deepEqual(operatorState.actor, { mode: "current-user", userId: owner.userId });
+    const stored = database.adapter.prepare(
+      "SELECT authSnapshotJson, credentialJson FROM sporades_jobs WHERE id = ?",
+    ).get(admitted.id);
+    assert.deepEqual(JSON.parse(stored.authSnapshotJson), { ...owner, provider: "access-key" });
+    assert.deepEqual(JSON.parse(stored.credentialJson), {
+      kind: "access-key",
+      id: issued.data.accessKey.id,
+      name: "automation",
+    });
+    assert.equal(JSON.stringify(stored).includes(issued.data.token), false);
+    assert.equal(/selector|verifier|grant|scope/i.test(JSON.stringify(stored)), false);
+
+    await runMutation(database, owner, "revoke", [issued.data.accessKey.id]);
+    await runMutation(database, owner, "remove", [issued.data.accessKey.id]);
+    const replacement = await runMutation(database, owner, "issue", []);
+    assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
+    database.adapter.prepare("UPDATE visibleItems SET visible = 0 WHERE ownerId = ?").run(owner.userId);
+    await deleteCurrentAuthUser(database, { kind: "mutation", auth: owner, credential: { kind: "session" } });
+    assert.equal(database.adapter.prepare("SELECT id FROM sporades_auth_users WHERE id = ?").get(owner.userId), undefined);
+    database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", admitted.id);
+    database.close();
+
+    database = await openDevDatabase(databasePath, "", {}, { name: "job-access-key" }, definition);
+    await runCurrentUserJobWorker(database);
+    const child = database.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = 'child'").get();
+    assert.ok(child);
+    assert.deepEqual(JSON.parse(child.authSnapshotJson), { ...owner, provider: "access-key" });
+    assert.deepEqual(JSON.parse(child.credentialJson), {
+      kind: "access-key",
+      id: issued.data.accessKey.id,
+      name: "automation",
+    });
+    database.adapter.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", child.id);
+    await runCurrentUserJobWorker(database);
+
+    assert.equal(parentAttempts, 2);
+    assert.equal(seen.length, 3);
+    for (const entry of seen) {
+      assert.deepEqual(entry.auth, { ...owner, provider: "access-key" });
+      assert.deepEqual(entry.credential, {
+        kind: "access-key",
+        id: issued.data.accessKey.id,
+        name: "automation",
+      });
+      assert.equal(entry.visibleCount, 0, "Job ACLs must read current resource state");
+      assert.equal(Object.isFrozen(entry.auth), true);
+      assert.equal(Object.isFrozen(entry.credential), true);
+    }
+    const events = await database.adapter.readRecentLogEvents(50);
+    for (const event of events.filter((entry) => entry.message?.startsWith("durable "))) {
+      assert.deepEqual(event.data.actor, { userId: owner.userId });
+      assert.deepEqual(event.data.credential, {
+        kind: "access-key",
+        id: issued.data.accessKey.id,
+        name: "automation",
+      });
+    }
+  } finally {
+    database?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("current users can enqueue, execute, get, and list their own durable jobs", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-jobs-"));
   const seen = [];
@@ -447,7 +586,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
       id: first.data.id,
       handler: "record",
       status: "succeeded",
-      enqueuedBy: { mode: "user", userId: "user-a" },
+      enqueuedBy: { mode: "user", userId: "user-a", credential: { kind: "session" } },
       actor: { mode: "current-user", userId: "user-a" },
       attempts: 1,
       result: { recorded: "hello" },

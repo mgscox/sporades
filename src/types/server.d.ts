@@ -841,7 +841,7 @@ export type JobStatus = "queued" | "delayed" | "running" | "succeeded" | "failed
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
 /** Server-only state for a known Job, including provenance and execution actor. */
 export type JobState = JobSummary & {
-  enqueuedBy: { mode: "user"; userId: string } | { mode: "schedule"; scheduleName: string; scheduledFor: string };
+  enqueuedBy: { mode: "user"; userId: string; credential: CredentialProvenance } | { mode: "schedule"; scheduleName: string; scheduledFor: string };
   actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
   result?: JsonValue;
   failure?: { code: string; message: string };

@@ -290,10 +290,10 @@ for (const engine of ENGINES) {
         await adapter
           .prepare(
             sql(
-              "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], " +
+              "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], " +
               "[status], [availableAt], [attempts], [idempotencyKey], [createdAt], [startedAt], [retryJson], " +
               "[attemptHistory], [leaseExpiresAt], [claimToken], [scheduleName], [scheduledFor]) " +
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
           )
           .run(
@@ -302,6 +302,8 @@ for (const engine of ENGINES) {
             "user-enqueued-by",
             "user-actor",
             "email",
+            '{"userId":"user-actor","displayName":"Actor","email":"actor@example.com","picture":null,"isAuthenticated":true,"isGuest":false,"provider":"email"}',
+            '{"kind":"session"}',
             '{"to":"someone@example.com"}',
             "running",
             NOW,
@@ -325,6 +327,8 @@ for (const engine of ENGINES) {
             enqueuedByUserId: row?.enqueuedByUserId,
             actorUserId: row?.actorUserId,
             actorProvider: row?.actorProvider,
+            authSnapshotJson: row?.authSnapshotJson,
+            credentialJson: row?.credentialJson,
             status: row?.status,
             availableAt: row?.availableAt,
             attempts: Number(row?.attempts),
@@ -347,6 +351,8 @@ for (const engine of ENGINES) {
             enqueuedByUserId: "user-enqueued-by",
             actorUserId: "user-actor",
             actorProvider: "email",
+            authSnapshotJson: '{"userId":"user-actor","displayName":"Actor","email":"actor@example.com","picture":null,"isAuthenticated":true,"isGuest":false,"provider":"email"}',
+            credentialJson: '{"kind":"session"}',
             status: "running",
             availableAt: NOW,
             attempts: 1,
@@ -373,11 +379,13 @@ for (const engine of ENGINES) {
           "actorUserId",
           "attemptHistory",
           "attempts",
+          "authSnapshotJson",
           "availableAt",
           "cancelRequestedAt",
           "claimToken",
           "completedAt",
           "createdAt",
+          "credentialJson",
           "enqueuedByUserId",
           "failedAt",
           "failure",
@@ -399,6 +407,35 @@ for (const engine of ENGINES) {
         // rather than Database adapter methods, and the engines differ on whether an empty `get`
         // is `undefined` or `null` — engine mechanics, not the field naming under test here.
         assert.equal((await adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get("job-never-enqueued")) ?? null, null);
+      });
+
+      await t.test("legacy Job provenance migrates and enqueue provenance rolls back atomically", async () => {
+        await adapter.insertAuthUser({
+          id: "legacy-job-user", createdAt: NOW, displayName: "Legacy Actor", email: "legacy@example.com",
+          picture: null, isAuthenticated: 1, isGuest: 0, provider: "email",
+        });
+        await adapter.prepare(sql(
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [createdAt]) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )).run("legacy-provenance", "work", "legacy-job-user", "legacy-job-user", "google", "null", "queued", NOW, 0, NOW);
+        await ensureJobStorage(adapter);
+        const migrated = await adapter.prepare(sql(
+          "SELECT [authSnapshotJson], [credentialJson] FROM [sporades_jobs] WHERE [id] = ?",
+        )).get("legacy-provenance");
+        assert.deepEqual(JSON.parse(migrated.authSnapshotJson), {
+          userId: "legacy-job-user", displayName: "Legacy Actor", email: "legacy@example.com", picture: null,
+          isAuthenticated: true, isGuest: false, provider: "google",
+        });
+        assert.deepEqual(JSON.parse(migrated.credentialJson), { kind: "session" });
+
+        await assert.rejects(adapter.withTransaction(async (tx) => {
+          await tx.prepare(sql(
+            "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [createdAt]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )).run("rolled-back-provenance", "work", "legacy-job-user", "legacy-job-user", "google", migrated.authSnapshotJson, migrated.credentialJson, "null", "queued", NOW, 0, NOW);
+          throw new Error("rollback provenance");
+        }), /rollback provenance/);
+        assert.equal((await adapter.prepare(sql("SELECT [id] FROM [sporades_jobs] WHERE [id] = ?")).get("rolled-back-provenance")) ?? null, null);
       });
 
       await t.test("a Schedule row and its occurrence read back under the field names the Schedule runtime reads", async () => {

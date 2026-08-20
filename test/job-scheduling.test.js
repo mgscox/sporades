@@ -3237,7 +3237,7 @@ test("Capsule code cannot forge Schedule provenance through context properties",
     assert.equal(result.ok, true);
     const row = database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs WHERE id=?").get(result.data.id);
     assert.deepEqual({ ...row }, { scheduleName: null, scheduledFor: null });
-    assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker" });
+    assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker", credential: { kind: "session" } });
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

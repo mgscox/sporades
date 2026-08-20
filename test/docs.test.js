@@ -460,7 +460,7 @@ test("published docs describe the complete Job scheduling contract", async () =>
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
   assert.match(guide, /four-digit UTC timestamp/i);
-  assert.match(guide, /JOB_ACTOR_UNAVAILABLE[\s\S]*remaining retry attempts/i);
+  assert.match(guide, /owner deletion[\s\S]*(?:does not|without)[\s\S]*(?:cancel|prevent|rewrite)[\s\S]*(?:Job|snapshot|work)/i);
   assert.match(guide, /shutdown hook[\s\S]*mail closure[\s\S]*both failures/i);
   assert.match(guide, /import \{ capsule, job, schedule \} from "sporades\/server"/);
   assert.match(guide, /sendDigest:\s*job\(/);
@@ -836,7 +836,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(prd, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(prd, /query, mutation, Custom endpoint,\s+App message, context middleware, and supported mutation hook/);
   assert.match(prd, /current user identity/);
-  assert.match(prd, /captured user\s+identity/);
+  assert.match(prd, /captured bounded[\s\S]*Auth and Credential snapshot/);
   assert.match(prd, /Privileged server role/);
   for (const notA of ["Capsule role", "app admin", "Teams", "user", "session", "browser credential", "service account"]) {
     assert.match(prd, new RegExp(notA));
@@ -849,7 +849,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
 
   assert.match(userGuide, /Choosing a server actor/);
   assert.match(userGuide, /current user/);
-  assert.match(userGuide, /captured user\s+identity/);
+  assert.match(userGuide, /bounded Auth and Credential snapshot captured/i);
   assert.match(userGuide, /Privileged server role/);
   assert.match(userGuide, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(userGuide, /not a Capsule role, app admin, Team, user, session,\s+service account, or browser credential/);

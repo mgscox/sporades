@@ -615,10 +615,37 @@ export async function ensureJobStorage(sqlite: LooseRecord) {
   // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
   // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
   // "PRAGMA"` before the Job queue existed.
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
   await sqlite.exec(
     sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"),
   );
+  const legacyRows = await sqlite.prepare(sqlite.dialect.sql(
+    "SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] " +
+    "WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)",
+  )).all(privilegedAuthUserId());
+  for (const row of legacyRows) {
+    let user = null;
+    try {
+      user = await sqlite.prepare(sqlite.dialect.sql(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?",
+      )).get(row.actorUserId);
+    } catch (error: any) {
+      if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
+    }
+    const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
+    const authSnapshot = canonicalJobAuthSnapshot(user ? {
+      userId: user.id,
+      displayName: user.displayName,
+      email: user.email,
+      picture: user.picture,
+      isAuthenticated: Boolean(user.isAuthenticated),
+      isGuest: Boolean(user.isGuest),
+      provider,
+    } : legacyJobAuthFallback(row.actorUserId, provider));
+    await sqlite.prepare(sqlite.dialect.sql(
+      "UPDATE [sporades_jobs] SET [authSnapshotJson] = COALESCE([authSnapshotJson], ?), [credentialJson] = COALESCE([credentialJson], ?) WHERE [id] = ?",
+    )).run(JSON.stringify(authSnapshot), JSON.stringify({ kind: "session" }), row.id);
+  }
 }
 
 export async function scheduleSummary(sqlite: LooseRecord, row: any) {
@@ -682,9 +709,82 @@ export function boundedJobJson(value: any, limit: number, code: string, label: s
   return serialized;
 }
 
+const JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+
+function boundedJobIdentityString(value: unknown, field: string, maximum: number, nullable = false) {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length > maximum) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", `Keep ${field} within its runtime-owned bound.`);
+  }
+  return value;
+}
+
+/** Canonical bounded AuthContext persisted at the successful enqueue boundary. */
+export function canonicalJobAuthSnapshot(auth: LooseRecord) {
+  const snapshot = {
+    userId: boundedJobIdentityString(auth?.userId, "userId", 256),
+    displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
+    email: boundedJobIdentityString(auth?.email, "email", 320, true),
+    picture: boundedJobIdentityString(auth?.picture, "picture", 4096, true),
+    isAuthenticated: auth?.isAuthenticated,
+    isGuest: auth?.isGuest,
+    provider: boundedJobIdentityString(auth?.provider, "provider", 64),
+  };
+  if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
+  }
+  return snapshot;
+}
+
+/** Canonical Credential provenance; secret material and granted scopes have no accepted field. */
+export function canonicalJobCredentialProvenance(credential: LooseRecord) {
+  if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind")) return { kind: "session" };
+  if (credential?.kind === "access-key" && Object.keys(credential).every((key) => ["kind", "id", "name"].includes(key))) {
+    return {
+      kind: "access-key",
+      id: boundedJobIdentityString(credential.id, "credential.id", 256),
+      name: boundedJobIdentityString(credential.name, "credential.name", 256),
+    };
+  }
+  throw jobError("INVALID_JOB_CREDENTIAL", "Job Credential provenance is invalid.", "Enqueue from a runtime-issued Session or Access-key context.");
+}
+
+export function legacyJobAuthFallback(userId: unknown, provider: unknown) {
+  const normalizedProvider = jobActorProvider({ provider, isGuest: provider === "anonymous" });
+  return {
+    userId: boundedJobIdentityString(userId, "userId", 256),
+    displayName: "Job enqueuer",
+    email: null,
+    picture: null,
+    isAuthenticated: normalizedProvider !== "anonymous",
+    isGuest: normalizedProvider === "anonymous",
+    provider: normalizedProvider,
+  };
+}
+
+export function readJobAuthSnapshot(row: LooseRecord) {
+  if (row?.authSnapshotJson) {
+    try { return canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson))); }
+    catch { throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution."); }
+  }
+  return canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+}
+
+export function readJobCredentialProvenance(row: LooseRecord) {
+  if (row?.credentialJson) {
+    try { return canonicalJobCredentialProvenance(JSON.parse(String(row.credentialJson))); }
+    catch { throw jobError("JOB_CREDENTIAL_INVALID", "Stored Job Credential provenance is invalid.", "Repair or remove the malformed Job before retrying execution."); }
+  }
+  return { kind: "session" };
+}
+
 export function jobState(row: any, includeDetail: boolean) {
   const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId, credential: readJobCredentialProvenance(row) };
   const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
   if (includeDetail && row.result) state.result = JSON.parse(row.result);
   if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
@@ -720,7 +820,7 @@ export async function inspectRuntimeJobs(adapter: LooseRecord) {
     }
     return rows.map((row) => ({
       id: String(row.id), handler: String(row.handler), status: String(row.status),
-      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
+      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId), credential: readJobCredentialProvenance(row) },
       actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
       attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
       idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,

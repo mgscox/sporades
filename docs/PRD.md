@@ -551,9 +551,12 @@ process-only endpoint overrides are admitted solely by explicit loopback test
 seams and cannot be configured through `sporades.json` or Server env.
 Provider token exchanges refuse redirects, use bounded deadlines and streamed
 response limits, and never expose authorization codes, client credentials, or
-provider response bodies. Current-user Jobs persist the enqueueing Session's
-provider provenance and replay it across retries and runtime restarts; later
-provider switches cannot rewrite an already-enqueued Job actor.
+provider response bodies. Current-user Jobs persist the enqueue-time bounded
+Auth context and Session-or-Access-key Credential provenance and replay them
+across retries, child Jobs, and runtime restarts; later provider, profile, key,
+or owner lifecycle changes cannot rewrite already-admitted Job attribution.
+Job rows never retain bearer secrets, grants, or matched scopes, and current
+resource and membership state continues to govern runtime authorization.
 Google, Apple, and Microsoft signing-key and OpenID metadata loads apply the
 same redirect, deadline, streamed-size, cancellation, and safe-error boundary.
 Process-only provider endpoint overrides accept exact IPv4 and IPv6 loopback
@@ -802,9 +805,11 @@ narrow approved File API, `privilegedCtx.signal`, and
 `privilegedCtx.auth.userId === "__privileged__"`.
 
 Use the current user identity when work should be authorized as the live
-Sporades user represented by `ctx.auth`. The Job Queue uses a captured user
-identity when background work should remain accountable to the user who
-authorized it after the original request has ended. Privileged Jobs use the
+Sporades user represented by `ctx.auth`. The Job Queue uses a captured bounded
+Auth and Credential snapshot when background work should remain accountable to
+the user and access method that authorized it after the original request has
+ended, while current ACL and membership state still decides resource access.
+Privileged Jobs use the
 Privileged server role for system-owned work that intentionally has no Sporades
 user identity. This authority remains distinct from Capsule roles and cannot be
 carried by browser credentials. Future scheduled maintenance or recurring Jobs
@@ -919,8 +924,10 @@ strand the attempt merely because the lease was not expired during storage
 open. Recovery rechecks the durable lease and exact claim before transition.
 Missing or noncanonical retained running leases fail terminally with the safe
 `JOB_LEASE_INVALID` code; malformed non-null claim ownership fails with
-`JOB_CLAIM_INVALID`. Orderly close clears the tracked recovery wake. A
-missing captured actor is terminal regardless of unused retry attempts. Capsule
+`JOB_CLAIM_INVALID`. Orderly close clears the tracked recovery wake. The
+bounded committed Auth and Credential snapshot executes without a current owner
+profile row; owner deletion affects current ACL, File, and Team authority rather
+than cancelling or rewriting admitted Job attribution. Capsule
 shutdown hook failure does not skip Database adapter closure. Runtime close
 attempts mail, Database adapter, and file-storage closure independently and
 aggregates multiple failures only after every closer has been attempted. A
@@ -944,8 +951,8 @@ afterward at the earliest requested instant, and shutdown awaits that complete
 chain. A claim acquired after the candidate's startup scan, retained by failed
 teardown, relinquished, or delayed by the outgoing worker during handoff remains
 discoverable.
-Durable queued and delayed Job state remains stored and recovers on runtime
-restart. Unclean interruption retains the ordinary lease-recovery and
+Durable queued and delayed Job state remains stored and recovers on runtime restart.
+Unclean interruption retains the ordinary lease-recovery and
 at-least-once behavior.
 
 Administrators inspect all bounded Job state using the JSON-only `sporades

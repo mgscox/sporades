@@ -131,7 +131,7 @@ A Capsule-defined app-message handler declared with `message((ctx, data) => ...)
 _Avoid_: socket listener, raw WebSocket handler
 
 **Job**:
-A durable unit of background work owned by a Capsule or by Sporades platform code. Jobs run under an explicit server-side actor, such as a captured Sporades user identity or the Privileged server role, and Capsule server code may inspect known Job state through runtime-owned APIs rather than modelling Jobs as app tables.
+A durable unit of background work owned by a Capsule or by Sporades platform code. Ordinary user Jobs persist the complete bounded Auth context and Session-or-Access-key Credential provenance captured when enqueue commits; they never persist the credential secret, grants, or matched scopes. Jobs run under that historical user actor or the Privileged server role, while resource and Team authorization still uses current state.
 _Avoid_: task, worker request, background mutation
 
 **Job queue**:
@@ -139,7 +139,7 @@ The runtime-owned background-work surface that stores, runs, retries, and expose
 _Avoid_: worker pool, message bus, queue table
 
 **Job state**:
-The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, and safe failure or result metadata. It is the inspection surface app code sees instead of raw queue internals.
+The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, safe failure or result metadata, execution actor, and user-mode enqueue Credential provenance. It is the inspection surface app code sees instead of raw queue internals.
 _Avoid_: queue internals, worker details, job row
 
 Job state progresses through `delayed`, `queued`, `running`, `succeeded`, `failed`, or `cancelled`; only `queued` means ready to run.

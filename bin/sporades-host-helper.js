@@ -172,6 +172,7 @@ var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
 
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
 var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
 var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 

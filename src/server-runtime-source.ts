@@ -106,11 +106,12 @@ import {
 } from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
+  canonicalJobAuthSnapshot, canonicalJobCredentialProvenance,
   commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
   dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
   finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
-  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
+  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload,
   resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
@@ -5351,11 +5352,21 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: {
 
 function createMutationContext(database: LooseRecord, auth: any, options: LooseRecord = {}) {
   auth = protectContextIdentity(auth);
+  const credential = options.ordinaryCredential === false
+    ? null
+    : protectContextIdentity(options.credential ?? { kind: "session" });
   const context: LooseRecord = {
     auth,
-    ...(options.ordinaryCredential === false ? {} : { credential: protectContextIdentity({ kind: "session" }) }),
+    ...(credential ? { credential } : {}),
     env: database.serverEnv,
-    log: createEndpointLogger(database),
+    log: createEndpointLogger(database, credential ? {
+      attribution: {
+        actor: { userId: auth.userId },
+        credential: credential.kind === "access-key"
+          ? { kind: credential.kind, id: credential.id, name: credential.name }
+          : { kind: "session" },
+      },
+    } : {}),
     __pendingAclWrites: [],
   };
   const holder = createContextHolder(context);
@@ -5454,15 +5465,22 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts, Boolean(scheduleProvenance && retry.maxAttempts === 1))) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
+      const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential
+        ? null
+        : JSON.stringify(canonicalJobAuthSnapshot(provenanceContext.auth));
+      const credentialJson = scheduleProvenance || !provenanceContext?.credential
+        ? null
+        : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
       // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
       // misreport handler work that is already durable.
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
-          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
           (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""),
-        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
@@ -5702,27 +5720,13 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
           });
         } else {
-          const user = await database.adapter.prepare(
-            sql(
-              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] " +
-              "FROM [sporades_auth_users] WHERE [id] = ?",
-            ),
-          ).get(row.actorUserId);
+          const auth = readJobAuthSnapshot(row);
+          const credential = readJobCredentialProvenance(row);
           if (database.__jobStopped) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
-          const auth = {
-            userId: user.id,
-            displayName: user.displayName,
-            email: user.email,
-            picture: user.picture,
-            isAuthenticated: Boolean(user.isAuthenticated),
-            isGuest: Boolean(user.isGuest),
-            provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
-          };
-          const context = createMutationContext(database, auth); context.signal = abortController.signal;
+          const context = createMutationContext(database, auth, { credential }); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try { result = await handler.handler(context, JSON.parse(row.payload)); }
