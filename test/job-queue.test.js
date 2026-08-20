@@ -591,19 +591,24 @@ test("retained Job provenance must match its actor and fails terminally before h
   try {
     const now = new Date().toISOString();
     const insert = database.adapter.prepare(
-      "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, authSnapshotJson, credentialJson, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory) " +
-      "VALUES (?, 'work', ?, ?, 'email', ?, ?, 'null', 'queued', ?, 0, ?, ?, '[]')",
+      "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, authSnapshotJson, credentialJson, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory, scheduleName) " +
+      "VALUES (?, 'work', ?, ?, 'email', ?, ?, 'null', 'queued', ?, 0, ?, ?, '[]', ?)",
     );
     insert.run(
       "mismatched-actor", "actor-a", "actor-a",
       JSON.stringify({ userId: "actor-b", displayName: "Actor B", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
-      JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }),
+      JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }), null,
     );
     insert.run(
       "malformed-credential", "actor-a", "actor-a",
       JSON.stringify({ userId: "actor-a", displayName: "Actor A", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
       JSON.stringify({ kind: "access-key", id: "key-a", name: "automation", token: "must-not-be-accepted" }),
-      now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }),
+      now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }), null,
+    );
+    insert.run(
+      "mismatched-scheduled-actor", "actor-a", "actor-a",
+      JSON.stringify({ userId: "actor-b", displayName: "Actor B", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "email" }),
+      JSON.stringify({ kind: "session" }), now, now, JSON.stringify({ maxAttempts: 3, delayMs: 0 }), "forged-schedule",
     );
 
     await runCurrentUserJobWorker(database);
@@ -623,6 +628,11 @@ test("retained Job provenance must match its actor and fails terminally before h
       },
       {
         id: "mismatched-actor", status: "failed", attempts: 0,
+        failure: { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." },
+        attemptHistory: [],
+      },
+      {
+        id: "mismatched-scheduled-actor", status: "failed", attempts: 0,
         failure: { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." },
         attemptHistory: [],
       },

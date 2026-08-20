@@ -1693,7 +1693,7 @@ function scheduleJobLeaseRecoveryTimer(database: LooseRecord, dueAt: number | nu
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 
 function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
-  if (!row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+  if (row.actorUserId !== privilegedAuthUserId()) {
     try {
       readJobAuthSnapshot(row);
       readJobCredentialProvenance(row);

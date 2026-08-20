@@ -1613,7 +1613,7 @@ function scheduleJobLeaseRecoveryTimer(database, dueAt) {
 }
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 function invalidStoredJobFailure(row, referenceInstant) {
-    if (!row.scheduleName && row.actorUserId !== privilegedAuthUserId()) {
+    if (row.actorUserId !== privilegedAuthUserId()) {
         try {
             readJobAuthSnapshot(row);
             readJobCredentialProvenance(row);
