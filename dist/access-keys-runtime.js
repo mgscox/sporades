@@ -187,6 +187,7 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
                 const normalized = normalizeAccessKeyListOptions(options);
                 const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
                 const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+                requireContext();
                 return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
             });
         },
@@ -198,6 +199,7 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
                 const row = await database.adapter.findAccessKeyRecordById(id);
                 if (row?.ownerUserId)
                     target.ownerUserId = row.ownerUserId;
+                requireContext();
                 if (!row)
                     throw accessKeyNotFoundError();
                 return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
@@ -211,12 +213,18 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
                 const existing = await database.adapter.findAccessKeyRecordById(id);
                 if (existing?.ownerUserId)
                     target.ownerUserId = existing.ownerUserId;
+                requireContext();
                 if (!existing)
                     throw accessKeyNotFoundError();
                 const revokedAt = database.clock.now().toISOString();
-                const row = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
-                    ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
-                }));
+                const row = await withAccessKeyTransaction(database, async (adapter) => {
+                    requireContext();
+                    const result = await adapter.revokeAccessKeyRecord({
+                        ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
+                    });
+                    requireContext();
+                    return result;
+                });
                 if (!row)
                     throw accessKeyNotFoundError();
                 return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
@@ -227,9 +235,12 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
             const context = requireContext();
             return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
                 const revokedAt = database.clock.now().toISOString();
-                const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.bulkRevokeAccessKeysForOwner({
-                    ownerUserId: owner, revokedAt, revocationCause: "operator",
-                }));
+                const outcome = await withAccessKeyTransaction(database, async (adapter) => {
+                    requireContext();
+                    const result = await adapter.bulkRevokeAccessKeysForOwner({ ownerUserId: owner, revokedAt, revocationCause: "operator" });
+                    requireContext();
+                    return result;
+                });
                 return {
                     ownerUserId: owner,
                     revokedCount: outcome.revokedCount,
@@ -250,11 +261,15 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
                 const existing = await database.adapter.findAccessKeyRecordById(id);
                 if (existing?.ownerUserId)
                     target.ownerUserId = existing.ownerUserId;
+                requireContext();
                 if (!existing)
                     throw accessKeyNotFoundError();
-                const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
-                    ownerUserId: existing.ownerUserId, id,
-                }));
+                const outcome = await withAccessKeyTransaction(database, async (adapter) => {
+                    requireContext();
+                    const result = await adapter.deleteRevokedAccessKeyRecord({ ownerUserId: existing.ownerUserId, id });
+                    requireContext();
+                    return result;
+                });
                 if (outcome.status === "not-found")
                     throw accessKeyNotFoundError();
                 if (outcome.status === "requires-revoked") {
@@ -283,13 +298,24 @@ async function runPrivilegedAccessKeyOperation(database, context, operation, tar
         if (outerMetadata)
             Object.assign(outerMetadata, target);
         const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
-        await database.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
+        const event = await database.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
+        recordPrivilegedAccessKeyAuditForRollback(database, context, event);
         throw error;
     }
     if (outerMetadata)
         Object.assign(outerMetadata, target);
-    await database.audit.emit({ ...details(), outcome: "completed" });
+    const event = await database.audit.emit({ ...details(), outcome: "completed" });
+    recordPrivilegedAccessKeyAuditForRollback(database, context, event);
     return result;
+}
+function recordPrivilegedAccessKeyAuditForRollback(database, context, event) {
+    if (!database.__transactionActive || event?.category !== "audit" || !String(event.event ?? "").startsWith("privileged."))
+        return;
+    const transactionContext = context.__jobParentContext ?? context;
+    if (!Array.isArray(transactionContext.__privilegedAuditEvents)) {
+        Object.defineProperty(transactionContext, "__privilegedAuditEvents", { value: [], enumerable: false, configurable: true });
+    }
+    transactionContext.__privilegedAuditEvents.push(event);
 }
 export function readAccessKeyAuthorization(request) {
     const values = [];

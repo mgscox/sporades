@@ -29,6 +29,12 @@ test("Privileged Access-key controls expose only metadata and retirement", async
       privilegedList: mutation((ctx, ownerUserId) => ctx.privileged.run({
         operation: "maintenance", targetResourceKind: "capsule",
       }, (privilegedCtx) => privilegedCtx.accessKeys.list(ownerUserId))),
+      privilegedListThenFail: mutation((ctx, ownerUserId) => ctx.privileged.run({
+        operation: "maintenance-rollback", targetResourceKind: "capsule",
+      }, async (privilegedCtx) => {
+        await privilegedCtx.accessKeys.list(ownerUserId);
+        throw new Error("rollback after Access-key inspection");
+      })),
     },
   });
   await database.init();
@@ -46,6 +52,15 @@ test("Privileged Access-key controls expose only metadata and retirement", async
     assert.deepEqual(surface.data, ["delete", "inspect", "list", "revoke", "revokeAll"]);
     const directList = await runMutation(database, owner, "privilegedList", [owner.userId]);
     assert.equal(directList.ok, true, JSON.stringify(directList));
+    const actionAuditsBeforeRollback = (await database.adapter.readRecentLogEvents(100))
+      .filter((event) => event.data?.operation === "access-keys.list").length;
+    const rolledBack = await runMutation(database, owner, "privilegedListThenFail", [owner.userId]);
+    assert.equal(rolledBack.ok, false);
+    const actionAuditsAfterRollback = (await database.adapter.readRecentLogEvents(100))
+      .filter((event) => event.data?.operation === "access-keys.list"
+        && event.data?.metadata?.ownerUserId === owner.userId && event.data?.metadata?.actionOwned === true).length;
+    assert.equal(actionAuditsAfterRollback, actionAuditsBeforeRollback + 1,
+      "action-owned Privileged audit must be reindexed after the surrounding mutation rolls back");
     const auditBeforeInvalidInput = await database.adapter.readRecentLogEvents(100);
     await assert.rejects(runRuntimeAccessKeyOperatorAction(database, "access-keys.inspect", {
       keyId: first.data.accessKey.id, authorization: "Bearer secret-shaped-input",
@@ -145,6 +160,51 @@ test("failed runtime initialization does not publish its Access-key scope vocabu
     finally { await afterPreflightFailure.close(); }
   } finally {
     await current.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("detached Privileged Access-key reads and mutations lose authority when the run settles", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-detached-privileged-"));
+  let releaseRead, releaseLookup;
+  const readGate = new Promise((resolve) => { releaseRead = resolve; });
+  const lookupGate = new Promise((resolve) => { releaseLookup = resolve; });
+  let detachedRead, detachedRevoke;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "detached-access-keys" }, {
+    accessKeys: { scopes: ["requests:read"] },
+    hooks: {
+      init: (ctx) => ctx.privileged.run({ operation: "detached-probe", targetResourceKind: "access-key" }, (privilegedCtx) => {
+        detachedRead = privilegedCtx.accessKeys.list(owner.userId);
+        detachedRevoke = privilegedCtx.accessKeys.revoke("detached-key");
+        return null;
+      }),
+    },
+  });
+  try {
+    await database.adapter.insertAuthUser({
+      id: owner.userId, createdAt: "2026-08-20T12:00:00.000Z", displayName: owner.displayName,
+      email: owner.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: owner.provider,
+    });
+    await database.adapter.issueAccessKeyRecord({
+      id: "detached-key", ownerUserId: owner.userId, name: "detached", reservedName: "detached",
+      grantsJson: JSON.stringify(["requests:read"]), secretVersion: 1, selector: "detached-selector",
+      verifierDigest: "0".repeat(64), lifecycleRevision: 1, createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null,
+    });
+    const originalList = database.adapter.listAccessKeyRecordsForOwner.bind(database.adapter);
+    const originalFind = database.adapter.findAccessKeyRecordById.bind(database.adapter);
+    database.adapter.listAccessKeyRecordsForOwner = async (...args) => { await readGate; return originalList(...args); };
+    database.adapter.findAccessKeyRecordById = async (...args) => { await lookupGate; return originalFind(...args); };
+    await database.init();
+    releaseRead(); releaseLookup();
+    const [readResult, revokeResult] = await Promise.allSettled([detachedRead, detachedRevoke]);
+    assert.equal(readResult.status, "rejected");
+    assert.equal(readResult.reason.code, "FORBIDDEN");
+    assert.equal(revokeResult.status, "rejected");
+    assert.equal(revokeResult.reason.code, "FORBIDDEN");
+    database.adapter.findAccessKeyRecordById = originalFind;
+    assert.equal((await originalFind("detached-key")).revokedAt, null, "detached destructive work must not commit");
+  } finally {
+    await database.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
