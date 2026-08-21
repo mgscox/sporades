@@ -1,8 +1,8 @@
 # User-owned scoped Access keys — completion report
 
-Date: 2026-08-21  
-Tested commit: `82ac350`  
-Branch: `codex/trusted-read-foundation`
+- Date: 2026-08-21
+- Tested commit: `82ac350`
+- Branch: `codex/trusted-read-foundation`
 
 ## Mandatory release gate
 
