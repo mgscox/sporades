@@ -317,8 +317,9 @@ exceptions; Sporades never pretends discarded repair evidence was resolved.
 A legacy successful row with an absent or malformed completion timestamp is
 likewise unresolved and retains raw data without a deadline. Safe Job inspection
 reports `INVALID_COMPLETED_AT`; once storage recovery restores a canonical
-completion timestamp, cleanup automatically derives and applies the 30-day
-clock without exposing a general Job mutation surface.
+completion timestamp, inspection reports `CANONICAL_REPAIR_PENDING` until
+cleanup automatically derives and applies the 30-day clock, without exposing a
+general Job mutation surface.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

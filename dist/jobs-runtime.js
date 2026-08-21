@@ -130,6 +130,45 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
         redactedCount += mutations;
         remaining -= mutations;
     }
+    // A previously classified malformed settlement may have been repaired by storage recovery.
+    // Select only timestamp-shaped sentinel rows so still-malformed rows neither consume the
+    // mutation budget nor cause a cleanup hot-loop. Canonical validation remains in JavaScript.
+    const repairedSentinels = remaining === 0 ? [] : await adapter.prepare(sql("SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+        "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND LENGTH([completedAt])=24 " +
+        "AND SUBSTR([completedAt],5,1)='-' AND SUBSTR([completedAt],8,1)='-' " +
+        "AND SUBSTR([completedAt],11,1)='T' AND SUBSTR([completedAt],14,1)=':' " +
+        "AND SUBSTR([completedAt],17,1)=':' AND SUBSTR([completedAt],20,1)='.' " +
+        "AND SUBSTR([completedAt],24,1)='Z' AND SUBSTR([completedAt],1,4) BETWEEN '0000' AND '9999' " +
+        "AND SUBSTR([completedAt],6,2) BETWEEN '01' AND '12' AND SUBSTR([completedAt],9,2) BETWEEN '01' AND '31' " +
+        "AND SUBSTR([completedAt],12,2) BETWEEN '00' AND '23' AND SUBSTR([completedAt],15,2) BETWEEN '00' AND '59' " +
+        "AND SUBSTR([completedAt],18,2) BETWEEN '00' AND '59' AND SUBSTR([completedAt],21,3) BETWEEN '000' AND '999' " +
+        "ORDER BY [completedAt] ASC, [id] ASC LIMIT ?")).all(STRIPE_EVENT_JOB, remaining);
+    for (const observed of repairedSentinels) {
+        if (remaining === 0)
+            break;
+        let row = observed;
+        let retried = false;
+        while (row && remaining > 0) {
+            const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+            if (deadline === null)
+                break;
+            const changed = await adapter.prepare(sql("UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
+                "AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL " +
+                "AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL")).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
+            const mutations = Number(changed?.changes ?? 0);
+            if (mutations > 0) {
+                assignedCount += mutations;
+                remaining -= mutations;
+                break;
+            }
+            if (retried)
+                break;
+            row = await adapter.prepare(sql("SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? " +
+                "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' " +
+                "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL")).get(observed.id, STRIPE_EVENT_JOB);
+            retried = true;
+        }
+    }
     // Older successful reserved Jobs predate the deadline column. Assign their deadline from the
     // durable settlement time only after due redaction, using whatever shared budget remains.
     const unassigned = remaining === 0 ? [] : await adapter.prepare(sql("SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
@@ -1041,6 +1080,9 @@ function stripeEventPayloadRetentionState(row) {
         return Object.freeze({ state: "unresolved", code: "JOB_NOT_SUCCESSFULLY_SETTLED", deadline: null });
     }
     if (row.payloadRetentionUntil === "") {
+        if (stripeEventPayloadRetentionDeadline(row.completedAt) !== null) {
+            return Object.freeze({ state: "unresolved", code: "CANONICAL_REPAIR_PENDING", deadline: null });
+        }
         return Object.freeze({ state: "unresolved", code: "INVALID_COMPLETED_AT", deadline: null });
     }
     if (isCanonicalJobTimestamp(row.payloadRetentionUntil)) {

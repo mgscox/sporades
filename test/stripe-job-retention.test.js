@@ -194,6 +194,56 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
     });
   });
 
+  test(`${engine.name}: a canonical repair after malformed classification re-enters retention`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (initialAdapter, controls) => {
+      let adapter = initialAdapter;
+      await ensureJobStorage(adapter);
+      await insertReservedJob(adapter, { id: "classified-then-repaired", status: "succeeded", completedAt: "not-a-timestamp" });
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+
+      const classified = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(classified.classifiedCount, 1);
+      assert.equal(classified.nextCleanupAt, null, "still-malformed sentinels do not hot-loop cleanup");
+      assert.equal((await readStoredJob(adapter, "classified-then-repaired")).payloadRetentionUntil, "");
+
+      adapter = await controls.restart();
+      await adapter.prepare(adapter.dialect.sql(
+        "UPDATE [sporades_jobs] SET [completedAt]=? WHERE [id]=? AND [payloadRetentionUntil]=''",
+      )).run("2029-12-01T00:00:00.000Z", "classified-then-repaired");
+      const pendingRepair = (await inspectRuntimeJobs(adapter)).find((job) => job.id === "classified-then-repaired");
+      assert.deepEqual(pendingRepair.payloadRetention, {
+        state: "unresolved",
+        code: "CANONICAL_REPAIR_PENDING",
+        deadline: null,
+      });
+
+      const repaired = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(repaired.assignedCount, 1);
+      assert.equal(repaired.redactedCount, 0);
+      assert.equal(repaired.nextCleanupAt, "2029-12-31T00:00:00.000Z");
+      let stored = await readStoredJob(adapter, "classified-then-repaired");
+      assert.equal(stored.payloadRetentionUntil, "2029-12-31T00:00:00.000Z");
+      assert.match(stored.payload, /raw_private_classified-then-repaired/);
+      assert.deepEqual((await inspectRuntimeJobs(adapter)).find((job) => job.id === "classified-then-repaired").payloadRetention, {
+        state: "retained",
+        deadline: "2029-12-31T00:00:00.000Z",
+      });
+
+      const concurrent = await Promise.all([
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+      ]);
+      assert.equal(concurrent.reduce((count, result) => count + result.redactedCount, 0), 1);
+      stored = await readStoredJob(adapter, "classified-then-repaired");
+      assert.deepEqual(JSON.parse(stored.payload), { kind: "stripe-event", retained: false });
+      assert.deepEqual((await inspectRuntimeJobs(adapter)).find((job) => job.id === "classified-then-repaired").payloadRetention, {
+        state: "redacted",
+        deadline: "2029-12-31T00:00:00.000Z",
+        redactedAt: "2030-01-01T00:00:00.000Z",
+      });
+    });
+  });
+
   test(`${engine.name}: one cleanup invocation shares its 100-row mutation budget`, { skip: engine.skip }, async () => {
     await engine.withAdapter(async (initialAdapter, controls) => {
       let adapter = initialAdapter;

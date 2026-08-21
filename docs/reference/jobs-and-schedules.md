@@ -135,7 +135,9 @@ the payload or provider identity. Sporades intentionally exposes no generic Job
 editor. If a supported storage recovery or migration restores a canonical
 `completedAt`, the next cleanup pass reselects the row and derives the ordinary
 30-day deadline. Exact compare-and-set classification cannot overwrite a
-concurrent repair.
+concurrent repair. Between the canonical repair and that cleanup pass, safe
+inspection reports `CANONICAL_REPAIR_PENDING`; still-malformed sentinel rows
+remain `INVALID_COMPLETED_AT` and do not repeatedly re-arm cleanup.
 
 Cleanup runs at runtime activation, after restart, and at the next deadline. It
 performs at most 100 successful row mutations in total per invocation. It
@@ -387,7 +389,8 @@ Reserved Stripe Event Jobs additionally include a non-sensitive
 `redacted` includes the deadline and redaction time; and `unresolved` includes
 an opaque reason code and an absent deadline. The unresolved codes are
 `JOB_NOT_SUCCESSFULLY_SETTLED`, `RETENTION_DEADLINE_UNASSIGNED`, and
-`INVALID_COMPLETED_AT`. None disclose provider values or make inspection a
+`INVALID_COMPLETED_AT`; a canonically repaired classified row temporarily uses
+`CANONICAL_REPAIR_PENDING`. None disclose provider values or make inspection a
 repair API.
 
 This first operator surface intentionally has no filters, cursor, pagination,
