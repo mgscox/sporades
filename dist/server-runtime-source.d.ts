@@ -25,6 +25,8 @@ export declare function shutdownHttpServerAndRuntime(server: LooseRecord, shutdo
 export declare function replaceRuntimeDatabase(currentDatabase: LooseRecord, candidateDatabase: LooseRecord): Promise<LooseRecord>;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
+/** Internal runtime/test seam; not exported from sporades/server. */
+export declare function recoverExpiredJobLeases(database: LooseRecord): Promise<number | null>;
 export declare function createRuntimeLogSink(options: {
     database: any;
     config: any;

@@ -51,6 +51,7 @@ const mutationResultsWithWrites = new WeakSet();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
+const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
 // and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
@@ -893,7 +894,9 @@ function validateStripeEventSubscription(subscription) {
     const options = subscription.options;
     if (keys.length !== 3 || keys[0] !== "handler" || keys[1] !== "kind" || keys[2] !== "options"
         || !options || typeof options !== "object" || Array.isArray(options)
-        || Object.keys(options).length !== 1 || options.consequence !== "atomic")
+        || Object.keys(options).length !== 1 || options.consequence !== "atomic"
+        || subscription[atomicStripeEventDefinitionBrand] !== true
+        || !Object.isFrozen(subscription) || !Object.isFrozen(options))
         throw invalid();
 }
 function resolveJourneySessionInactivityMinutes(config = {}) {
@@ -1495,7 +1498,8 @@ async function enqueueResolvedScheduledOccurrence(database, definition, schedule
     const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } }, (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, payload, { retry: definition.retry, idempotencyKey: provenance }));
     return state;
 }
-async function recoverExpiredJobLeases(database) {
+/** Internal runtime/test seam; not exported from sporades/server. */
+export async function recoverExpiredJobLeases(database) {
     const recoveredAt = database.clock.now();
     const recoveredIso = recoveredAt.toISOString();
     const sql = database.adapter.dialect.sql;
@@ -1794,8 +1798,10 @@ export function createRuntimeLogSink(options) {
             if (process.env.SPORADES_LOG_STDOUT === "1") {
                 process.stdout.write(`${JSON.stringify(event)}\n`);
             }
-            const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
             const pendingWrites = options.database?.[transactionPendingLogWrites];
+            const settled = isPromiseLike(indexed)
+                ? pendingWrites ? indexed.then(() => event) : indexed.then(() => event, () => event)
+                : event;
             if (isPromiseLike(settled) && pendingWrites)
                 pendingWrites.push(settled);
             return settled;
@@ -2964,6 +2970,34 @@ function createAtomicStripeConsequenceContext(database, parent) {
     });
     return context;
 }
+async function settleAtomicStripeEventHandler(database, context, signal, dispatch) {
+    if (signal?.aborted)
+        throw atomicStripeAbortError();
+    let abortHandler;
+    let watchdog;
+    let rejectSettlement;
+    const failClosed = () => {
+        context.__privilegedRunActive = false;
+        revokePrivilegedDbAccess(context);
+        rejectSettlement?.(atomicStripeAbortError());
+    };
+    const aborted = new Promise((_, reject) => {
+        rejectSettlement = reject;
+        if (!signal)
+            return;
+        abortHandler = failClosed;
+        signal.addEventListener("abort", abortHandler, { once: true });
+    });
+    watchdog = database.clock.setTimer(failClosed, RUNTIME_CLAIM_LEASE_MS);
+    try {
+        return await Promise.race([dispatch(), aborted]);
+    }
+    finally {
+        database.clock.clearTimer(watchdog);
+        if (signal && abortHandler)
+            signal.removeEventListener("abort", abortHandler);
+    }
+}
 export async function runAtomicStripeConsequence(database, parentContext, event, subscription) {
     if (parentContext.signal?.aborted)
         throw atomicStripeAbortError();
@@ -2979,7 +3013,7 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
                 let handlerFailed = false;
                 try {
                     context = createAtomicStripeConsequenceContext(transactionDatabase, parentContext);
-                    const delivered = await dispatchVerifiedStripeEvent(context, event, subscription);
+                    const delivered = await settleAtomicStripeEventHandler(database, context, parentContext.signal, () => dispatchVerifiedStripeEvent(context, event, subscription));
                     await cleanupTransactionHandler(transactionDatabase, context, false, false);
                     cleanupComplete = true;
                     if (parentContext.signal?.aborted)
@@ -3181,7 +3215,10 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
 async function drainPendingLogWrites(database) {
     const pending = database.__pendingLogWrites;
     while (pending?.length > 0) {
-        await Promise.allSettled(pending.splice(0));
+        const outcomes = await Promise.allSettled(pending.splice(0));
+        const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+        if (rejected?.status === "rejected")
+            throw rejected.reason;
     }
 }
 async function applyContextMiddleware(database, baseContext, kind) {

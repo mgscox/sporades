@@ -684,7 +684,10 @@ read and commits or rolls back the callback's app writes, logs, and Job enqueues
 together. Enqueued Jobs are dispatched only after commit. This narrow context
 has no provider, mail, File, message, auth-management, Schedule, Access-key,
 Team-management, or nested Privileged API. It is for bounded database
-consequences; keep long-lived cooperative handlers on the legacy declaration.
+consequences. A 30-second runtime watchdog revokes database and Job authority,
+rolls back the attempt, and releases the per-Capsule fence if handler code does
+not settle cooperatively; late handler work cannot commit. Keep long-lived
+cooperative handlers on the legacy declaration.
 Delivery remains at least once, so app policy still owns Event idempotency and
 equal-time or stale-event decisions.
 

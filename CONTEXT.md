@@ -120,6 +120,7 @@ _Avoid_: Stripe webhook handler, callback endpoint, billing-state synchronizer
 
 **Atomic Stripe consequence**:
 The opt-in `stripeEvent({ consequence: "atomic" }, handler)` policy form. One Job attempt enters a runtime-owned, per-Capsule serialization fence before any app read, then runs the handler's database writes and Job enqueues in one transaction through a narrow userless context. Return commits and dispatches enqueued Jobs afterward; throw, cleanup failure, or pre-commit cancellation rolls back and revokes every captured capability. The legacy Stripe-event subscription remains non-transactional for long-lived cooperative handlers.
+An atomic attempt is bounded by the runtime's 30-second claim watchdog. Abort or watchdog expiry revokes the context immediately and forces rollback even when handler code does not cooperate; late handler work cannot commit or retain database or Job authority.
 _Avoid_: webhook transaction, provider transaction, exactly-once Stripe delivery
 
 **Built-in payment foundation**:

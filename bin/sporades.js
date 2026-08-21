@@ -2423,8 +2423,10 @@ function isPlainObject(value) {
 }
 
 // src/server.ts
+var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 function serverRuntimeModuleSource() {
   return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {
   const error = new Error("Invalid Auth requirements.");
@@ -2584,7 +2586,9 @@ export function emailEvent(handler) {
 export function stripeEvent(first, second) {
   if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
   if (plainObject(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
-    return Object.freeze({ kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second });
+    const definition = { kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second };
+    Object.defineProperty(definition, ATOMIC_STRIPE_EVENT_DEFINITION, { value: true });
+    return Object.freeze(definition);
   }
   const error = new Error("Invalid Stripe-event declaration.");
   error.code = "INVALID_STRIPE_EVENT_DECLARATION";
@@ -17331,6 +17335,7 @@ var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
+var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
 async function shutdownAndCloseDatabase(database) {
   let shutdownError;
   let closeError;
@@ -17823,7 +17828,7 @@ function validateStripeEventSubscription(subscription) {
     return;
   }
   const options = subscription.options;
-  if (keys.length !== 3 || keys[0] !== "handler" || keys[1] !== "kind" || keys[2] !== "options" || !options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).length !== 1 || options.consequence !== "atomic") throw invalid();
+  if (keys.length !== 3 || keys[0] !== "handler" || keys[1] !== "kind" || keys[2] !== "options" || !options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).length !== 1 || options.consequence !== "atomic" || subscription[atomicStripeEventDefinitionBrand2] !== true || !Object.isFrozen(subscription) || !Object.isFrozen(options)) throw invalid();
 }
 function resolveJourneySessionInactivityMinutes(config = {}) {
   const value = config.journey?.sessionInactivityMinutes;
@@ -18600,8 +18605,8 @@ function createRuntimeLogSink(options) {
         process.stdout.write(`${JSON.stringify(event)}
 `);
       }
-      const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
       const pendingWrites = options.database?.[transactionPendingLogWrites];
+      const settled = isPromiseLike(indexed) ? pendingWrites ? indexed.then(() => event) : indexed.then(() => event, () => event) : event;
       if (isPromiseLike(settled) && pendingWrites) pendingWrites.push(settled);
       return settled;
     },
@@ -19705,6 +19710,30 @@ function createAtomicStripeConsequenceContext(database, parent) {
   });
   return context;
 }
+async function settleAtomicStripeEventHandler(database, context, signal, dispatch) {
+  if (signal?.aborted) throw atomicStripeAbortError();
+  let abortHandler;
+  let watchdog;
+  let rejectSettlement;
+  const failClosed = () => {
+    context.__privilegedRunActive = false;
+    revokePrivilegedDbAccess(context);
+    rejectSettlement?.(atomicStripeAbortError());
+  };
+  const aborted = new Promise((_, reject) => {
+    rejectSettlement = reject;
+    if (!signal) return;
+    abortHandler = failClosed;
+    signal.addEventListener("abort", abortHandler, { once: true });
+  });
+  watchdog = database.clock.setTimer(failClosed, RUNTIME_CLAIM_LEASE_MS);
+  try {
+    return await Promise.race([dispatch(), aborted]);
+  } finally {
+    database.clock.clearTimer(watchdog);
+    if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
+  }
+}
 async function runAtomicStripeConsequence(database, parentContext, event, subscription) {
   if (parentContext.signal?.aborted) throw atomicStripeAbortError();
   for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
@@ -19718,7 +19747,12 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
         let handlerFailed = false;
         try {
           context = createAtomicStripeConsequenceContext(transactionDatabase, parentContext);
-          const delivered = await dispatchVerifiedStripeEvent(context, event, subscription);
+          const delivered = await settleAtomicStripeEventHandler(
+            database,
+            context,
+            parentContext.signal,
+            () => dispatchVerifiedStripeEvent(context, event, subscription)
+          );
           await cleanupTransactionHandler(transactionDatabase, context, false, false);
           cleanupComplete = true;
           if (parentContext.signal?.aborted) throw atomicStripeAbortError();
@@ -19905,7 +19939,9 @@ async function cleanupTransactionHandler(database, context, preservePrimaryError
 async function drainPendingLogWrites(database) {
   const pending = database.__pendingLogWrites;
   while (pending?.length > 0) {
-    await Promise.allSettled(pending.splice(0));
+    const outcomes = await Promise.allSettled(pending.splice(0));
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
   }
 }
 async function applyContextMiddleware(database, baseContext, kind) {
