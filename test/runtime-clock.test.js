@@ -30,6 +30,7 @@ test("the full runtime can advance delayed Job timers without sleeping or replac
       get: mutation((ctx, id) => ctx.jobs.get(id)),
     },
   }, { clock });
+  await database.init();
 
   try {
     await database.init();

@@ -5,8 +5,10 @@ import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, supportsClientCapability } from "../client-capabilities.js";
 import { validateMailConfig } from "../mail-config.js";
+import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { commandError, errorDetails } from "./cli-support.js";
 export { validateMailConfig } from "../mail-config.js";
+export { validatePaymentsConfig } from "../stripe-payment-config.js";
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
 const DEFAULT_CSP_DIRECTIVES = {
     "default-src": ["'self'"],
@@ -32,6 +34,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
     "logs",
     "mail",
     "name",
+    "payments",
     "release",
     "security",
     "scheduling",
@@ -53,6 +56,8 @@ export async function readProjectConfig(projectDir) {
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);
+    if (config.payments !== undefined)
+        config.payments = validatePaymentsConfig(config.payments);
     if (config.mail !== undefined)
         config.mail = validateMailConfig(config.mail);
     validatePasswordResetConfig(config.auth);

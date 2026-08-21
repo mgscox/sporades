@@ -8,7 +8,7 @@ import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "nod
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
 import path11 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat4, mkdir as mkdir3, readFile as readFile5, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
@@ -1791,6 +1791,9 @@ function sporadesEsbuildClientPlugin(devRefresh = false) {
   return {
     name: "sporades-client",
     setup(build) {
+      build.onResolve({ filter: /^sporades\/server(?:\/|$)/ }, (args) => {
+        throw serverOnlyClientImportError(args.path);
+      });
       build.onResolve({ filter: /^sporades\/client$/ }, () => ({ path: "sporades/client", namespace: "sporades-runtime" }));
       build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource({ devRefresh }) }));
     }
@@ -1802,12 +1805,20 @@ function sporadesViteClientPlugin(devRefresh = false) {
     name: "sporades-client-runtime",
     enforce: "pre",
     resolveId(id) {
+      if (/^sporades\/server(?:\/|$)/.test(id)) throw serverOnlyClientImportError(id);
       return id === "sporades/client" ? runtimeId : null;
     },
     load(id) {
       return id === runtimeId ? createClientRuntimeSource({ devRefresh }) : null;
     }
   };
+}
+function serverOnlyClientImportError(specifier) {
+  return clientToolchainError(
+    "Client code cannot import server-only Sporades modules.",
+    "Move this import into server/ and expose only bounded application data through a query or mutation.",
+    { specifier }
+  );
 }
 function sporadesViteBuildInvariants(indexHtmlPath, frameworkConfig) {
   return {
@@ -2570,6 +2581,13 @@ export function emailEvent(handler) {
   };
 }
 
+export function stripeEvent(handler) {
+  return {
+    kind: "stripeEvent",
+    handler,
+  };
+}
+
 export function query(handler) {
   return {
     kind: "query",
@@ -2756,6 +2774,17 @@ ${options.epilogue}
               loader: "js",
               contents: inputsModule
             }));
+          }
+        },
+        {
+          name: "sporades-node-builtin-prefix",
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /.*/ }, (args) => {
+              if (!args.path.startsWith("node:") && isBuiltin(args.path)) {
+                return { path: `node:${args.path}`, external: true };
+              }
+              return void 0;
+            });
           }
         }
       ]
@@ -3542,6 +3571,145 @@ function publicTreeError(message, hint, diagnostics) {
   return Object.assign(new Error(message), { hint, ...diagnostics === void 0 ? {} : { diagnostics } });
 }
 
+// src/stripe-payment-config.ts
+var STRIPE_API_VERSION = "2026-07-29.dahlia";
+var ENABLED_KEYS = [
+  "enabled",
+  "secretKeyEnv",
+  "webhookSecretEnv",
+  "publicOrigin",
+  "callbackPath",
+  "apiVersion",
+  "livemode",
+  "requestTimeoutMs"
+];
+function validatePaymentsConfig(payments) {
+  if (payments === void 0) return void 0;
+  if (!isPlainRecord(payments)) {
+    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
+  }
+  const unknownProviders = Object.keys(payments).filter((key) => key !== "stripe");
+  if (unknownProviders.length > 0) {
+    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
+  }
+  if (payments.stripe === void 0) {
+    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
+  }
+  if (!isPlainRecord(payments.stripe)) {
+    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
+  }
+  const stripe = payments.stripe;
+  if (stripe.enabled === false) {
+    if (Object.keys(stripe).some((key) => key !== "enabled")) {
+      fail("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
+    }
+    return { stripe: { enabled: false } };
+  }
+  if (stripe.enabled !== true) {
+    fail("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
+  }
+  const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
+  if (unknownKeys.length > 0) {
+    fail("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
+  }
+  for (const key of ENABLED_KEYS) {
+    if (!(key in stripe)) {
+      fail("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
+    }
+  }
+  if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
+    fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
+  }
+  validatePublicOrigin(stripe.publicOrigin);
+  const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
+  if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
+    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
+  }
+  if (stripe.apiVersion !== STRIPE_API_VERSION) {
+    fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
+  }
+  if (typeof stripe.livemode !== "boolean") {
+    fail("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
+  }
+  if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
+    fail("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
+  }
+  return {
+    stripe: {
+      enabled: true,
+      secretKeyEnv: stripe.secretKeyEnv,
+      webhookSecretEnv: stripe.webhookSecretEnv,
+      publicOrigin: stripe.publicOrigin,
+      callbackPath,
+      apiVersion: STRIPE_API_VERSION,
+      livemode: stripe.livemode,
+      requestTimeoutMs: stripe.requestTimeoutMs
+    }
+  };
+}
+function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
+  const normalized = validatePaymentsConfig(payments);
+  if (!normalized || normalized.stripe.enabled === false) return normalized;
+  const secretKey = serverEnv?.[normalized.stripe.secretKeyEnv];
+  const webhookSecret = serverEnv?.[normalized.stripe.webhookSecretEnv];
+  const expectedSecretPrefix = normalized.stripe.livemode ? "sk_live_" : "sk_test_";
+  if (typeof secretKey !== "string" || !secretKey.startsWith(expectedSecretPrefix) || secretKey.length <= expectedSecretPrefix.length) {
+    fail("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
+  }
+  if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
+    fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  return normalized;
+}
+function validateStripePaymentsSealedServerEnv(payments, hasSealedEnvelope) {
+  const normalized = validatePaymentsConfig(payments);
+  if (normalized?.stripe.enabled && !hasSealedEnvelope) {
+    fail("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
+  }
+  return normalized;
+}
+function isPlainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function isServerEnvReference(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+function validatePublicOrigin(value) {
+  if (typeof value !== "string") {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  let origin;
+  try {
+    origin = new URL(value);
+  } catch {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  const loopback = origin.hostname === "localhost" || origin.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
+  const secureHosted = origin.protocol === "https:";
+  const localHttp = origin.protocol === "http:" && loopback;
+  if (!secureHosted && !localHttp || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/" || origin.origin !== value.replace(/\/$/, "")) {
+    fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
+  }
+}
+function canonicalSameOriginAbsolutePath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
+    return null;
+  }
+  try {
+    return new URL(value, "https://sporades.invalid").pathname;
+  } catch {
+    return null;
+  }
+}
+function fail(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
@@ -3569,9 +3737,11 @@ async function createBundle(projectDir, config, options = {}) {
   }
   const sealedPaths = sealedServerEnvPaths(projectDir);
   const sealedEnvelope = await readSealedServerEnv(sealedPaths);
+  validateStripePaymentsSealedServerEnv(config.payments, sealedEnvelope !== null);
   const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
   const serverEnv = sealedEnvelope ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey) : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
+  validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   const [serverSource, clientSource] = await Promise.all([
     readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.").catch((error) => {
       throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain);
@@ -4121,6 +4291,9 @@ function sporadesServerPlugin() {
         loader: "js",
         contents: serverRuntimeModuleSource()
       }));
+      build.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
+        path: path6.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js")
+      }));
     }
   };
 }
@@ -4541,7 +4714,7 @@ function captureMailConfigData(value, allowed, message, hint) {
   }
   return new Map(entries);
 }
-function isServerEnvReference(value) {
+function isServerEnvReference2(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
 }
 
@@ -4587,7 +4760,7 @@ function validateEmailWebhooksConfig(webhooks) {
         `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
       );
     }
-    if (!isServerEnvReference(secretEnv)) {
+    if (!isServerEnvReference2(secretEnv)) {
       invalidMailConfig(
         `Invalid ${provider} webhook Server env reference.`,
         `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
@@ -4600,9 +4773,9 @@ function validateEmailWebhooksConfig(webhooks) {
 
 // src/mail-config.ts
 function validateMailConfig(mail) {
-  const fail = invalidMailConfig;
+  const fail2 = invalidMailConfig;
   const capture = captureMailConfigData;
-  const envReference = isServerEnvReference;
+  const envReference = isServerEnvReference2;
   const optional = (target, name, value) => {
     if (value !== void 0) target[name] = value;
   };
@@ -4625,13 +4798,13 @@ function validateMailConfig(mail) {
   const host = smtpData.get("host");
   const port = smtpData.get("port");
   if (typeof vendor !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(vendor)) {
-    fail("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
+    fail2("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
   }
   if (typeof host !== "string" || host.length < 1 || host.length > 253 || /[^\x21-\x7e]/.test(host)) {
-    fail("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
+    fail2("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
+    fail2("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
   }
   const tlsData = capture(
     smtpData.get("tls"),
@@ -4643,13 +4816,13 @@ function validateMailConfig(mail) {
   const rejectUnauthorized = tlsData.get("rejectUnauthorized");
   const servername = tlsData.get("servername");
   if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(tlsMode)) {
-    fail("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
+    fail2("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
   }
   if (rejectUnauthorized !== void 0 && typeof rejectUnauthorized !== "boolean") {
-    fail("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
+    fail2("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
   }
   if (servername !== void 0 && (typeof servername !== "string" || servername.length < 1 || servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername) || servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
-    fail("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
+    fail2("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
   }
   const authData = capture(
     smtpData.get("auth"),
@@ -4663,31 +4836,31 @@ function validateMailConfig(mail) {
   let auth;
   if (authMethod === "none") {
     if (authData.size !== 1) {
-      fail("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
+      fail2("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
     }
     auth = { method: "none" };
   } else {
     if (!["PLAIN", "LOGIN"].includes(authMethod) || typeof usernameEnv !== "string" || typeof passwordEnv !== "string") {
-      fail("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+      fail2("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
     }
     if (!envReference(usernameEnv) || !envReference(passwordEnv)) {
-      fail("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
+      fail2("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
     }
     auth = { method: authMethod, usernameEnv, passwordEnv };
   }
   if (["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none") {
-    fail(
+    fail2(
       "SMTP plaintext delivery requires an explicit unauthenticated relay.",
       'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
     );
   }
   const defaultFrom = smtpData.get("defaultFrom");
   if (defaultFrom !== void 0 && (typeof defaultFrom !== "string" || defaultFrom.length < 1 || defaultFrom.length > 320 || /[\r\n\0]/.test(defaultFrom))) {
-    fail("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
+    fail2("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
   }
   const validateTimeout = (name, value, maximum, label) => {
     if (value !== void 0 && (!Number.isInteger(value) || value < 100 || value > maximum)) {
-      fail(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name}\` to an integer from 100 through ${maximum} milliseconds.`);
+      fail2(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name}\` to an integer from 100 through ${maximum} milliseconds.`);
     }
   };
   const connectionTimeoutMs = smtpData.get("connectionTimeoutMs");
@@ -7036,6 +7209,7 @@ function isPlainObject2(value) {
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
+var STRIPE_EVENT_JOB = "_sporades.stripe-event";
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
@@ -7418,6 +7592,10 @@ function createRuntimeClock(clock) {
 }
 function runtimeOwnedJobHandlers(runtime) {
   return [
+    {
+      name: STRIPE_EVENT_JOB,
+      handler: runtime.dispatchStripeEvent
+    },
     {
       name: PASSWORD_RESET_MAIL_JOB,
       handler: async (ctx, payload) => {
@@ -7830,13 +8008,28 @@ function decodeJobCursor(value) {
   }
 }
 function safeJobFailure(error) {
-  const knownCodes = /* @__PURE__ */ new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const knownCodes = /* @__PURE__ */ new Set([
+    "JOB_ACTOR_UNAVAILABLE",
+    "UNKNOWN_JOB_HANDLER",
+    "JOB_RESULT_TOO_LARGE",
+    "INVALID_JOB_PAYLOAD",
+    "STRIPE_CHECKOUT_REJECTED",
+    "STRIPE_CHECKOUT_RESPONSE_INVALID",
+    "STRIPE_PORTAL_REJECTED",
+    "STRIPE_PORTAL_RESPONSE_INVALID",
+    "PAYMENT_PORTAL_UNAVAILABLE"
+  ]);
   const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
   const messages = {
     JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
     UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
     JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
     INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
+    STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
+    STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
+    STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
+    PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
     JOB_FAILED: "Job handler failed."
   };
   return { code, message: messages[code] };
@@ -12372,7 +12565,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
       invalidHint: "Check Microsoft tenant selection and retry sign-in."
     });
     const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
-    if (!isPlainRecord(discovery) || !required.every(
+    if (!isPlainRecord2(discovery) || !required.every(
       (key) => typeof discovery[key] === "string" && discovery[key].length > 0 && discovery[key].length <= 2048
     )) {
       throw commandError(
@@ -12513,7 +12706,7 @@ async function completeMicrosoftOAuth(database, context) {
     invalidMessage: "Microsoft OAuth response was invalid.",
     invalidHint: "Check the Microsoft client configuration and retry sign-in."
   });
-  if (!isPlainRecord(token)) {
+  if (!isPlainRecord2(token)) {
     throw commandError(
       "Microsoft OAuth response was invalid.",
       "Check the Microsoft client configuration and retry sign-in.",
@@ -12530,7 +12723,7 @@ async function completeMicrosoftOAuth(database, context) {
   return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
 }
 async function verifyMicrosoftIdentityToken(database, token, expectedNonce, discovery) {
-  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
+  if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord2(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
     throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const parts = token.split(".");
@@ -12794,7 +12987,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
     for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
       if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
     }
-    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord(value) && value.kid === missingKid2);
+    const found = Array.isArray(jwks?.keys) && jwks.keys.some((value) => isPlainRecord2(value) && value.kid === missingKid2);
     state.missingKidCooldowns.delete(missingKid2);
     if (!found) state.missingKidCooldowns.set(missingKid2, at + 1e4);
     while (state.missingKidCooldowns.size > 64) {
@@ -12839,7 +13032,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
       invalidMessage: "Microsoft signing keys were invalid.",
       invalidHint: "Retry Microsoft sign-in."
     });
-    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
+    if (!isPlainRecord2(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
       throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
     }
     if (requestGeneration >= state.generation) {
@@ -12864,7 +13057,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
 }
 async function selectMicrosoftJwk(database, discovery, kid) {
   let jwks = await loadMicrosoftJwks(database, discovery, false);
-  let candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+  let candidate = jwks.keys.find((value) => isPlainRecord2(value) && value.kid === kid);
   if (!candidate) {
     const microsoft = database.authConfig.providers.microsoft;
     const cacheKey = microsoftOidcCacheKey([
@@ -12875,7 +13068,7 @@ async function selectMicrosoftJwk(database, discovery, kid) {
     ]);
     const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
     jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
-    candidate = jwks.keys.find((value) => isPlainRecord(value) && value.kid === kid);
+    candidate = jwks.keys.find((value) => isPlainRecord2(value) && value.kid === kid);
   }
   if (!candidate) {
     throw commandError("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
@@ -12886,7 +13079,7 @@ async function selectMicrosoftJwk(database, discovery, kid) {
   }
   return candidate;
 }
-function isPlainRecord(value) {
+function isPlainRecord2(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
@@ -12898,7 +13091,7 @@ function parseMicrosoftJwtPart(value, maxBytes) {
   const decoded = decodeJwtPart(value);
   if (decoded.length > maxBytes) throw new Error("JWT segment exceeded its byte limit");
   const parsed = JSON.parse(decoded.toString("utf8"));
-  if (!isPlainRecord(parsed)) throw new Error("JWT segment was not an object");
+  if (!isPlainRecord2(parsed)) throw new Error("JWT segment was not an object");
   return parsed;
 }
 function microsoftTenantAllowsClaims(selectedTenant, tenantId, issuer, discoveredIssuer) {
@@ -17112,10 +17305,29 @@ function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
+// src/stripe-events-runtime.ts
+function deepFreezeVerifiedJson(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeVerifiedJson(child);
+  return Object.freeze(value);
+}
+async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
+  const deliveredEvent = Object.freeze({
+    ...event,
+    raw: deepFreezeVerifiedJson(event.raw)
+  });
+  if (subscription?.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
+    return Object.freeze({ delivered: false, ignored: true, providerEventId: event.providerEventId, type: event.type });
+  }
+  await subscription.handler(ctx, deliveredEvent);
+  return Object.freeze({ delivered: true, providerEventId: event.providerEventId, type: event.type });
+}
+
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.join-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 async function shutdownAndCloseDatabase(database) {
   let shutdownError;
   let closeError;
@@ -17247,6 +17459,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
   }
+  const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
@@ -17267,21 +17480,35 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   });
   const capsuleEndpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+  const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled ? options?.createStripeCallbackEndpoint?.(
+    paymentsConfig,
+    serverEnv,
+    options?.stripeCallbackAdmissionFault
+  ) : null;
+  if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
+    throw commandError(
+      "Stripe callback integration is unavailable.",
+      "Build and run this Capsule with matching Sporades generated runtime artifacts.",
+      "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE"
+    );
+  }
+  const providerEndpoints = [...emailEventEndpoints, ...stripeCallbackEndpoint ? [stripeCallbackEndpoint] : []];
+  for (const [providerIndex, providerEndpoint] of providerEndpoints.entries()) {
     const conflictsWithCapsule = capsuleEndpoints.some(
       (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
     );
-    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+    const conflictsWithProvider = providerEndpoints.slice(0, providerIndex).find(
       (endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path
     );
     if (conflictsWithCapsule || conflictsWithProvider) {
-      const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
-      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+      const stripeConflict = providerEndpoint.runtimeOwnedStripeCallback || conflictsWithProvider?.runtimeOwnedStripeCallback;
+      const error = new Error(stripeConflict ? "Stripe callback route conflicts with another Capsule or provider route." : "Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = stripeConflict ? "STRIPE_CALLBACK_ROUTE_CONFLICT" : "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Assign every Capsule endpoint and enabled provider a different path in sporades.json.";
       throw error;
     }
   }
-  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
+  const endpoints = [...capsuleEndpoints, ...providerEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
@@ -17298,7 +17525,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const messages = capsuleDefinition ? handlersFromCapsuleDefinition(capsuleDefinition.messages, "message") : extractMessageHandlers(serverSource);
   let database;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
-    prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1)
+    prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+    dispatchStripeEvent: (context, event) => dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents)
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -17348,6 +17576,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    paymentsConfig,
     mail,
     authConfig: authStatus2(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -19261,13 +19490,19 @@ async function routeEndpoint(database, request, response) {
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
-  const endpointRequest = await readEndpointRequest(database, requestUrl, request);
+  const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
+  const endpointRequest = await readEndpointRequest(
+    database,
+    requestUrl,
+    request,
+    !endpoint.runtimeOwnedStripeCallback
+  );
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
-  const session = endpoint.runtimeOwnedEmailEvent ? { auth: {
+  const session = runtimeOwnedProviderCallback ? { auth: {
     userId: privilegedAuthUserId(),
-    displayName: "Email provider callback",
+    displayName: endpoint.runtimeOwnedStripeCallback ? "Stripe provider callback" : "Email provider callback",
     email: null,
     picture: null,
     isAuthenticated: false,
@@ -19303,11 +19538,14 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
       try {
         const resolvedSession = accessKeyAdmission ?? session;
         context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
-          ordinaryCredential: !endpoint.runtimeOwnedEmailEvent,
+          ordinaryCredential: !runtimeOwnedProviderCallback,
           credential: accessKeyAdmission?.credential,
           accessKeyGrants: accessKeyAdmission?.grants
         });
-        if (!endpoint.runtimeOwnedEmailEvent) {
+        if (endpoint.runtimeOwnedStripeCallback) {
+          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+        }
+        if (!runtimeOwnedProviderCallback) {
           if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
@@ -19394,7 +19632,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
   });
   return transactionDatabase;
 }
-async function readEndpointRequest(database, requestUrl, request) {
+async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -19402,12 +19640,13 @@ async function readEndpointRequest(database, requestUrl, request) {
     ])
   );
   const query = endpointQueryFromUrl(requestUrl);
+  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    body: await readEndpointBody(request, headers, database)
+    ...payload
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
@@ -19417,6 +19656,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     auth,
     ...credential ? { credential } : {},
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
       request: {
         method: endpointRequest.method,
@@ -19434,7 +19674,8 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       path: endpointRequest.path,
       headers: endpointRequest.headers,
       query: endpointRequest.query,
-      body: endpointRequest.body
+      body: endpointRequest.body,
+      bodyBytes: endpointRequest.bodyBytes
     }
   };
   if (credential?.kind === "session" && typeof session.token === "string") {
@@ -19956,19 +20197,35 @@ function fieldValueForWrite(database, field, value) {
 function referenceExists(database, field, value) {
   return database.adapter.referenceExists(field, value);
 }
-async function readEndpointBody(request, headers, limitSource = null) {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  if (!raw) {
-    return null;
-  }
+async function readEndpointPayload(request, headers, limitSource = null, parseJsonBody = true) {
+  const raw = await readLimitedRequestBody(request, limitSource);
+  const bodyBytes = immutableEndpointBodyBytes(raw);
+  if (raw.byteLength === 0) return { body: null, bodyBytes };
+  if (!parseJsonBody) return { body: null, bodyBytes };
+  const text2 = raw.toString("utf8");
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
     try {
-      return JSON.parse(raw);
+      return { body: JSON.parse(text2), bodyBytes };
     } catch {
       throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
     }
   }
-  return raw;
+  return { body: text2, bodyBytes };
+}
+function immutableEndpointBodyBytes(bytes) {
+  return Object.freeze({
+    byteLength: bytes.byteLength,
+    length: bytes.byteLength,
+    at(index) {
+      return bytes.at(index);
+    },
+    toUint8Array() {
+      return Uint8Array.from(bytes);
+    },
+    [Symbol.iterator]() {
+      return bytes.values();
+    }
+  });
 }
 function createEndpointLogger(database, context = {}) {
   return createRuntimeLogger(database, {
@@ -20568,6 +20825,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
+      database.__notifyJobStateQueries = refreshQueries;
       void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
       return;
     }
@@ -20880,17 +21138,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       });
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(() => {
-          for (const subscribedClient of clients) {
-            for (const subscription of subscribedClient.subscriptions.values()) {
-              void sendQueryResult(
-                subscribedClient,
-                subscription,
-                (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-              );
-            }
-          }
-        }, 0);
+        setTimeout(refreshQueries, 0);
       }
       return;
     }
@@ -20990,6 +21238,17 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       try {
         onError(error);
       } catch {
+      }
+    }
+  }
+  function refreshQueries() {
+    for (const subscribedClient of clients) {
+      for (const subscription of subscribedClient.subscriptions.values()) {
+        void sendQueryResult(
+          subscribedClient,
+          subscription,
+          (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
+        );
       }
     }
   }
@@ -21555,6 +21814,7 @@ function createMutationContext(database, auth, options = {}) {
     auth,
     ...credential ? { credential } : {},
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, credential ? {
       attribution: {
         actor: { userId: auth.userId },
@@ -21631,6 +21891,9 @@ function createCurrentUserJobApi(database, contextGetter) {
       const queueDatabase = database.__rootDatabase ?? database;
       const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
+      if (typeof handlerName === "string" && handlerName.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX) && Reflect.get(context, runtimeOwnedJobEnqueueHandler) !== handlerName) {
+        throw jobError("RESERVED_JOB_NAME", "Runtime-owned Job handlers cannot be enqueued by Capsule code.", "Use a Capsule-declared Job handler name.");
+      }
       const handler = database.jobs?.find((candidate) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -21931,6 +22194,7 @@ async function runCurrentUserJobWorker(database) {
       database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
       try {
+        const jobPayload = JSON.parse(row.payload);
         const claimedState = await database.adapter.prepare(sql(
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken);
@@ -21944,11 +22208,11 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try {
-              return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+              return await handler.handler(privilegedCtx, jobPayload);
             } finally {
               database.__runtimeJobAttempts.delete(privilegedCtx);
             }
@@ -21965,7 +22229,7 @@ async function runCurrentUserJobWorker(database) {
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try {
-            result = await handler.handler(context, JSON.parse(row.payload));
+            result = await handler.handler(context, jobPayload);
           } finally {
             database.__runtimeJobAttempts.delete(context);
           }
@@ -21983,6 +22247,7 @@ async function runCurrentUserJobWorker(database) {
           return;
         }
         const handlerFailure = safeJobFailure(error);
+        const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
@@ -21992,7 +22257,7 @@ async function runCurrentUserJobWorker(database) {
           "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
         )).get(row.id, claimToken) : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
-        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
+        const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE" && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
         const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
         const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
         const retryAvailableAt = retryAvailableAtCandidate !== null && retry !== null && jobRetryHorizonFits(new Date(retryAvailableAtCandidate), retry, remainingAttempts) ? retryAvailableAtCandidate : null;
@@ -22016,6 +22281,7 @@ async function runCurrentUserJobWorker(database) {
       } finally {
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
+        database.__notifyJobStateQueries?.();
       }
     }
   } finally {
@@ -22265,6 +22531,7 @@ function scaffoldFiles(options) {
         template: options.template,
         client: { framework, toolchain },
         auth: templateOptions.auth,
+        ...options.template === "blank" ? { payments: { stripe: { enabled: false } } } : {},
         security: {
           cors: {
             allowedOrigins: []
@@ -23460,28 +23727,31 @@ ${files["client/index.tsx"]}`,
   };
 }
 function vanillaTemplateFiles(options) {
+  const payments = options.template === "blank";
   return {
-    "README.md": `# ${options.name}
+    "README.md": payments ? blankPaymentReadme(options.name, "A framework-neutral Vanilla TypeScript Sporades capsule.") : `# ${options.name}
 
 A framework-neutral Vanilla TypeScript Sporades capsule.
 `,
-    "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";
+    "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
   journey: { enabled: true },
-  schema: { notes: table({ text: String(), ownerId: String() }) },
-  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()) },
-  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
+  schema: { notes: table({ text: String(), ownerId: String() })${payments ? ", ...paymentSchema" : ""} },
+  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all())${payments ? ", ...paymentQueries" : ""} },
+  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId }))${payments ? ", ...paymentMutations" : ""} },
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
-  }) },
+  }) },${payments ? "\n  jobs: paymentJobs,\n  stripeEvents: paymentStripeEvents," : ""}
 });
 `,
     "client/index.ts": vanillaClientTemplate(),
     "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };
-`
+`,
+    ...payments ? blankPaymentSupportFiles(options.name) : {}
   };
 }
 function vanillaClientTemplate() {
@@ -23582,21 +23852,313 @@ function resolveTemplateOptions(template) {
 }
 function blankTemplateFiles(options) {
   return {
-    "README.md": `# ${options.name}
-
-A blank Sporades capsule.
-`,
+    "README.md": blankPaymentReadme(options.name, "A blank Sporades capsule."),
     "server/index.ts": `import { capsule } from "sporades/server";
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
-  schema: {},
-  queries: {},
-  mutations: {},
+  schema: paymentSchema,
+  queries: paymentQueries,
+  mutations: paymentMutations,
+  jobs: paymentJobs,
+  stripeEvents: paymentStripeEvents,
 });
 `,
+    ...blankPaymentSupportFiles(options.name),
     "client/index.tsx": blankClientTemplate(options.framework),
     "shared/types.ts": `export {};
+`
+  };
+}
+function blankPaymentReadme(name, introduction) {
+  return `# ${name}
+
+${introduction}
+
+## Built-in payments
+
+This blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.
+
+Activation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.
+
+Start in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.
+
+Customer Portal is the preferred surface for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes. Keep \`authorizeStripeCustomerPortal\` deny-by-default and implement \`resolveStripeCustomerForPortal\` to return an existing Customer only after the linked actor's active user or Team billing authority is verified. Unknown, deleted, and unauthorized holders all return the same unavailable result before enqueue. Browser input carries only a Capsule billing-holder key; it never carries a Customer ID.
+
+Implement Stripe event policy in \`server/payments.ts\` at \`paymentStripeEvents\`. The generated handler deliberately ignores every event until the Capsule defines its own Team ownership, billing-holder, subscription, entitlement, notification, retention, export, and erasure decisions. Treat delivery as duplicated and out of order: make every consequence idempotent and order-independent, compare provider creation time or authoritative provider state, and reject a later-arriving older observation. Unknown event types should remain safe to ignore. The verified raw provider value is forward-compatible but sensitive; never log or persist it by default. Persist only the bounded fields the Capsule deliberately needs.
+
+Anonymous Checkout requires an explicit Capsule opt-in: deliberately relax the linked-user guard, authorize the guest in server policy, and derive its business reference on the server. It grants no Customer Portal or Team billing authority. Subscription Checkout begins provider billing, but verified events and Capsule policy determine local access consequences; Sporades creates no subscription, entitlement, invoice, seat, order, billing-holder, or access record for the Capsule. Complete activation registers the configured callback path outside reserved runtime namespaces. Sporades verifies exact signed bytes and admits one idempotent Privileged Job per Stripe Event before acknowledging; this admission performs no Capsule billing consequence. Sporades owns Stripe transport, retries, compatibility, redirect validation, callback verification, and safe provider errors. This Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
+`;
+}
+function blankPaymentSupportFiles(capsuleName) {
+  return {
+    "server/payments.ts": `import { job, mutation, Number as Numeric, query, requireAuth, String as Text, stripeEvent, table } from "sporades/server";
+import { createStripePaymentIntegration } from "sporades/server/stripe";
+import type { CapsuleContext } from "sporades/server";
+import type { StripeCheckoutSessionInput, StripeCheckoutSessionResult, StripeCustomerPortalSessionResult, StripePaymentsDisabledResult } from "sporades/server/stripe";
+import type { PaymentJobState } from "../shared/payments.js";
+
+type CheckoutMode = "payment" | "subscription";
+type CheckoutProduct = Readonly<{ mode: CheckoutMode; priceId: string; maxQuantity: number }>;
+type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
+type PortalInput = Readonly<{ intentId: string; billingHolderKey: string }>;
+type PortalJobInput = Readonly<{ intentId: string; billingHolderKey: string; returnPath: string; idempotencyKey: string }>;
+
+// Server-owned catalogue. Browsers choose Capsule product keys; they never supply Stripe Price IDs.
+export const stripePrices: Readonly<Record<string, CheckoutProduct>> = Object.freeze({});
+
+export const paymentSchema = {
+  paymentIntents: table({ ownerId: Text(), intentId: Text(), productKey: Text(), mode: Text(), quantity: Numeric(), status: Text() })
+    .unique("ownerId", "intentId")
+    .acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: ({ previous, next, ctx }) => (next ?? previous)?.ownerId === ctx.auth.userId,
+    }),
+  portalIntents: table({ ownerId: Text(), intentId: Text(), billingHolderKey: Text() })
+    .unique("ownerId", "intentId")
+    .acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: ({ previous, next, ctx }) => (next ?? previous)?.ownerId === ctx.auth.userId,
+    }),
+};
+
+// Capsule policy seam. Deliberately deny until the Capsule author makes an explicit policy decision.
+export async function authorizeStripeCheckout(_ctx: CapsuleContext, _input: CheckoutInput): Promise<boolean> {
+  return false;
+}
+
+// These are separate seams deliberately: policy must authorize the active billing holder
+// before the Capsule resolves its already-associated Stripe Customer. Return null for
+// unknown, deleted, or no-longer-authorized holders; do not create a Customer here.
+export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<boolean> {
+  return false;
+}
+
+export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {
+  return null;
+}
+
+// Capsule policy seam. Delivery is durable, duplicated, and potentially out of order.
+// Ratchet from authoritative provider state or reject stale observations before writing.
+// The verified raw provider value is sensitive and is not safe to log or persist by default.
+export const paymentStripeEvents = stripeEvent((_ctx, event) => {
+  switch (event.type) {
+    default:
+      // Unknown event types are forward-compatible and safe to ignore.
+      return;
+  }
+});
+
+function stripeForContext(ctx: CapsuleContext) {
+  const config = ctx.payments?.stripe;
+  return config?.enabled
+    ? createStripePaymentIntegration({ enabled: true, config, env: ctx.env, signal: ctx.signal })
+    : createStripePaymentIntegration({ enabled: false });
+}
+
+export const paymentJobs = {
+  stripeCheckout: job<StripeCheckoutSessionInput, StripeCheckoutSessionResult | StripePaymentsDisabledResult>((ctx, input) => stripeForContext(ctx).createCheckoutSession(input)),
+  stripeCustomerPortal: job<PortalJobInput, StripeCustomerPortalSessionResult | StripePaymentsDisabledResult>(async (ctx, input) => {
+    requireAuth(ctx, { linked: true });
+    const policyInput = { intentId: input.intentId, billingHolderKey: input.billingHolderKey };
+    validatePortalInput(policyInput);
+    if (!await authorizeStripeCustomerPortal(ctx, policyInput)) throw portalUnavailable();
+    const customerId = await resolveStripeCustomerForPortal(ctx, policyInput);
+    if (typeof customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(customerId)) throw portalUnavailable();
+    return stripeForContext(ctx).createCustomerPortalSession({ customerId, returnPath: input.returnPath, idempotencyKey: input.idempotencyKey });
+  }),
+};
+
+export const paymentMutations = {
+  startStripeCheckout: mutation(async (ctx, input: CheckoutInput) => {
+    const actor = requireAuth(ctx, { linked: true });
+    validateCheckoutInput(input);
+    const product = stripePrices[input.productKey];
+    if (!product || !validPrice(product) || input.quantity > product.maxQuantity) throw checkoutError("PAYMENT_PRODUCT_UNAVAILABLE", "That product is not available for Checkout.", "Choose an available Capsule product and server-approved quantity.");
+    if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before starting Checkout.");
+    if (!await authorizeStripeCheckout(ctx, input)) throw checkoutError("PAYMENT_CHECKOUT_FORBIDDEN", "Checkout is not authorized.", "Ask a Capsule billing administrator to review this payment action.");
+
+    const inserted = await ctx.db.paymentIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, productKey: input.productKey, mode: product.mode, quantity: input.quantity, status: "queued" }, "ownerId", "intentId");
+    const intent = inserted ?? await ctx.db.paymentIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
+    if (!intent || intent.productKey !== input.productKey || intent.mode !== product.mode || intent.quantity !== input.quantity) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different product, mode, or quantity.");
+
+    const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:checkout:`)} + actor.userId + ":" + input.intentId;
+    const queued = await ctx.jobs.enqueue("stripeCheckout", {
+      mode: product.mode,
+      priceId: product.priceId,
+      quantity: input.quantity,
+      successPath: "/payments/success",
+      cancelPath: "/payments/cancelled",
+      idempotencyKey,
+      businessReference: input.intentId,
+    }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
+    return { intentId: input.intentId, jobId: queued.id };
+  }),
+  startStripeCustomerPortal: mutation(async (ctx, input: PortalInput) => {
+    const actor = requireAuth(ctx, { linked: true });
+    validatePortalInput(input);
+    if (!await authorizeStripeCustomerPortal(ctx, input)) throw portalUnavailable();
+    const customerId = await resolveStripeCustomerForPortal(ctx, input);
+    if (typeof customerId !== "string" || !/^cus_[A-Za-z0-9_]{1,120}$/.test(customerId)) throw portalUnavailable();
+    if (!ctx.payments?.stripe.enabled) throw checkoutError("STRIPE_PAYMENTS_DISABLED", "Stripe payments are disabled.", "Complete the Stripe project configuration and Sealed Server env before opening Customer Portal.");
+
+    const inserted = await ctx.db.portalIntents.insertOrIgnore({ ownerId: actor.userId, intentId: input.intentId, billingHolderKey: input.billingHolderKey }, "ownerId", "intentId");
+    const intent = inserted ?? await ctx.db.portalIntents.where("ownerId", actor.userId).where("intentId", input.intentId).get();
+    if (!intent || intent.billingHolderKey !== input.billingHolderKey) throw checkoutError("PAYMENT_INTENT_CONFLICT", "That payment intent already identifies different work.", "Use a new opaque intentId for a different billing holder.");
+
+    const idempotencyKey = ${JSON.stringify(`sporades:${capsuleName}:stripe:portal:`)} + actor.userId + ":" + input.intentId;
+    const queued = await ctx.jobs.enqueue("stripeCustomerPortal", {
+      intentId: input.intentId,
+      billingHolderKey: input.billingHolderKey,
+      returnPath: "/account/billing",
+      idempotencyKey,
+    }, { idempotencyKey, retry: { maxAttempts: 3, delayMs: 1000 } });
+    return { intentId: input.intentId, jobId: queued.id };
+  }),
+};
+
+function validateCheckoutInput(input: unknown): asserts input is CheckoutInput {
+  const keys = ["intentId", "productKey", "quantity"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\\0") !== keys.join("\\0")) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout request.", "Pass only intentId, productKey, and quantity.");
+  const candidate = input as Record<string, unknown>;
+  if (typeof candidate.intentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(candidate.intentId)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid payment intent identity.", "Pass one stable opaque intentId from 8 through 128 characters.");
+  if (typeof candidate.productKey !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(candidate.productKey)) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Capsule product key.", "Choose one lowercase server-owned product key.");
+  if (!Number.isInteger(candidate.quantity) || Number(candidate.quantity) < 1 || Number(candidate.quantity) > 99) throw checkoutError("PAYMENT_CHECKOUT_INPUT_INVALID", "Invalid Checkout quantity.", "Pass an integer quantity from 1 through 99.");
+}
+
+function validPrice(product: CheckoutProduct) {
+  return (product.mode === "payment" || product.mode === "subscription") && /^price_[A-Za-z0-9_]{1,120}$/.test(product.priceId) && Number.isInteger(product.maxQuantity) && product.maxQuantity >= 1 && product.maxQuantity <= 99;
+}
+
+function validatePortalInput(input: unknown): asserts input is PortalInput {
+  const keys = ["billingHolderKey", "intentId"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== keys.join("\0")) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid Customer Portal request.", "Pass only intentId and a Capsule-defined billingHolderKey.");
+  const candidate = input as Record<string, unknown>;
+  if (typeof candidate.intentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(candidate.intentId)) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid payment intent identity.", "Pass one stable opaque intentId from 8 through 128 characters.");
+  if (typeof candidate.billingHolderKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(candidate.billingHolderKey)) throw checkoutError("PAYMENT_PORTAL_INPUT_INVALID", "Invalid billing-holder reference.", "Pass one bounded opaque Capsule billing-holder key.");
+}
+
+function portalUnavailable() {
+  return Object.assign(checkoutError("PAYMENT_PORTAL_UNAVAILABLE", "Customer Portal is not available for this billing holder.", "Ask a Capsule billing administrator to review this payment action."), { retryable: false });
+}
+
+function checkoutError(code: string, message: string, hint: string) {
+  return Object.assign(new Error(message), { code, hint });
+}
+
+const paymentJobHandlers = new Set(Object.keys(paymentJobs));
+
+export const paymentQueries = {
+  paymentJob: query(async (ctx, jobId: string): Promise<PaymentJobState | null> => {
+    const state = await ctx.jobs.get(jobId);
+    if (!state || !paymentJobHandlers.has(state.handler)) return null;
+    return {
+      id: state.id,
+      status: state.status,
+      attempts: state.attempts,
+      result: state.result ?? null,
+      failure: state.failure ?? null,
+    };
+  }),
+};
+`,
+    "client/payments.ts": `import { mutations, queries } from "sporades/client";
+import type { SporadesError, Subscription } from "sporades/client";
+import type { PaymentCheckoutResult, PaymentJobState, PaymentPortalResult } from "../shared/payments.js";
+
+export type CheckoutInput = Readonly<{ intentId: string; productKey: string; quantity: number }>;
+type PaymentRedirectResult = PaymentCheckoutResult | PaymentPortalResult;
+type PaymentRedirectProgress =
+  | Readonly<{ status: "pending"; intentId: string; jobId: string }>
+  | Readonly<{ status: "succeeded"; intentId: string; jobId: string; sessionId: string; url: string }>
+  | Readonly<{ status: "failed"; intentId: string; jobId: string | null; error: SporadesError }>;
+export type CheckoutProgress = PaymentRedirectProgress;
+export type PortalInput = Readonly<{ intentId: string; billingHolderKey: string }>;
+export type PortalProgress = PaymentRedirectProgress;
+
+// The caller owns the returned subscription and should unsubscribe when its UI is disposed.
+export async function startStripeCheckout(input: CheckoutInput, onProgress: (progress: CheckoutProgress) => void): Promise<Subscription> {
+  return startStripeRedirect(input, "startStripeCheckout", "Checkout", validCheckoutResult, onProgress);
+}
+
+// Portal remains linked-user-only. Capsule server policy resolves the opaque holder key
+// before enqueue and rechecks it in the Job; no Stripe identity crosses this seam.
+export async function startStripeCustomerPortal(input: PortalInput, onProgress: (progress: PortalProgress) => void): Promise<Subscription> {
+  return startStripeRedirect(input, "startStripeCustomerPortal", "Customer Portal", validPortalResult, onProgress);
+}
+
+async function startStripeRedirect<TInput extends Readonly<{ intentId: string }>, TResult extends PaymentRedirectResult>(
+  input: TInput,
+  mutationName: "startStripeCheckout" | "startStripeCustomerPortal",
+  operation: "Checkout" | "Customer Portal",
+  validateResult: (value: unknown) => TResult | null,
+  onProgress: (progress: PaymentRedirectProgress) => void,
+): Promise<Subscription> {
+  const started = await mutations.run<{ intentId: string; jobId: string }>(mutationName, input);
+  if (started.error || !started.data) {
+    onProgress({ status: "failed", intentId: input.intentId, jobId: null, error: started.error ?? { message: operation + " did not start." } });
+    return { unsubscribe() {} };
+  }
+
+  const { intentId, jobId } = started.data;
+  onProgress({ status: "pending", intentId, jobId });
+  let settled = false;
+  return queries.subscribe<PaymentJobState>("paymentJob", (state) => {
+    if (settled || state.loading) return;
+    if (state.error) return fail(state.error);
+    const job = state.data;
+    if (!job) return fail({ message: operation + " progress is unavailable." });
+    if (job.status === "failed" || job.status === "cancelled") return fail(job.failure ?? { message: operation + " did not complete." });
+    if (job.status !== "succeeded") return;
+    const result = validateResult(job.result);
+    if (!result) return fail({ message: operation + " returned an invalid redirect." });
+    settled = true;
+    onProgress({ status: "succeeded", intentId, jobId, sessionId: result.sessionId, url: result.url });
+    window.location.assign(result.url);
+  }, jobId);
+
+  function fail(error: SporadesError) {
+    settled = true;
+    onProgress({ status: "failed", intentId, jobId, error });
+  }
+}
+
+function validCheckoutResult(value: unknown): PaymentCheckoutResult | null {
+  return validPaymentRedirectResult(value, /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/, (url, sessionId) => {
+    const validPath = url.pathname === \`/c/pay/\${sessionId}\` || url.pathname === \`/pay/\${sessionId}\`;
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && validPath && !url.username && !url.password && !url.port;
+  }) as PaymentCheckoutResult | null;
+}
+
+function validPortalResult(value: unknown): PaymentPortalResult | null {
+  return validPaymentRedirectResult(value, /^bps_[A-Za-z0-9_]{1,240}$/, (url) =>
+    url.protocol === "https:" && url.hostname === "billing.stripe.com" && /^\\/p\\/session\\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname) && !url.username && !url.password && !url.port,
+  ) as PaymentPortalResult | null;
+}
+
+function validPaymentRedirectResult(value: unknown, sessionIdPattern: RegExp, validUrl: (url: URL, sessionId: string) => boolean): PaymentRedirectResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (Object.keys(result).sort().join("\\0") !== ["ok", "sessionId", "url"].join("\\0")) return null;
+  if (result.ok !== true || typeof result.sessionId !== "string" || !sessionIdPattern.test(result.sessionId) || typeof result.url !== "string") return null;
+  try {
+    const url = new URL(result.url);
+    if (!validUrl(url, result.sessionId)) return null;
+  } catch { return null; }
+  return result as PaymentRedirectResult;
+}
+`,
+    "shared/payments.ts": `export type PaymentCheckoutResult = { ok: true; sessionId: string; url: string };
+export type PaymentPortalResult = { ok: true; sessionId: string; url: string };
+
+export type PaymentJobState = {
+  id: string;
+  status: "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
+  attempts: number;
+  result: unknown | null;
+  failure: { code: string; message: string } | null;
+};
 `
   };
 }
@@ -25016,6 +25578,29 @@ Client toolchain: ${toolchain}
 - Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : inferno ? "`authAdapter(this)` in a native Inferno class component" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
+${template === "blank" ? `
+## Built-in Stripe payments
+
+- The payment foundation is intentionally disabled at \`payments.stripe.enabled\` until the complete provider configuration and matching Sealed Server env are ready.
+- Define product-key to Price mappings only in \`server/payments.ts\`; browser input must never carry a provider Price identity.
+- Give every catalogue entry an explicit \`payment\` or \`subscription\` mode and matching Stripe Price; never infer or accept the mode from browser input.
+- Keep \`authorizeStripeCheckout\` deny-by-default until the Capsule makes an explicit linked-user or Team billing decision.
+- Start Checkout in the mutation, observe its actor-scoped durable Job, and redirect only through the validator in \`client/payments.ts\`.
+- Keep \`authorizeStripeCustomerPortal\` deny-by-default and resolve an existing Customer in \`resolveStripeCustomerForPortal\` only after checking the linked actor's active user or Team billing authority.
+- Recheck Portal authorization and Customer resolution in the durable Job; never persist or accept a browser-supplied Customer identity.
+- Prefer Customer Portal for ordinary customer-managed payment methods, invoices, cancellations, and supported subscription changes; Capsule policy still decides who may enter it.
+- Checkout begins provider billing; verified events and Capsule policy determine local subscription, entitlement, and access consequences.
+- An enabled callback path is runtime-owned: do not shadow it with a Custom endpoint or parse and verify Stripe requests in Capsule code.
+- Treat verified provider values as sensitive. Callback admission creates one userless Privileged Job per Stripe Event but performs no billing or access consequence automatically.
+- Never enqueue \`_sporades.stripe-event\`; reserved runtime Job names are not a Capsule authoring seam, even inside \`ctx.privileged.run(...)\`.
+- Implement Capsule consequences only in \`paymentStripeEvents\`; keep the runtime-owned callback route and reserved Job out of app code.
+- Make each event consequence idempotent and order-independent. A later-arriving older event must not roll back newer provider or Capsule state.
+- Keep unknown event types safe to ignore, and never log or persist the verified raw provider value by default.
+- Anonymous Checkout is opt-in only: relax the linked guard deliberately, authorize it in server policy, and derive its business reference on the server. It grants no Portal or Team billing authority.
+- Sporades owns Stripe transport, compatibility, redirect validation, callback verification, retries, provider timeouts, and safe provider errors.
+- The Capsule owns Prices, Customers, Teams, billing authority, subscriptions, entitlements, notifications, retention, export, and erasure.
+- Keep provider identities and credentials out of client and shared code. Browser input may choose only Capsule-defined product keys.
+` : ""}
 
 ## Commands
 
@@ -25030,6 +25615,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
+${template === "blank" ? "- `server/payments.ts` - payment mutations and Jobs, known-Job query, policy seams, Customer resolver, and server-owned Price catalogue\n- `client/payments.ts` - Checkout and Customer Portal progress with validated redirect helpers\n- `shared/payments.ts` - serializable payment Job state\n" : ""}
 - \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
@@ -25638,6 +26224,9 @@ var HELP_TEXT = {
 
 Scaffold a new Capsule.
 
+The blank template includes a dormant, credential-free Stripe payment foundation;
+activation remains explicit and server-only.
+
 Options:
   --framework <name>  Client framework: ${frameworkHelp}
   --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)
@@ -26028,6 +26617,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "logs",
   "mail",
   "name",
+  "payments",
   "release",
   "security",
   "scheduling",
@@ -26052,6 +26642,7 @@ async function readProjectConfig(projectDir) {
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
+  if (config.payments !== void 0) config.payments = validatePaymentsConfig(config.payments);
   if (config.mail !== void 0) config.mail = validateMailConfig(config.mail);
   validatePasswordResetConfig(config.auth);
   validateTeamsConfig(config.teams);
@@ -26063,30 +26654,30 @@ var PASSWORD_RESET_MAX_TTL_MS3 = 24 * 60 * 60 * 1e3;
 function validatePasswordResetConfig(auth) {
   const passwordReset = auth?.email?.passwordReset;
   if (passwordReset === void 0) return;
-  const fail = (message, hint) => {
+  const fail2 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_AUTH_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
-    fail("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+    fail2("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
   }
   const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
   if (unknown.length > 0) {
-    fail(
+    fail2(
       `Unsupported password reset option: ${unknown.sort().join(", ")}`,
       "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`."
     );
   }
   if (passwordReset.path !== void 0 && !isSameOriginResetPath(passwordReset.path)) {
-    fail(
+    fail2(
       "Invalid password reset page path.",
       "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
     );
   }
   if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS3 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS3)) {
-    fail(
+    fail2(
       "Invalid password reset code lifetime.",
       "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."
     );
@@ -26099,21 +26690,21 @@ function isSameOriginResetPath(value) {
 }
 function validateTeamsConfig(teams) {
   if (teams === void 0) return;
-  const fail = (message, hint) => {
+  const fail2 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_TEAMS_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!teams || typeof teams !== "object" || Array.isArray(teams) || Object.keys(teams).some((key) => key !== "join")) {
-    fail("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
+    fail2("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
   }
   if (teams.join === void 0) return;
   if (!teams.join || typeof teams.join !== "object" || Array.isArray(teams.join) || Object.keys(teams.join).some((key) => key !== "path")) {
-    fail("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
+    fail2("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
   }
   if (teams.join.path !== void 0 && !isSameOriginResetPath(teams.join.path)) {
-    fail("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
+    fail2("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
   }
 }
 function validateClientConfig(client) {
@@ -30246,6 +30837,14 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
     }
   );
 }
+var stripeCallbackFactoryPromise;
+async function stripeCallbackFactory(config) {
+  if (!config.payments?.stripe?.enabled) return void 0;
+  stripeCallbackFactoryPromise ??= import(pathToFileURL2(
+    path11.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
+  ).href).then((module) => module.createStripeCallbackEndpoint);
+  return await stripeCallbackFactoryPromise;
+}
 async function createDevRuntime(options) {
   let database = await openDevDatabase(
     options.databasePath,
@@ -30253,7 +30852,7 @@ async function createDevRuntime(options) {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
-    { serviceEnv: options.serviceEnv }
+    { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) }
   );
   await database.init();
   return {
@@ -30267,7 +30866,7 @@ async function createDevRuntime(options) {
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
-        { serviceEnv }
+        { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) }
       );
       database = await replaceRuntimeDatabase(database, nextDatabase);
     },

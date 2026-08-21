@@ -152,6 +152,28 @@ Sporades currently includes:
 - Inferno scaffolds across the complete template set, using native class-component
   lifecycle and classic Inferno JSX without React compatibility packages. esbuild
   remains the default; Vite is available explicitly with full-page Dev refresh.
+- Every new blank Capsule includes a built-in but disabled Stripe payment
+  foundation: server-owned wiring, named Checkout and Customer Portal Jobs, shared Job state, an
+  empty Price catalogue, and no credentials, payment UI, active callback route, or
+  browser Stripe SDK. Complete activation supports an authorized, idempotent
+  one-time or recurring subscription Checkout through the same durable Job,
+  actor-scoped progress, safe retries, and validated Stripe-hosted redirects.
+  Portal remains linked-user-only: Capsule policy authorizes an opaque billing
+  holder and resolves its existing Customer before enqueue, then the Job repeats
+  both checks before provider access so revocation fails safely. No Customer
+  identity is stored in the Capsule intent or Job payload. It is the preferred
+  surface for ordinary customer-managed payment methods, invoices,
+  cancellations, and supported subscription changes. Complete activation also
+  registers one collision-checked callback path. Signed exact bytes are admitted
+  into one idempotent Privileged Job per Stripe Event before acknowledgment;
+  retries converge and no Capsule billing state changes automatically. The Job
+  delivers one Verified Stripe event to the blank Capsule's single
+  `stripeEvents: stripeEvent(...)` policy seam under the userless Privileged
+  audit lifecycle. Generated policy ignores unknown events and tells authors to
+  make deliberate consequences idempotent and order-independent, reject stale
+  later-arriving observations, and avoid logging or retaining raw provider data.
+  The catalogue owns each Price mode; browser input owns neither mode nor Stripe
+  identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage. Every admitted
   esbuild/Vite pair uses the same acknowledged Sporades full-page refresh

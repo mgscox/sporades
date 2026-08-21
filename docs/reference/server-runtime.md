@@ -575,6 +575,109 @@ Recovery is achieved by re-sealing known values:
   sealed values cannot be recovered. Regenerate the real provider secrets, add
   them back to Server env, import, and push a new Host-encrypted release.
 
+### Use the Stripe payment boundary
+
+The built-in Stripe payment boundary starts dormant in every blank Capsule and
+receives no provider authority until complete activation.
+
+The blank template imports `createStripePaymentIntegration` from the separate
+server-only export:
+
+```ts
+import { createStripePaymentIntegration } from "sporades/server/stripe";
+
+const stripe = createStripePaymentIntegration({ enabled: false });
+const result = await stripe.createCheckoutSession({});
+// result.error.code === "STRIPE_PAYMENTS_DISABLED"
+```
+
+The boundary exposes only `createCheckoutSession`,
+`createCustomerPortalSession`, and `verifyWebhookEvent`. It does not expose a
+generic provider request function or the underlying Stripe client. While
+disabled, every operation returns a stable `STRIPE_PAYMENTS_DISABLED` result
+with an activation hint, performs no provider request, and receives no payment
+authority.
+
+Complete `enabled: true` options contain the validated project configuration,
+the runtime's Sealed Server env view, and the durable Job AbortSignal. The
+enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
+or `subscription` mode, server-owned Price ID, bounded quantity, trusted
+same-origin return paths, stable business idempotency key, and opaque business
+reference. Both modes use the same provider operation and durable Job; there is
+no parallel subscription transport. It returns only
+`{ ok: true, sessionId, url }` after validating Stripe's matching mode,
+account mode, Session identity, and exact `https://checkout.stripe.com` host.
+Transient failures are retryable by the durable Job; permanent rejection and
+invalid responses are bounded, redacted, and non-retryable. Customer Portal
+uses the same narrow pattern: enabled `createCustomerPortalSession` accepts only
+an existing Capsule-authorized Customer ID, a trusted same-origin return path,
+and a stable idempotency key. It calls only Stripe's Portal Session operation
+and returns `{ ok: true, sessionId, url }` after binding the response to the
+requested Customer, configured account mode and return URL, and validating the
+exact `https://billing.stripe.com/p/session/...` authority. Provider timeouts,
+cancellation, retries, permanent rejection, and malformed responses follow the
+same bounded and redacted Job policy.
+
+Enabled `verifyWebhookEvent` accepts only an exact `Uint8Array` body copy and
+the unmodified `Stripe-Signature` header. The official Stripe verifier checks
+the signature and its five-minute timestamp tolerance before JSON parsing. A
+successful call returns one frozen `VerifiedStripeEvent` containing provider
+Event identity, type, provider creation time, live/test mode, relevant object
+identity, and the verified raw provider value. Rejection is always the same
+bounded `STRIPE_WEBHOOK_REJECTED` error; provider diagnostics, expected
+signatures, payloads, and secrets are not exposed.
+
+The official server Stripe SDK is a Sporades dependency and is not copied into
+generated projects or browser Bundles. The real server Bundle inlines it. Keep
+provider credentials in Sealed Server env and provider identities in
+Capsule-owned server code. Complete activation registers one runtime-owned POST
+callback route outside reserved `__sporades` namespaces. It admits every valid
+Stripe Event identity into one transaction-owned `_sporades.stripe-event` Job
+under the userless Privileged actor and acknowledges only after commit. Duplicate
+and concurrent delivery converges on the same Job. The Job payload is not shown
+by routine Job inspection, and admission creates no app billing records.
+Capsule code cannot enqueue the reserved handler by name, including from
+`ctx.privileged.run(...)`; only the active verified callback context receives
+the runtime-owned enqueue capability.
+
+Declare the Capsule's single Stripe event handler with the normal server
+authoring API; do not define or shadow the provider HTTP route:
+
+```ts
+import { capsule, stripeEvent } from "sporades/server";
+
+export default capsule({
+  name: "Billing-aware Capsule",
+  stripeEvents: stripeEvent(async (ctx, event) => {
+    switch (event.type) {
+      case "checkout.session.completed":
+        // Apply idempotent, order-independent Capsule policy through ctx.db.
+        return;
+      default:
+        // Unknown verified types remain safe to ignore.
+        return;
+    }
+  }),
+});
+```
+
+The Stripe event handler runs only from the durable runtime-owned Job under the
+userless Privileged server role. Every attempt emits the existing `started`,
+then `completed` or `errored`, then `finished` audit lifecycle. Thrown failures
+follow the Job's bounded retry policy under the same identity; committed
+cancellation reaches `ctx.signal`, and callback-scoped Privileged APIs fail once
+the attempt settles or aborts. No current user or Team membership is invented.
+
+The handler receives the same bounded `VerifiedStripeEvent` contract returned
+by verification. Its `raw` provider value is forward-compatible but sensitive;
+do not log or persist it by default. Sporades creates no subscription,
+entitlement, invoice, access, Customer, Team, order, export, erasure, or
+retention record automatically. Capsule writes use the ordinary Database
+adapter and Privileged semantics. Duplicate provider delivery converges on the
+completed Job, unknown event types may be ignored, and policy must reject stale
+later-arriving observations rather than trusting callback order. Operator Job
+inspection omits the payload and does not expose raw provider history.
+
 ### Send SMTP mail
 
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
@@ -695,9 +798,10 @@ import { capsule, endpoint } from "sporades/server";
 export default capsule({
   endpoints: {
     webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
+      const signatureInput = ctx.request.bodyBytes.toUint8Array();
       ctx.log.info("Webhook received", {
         path: ctx.request.path,
-        body: ctx.request.body,
+        byteLength: ctx.request.bodyBytes.byteLength,
       });
 
       return {
@@ -715,4 +819,13 @@ export default capsule({
 
 Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
 `ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
-query parameters, and parsed body data.
+query parameters, parsed `body` data, and immutable exact `bodyBytes`.
+
+Both body representations come from the same bounded request-body read.
+`bodyBytes` preserves the bytes exactly as received, so JSON whitespace and key
+ordering remain available for signed-webhook verification even though `body`
+contains the parsed value. The byte view is iterable and supports `at()`;
+`toUint8Array()` returns a mutable copy without exposing runtime-owned storage.
+Exact bytes are server-only and never automatically logged or added to HTTP
+errors, CLI output, or client transport results. Do not log the copy merely
+because an integration library accepts it.

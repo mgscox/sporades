@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { authStatus, createBundle, isReservedServerEnvKeyName, isValidServerEnvKeyName, parseServerEnv, readServerEnvFile, serverEnvPlaintextSize, } from "../bundle-pipeline.js";
 import { replaceFilesAtomically } from "../file-transaction.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
@@ -15,6 +15,7 @@ import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKe
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
 import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replaceRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
+import { resolveSporadesPackageRoot } from "../package-root.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
@@ -2279,15 +2280,22 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
         hint: "A later rebuild will retry bounded cleanup while preserving the active public tree.",
     });
 }
+let stripeCallbackFactoryPromise;
+async function stripeCallbackFactory(config) {
+    if (!config.payments?.stripe?.enabled)
+        return undefined;
+    stripeCallbackFactoryPromise ??= import(pathToFileURL(path.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")).href).then((module) => module.createStripeCallbackEndpoint);
+    return await stripeCallbackFactoryPromise;
+}
 async function createDevRuntime(options) {
-    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), { serviceEnv: options.serviceEnv });
+    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), { serviceEnv: options.serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(options.config) });
     await database.init();
     return {
         get database() {
             return database;
         },
         async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), { serviceEnv });
+            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), { serviceEnv, createStripeCallbackEndpoint: await stripeCallbackFactory(config) });
             database = await replaceRuntimeDatabase(database, nextDatabase);
         },
         async shutdown() {

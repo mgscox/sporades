@@ -10,6 +10,7 @@ import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, 
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 import { validateMailConfig } from "./mail-config.js";
+import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
@@ -115,13 +116,16 @@ import {
   finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
   normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload,
-  resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
+  STRIPE_EVENT_JOB,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
+import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -570,6 +574,7 @@ export async function openDevDatabase(
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
   }
+  const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
@@ -592,21 +597,39 @@ export async function openDevDatabase(
     ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
     : extractEndpoints(serverSource);
   const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-  for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+  const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
+    ? options?.createStripeCallbackEndpoint?.(
+        paymentsConfig,
+        serverEnv,
+        options?.stripeCallbackAdmissionFault,
+      )
+    : null;
+  if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
+    throw commandError(
+      "Stripe callback integration is unavailable.",
+      "Build and run this Capsule with matching Sporades generated runtime artifacts.",
+      "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE",
+    );
+  }
+  const providerEndpoints: LooseRecord[] = [...emailEventEndpoints, ...(stripeCallbackEndpoint ? [stripeCallbackEndpoint] : [])];
+  for (const [providerIndex, providerEndpoint] of providerEndpoints.entries()) {
     const conflictsWithCapsule = capsuleEndpoints.some(
       (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
     );
-    const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some(
+    const conflictsWithProvider = providerEndpoints.slice(0, providerIndex).find(
       (endpoint: LooseRecord) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path,
     );
     if (conflictsWithCapsule || conflictsWithProvider) {
-      const error: any = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
-      error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-      error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+      const stripeConflict = providerEndpoint.runtimeOwnedStripeCallback || conflictsWithProvider?.runtimeOwnedStripeCallback;
+      const error: any = new Error(stripeConflict
+        ? "Stripe callback route conflicts with another Capsule or provider route."
+        : "Capsule endpoint conflicts with an email-provider webhook route.");
+      error.code = stripeConflict ? "STRIPE_CALLBACK_ROUTE_CONFLICT" : "EMAIL_EVENT_ROUTE_CONFLICT";
+      error.hint = "Assign every Capsule endpoint and enabled provider a different path in sporades.json.";
       throw error;
     }
   }
-  const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
+  const endpoints = [...capsuleEndpoints, ...providerEndpoints];
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
   const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   // Handler sources extracted from Capsule server code are re-created with
@@ -632,6 +655,8 @@ export async function openDevDatabase(
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
       prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+    dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) =>
+      dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -682,6 +707,7 @@ export async function openDevDatabase(
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    paymentsConfig,
     mail,
     authConfig: authStatus(config, serverEnv),
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -2978,14 +3004,20 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     typeof endpoint.handler === "function"
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
-  const endpointRequest = await readEndpointRequest(database, requestUrl, request);
+  const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
+  const endpointRequest = await readEndpointRequest(
+    database,
+    requestUrl,
+    request,
+    !(endpoint as LooseRecord).runtimeOwnedStripeCallback,
+  );
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
-  const session = (endpoint as LooseRecord).runtimeOwnedEmailEvent
+  const session = runtimeOwnedProviderCallback
     ? { auth: {
         userId: privilegedAuthUserId(),
-        displayName: "Email provider callback",
+        displayName: (endpoint as LooseRecord).runtimeOwnedStripeCallback ? "Stripe provider callback" : "Email provider callback",
         email: null,
         picture: null,
         isAuthenticated: false,
@@ -3026,11 +3058,14 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       try {
         const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
         context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
-          ordinaryCredential: !(endpoint as LooseRecord).runtimeOwnedEmailEvent,
+          ordinaryCredential: !runtimeOwnedProviderCallback,
           credential: accessKeyAdmission?.credential,
           accessKeyGrants: accessKeyAdmission?.grants,
         });
-        if (!(endpoint as LooseRecord).runtimeOwnedEmailEvent) {
+        if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
+          Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+        }
+        if (!runtimeOwnedProviderCallback) {
           if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
@@ -3117,7 +3152,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
   return transactionDatabase;
 }
 
-async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any) {
+async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -3125,12 +3160,13 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
     ]),
   );
   const query = endpointQueryFromUrl(requestUrl);
+  const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    body: await readEndpointBody(request, headers, database),
+    ...payload,
   };
 }
 
@@ -3143,6 +3179,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     auth,
     ...(credential ? { credential } : {}),
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
       request: {
         method: endpointRequest.method,
@@ -3161,6 +3198,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       headers: endpointRequest.headers,
       query: endpointRequest.query,
       body: endpointRequest.body,
+      bodyBytes: endpointRequest.bodyBytes,
     },
   };
   if (credential?.kind === "session" && typeof session.token === "string") {
@@ -3722,19 +3760,36 @@ function referenceExists(database: LooseRecord, field: any, value: any) {
 // `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
 // first two are imported back at the top of this file; the other three have no consumer here.
 
-async function readEndpointBody(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null) {
-  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-  if (!raw) {
-    return null;
-  }
+async function readEndpointPayload(request: any, headers: { [x: string]: any; }, limitSource: LooseRecord | number | null = null, parseJsonBody = true) {
+  const raw = await readLimitedRequestBody(request, limitSource);
+  const bodyBytes = immutableEndpointBodyBytes(raw);
+  if (raw.byteLength === 0) return { body: null, bodyBytes };
+  if (!parseJsonBody) return { body: null, bodyBytes };
+  const text = raw.toString("utf8");
   if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
     try {
-      return JSON.parse(raw);
+      return { body: JSON.parse(text), bodyBytes };
     } catch {
       throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
     }
   }
-  return raw;
+  return { body: text, bodyBytes };
+}
+
+function immutableEndpointBodyBytes(bytes: Uint8Array) {
+  return Object.freeze({
+    byteLength: bytes.byteLength,
+    length: bytes.byteLength,
+    at(index: number) {
+      return bytes.at(index);
+    },
+    toUint8Array() {
+      return Uint8Array.from(bytes);
+    },
+    [Symbol.iterator]() {
+      return bytes.values();
+    },
+  });
 }
 
 function createEndpointLogger(database: any, context = {}) {
@@ -4399,6 +4454,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       client.subscriptions.set(message.id, subscription);
+      database.__notifyJobStateQueries = refreshQueries;
       void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error));
       return;
     }
@@ -4722,17 +4778,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       });
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(() => {
-          for (const subscribedClient of clients) {
-            for (const subscription of subscribedClient.subscriptions.values()) {
-              void sendQueryResult(
-                subscribedClient,
-                subscription,
-                (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
-              );
-            }
-          }
-        }, 0);
+        setTimeout(refreshQueries, 0);
       }
       return;
     }
@@ -4841,6 +4887,18 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     } catch (error) {
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
+    }
+  }
+
+  function refreshQueries() {
+    for (const subscribedClient of clients) {
+      for (const subscription of subscribedClient.subscriptions.values()) {
+        void sendQueryResult(
+          subscribedClient,
+          subscription,
+          (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
+        );
+      }
     }
   }
 
@@ -5485,6 +5543,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     auth,
     ...(credential ? { credential } : {}),
     env: database.serverEnv,
+    payments: database.paymentsConfig,
     log: createEndpointLogger(database, credential ? {
       attribution: {
         actor: { userId: auth.userId },
@@ -5566,6 +5625,13 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       const queueDatabase = database.__rootDatabase ?? database;
       const jobAdapter = database.adapter;
       const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
+      if (
+        typeof handlerName === "string"
+        && handlerName.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX)
+        && Reflect.get(context, runtimeOwnedJobEnqueueHandler) !== handlerName
+      ) {
+        throw jobError("RESERVED_JOB_NAME", "Runtime-owned Job handlers cannot be enqueued by Capsule code.", "Use a Capsule-declared Job handler name.");
+      }
       const handler = database.jobs?.find((candidate: any) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -5825,6 +5891,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
       try {
+        const jobPayload = JSON.parse(row.payload);
         // Cancellation may commit after the durable claim but before its
         // in-memory controller is registered. Reconcile the exact owned claim
         // before crossing the handler boundary so that window cannot lose the
@@ -5842,10 +5909,10 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
-            try { return await handler.handler(privilegedCtx, JSON.parse(row.payload)); }
+            try { return await handler.handler(privilegedCtx, jobPayload); }
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
           });
         } else {
@@ -5858,7 +5925,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           const context = createMutationContext(database, auth, { credential }); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
-          try { result = await handler.handler(context, JSON.parse(row.payload)); }
+          try { result = await handler.handler(context, jobPayload); }
           finally { database.__runtimeJobAttempts.delete(context); }
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
@@ -5875,6 +5942,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           return;
         }
         const handlerFailure = safeJobFailure(error);
+        const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = parsePersistedJobRetry(row.retryJson);
@@ -5886,7 +5954,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
           )).get(row.id, claimToken)
           : null;
         const cancelled = Boolean(cancellation?.cancelRequestedAt);
-        const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+        const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
           && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
         const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
         const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
@@ -5920,6 +5988,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
       } finally {
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
+        database.__notifyJobStateQueries?.();
       }
     }
   } finally {

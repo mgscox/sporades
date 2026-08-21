@@ -439,6 +439,7 @@ var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBe
 
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;

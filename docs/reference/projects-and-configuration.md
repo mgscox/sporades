@@ -27,6 +27,10 @@ README.md
 package.json
 ```
 
+Blank Capsules additionally contain `server/payments.ts` and
+`shared/payments.ts`. They are ordinary blank-template source: there is no
+separate payment template or post-generation codemod.
+
 Useful create options:
 
 ```sh
@@ -108,7 +112,9 @@ entry as a write-free preflight error and never rewrites the source shell.
 ### Project Files
 
 `server/index.ts` defines the Capsule: schema, queries, mutations, endpoints,
-messages, middleware, and server-side behavior.
+messages, Jobs, middleware, and server-side behavior. A blank Capsule imports
+its built-in payment mutations, Jobs, policy seam, and known-Job query from
+`server/payments.ts`.
 
 `client/index.tsx` is the browser entry. It imports the configured framework and
 `sporades/client`.
@@ -122,7 +128,7 @@ Vue/Vite loads `/client/index.ts`. Released HTML references only transformed
 hashed assets.
 
 `sporades.json` configures the Capsule name, template, client framework and
-toolchain, auth, and default ports. Omitting `client.toolchain` preserves the
+toolchain, auth, optional payments, and default ports. Omitting `client.toolchain` preserves the
 esbuild default for existing React and Preact Capsules. Vue defaults to Vite.
 
 Sealed Server env stores server-only values in `.sporades/sealed-server-env/`
@@ -176,6 +182,162 @@ A typical `sporades.json` looks like this:
 ```
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
+
+### Built-in Stripe payments in blank Capsules
+
+Every newly generated blank Capsule includes this credential-free project
+configuration:
+
+```json
+{
+  "payments": {
+    "stripe": {
+      "enabled": false
+    }
+  }
+}
+```
+
+`payments` remains optional so existing Capsules and non-blank demonstration
+templates retain their current behavior. The dormant shape is exact and grants
+no provider authority. Activation is all-or-nothing:
+
+```json
+{
+  "payments": {
+    "stripe": {
+      "enabled": true,
+      "secretKeyEnv": "STRIPE_SECRET_KEY",
+      "webhookSecretEnv": "STRIPE_WEBHOOK_SECRET",
+      "publicOrigin": "https://capsule.example",
+      "callbackPath": "/stripe/webhook",
+      "apiVersion": "2026-07-29.dahlia",
+      "livemode": false,
+      "requestTimeoutMs": 10000
+    }
+  }
+}
+```
+
+The two env fields name values stored with `sporades env set`; secret values do
+not belong in `sporades.json`. The runtime validates the complete shape and the
+matching `sk_test_` or `sk_live_` and `whsec_` Sealed Server credentials before
+publishing an activated Capsule. A hosted `publicOrigin` must be an exact HTTPS
+origin. Explicit loopback HTTP origins are admitted for Dev sessions. Return
+paths are resolved only against that trusted origin, never an incoming Host
+header. Unknown providers, undeclared options, partial activation, mode-mismatched
+credentials, malformed origins, and unsupported compatibility versions fail as
+`INVALID_STRIPE_PAYMENTS_CONFIG`.
+
+`callbackPath` is an exact same-origin absolute path outside the reserved
+`/__sporades` runtime namespace. URL parsing must preserve the path exactly;
+dot-segment forms, including percent-encoded forms, are rejected. When Stripe
+is enabled, startup claims that path for one runtime-owned POST callback after
+rejecting method-and-path collisions with Capsule Custom endpoints and other
+enabled provider routes.
+Disabled or absent Stripe configuration registers no callback route.
+Sporades does not create or reconcile a Stripe webhook endpoint. The operator
+registers the exact `publicOrigin + callbackPath` URL in Stripe after the
+Capsule is reachable and seals that endpoint's matching `whsec_` secret.
+
+The generated `server/payments.ts` contains an empty server-owned Price
+catalogue, deny-by-default `authorizeStripeCheckout` and
+`authorizeStripeCustomerPortal` policy seams, a Capsule-owned
+`resolveStripeCustomerForPortal` seam, named
+Checkout and Customer Portal Jobs, one `paymentStripeEvents` policy declaration,
+and a query that exposes only bounded state
+for a known payment Job owned by the current actor. `shared/payments.ts`
+contains the serializable Job-state shape. `client/payments.ts` starts Checkout or Customer Portal,
+reports pending, succeeded, or safely failed progress, validates the returned
+Stripe-hosted URL, and redirects only after success. It is not imported into the
+blank UI automatically.
+
+To activate Checkout, define Capsule product keys in the server-owned Price
+catalogue with an explicit `payment` or `subscription` mode, matching Stripe
+Price identity, and maximum quantity. Then make an explicit billing decision in
+`authorizeStripeCheckout`, enable the complete configuration, and seal both
+named credentials. Browser input contains only an opaque intent ID, Capsule
+product key, and bounded quantity; it cannot select the Stripe Price, Customer,
+mode, metadata, idempotency namespace, or return origins. The linked-user
+mutation atomically persists the selected mode with the intent and enqueues the
+same durable Checkout Job for one-time and recurring work. Network I/O starts after commit. Capsule,
+operation, actor, and intent identity form the stable Stripe and Job idempotency
+key, so retries and repeated mutation calls converge on the same work. Transient
+provider failures retry within the declared Job policy; permanent rejection is
+retained as bounded redacted failure metadata.
+
+Customer Portal is the preferred surface for ordinary customer-managed payment
+methods, invoices, cancellations, and supported subscription changes. Capsule
+policy still decides who may enter it. The linked-user Portal mutation first
+checks `authorizeStripeCustomerPortal`, then asks Capsule code to resolve the
+opaque billing-holder key to one existing Stripe Customer. Unknown Customers,
+unauthorized holders, deleted Teams, and missing billing authority all fail
+with the same unavailable result before enqueue and provider access. Sporades
+does not create, enumerate, infer, or persist Customer ownership; the durable
+Job payload carries the opaque Capsule billing-holder key rather than a Customer
+identity. Immediately before provider access, the Job repeats policy admission
+and Customer resolution under its captured linked actor, so Team deletion and
+billing-authority revocation fail safely. The return path and idempotency namespace remain server-owned, and only
+the initiating actor can observe the known Job and its validated short-lived
+`billing.stripe.com` redirect.
+
+Anonymous Checkout remains off by default. A Capsule may opt in only by
+deliberately relaxing the linked-user guard, authorizing the guest in the policy
+seam, and deriving the business reference in server code. That opt-in grants no
+Customer Portal or Team billing authority. Portal always retains its linked
+guard and independent Capsule billing-holder policy. The activated callback
+verifies the exact bounded request bytes and `Stripe-Signature` header before
+parsing. Each accepted provider Event identity commits one idempotent Privileged
+Job before the route returns `200`; retries receive the same Job identity.
+That identity is scoped by the retained Capsule database, not the mutable
+configured Capsule name, so a rename and restart cannot admit the Event again.
+Admission does not wait for or perform Capsule subscription, entitlement, or
+access consequences.
+
+The admitted Job is the only delivery path into Capsule policy. The blank
+Capsule registers `stripeEvents: paymentStripeEvents`, where
+`paymentStripeEvents` is declared with `stripeEvent(handler)` in
+`server/payments.ts`. The handler receives the Verified Stripe event—not an HTTP
+request, signature, or unverified body—inside the Job's userless Privileged
+server-role attempt. Existing Job retry and cancellation keep the same Job
+identity, and Privileged authority is revoked when each audited attempt settles.
+
+Provider deliveries are duplicated and may be out of order. Make every Capsule
+consequence idempotent and order-independent. Compare provider creation time or
+authoritative provider state so a later-arriving older event cannot roll back
+newer state. Unknown event types are forward-compatible and safe to ignore. The
+verified raw provider value is sensitive: do not log or persist it by default;
+store only bounded fields required by deliberate Capsule policy. Sporades stores
+no second raw-event history and routine Job inspection omits the durable payload.
+
+Subscription Checkout begins provider billing; it does not grant local access.
+Verified events and Capsule policy determine any subscription, entitlement,
+seat, order, billing-holder, or access consequences. Sporades creates none of
+those Capsule records automatically.
+
+Sporades owns Stripe transport, retries, compatibility, redirect validation,
+and safe provider-error translation behind `sporades/server/stripe`. The Capsule owns
+Prices, Customers, Teams, billing authority, subscriptions, entitlements,
+notifications, retention, export, and erasure. Do not place secrets or provider
+identities in `sporades.json`, shared code, or browser code.
+
+#### Inspect a payment-bearing release candidate
+
+Build and test the exact checkout first, then create an immutable local candidate
+with `npm pack --json --ignore-scripts`. Record the reported `integrity`, `shasum`,
+filename, and file list. Inspect that list for the Stripe integration runtime,
+event dispatcher, declarations, generated manifest, scaffold generator, CLI, package
+metadata, and consumer README before treating repository behavior as shipped proof.
+
+Install the packed candidate into a fresh generated blank Capsule and run its
+strict typecheck and real Dev Bundle as a consumer artifact. Prove the dormant
+route remains absent, then exercise activated Checkout, Customer Portal, and
+verified event delivery through that installed package. Scan the packed files,
+generated source, Bundle, CLI output, Job state, and runtime logs for the exact
+fixture secrets, signatures, raw-provider markers, authorization values, and
+short-lived URLs used by acceptance. `npm pack` only creates a local candidate;
+it does not publish, upgrade another Capsule, call Stripe, mutate a provider
+account, or activate production.
 
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.

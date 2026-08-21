@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import Stripe from "stripe";
 
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -149,9 +150,37 @@ async function snapshotProjectTree(root, current = root) {
   return snapshot;
 }
 
-function runCli(args, options = {}) {
+function runCliFrom(selectedCliPath, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(process.execPath, [selectedCliPath, ...args], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+
+    if (options.stdin !== undefined) child.stdin.end(options.stdin);
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+function runCli(args, options = {}) {
+  return runCliFrom(cliPath, args, options);
+}
+
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -171,12 +200,68 @@ function runCli(args, options = {}) {
   });
 }
 
-function startCli(args, options = {}) {
-  return spawn(process.execPath, [cliPath, ...args], {
+function startCliFrom(selectedCliPath, args, options = {}) {
+  return spawn(process.execPath, [selectedCliPath, ...args], {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function startCli(args, options = {}) {
+  return startCliFrom(cliPath, args, options);
+}
+
+async function packCandidateInto(dir) {
+  const packed = await runCommand(
+    "npm",
+    ["pack", "--json", "--ignore-scripts", "--pack-destination", dir],
+    { cwd: repoRoot },
+  );
+  assert.equal(packed.code, 0, packed.stderr);
+  const candidate = JSON.parse(packed.stdout)[0];
+  assert.equal(typeof candidate?.filename, "string", packed.stdout);
+  assert.match(candidate.shasum, /^[a-f0-9]{40}$/);
+  assert.match(candidate.integrity, /^sha512-/);
+  return { packed, candidate, tarballPath: path.join(dir, candidate.filename) };
+}
+
+async function installPackedCandidate(projectDir, tarballPath) {
+  const packagePath = path.join(projectDir, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.devDependencies.sporades = `file:${tarballPath}`;
+  await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  const installed = await runCommand(
+    "npm",
+    ["install", "--offline", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+    { cwd: projectDir },
+  );
+  assert.equal(installed.code, 0, installed.stderr);
+  const packageRoot = path.join(projectDir, "node_modules", "sporades");
+  return {
+    installed,
+    packageRoot,
+    cliPath: path.join(packageRoot, "bin", "sporades.js"),
+  };
+}
+
+async function installPackedCandidateCli(dir, tarballPath) {
+  const runnerDir = path.join(dir, "packed-candidate-cli");
+  await mkdir(runnerDir, { recursive: true });
+  await writeFile(path.join(runnerDir, "package.json"), `${JSON.stringify({
+    private: true,
+    devDependencies: { sporades: `file:${tarballPath}` },
+  }, null, 2)}\n`);
+  const installed = await runCommand(
+    "npm",
+    ["install", "--offline", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+    { cwd: runnerDir },
+  );
+  assert.equal(installed.code, 0, installed.stderr);
+  return {
+    installed,
+    cliPath: path.join(runnerDir, "node_modules", "sporades", "bin", "sporades.js"),
+  };
 }
 
 async function installFakeDocker(dir) {
@@ -503,6 +588,37 @@ async function installFakePreact(projectDir) {
     },
   );
 }
+
+test("client toolchains reject the server-only Stripe integration boundary", async () => {
+  for (const toolchain of ["esbuild", "vite"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `stripe-client-${toolchain}`, "--framework", "react", "--toolchain", toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `stripe-client-${toolchain}`);
+      await installFakeReact(projectDir);
+      const clientSourcePath = path.join(projectDir, "client", "index.tsx");
+      const clientSource = `import { createStripePaymentIntegration } from "sporades/server/stripe";\nvoid createStripePaymentIntegration;\n${await readFile(clientSourcePath, "utf8")}`;
+      await writeFile(clientSourcePath, clientSource);
+      const indexHtmlPath = path.join(projectDir, "index.html");
+
+      await assert.rejects(
+        buildClientToolchain({
+          projectDir,
+          frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+          toolchain,
+          clientSource,
+          clientSourcePath,
+          indexHtml: await readFile(indexHtmlPath, "utf8"),
+          indexHtmlPath,
+        }),
+        (error) => {
+          assert.match(error.message, /client code cannot import server-only Sporades modules/i);
+          return true;
+        },
+      );
+    });
+  }
+});
 
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
@@ -1822,10 +1938,11 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
     await installFakeReact(projectDir);
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
     try {
       const started = await waitForJsonLine(child);
 
-      assert.equal(started.ok, true);
+      assert.equal(started.ok, true, JSON.stringify(started));
       assert.equal(started.data.event, "started");
 
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
@@ -1833,12 +1950,556 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
       assert.match(serverBundle, /blank-island/);
       assert.match(clientBundle, /Blank Sporades Capsule/);
       assert.doesNotMatch(clientBundle, /Sporades Todos|useQuery|useMutation/);
+      assert.doesNotMatch(clientBundle, /stripe/i);
+
+      socket = await openWebSocket(started.data.url.replace("http://", "ws://") + "/__sporades/ws");
+      socket.send(JSON.stringify({ id: "payment-job", type: "query.subscribe", query: "paymentJob", args: ["not-a-known-job"] }));
+      const paymentJob = await waitForSocketMessage(socket, (message) => message.type === "query.result" && message.id === "payment-job");
+      assert.ok(paymentJob.data == null);
+      assert.ok(paymentJob.error == null);
+
+      const dormantCallback = await fetch(`${started.data.url}/stripe/webhook`, { method: "POST", body: "{}" });
+      assert.equal(dormantCallback.status, 404);
 
       const html = await (await fetch(`${started.data.url}/`)).text();
       assert.match(html, /<div id="app"><\/div>/);
     } finally {
+      await closeSocketGracefully(socket);
       child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("a packed credential-free blank Capsule installs, typechecks, builds, and boots", { timeout: 120_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const { packed, candidate, tarballPath } = await packCandidateInto(dir);
+    const candidateCli = await installPackedCandidateCli(dir, tarballPath);
+    const packedPaths = new Set(candidate.files.map((file) => file.path));
+    for (const requiredPath of [
+      "README.md",
+      "bin/sporades.js",
+      "dist/generated-source-manifest.json",
+      "dist/stripe-events-runtime.js",
+      "dist/stripe-payment-config.js",
+      "dist/stripe-payment-integration.js",
+      "dist/stripe-webhook-runtime.js",
+      "dist/templates/scaffold-template.js",
+      "package.json",
+      "src/types/server.d.ts",
+      "src/types/stripe.d.ts",
+    ]) assert.equal(packedPaths.has(requiredPath), true, `packed candidate omitted ${requiredPath}`);
+
+    const createResult = await runCliFrom(
+      candidateCli.cliPath,
+      ["create", "packed-blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "packed-blank");
+    const { installed, packageRoot: installedPackageRoot, cliPath: installedCliPath } = await installPackedCandidate(projectDir, tarballPath);
+    const installedPackage = JSON.parse(await readFile(path.join(installedPackageRoot, "package.json"), "utf8"));
+    assert.deepEqual(installedPackage.exports["./server/stripe"], {
+      types: "./src/types/stripe.d.ts",
+      default: "./dist/stripe-payment-integration.js",
+    });
+    assert.match(installedPackage.dependencies.stripe, /^\^22\./);
+    const packedContract = {
+      readme: await readFile(path.join(installedPackageRoot, "README.md"), "utf8"),
+      integration: await readFile(path.join(installedPackageRoot, "dist", "stripe-payment-integration.js"), "utf8"),
+      events: await readFile(path.join(installedPackageRoot, "dist", "stripe-events-runtime.js"), "utf8"),
+      scaffold: await readFile(path.join(installedPackageRoot, "dist", "templates", "scaffold-template.js"), "utf8"),
+      serverTypes: await readFile(path.join(installedPackageRoot, "src", "types", "server.d.ts"), "utf8"),
+      stripeTypes: await readFile(path.join(installedPackageRoot, "src", "types", "stripe.d.ts"), "utf8"),
+      manifest: await readFile(path.join(installedPackageRoot, "dist", "generated-source-manifest.json"), "utf8"),
+    };
+    assert.match(packedContract.readme, /built-in but disabled Stripe payment\s+foundation/i);
+    assert.match(packedContract.integration, /createCheckoutSession/);
+    assert.match(packedContract.integration, /createCustomerPortalSession/);
+    assert.match(packedContract.integration, /verifyWebhookEvent/);
+    assert.match(packedContract.events, /dispatchVerifiedStripeEvent/);
+    assert.match(packedContract.scaffold, /paymentStripeEvents/);
+    assert.match(packedContract.scaffold, /payments[\s\S]{0,80}stripe[\s\S]{0,80}enabled[\s\S]{0,80}false/i);
+    assert.match(packedContract.serverTypes, /stripeEvents/);
+    assert.match(packedContract.serverTypes, /stripeEvent</);
+    assert.match(packedContract.stripeTypes, /VerifiedStripeEvent/);
+    for (const manifestPath of ["src/stripe-events-runtime.ts", "src/stripe-payment-integration.ts", "src/stripe-webhook-runtime.ts", "dist/stripe-events-runtime.js", "dist/stripe-payment-integration.js", "dist/stripe-webhook-runtime.js"]) {
+      assert.match(packedContract.manifest, new RegExp(manifestPath.replaceAll(".", "\\.")));
+    }
+    const packedText = (await Promise.all(candidate.files.map(({ path: packedPath }) => readFile(path.join(installedPackageRoot, packedPath), "utf8").catch(() => "")))).join("\n");
+    assert.doesNotMatch(packedText, /sk_test_generated_fixture|whsec_generated_fixture|obj_future_1|pending_webhooks|cs_test_generated_|test_generated_portal|Bearer sk_test_/i);
+
+    const typechecked = await runCommand(
+      process.execPath,
+      [
+        path.join(projectDir, "node_modules", "typescript", "bin", "tsc"),
+        "--noEmit",
+        "--strict",
+        "--target", "ES2022",
+        "--module", "ESNext",
+        "--moduleResolution", "Bundler",
+        "--lib", "ES2022,DOM,DOM.Iterable",
+        "--skipLibCheck",
+        "server/index.ts",
+        "server/payments.ts",
+        "shared/payments.ts",
+        "shared/types.ts",
+        "client/index.ts",
+      ],
+      { cwd: projectDir },
+    );
+    assert.equal(typechecked.code, 0, typechecked.stderr || typechecked.stdout);
+
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const child = spawn(process.execPath, [installedCliPath, "dev", "--json"], {
+      cwd: projectDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(started.data.event, "started");
+      assert.equal((await fetch(started.data.url)).status, 200);
+      await access(path.join(projectDir, ".sporades", "build", "server.mjs"));
+      assert.equal((await fetch(`${started.data.url}/stripe/webhook`, { method: "POST", body: "{}" })).status, 404);
+      const dumpResult = await runCommand(process.execPath, [installedCliPath, "db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      for (const tableName of ["paymentIntents", "portalIntents"]) {
+        assert.deepEqual(tables.find((table) => table.name === tableName)?.rows, []);
+      }
+      for (const implicitTable of ["customers", "prices", "subscriptions", "entitlements"]) {
+        assert.equal(tables.some((table) => table.name === implicitTable), false);
+      }
+      const jobsResult = await runCommand(process.execPath, [installedCliPath, "jobs"], { cwd: projectDir });
+      assert.equal(jobsResult.code, 0, jobsResult.stderr);
+      assert.equal(JSON.parse(jobsResult.stdout).data.jobs.some((job) => /^stripe/i.test(job.handler)), false);
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+      assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);
+      assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_PORTAL_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_WEBHOOK_REJECTED/);
+      assert.doesNotMatch(clientBundle, /stripe/i);
+      assert.doesNotMatch(`${packed.stdout}${packed.stderr}${candidateCli.installed.stdout}${candidateCli.installed.stderr}${createResult.stdout}${createResult.stderr}${installed.stdout}${installed.stderr}${typechecked.stdout}${typechecked.stderr}${dumpResult.stdout}${dumpResult.stderr}${jobsResult.stdout}${jobsResult.stderr}${serverBundle}${clientBundle}`, /sk_test_generated_fixture|whsec_generated_fixture|obj_future_1|pending_webhooks|cs_test_generated_|test_generated_portal|Bearer sk_test_/i);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("a generated activated blank Capsule runs Checkout, Customer Portal, and signed callback delivery through durable Jobs", { timeout: 120_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const { packed, candidate, tarballPath } = await packCandidateInto(dir);
+    const candidateCli = await installPackedCandidateCli(dir, tarballPath);
+    const providerRequests = [];
+    const provider = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const params = new URLSearchParams(body);
+      providerRequests.push({ url: request.url, headers: request.headers, body: params });
+      if (request.url === "/v1/billing_portal/sessions") {
+        const customer = params.get("customer");
+        assert.match(customer, /^cus_server_(?:resolved|retry|rejected)$/);
+        assert.equal(params.get("return_url"), "https://payments.example.test/account/billing");
+        const matchingPortalRequests = providerRequests.filter((candidate) => candidate.url === request.url && candidate.body.get("customer") === customer);
+        if (customer === "cus_server_retry" && matchingPortalRequests.length === 1) {
+          response.writeHead(500, { "content-type": "application/json", "request-id": "req_portal_retry" });
+          response.end(JSON.stringify({ error: { message: "temporary portal failure" } }));
+          return;
+        }
+        if (customer === "cus_server_rejected") {
+          response.writeHead(400, { "content-type": "application/json", "request-id": "req_portal_rejected" });
+          response.end(JSON.stringify({ error: { message: "cus_server_rejected must not escape" } }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json", "request-id": "req_generated_portal" });
+        response.end(JSON.stringify({
+          id: customer === "cus_server_retry" ? "bps_generated_portal_retry" : "bps_generated_portal",
+          object: "billing_portal.session",
+          customer,
+          livemode: false,
+          return_url: "https://payments.example.test/account/billing",
+          url: customer === "cus_server_retry" ? "https://billing.stripe.com/p/session/test_generated_portal_retry" : "https://billing.stripe.com/p/session/test_generated_portal",
+        }));
+        return;
+      }
+      const priceId = params.get("line_items[0][price]");
+      const mode = params.get("mode");
+      if (((priceId === "price_server_owned" || priceId === "price_guest_server_owned") && mode !== "payment") || (priceId === "price_recurring_server_owned" && mode !== "subscription")) {
+        response.writeHead(400, { "content-type": "application/json", "request-id": "req_price_mode_mismatch" });
+        response.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Price mode mismatch" } }));
+        return;
+      }
+      const retryRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === "intent-retry-1");
+      if (params.get("client_reference_id") === "intent-retry-1" && retryRequests.length === 1) {
+        response.writeHead(500, { "content-type": "application/json", "request-id": "req_retry_once" });
+        response.end(JSON.stringify({ error: { message: "temporary provider failure" } }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json", "request-id": "req_generated_checkout" });
+      const subscription = mode === "subscription";
+      const sessionId = subscription ? "cs_test_generated_subscription" : "cs_test_generated_checkout";
+      response.end(JSON.stringify({
+        id: sessionId,
+        object: "checkout.session",
+        livemode: false,
+        mode,
+        url: `https://checkout.stripe.com/c/pay/${sessionId}#fixture`,
+      }));
+    });
+    await new Promise((resolve, reject) => {
+      provider.once("error", reject);
+      provider.listen(0, "127.0.0.1", resolve);
+    });
+    const apiBaseUrl = `http://127.0.0.1:${provider.address().port}`;
+
+    let child;
+    let socket;
+    let foreignSocket;
+    let runtimeStdout = "";
+    let runtimeStderr = "";
+    try {
+      const createResult = await runCliFrom(candidateCli.cliPath, ["create", "checkout-blank", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(createResult.code, 0, createResult.stderr);
+      const projectDir = path.join(dir, "checkout-blank");
+      const installedCandidate = await installPackedCandidate(projectDir, tarballPath);
+      const installedCliPath = installedCandidate.cliPath;
+      const installedManifest = await readFile(path.join(installedCandidate.packageRoot, "dist", "generated-source-manifest.json"), "utf8");
+      assert.match(installedManifest, /dist\/stripe-payment-integration\.js/);
+      assert.match(installedManifest, /dist\/stripe-webhook-runtime\.js/);
+      assert.equal(candidate.files.some((file) => file.path === "bin/sporades.js"), true);
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.dev.port = 0;
+      config.auth = { providers: { anonymous: true, email: true } };
+      config.payments.stripe = {
+        enabled: true,
+        secretKeyEnv: "STRIPE_SECRET_KEY",
+        webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+        publicOrigin: "https://payments.example.test",
+        callbackPath: "/stripe/webhook",
+        apiVersion: "2026-07-29.dahlia",
+        livemode: false,
+        requestTimeoutMs: 10_000,
+      };
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+      for (const [name, value] of [
+        ["STRIPE_SECRET_KEY", "sk_test_generated_fixture"],
+        ["STRIPE_WEBHOOK_SECRET", "whsec_generated_fixture"],
+      ]) {
+        const sealed = await runCliFrom(installedCliPath, ["env", "set", name, "--stdin", "--json"], { cwd: projectDir, stdin: `${value}\n` });
+        assert.equal(sealed.code, 0, sealed.stderr);
+        assert.doesNotMatch(`${sealed.stdout}${sealed.stderr}`, /generated_fixture/);
+      }
+
+      const paymentsPath = path.join(projectDir, "server", "payments.ts");
+      const paymentSource = await readFile(paymentsPath, "utf8");
+      await writeFile(
+        paymentsPath,
+        paymentSource
+          .replace("Object.freeze({})", 'Object.freeze({ starter: { mode: "payment", priceId: "price_server_owned", maxQuantity: 3 }, guest: { mode: "payment", priceId: "price_guest_server_owned", maxQuantity: 1 }, pro: { mode: "subscription", priceId: "price_recurring_server_owned", maxQuantity: 5 } })')
+          .replace('export const paymentMutations = {', 'export const paymentMutations = {\n  testEnqueueAnonymousPortal: mutation((ctx) => ctx.jobs.enqueue("stripeCustomerPortal", { intentId: "intent-anonymous-direct", billingHolderKey: "personal", returnPath: "/account/billing", idempotencyKey: "test:anonymous:portal" }, { idempotencyKey: "test:anonymous:portal", retry: { maxAttempts: 1 } })),')
+          .replace("  return false;", "  return true;")
+          .replace('    const actor = requireAuth(ctx, { linked: true });', '    const actor = input?.productKey === "guest" ? ctx.auth : requireAuth(ctx, { linked: true });')
+          .replace('export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<boolean> {\n  return false;\n}', 'export async function authorizeStripeCustomerPortal(_ctx: CapsuleContext, input: PortalInput): Promise<boolean> {\n  return input.billingHolderKey !== "forbidden";\n}')
+          .replace('export async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, _input: PortalInput): Promise<string | null> {\n  return null;\n}', 'const portalResolutionCalls = new Map<string, number>();\nexport async function resolveStripeCustomerForPortal(_ctx: CapsuleContext, input: PortalInput): Promise<string | null> {\n  const calls = (portalResolutionCalls.get(input.intentId) ?? 0) + 1;\n  portalResolutionCalls.set(input.intentId, calls);\n  if (input.billingHolderKey === "revoked") return calls === 1 ? "cus_server_revoked" : null;\n  return input.billingHolderKey === "personal" ? "cus_server_resolved" : input.billingHolderKey === "retry" ? "cus_server_retry" : input.billingHolderKey === "rejected" ? "cus_server_rejected" : null;\n}')
+          .replace('export const paymentStripeEvents = stripeEvent((_ctx, event) => {', 'export const paymentStripeEvents = stripeEvent((ctx, event) => {\n  ctx.log.info("generated.stripe-event", { providerEventId: event.providerEventId, type: event.type });')
+          .replaceAll("signal: ctx.signal })", `signal: ctx.signal, apiBaseUrl: ${JSON.stringify(apiBaseUrl)} })`),
+      );
+      child = startCliFrom(installedCliPath, ["dev", "--json"], { cwd: projectDir });
+      child.stdout.on("data", (chunk) => { runtimeStdout += chunk; });
+      child.stderr.on("data", (chunk) => { runtimeStderr += chunk; });
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      const send = async (target, message) => {
+        const response = waitForSocketMessage(target, (candidate) => candidate.id === message.id);
+        target.send(JSON.stringify(message));
+        return await response;
+      };
+      const checkoutInput = { intentId: "intent-generated-1", productKey: "starter", quantity: 2 };
+      const subscriptionInput = { intentId: "intent-subscription-1", productKey: "pro", quantity: 4 };
+      const anonymous = await send(socket, { id: "anonymous-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
+      assert.ok(anonymous.error);
+      const anonymousPortal = await send(socket, { id: "anonymous-portal", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-anonymous-portal", billingHolderKey: "personal" }] });
+      assert.ok(anonymousPortal.error);
+      const directAnonymousPortal = await send(socket, { id: "anonymous-portal-direct", type: "mutation.run", mutation: "testEnqueueAnonymousPortal", args: [] });
+      assert.equal(directAnonymousPortal.error, null, JSON.stringify(directAnonymousPortal));
+      const directAnonymousFailedPromise = waitForSocketMessage(socket, (message) => message.id === "anonymous-portal-direct-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "anonymous-portal-direct-state", type: "query.subscribe", query: "paymentJob", args: [directAnonymousPortal.data.id] }));
+      const directAnonymousFailed = await directAnonymousFailedPromise;
+      assert.equal(directAnonymousFailed.data.attempts, 1);
+      assert.equal(providerRequests.length, 0);
+
+      const signup = await send(socket, {
+        id: "signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: { email: "buyer@example.test", password: "correct horse battery staple", name: "Buyer" },
+      });
+      assert.equal(signup.error, null);
+      assert.equal(signup.data.auth.isGuest, false);
+
+      for (const billingHolderKey of ["forbidden", "unknown", "deleted-team"]) {
+        const denied = await send(socket, { id: `portal-${billingHolderKey}`, type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: `intent-${billingHolderKey}-1`, billingHolderKey }] });
+        assert.equal(denied.error?.code, "PAYMENT_PORTAL_UNAVAILABLE");
+      }
+      const portalInjection = await send(socket, { id: "portal-injected-customer", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-injected", billingHolderKey: "personal", customerId: "cus_browser_supplied" }] });
+      assert.ok(portalInjection.error);
+      assert.equal(providerRequests.length, 0);
+
+      for (const [field, value] of Object.entries({
+        priceId: "price_browser_supplied",
+        customerId: "cus_browser_supplied",
+        mode: "payment",
+        metadata: { role: "admin" },
+        idempotencyKey: "browser-owned",
+        successPath: "https://browser.example/success",
+        cancelPath: "https://browser.example/cancel",
+      })) {
+        const injected = await send(socket, { id: `injected-${field}`, type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...subscriptionInput, [field]: value }] });
+        assert.ok(injected.error, field);
+      }
+      const excessiveQuantity = await send(socket, { id: "excessive-quantity", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...subscriptionInput, quantity: 6 }] });
+      assert.ok(excessiveQuantity.error);
+      const unknown = await send(socket, { id: "unknown", type: "mutation.run", mutation: "startStripeCheckout", args: [{ ...checkoutInput, intentId: "intent-unknown-1", productKey: "unknown" }] });
+      assert.ok(unknown.error);
+      assert.equal(providerRequests.length, 0);
+
+      const startedCheckout = await send(socket, { id: "checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      assert.equal(startedCheckout.error, null, JSON.stringify(startedCheckout));
+      const jobId = startedCheckout.data.jobId;
+      const succeededPromise = waitForSocketMessage(socket, (message) => message.id === "payment-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "payment-state", type: "query.subscribe", query: "paymentJob", args: [jobId] }));
+      const succeeded = await succeededPromise;
+      assert.deepEqual(succeeded.data.result, {
+        ok: true,
+        sessionId: "cs_test_generated_checkout",
+        url: "https://checkout.stripe.com/c/pay/cs_test_generated_checkout#fixture",
+      });
+      assert.equal(providerRequests.length, 1);
+      assert.equal(providerRequests[0].headers["idempotency-key"], `sporades:checkout-blank:stripe:checkout:${signup.data.auth.userId}:intent-generated-1`);
+      assert.equal(providerRequests[0].body.get("mode"), "payment");
+      assert.equal(providerRequests[0].body.get("line_items[0][price]"), "price_server_owned");
+
+      const repeated = await send(socket, { id: "checkout-repeat", type: "mutation.run", mutation: "startStripeCheckout", args: [checkoutInput] });
+      assert.equal(repeated.error, null);
+      assert.equal(repeated.data.jobId, jobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.length, 1);
+
+      const startedSubscription = await send(socket, { id: "subscription", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
+      assert.equal(startedSubscription.error, null, JSON.stringify(startedSubscription));
+      const subscriptionJobId = startedSubscription.data.jobId;
+      const subscriptionSucceededPromise = waitForSocketMessage(socket, (message) => message.id === "subscription-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "subscription-state", type: "query.subscribe", query: "paymentJob", args: [subscriptionJobId] }));
+      const subscriptionSucceeded = await subscriptionSucceededPromise;
+      assert.deepEqual(subscriptionSucceeded.data.result, {
+        ok: true,
+        sessionId: "cs_test_generated_subscription",
+        url: "https://checkout.stripe.com/c/pay/cs_test_generated_subscription#fixture",
+      });
+      assert.equal(providerRequests.length, 2);
+      assert.equal(providerRequests[1].headers["idempotency-key"], `sporades:checkout-blank:stripe:checkout:${signup.data.auth.userId}:intent-subscription-1`);
+      assert.equal(providerRequests[1].body.get("mode"), "subscription");
+      assert.equal(providerRequests[1].body.get("line_items[0][price]"), "price_recurring_server_owned");
+      assert.equal(providerRequests[1].body.get("line_items[0][quantity]"), "4");
+
+      const repeatedSubscription = await send(socket, { id: "subscription-repeat", type: "mutation.run", mutation: "startStripeCheckout", args: [subscriptionInput] });
+      assert.equal(repeatedSubscription.error, null);
+      assert.equal(repeatedSubscription.data.jobId, subscriptionJobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.length, 2);
+
+      const retryInput = { intentId: "intent-retry-1", productKey: "pro", quantity: 1 };
+      const retryStarted = await send(socket, { id: "checkout-retry", type: "mutation.run", mutation: "startStripeCheckout", args: [retryInput] });
+      assert.equal(retryStarted.error, null, JSON.stringify(retryStarted));
+      const retrySucceededPromise = waitForSocketMessage(socket, (message) => message.id === "payment-retry-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "payment-retry-state", type: "query.subscribe", query: "paymentJob", args: [retryStarted.data.jobId] }));
+      const retrySucceeded = await retrySucceededPromise;
+      assert.equal(retrySucceeded.data.attempts, 2);
+      const retryRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === "intent-retry-1");
+      assert.equal(retryRequests.length, 2);
+      assert.equal(retryRequests[0].headers["idempotency-key"], retryRequests[1].headers["idempotency-key"]);
+      assert.match(retryRequests[0].headers["idempotency-key"], /:intent-retry-1$/);
+
+      const portalInput = { intentId: "intent-portal-1", billingHolderKey: "personal" };
+      const portalStarted = await send(socket, { id: "portal", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [portalInput] });
+      assert.equal(portalStarted.error, null, JSON.stringify(portalStarted));
+      const portalSucceededPromise = waitForSocketMessage(socket, (message) => message.id === "portal-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "portal-state", type: "query.subscribe", query: "paymentJob", args: [portalStarted.data.jobId] }));
+      const portalSucceeded = await portalSucceededPromise;
+      assert.deepEqual(portalSucceeded.data.result, {
+        ok: true,
+        sessionId: "bps_generated_portal",
+        url: "https://billing.stripe.com/p/session/test_generated_portal",
+      });
+      const portalRequests = providerRequests.filter((candidate) => candidate.url === "/v1/billing_portal/sessions");
+      assert.equal(portalRequests.length, 1);
+      assert.equal(portalRequests[0].headers["idempotency-key"], `sporades:checkout-blank:stripe:portal:${signup.data.auth.userId}:intent-portal-1`);
+      assert.equal(portalRequests[0].body.get("customer"), "cus_server_resolved");
+
+      const repeatedPortal = await send(socket, { id: "portal-repeat", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [portalInput] });
+      assert.equal(repeatedPortal.error, null);
+      assert.equal(repeatedPortal.data.jobId, portalStarted.data.jobId);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(providerRequests.filter((candidate) => candidate.url === "/v1/billing_portal/sessions").length, 1);
+
+      const portalRetryStarted = await send(socket, { id: "portal-retry", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-retry", billingHolderKey: "retry" }] });
+      assert.equal(portalRetryStarted.error, null, JSON.stringify(portalRetryStarted));
+      const portalRetryPromise = waitForSocketMessage(socket, (message) => message.id === "portal-retry-state" && message.data?.status === "succeeded");
+      socket.send(JSON.stringify({ id: "portal-retry-state", type: "query.subscribe", query: "paymentJob", args: [portalRetryStarted.data.jobId] }));
+      const portalRetried = await portalRetryPromise;
+      assert.equal(portalRetried.data.attempts, 2);
+      const portalRetryRequests = providerRequests.filter((candidate) => candidate.body.get("customer") === "cus_server_retry");
+      assert.equal(portalRetryRequests.length, 2);
+      assert.equal(portalRetryRequests[0].headers["idempotency-key"], portalRetryRequests[1].headers["idempotency-key"]);
+
+      const portalRejected = await send(socket, { id: "portal-rejected", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-rejected", billingHolderKey: "rejected" }] });
+      assert.equal(portalRejected.error, null, JSON.stringify(portalRejected));
+      const portalRejectedPromise = waitForSocketMessage(socket, (message) => message.id === "portal-rejected-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "portal-rejected-state", type: "query.subscribe", query: "paymentJob", args: [portalRejected.data.jobId] }));
+      const portalFailed = await portalRejectedPromise;
+      assert.equal(portalFailed.data.attempts, 1);
+      assert.deepEqual(portalFailed.data.failure, { code: "STRIPE_PORTAL_REJECTED", message: "Stripe rejected the Customer Portal request." });
+      assert.doesNotMatch(JSON.stringify(portalFailed), /cus_server_rejected/);
+
+      const portalRevoked = await send(socket, { id: "portal-revoked", type: "mutation.run", mutation: "startStripeCustomerPortal", args: [{ intentId: "intent-portal-revoked", billingHolderKey: "revoked" }] });
+      assert.equal(portalRevoked.error, null, JSON.stringify(portalRevoked));
+      const portalRevokedPromise = waitForSocketMessage(socket, (message) => message.id === "portal-revoked-state" && message.data?.status === "failed");
+      socket.send(JSON.stringify({ id: "portal-revoked-state", type: "query.subscribe", query: "paymentJob", args: [portalRevoked.data.jobId] }));
+      const revokedState = await portalRevokedPromise;
+      assert.equal(revokedState.data.attempts, 1);
+      assert.deepEqual(revokedState.data.failure, { code: "PAYMENT_PORTAL_UNAVAILABLE", message: "Customer Portal is not available for this billing holder." });
+      assert.equal(providerRequests.some((candidate) => candidate.body.get("customer") === "cus_server_revoked"), false);
+
+      foreignSocket = await openSocket(started.data.url);
+      const guestInput = { intentId: "intent-guest-1", productKey: "guest", quantity: 1 };
+      const guestStarted = await send(foreignSocket, { id: "guest-checkout", type: "mutation.run", mutation: "startStripeCheckout", args: [guestInput] });
+      assert.equal(guestStarted.error, null, JSON.stringify(guestStarted));
+      const guestSucceededPromise = waitForSocketMessage(foreignSocket, (message) => message.id === "guest-payment-state" && message.data?.status === "succeeded");
+      foreignSocket.send(JSON.stringify({ id: "guest-payment-state", type: "query.subscribe", query: "paymentJob", args: [guestStarted.data.jobId] }));
+      const guestSucceeded = await guestSucceededPromise;
+      assert.equal(guestSucceeded.data.result.sessionId, "cs_test_generated_checkout");
+      const guestRequests = providerRequests.filter((candidate) => candidate.body.get("client_reference_id") === guestInput.intentId);
+      assert.equal(guestRequests.length, 1);
+      assert.equal(guestRequests[0].body.get("mode"), "payment");
+      assert.equal(guestRequests[0].body.get("line_items[0][price]"), "price_guest_server_owned");
+      assert.match(guestRequests[0].headers["idempotency-key"], /^sporades:checkout-blank:stripe:checkout:[^:]+:intent-guest-1$/);
+
+      const foreign = await send(foreignSocket, { id: "foreign-state", type: "query.subscribe", query: "paymentJob", args: [subscriptionJobId] });
+      assert.equal(foreign.data ?? null, null);
+      assert.equal(foreign.error ?? null, null);
+      const foreignPortal = await send(foreignSocket, { id: "foreign-portal-state", type: "query.subscribe", query: "paymentJob", args: [portalStarted.data.jobId] });
+      assert.equal(foreignPortal.data ?? null, null);
+      assert.equal(foreignPortal.error ?? null, null);
+
+      const stripeEvent = JSON.stringify({
+        id: "evt_generated_callback_1",
+        object: "event",
+        api_version: "2026-07-29.dahlia",
+        created: Math.floor(Date.now() / 1000),
+        data: { object: { id: "obj_future_1", object: "future.billing.object" } },
+        livemode: false,
+        pending_webhooks: 1,
+        request: null,
+        type: "future.billing.reconciled",
+      });
+      const stripeSignature = Stripe.webhooks.generateTestHeaderString({ payload: stripeEvent, secret: "whsec_generated_fixture" });
+      const postStripeEvent = () => fetch(`${started.data.url}/stripe/webhook`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "stripe-signature": stripeSignature },
+        body: stripeEvent,
+      });
+      const firstCallback = await postStripeEvent();
+      const duplicateCallback = await postStripeEvent();
+      assert.equal(firstCallback.status, 200);
+      assert.equal(duplicateCallback.status, 200);
+      const firstAdmission = await firstCallback.json();
+      const duplicateAdmission = await duplicateCallback.json();
+      assert.equal(firstAdmission.jobId, duplicateAdmission.jobId);
+      let admittedJobs = [];
+      const deliveryDeadline = Date.now() + 5_000;
+      do {
+        admittedJobs = JSON.parse((await runCliFrom(installedCliPath, ["jobs"], { cwd: projectDir })).stdout).data.jobs;
+        if (admittedJobs.some((candidate) => candidate.id === firstAdmission.jobId && candidate.status === "succeeded")) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      } while (Date.now() < deliveryDeadline);
+      assert.equal(admittedJobs.filter((candidate) => candidate.id === firstAdmission.jobId && candidate.handler === "_sporades.stripe-event").length, 1);
+      assert.equal(admittedJobs.find((candidate) => candidate.id === firstAdmission.jobId)?.status, "succeeded");
+      assert.doesNotMatch(JSON.stringify(admittedJobs), /obj_future_1|pending_webhooks|whsec_generated_fixture|stripe-signature|cs_test_generated_|test_generated_portal/i);
+      const completedDuplicate = await postStripeEvent();
+      assert.equal(completedDuplicate.status, 200);
+      assert.equal((await completedDuplicate.json()).jobId, firstAdmission.jobId);
+      const paymentLogs = JSON.parse((await runCliFrom(installedCliPath, ["logs", "--json"], { cwd: projectDir })).stdout).data.entries;
+      const deliveredLogs = paymentLogs.filter((event) => event.message === "generated.stripe-event" && event.data?.providerEventId === "evt_generated_callback_1");
+      assert.equal(deliveredLogs.length, 1);
+      assert.equal(deliveredLogs[0].data.type, "future.billing.reconciled");
+      assert.doesNotMatch(JSON.stringify(paymentLogs), /obj_future_1|pending_webhooks|whsec_generated_fixture|stripe-signature|cs_test_generated_|test_generated_portal/i);
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      assert.doesNotMatch(serverBundle, /sk_test_generated_fixture|whsec_generated_fixture/);
+      assert.doesNotMatch(serverBundle, /(?:from\s+|require\()["']stripe["']/);
+      assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_PORTAL_RESPONSE_INVALID/);
+      assert.match(serverBundle, /STRIPE_WEBHOOK_REJECTED/);
+      const generatedPaymentSurfaces = (await Promise.all([
+        readFile(configPath, "utf8"),
+        readFile(paymentsPath, "utf8"),
+        readFile(path.join(projectDir, "client", "payments.ts"), "utf8"),
+        readFile(path.join(projectDir, "README.md"), "utf8"),
+        readFile(path.join(projectDir, "AGENTS.md"), "utf8"),
+      ])).join("\n");
+      const redactionSurfaces = `${packed.stdout}${packed.stderr}${candidateCli.installed.stdout}${candidateCli.installed.stderr}${installedCandidate.installed.stdout}${installedCandidate.installed.stderr}${runtimeStdout}${runtimeStderr}${generatedPaymentSurfaces}${serverBundle}`;
+      assert.equal(redactionSurfaces.includes(stripeSignature), false);
+      assert.doesNotMatch(redactionSurfaces, /sk_test_generated_fixture|whsec_generated_fixture|obj_future_1|pending_webhooks|cs_test_generated_|test_generated_portal|Bearer sk_test_/i);
+    } finally {
+      await closeSocketGracefully(foreignSocket);
+      await closeSocketGracefully(socket);
+      child?.kill("SIGTERM");
+      if (child) await new Promise((resolve) => child.once("exit", resolve));
+      provider.closeAllConnections();
+      await new Promise((resolve) => provider.close(resolve));
+    }
+  });
+});
+
+test("activated Stripe rejects legacy plaintext server env before publishing a Bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "sealed-stripe", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "sealed-stripe");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.payments.stripe = {
+      enabled: true,
+      secretKeyEnv: "STRIPE_SECRET_KEY",
+      webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
+      publicOrigin: "https://payments.example.test",
+      callbackPath: "/stripe/webhook",
+      apiVersion: "2026-07-29.dahlia",
+      livemode: false,
+      requestTimeoutMs: 10_000,
+    };
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "STRIPE_SECRET_KEY=sk_test_plaintext_fixture\nSTRIPE_WEBHOOK_SECRET=whsec_plaintext_fixture\n");
+
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.code, "INVALID_STRIPE_PAYMENTS_CONFIG");
+      assert.match(error.hint, /sporades env set/i);
+      assert.doesNotMatch(`${error.message}\n${error.hint}`, /plaintext_fixture/);
+      return true;
+    });
+    await assert.rejects(access(path.join(projectDir, ".sporades", "build", "server.mjs")), (error) => error.code === "ENOENT");
   });
 });
 

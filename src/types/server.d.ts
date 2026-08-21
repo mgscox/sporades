@@ -1,3 +1,5 @@
+import type { StripeEnabledPaymentsConfig, VerifiedStripeEvent } from "./stripe.js";
+
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 
 /** JSON-compatible values accepted by Sporades `Json()` fields and preferences APIs. */
@@ -685,6 +687,10 @@ export type CapsuleContext<
   auth: AuthContext;
   credential: Credential;
   env: Record<string, string>;
+  /** Normalized non-secret payment configuration. Secret values remain in `env` and are resolved only by the server integration. */
+  payments: Readonly<{ stripe: Readonly<{ enabled: false }> | StripeEnabledPaymentsConfig }> | undefined;
+  /** Cooperative cancellation is present for durable Job and Privileged execution. */
+  signal?: AbortSignal;
   log: Logger;
   messages: MessageApi;
   privileged: PrivilegedApi<Schema>;
@@ -700,6 +706,15 @@ export type CapsuleContext<
   accessKeys: CurrentUserAccessKeysApi;
 };
 
+/** Immutable exact bytes from one bounded Custom endpoint request-body read. */
+export type EndpointBodyBytes = {
+  readonly byteLength: number;
+  readonly length: number;
+  at(index: number): number | undefined;
+  toUint8Array(): Uint8Array;
+  [Symbol.iterator](): IterableIterator<number>;
+};
+
 /** Request details available only inside Custom endpoint handlers. */
 export type EndpointRequest = {
   method: string;
@@ -707,6 +722,7 @@ export type EndpointRequest = {
   query: Record<string, string>;
   headers: Record<string, string>;
   body?: unknown;
+  readonly bodyBytes: EndpointBodyBytes;
 };
 
 export type EndpointContext<
@@ -743,6 +759,12 @@ export type VerifiedEmailEvent = {
 export type EmailEventHandler<Schema extends SchemaDefinition = SchemaDefinition> = (
   ctx: PrivilegedContext<Schema>,
   event: VerifiedEmailEvent,
+) => MaybePromise<void>;
+
+/** Handler for a Capsule's single verified Stripe-event subscription. */
+export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinition> = (
+  ctx: PrivilegedContext<Schema>,
+  event: VerifiedStripeEvent,
 ) => MaybePromise<void>;
 
 /** Handler for a named query exposed over the Sporades client transport. */
@@ -847,6 +869,11 @@ export type EmailEventDefinition<Handler = EmailEventHandler> = {
   handler: Handler;
 };
 
+export type StripeEventDefinition<Handler = StripeEventHandler> = {
+  kind: "stripeEvent";
+  handler: Handler;
+};
+
 export type MessageDefinition<Handler = MessageHandler> = {
   kind: "message";
   handler: Handler;
@@ -941,8 +968,9 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   mutations?: Record<string, MutationDefinition<MutationHandler | AuthGuardedHandler<(...args: any[]) => any>>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
+  stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  jobs?: Record<string, JobDefinition>;
+  jobs?: Record<string, JobDefinition<any>>;
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: {
@@ -1019,6 +1047,8 @@ export function endpoint<Handler extends (...args: any[]) => any>(options: Endpo
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
+/** Declare the single verified Stripe-event subscription for a Capsule. */
+export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,

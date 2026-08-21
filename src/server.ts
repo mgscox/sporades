@@ -37,6 +37,11 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
   handler: HandlerType;
 };
 
+export type StripeEventDefinition<HandlerType extends Handler = Handler> = {
+  kind: "stripeEvent";
+  handler: HandlerType;
+};
+
 /**
  * A server-only recurring Job declaration using numeric five-field cron.
  * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
@@ -193,6 +198,11 @@ export function endpoint<const HandlerType extends Handler>(
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<const HandlerType extends Handler>(handler: HandlerType): EmailEventDefinition<HandlerType> {
   return { kind: "emailEvent", handler };
+}
+
+/** Declare the single verified Stripe-event subscription for a Capsule. */
+export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType> {
+  return { kind: "stripeEvent", handler };
 }
 
 export function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType> {
@@ -457,6 +467,13 @@ export function endpoint(options, handler) {
 export function emailEvent(handler) {
   return {
     kind: "emailEvent",
+    handler,
+  };
+}
+
+export function stripeEvent(handler) {
+  return {
+    kind: "stripeEvent",
     handler,
   };
 }

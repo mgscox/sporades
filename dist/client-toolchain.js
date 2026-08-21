@@ -365,6 +365,9 @@ function sporadesEsbuildClientPlugin(devRefresh = false) {
     return {
         name: "sporades-client",
         setup(build) {
+            build.onResolve({ filter: /^sporades\/server(?:\/|$)/ }, (args) => {
+                throw serverOnlyClientImportError(args.path);
+            });
             build.onResolve({ filter: /^sporades\/client$/ }, () => ({ path: "sporades/client", namespace: "sporades-runtime" }));
             build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource({ devRefresh }) }));
         },
@@ -375,9 +378,16 @@ function sporadesViteClientPlugin(devRefresh = false) {
     return {
         name: "sporades-client-runtime",
         enforce: "pre",
-        resolveId(id) { return id === "sporades/client" ? runtimeId : null; },
+        resolveId(id) {
+            if (/^sporades\/server(?:\/|$)/.test(id))
+                throw serverOnlyClientImportError(id);
+            return id === "sporades/client" ? runtimeId : null;
+        },
         load(id) { return id === runtimeId ? createClientRuntimeSource({ devRefresh }) : null; },
     };
+}
+function serverOnlyClientImportError(specifier) {
+    return clientToolchainError("Client code cannot import server-only Sporades modules.", "Move this import into server/ and expose only bounded application data through a query or mutation.", { specifier });
 }
 function sporadesViteBuildInvariants(indexHtmlPath, frameworkConfig) {
     return {

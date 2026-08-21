@@ -3,6 +3,9 @@ declare const HELP_TEXT: {
 
 Scaffold a new Capsule.
 
+The blank template includes a dormant, credential-free Stripe payment foundation;
+activation remains explicit and server-only.
+
 Options:
   --framework <name>  Client framework: ${string}
   --toolchain <name>  Client toolchain: ${string} (framework-dependent)
@@ -28,6 +31,9 @@ export type CliHelpCommand = keyof Omit<typeof HELP_TEXT, "default">;
 export declare function renderCliHelp(command?: string): `Usage: sporades create <name> [options]
 
 Scaffold a new Capsule.
+
+The blank template includes a dormant, credential-free Stripe payment foundation;
+activation remains explicit and server-only.
 
 Options:
   --framework <name>  Client framework: ${string}
