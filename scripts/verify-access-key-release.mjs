@@ -80,6 +80,10 @@ try {
   };
   const testcases = [...junit.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
     .map((match) => testcase(match[1], match[2] ?? ""));
+  const successfulSuites = [...junit.matchAll(/<testsuite\b([^>]*)>/g)]
+    .filter((match) => ["errors", "failures", "skipped"].every((name) =>
+      Number(new RegExp(`\\b${name}="(\\d+)"`).exec(match[1])?.[1] ?? -1) === 0))
+    .map((match) => decodeXml(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? ""));
   const allowedOptionalSmoke = (name) =>
     name === "ctx.mail sends through Mailjet's generic authenticated STARTTLS endpoint" ||
     name.startsWith("real Container serves a complete ") ||
@@ -110,7 +114,8 @@ try {
     "the generated Bundle runs audited Access-key operator actions without credential material",
     "the packed package exposes the complete server and client Access-key contract",
   ];
-  const missingRequiredCases = requiredCases.filter((name) => !testcases.some((entry) => entry.name === name && !entry.skipped));
+  const missingRequiredCases = requiredCases.filter((name) =>
+    !successfulSuites.includes(name) && !testcases.some((entry) => entry.name === name && !entry.skipped && !entry.failed));
   if (missingRequiredCases.length) {
     throw new Error(`Release verification did not execute required cases: ${JSON.stringify(missingRequiredCases)}`);
   }
