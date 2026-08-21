@@ -36,7 +36,7 @@ The 37 allowed skips were only the reviewed external/live smokes: real SSH Hoste
 - disclosed bearer values scanned: 6
 - retained bearer files: 0
 
-The purpose-built Capsule proved linked-Session owner management, Bearer admission, Credential provenance, central wildcard scopes, middleware, current Table/Team/File authority, durable Job execution after rotation/revocation/restart, password-reset bulk retirement, opaque 401/403/429 behavior, one-time browser disclosure and recovery, CLI/operator routing, generated runtime parity, and absence of disclosed credentials from captured non-disclosure surfaces and retained files.
+The purpose-built Capsule proved linked-Session owner management, Bearer admission, Credential provenance, central scoped admission, middleware, current Table/Team/File authority, durable Job execution after rotation/revocation/restart, password-reset bulk retirement, opaque 401/403/429 behavior, one-time browser disclosure and recovery, CLI/operator routing, generated runtime parity, and absence of disclosed credentials from captured non-disclosure surfaces and retained files. Wildcard matching was proved separately by the integrated scope suite.
 
 ## Review and cleanup
 
