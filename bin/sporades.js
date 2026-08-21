@@ -6687,7 +6687,7 @@ function accessKeyVerifierDigest(selector, verifier) {
   return accessKeyCrypto().createHash("sha256").update("sporades-access-key-v1\0", "utf8").update(Buffer.from(selector, "base64url")).update(Buffer.from(verifier, "base64url")).digest("hex");
 }
 function requireOwnerSessionContext(context) {
-  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session" || context?.auth?.isAuthenticated !== true || context?.auth?.isGuest === true) {
+  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session" || !accessKeyOwnerSessionTokens.has(context) || context?.auth?.isAuthenticated !== true || context?.auth?.isGuest === true) {
     throw commandError(
       "Access-key owner approval requires a linked Session.",
       "Sign in interactively and retry the Access-key operation.",
@@ -19382,6 +19382,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind
   };
+  transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
   if (!context.__sporadesContextHolder) {

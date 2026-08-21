@@ -3281,6 +3281,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
+  transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
   if (!context.__sporadesContextHolder) {

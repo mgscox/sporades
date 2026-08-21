@@ -272,9 +272,17 @@ test("a failed endpoint rolls back its Job enqueue with its handler data", async
 test("Jobs capture enqueue-time Session provider provenance across later provider switches", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-"));
   const seen = [];
+  const ownerActionDenials = [];
   const capsule = {
     jobs: {
-      recordProvider: job((ctx) => {
+      recordProvider: job(async (ctx) => {
+        ctx.kind = "mutation";
+        try {
+          await ctx.accessKeys.list();
+          ownerActionDenials.push("allowed");
+        } catch (error) {
+          ownerActionDenials.push(error.code);
+        }
         seen.push({
           provider: ctx.auth.provider,
           credential: ctx.credential,
@@ -326,6 +334,7 @@ test("Jobs capture enqueue-time Session provider provenance across later provide
       { provider: "google", credential: { kind: "session" }, credentialFrozen: true, authFrozen: true },
       { provider: "google", credential: { kind: "session" }, credentialFrozen: true, authFrozen: true },
     ]);
+    assert.deepEqual(ownerActionDenials, ["FORBIDDEN", "FORBIDDEN"]);
     assert.equal(database.adapter.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "google");
   } finally {
     database.close();
@@ -493,13 +502,18 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
       isGuest: 0,
       provider: owner.provider,
     });
+    const ownerSessionToken = `job-owner-session-${owner.userId}`;
+    await database.adapter.insertAuthSession({
+      token: ownerSessionToken, userId: owner.userId, provider: owner.provider,
+      createdAt: "2026-08-20T12:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     database.adapter.prepare("INSERT INTO sporades_teams (id, name, createdAt, createdByUserId) VALUES (?, ?, ?, ?)")
       .run(teamId, "Job authority team", "2026-08-20T12:00:00.000Z", owner.userId);
     database.adapter.prepare("INSERT INTO sporades_team_memberships (teamId, userId, role, createdAt) VALUES (?, ?, 'member', ?)")
       .run(teamId, owner.userId, "2026-08-20T12:00:00.000Z");
     await runMutation(database, owner, "createVisible", []);
     await runMutation(database, owner, "createTeamItem", []);
-    const issued = await runMutation(database, owner, "issue", []);
+    const issued = await runMutation(database, owner, "issue", [], { sessionToken: ownerSessionToken });
     assert.equal(issued.ok, true, JSON.stringify(issued));
     const admitted = await runEndpoint(database, { handler: endpointHandler }, new URL("http://capsule.test/jobs"), {
       method: "POST",
@@ -526,9 +540,9 @@ test("Access-key Jobs preserve bounded admission provenance through deletion, re
     assert.equal(JSON.stringify(stored).includes(issued.data.token), false);
     assert.equal(/selector|verifier|grant|scope/i.test(JSON.stringify(stored)), false);
 
-    await runMutation(database, owner, "revoke", [issued.data.accessKey.id]);
-    await runMutation(database, owner, "remove", [issued.data.accessKey.id]);
-    const replacement = await runMutation(database, owner, "issue", []);
+    await runMutation(database, owner, "revoke", [issued.data.accessKey.id], { sessionToken: ownerSessionToken });
+    await runMutation(database, owner, "remove", [issued.data.accessKey.id], { sessionToken: ownerSessionToken });
+    const replacement = await runMutation(database, owner, "issue", [], { sessionToken: ownerSessionToken });
     assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
     database.adapter.prepare("UPDATE visibleItems SET visible = 0 WHERE ownerId = ?").run(owner.userId);
     database.adapter.prepare("DELETE FROM sporades_team_memberships WHERE teamId = ? AND userId = ?").run(teamId, owner.userId);
@@ -714,22 +728,27 @@ async function proveAccessKeyJobLifecycleAcrossEngine({ databasePath, serverEnv 
       isGuest: 0,
       provider: owner.provider,
     });
+    const ownerSessionToken = `cross-engine-session-${owner.userId}`;
+    await database.adapter.insertAuthSession({
+      token: ownerSessionToken, userId: owner.userId, provider: owner.provider,
+      createdAt: "2026-08-20T12:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     const rolledBack = await runMutation(database, owner, "enqueueThenFail", []);
     assert.equal(rolledBack.ok, false);
     assert.equal((await database.adapter.prepare(database.adapter.dialect.sql(
       "SELECT [id] FROM [sporades_jobs] WHERE [idempotencyKey] = ?",
     )).get("must-roll-back")) ?? null, null);
 
-    const issued = await runMutation(database, owner, "issue", []);
+    const issued = await runMutation(database, owner, "issue", [], { sessionToken: ownerSessionToken });
     assert.equal(issued.ok, true, JSON.stringify(issued));
     const admitted = await runEndpoint(database, { handler: endpointHandler }, new URL("http://capsule.test/jobs"), {
       method: "POST",
       headers: { authorization: `Bearer ${issued.data.token}` },
       async *[Symbol.asyncIterator]() {},
     });
-    await runMutation(database, owner, "revoke", [issued.data.accessKey.id]);
-    await runMutation(database, owner, "remove", [issued.data.accessKey.id]);
-    const replacement = await runMutation(database, owner, "issue", []);
+    await runMutation(database, owner, "revoke", [issued.data.accessKey.id], { sessionToken: ownerSessionToken });
+    await runMutation(database, owner, "remove", [issued.data.accessKey.id], { sessionToken: ownerSessionToken });
+    const replacement = await runMutation(database, owner, "issue", [], { sessionToken: ownerSessionToken });
     assert.equal(replacement.ok, true, JSON.stringify(replacement));
     assert.notEqual(replacement.data.accessKey.id, issued.data.accessKey.id);
     await deleteCurrentAuthUser(database, { kind: "mutation", auth: owner, credential: { kind: "session" } });

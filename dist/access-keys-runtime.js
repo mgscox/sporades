@@ -476,6 +476,7 @@ export function accessKeyVerifierDigest(selector, verifier) {
 function requireOwnerSessionContext(context) {
     if (!["query", "mutation", "endpoint", "message"].includes(context?.kind)
         || context?.credential?.kind !== "session"
+        || !accessKeyOwnerSessionTokens.has(context)
         || context?.auth?.isAuthenticated !== true
         || context?.auth?.isGuest === true) {
         throw commandError("Access-key owner approval requires a linked Session.", "Sign in interactively and retry the Access-key operation.", context?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED");

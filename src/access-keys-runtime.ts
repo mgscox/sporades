@@ -489,6 +489,7 @@ function requireOwnerSessionContext(context: LooseRecord) {
   if (
     !["query", "mutation", "endpoint", "message"].includes(context?.kind)
     || context?.credential?.kind !== "session"
+    || !accessKeyOwnerSessionTokens.has(context)
     || context?.auth?.isAuthenticated !== true
     || context?.auth?.isGuest === true
   ) {

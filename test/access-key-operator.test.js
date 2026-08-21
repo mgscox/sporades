@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, replaceRuntimeDatabase, runMutation, runRuntimeAccessKeyOperatorAction } from "../dist/server-runtime-source.js";
+import {
+  openDevDatabase, replaceRuntimeDatabase, runMutation as runRuntimeMutation,
+  runRuntimeAccessKeyOperatorAction,
+} from "../dist/server-runtime-source.js";
 import { mutation } from "../dist/server.js";
 
 const owner = {
@@ -16,6 +19,18 @@ const owner = {
   isGuest: false,
   provider: "email",
 };
+const ownerSessionToken = "operator-key-owner-session";
+
+function runMutation(database, auth, name, args) {
+  return runRuntimeMutation(database, auth, name, args, { sessionToken: ownerSessionToken });
+}
+
+async function insertOwnerSession(database) {
+  await database.adapter.insertAuthSession({
+    token: ownerSessionToken, userId: owner.userId, provider: owner.provider,
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+}
 
 test("Privileged Access-key controls expose only metadata and retirement", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-operator-"));
@@ -43,6 +58,7 @@ test("Privileged Access-key controls expose only metadata and retirement", async
       id: owner.userId, createdAt: "2026-08-20T12:00:00.000Z", displayName: owner.displayName,
       email: owner.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: owner.provider,
     });
+    await insertOwnerSession(database);
     const first = await runMutation(database, owner, "issue", ["automation one"]);
     const second = await runMutation(database, owner, "issue", ["automation two"]);
     assert.equal(first.ok, true, JSON.stringify(first));
@@ -149,6 +165,7 @@ test("operator retirement rolls back when its terminal audit cannot be emitted",
       id: owner.userId, createdAt: "2026-08-20T12:00:00.000Z", displayName: owner.displayName,
       email: owner.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: owner.provider,
     });
+    await insertOwnerSession(database);
     const issued = await runMutation(database, owner, "issue", ["audit rollback"]);
     assert.equal(issued.ok, true, JSON.stringify(issued));
 

@@ -7,7 +7,22 @@ import { test } from "node:test";
 import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
 import { deleteCurrentAuthUser, unlinkCurrentAuthUser } from "../dist/auth-runtime.js";
-import { openDevDatabase, routeEndpoint, runClientAccessKeyOperation, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import {
+  openDevDatabase, routeEndpoint, runClientAccessKeyOperation,
+  runMutation as runRuntimeMutation, runQuery as runRuntimeQuery,
+} from "../dist/server-runtime-source.js";
+
+function sessionTokenFor(auth) {
+  return `test-session-${auth.userId}`;
+}
+
+function runMutation(database, auth, name, args) {
+  return runRuntimeMutation(database, auth, name, args, { sessionToken: sessionTokenFor(auth) });
+}
+
+function runQuery(database, auth, name, args = []) {
+  return runRuntimeQuery(database, auth, name, args, { sessionToken: sessionTokenFor(auth) });
+}
 
 function linkedAuth(userId = "access-key-owner") {
   return {
@@ -61,6 +76,13 @@ async function seedLinkedUser(database, auth = linkedAuth()) {
     isAuthenticated: 1,
     isGuest: 0,
     provider: auth.provider,
+  });
+  await database.adapter.insertAuthSession({
+    token: sessionTokenFor(auth),
+    userId: auth.userId,
+    provider: auth.provider,
+    createdAt: "2026-08-20T12:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
   });
   return auth;
 }
@@ -888,7 +910,7 @@ test("owner operations validate immutable metadata, eligibility, and one-time se
       redactedFailure = await runClientAccessKeyOperation(database, auth, {
         type: "accessKeys.issue",
         input: { name: "redacted-failure" },
-      });
+      }, sessionTokenFor(auth));
     } finally {
       database.adapter.withTransaction = originalWithTransaction;
     }

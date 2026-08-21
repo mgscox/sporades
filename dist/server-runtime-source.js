@@ -3034,6 +3034,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
+    transferAccessKeyRuntimeState(baseContext, context);
     const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
     holder.current = context;
     if (!context.__sporadesContextHolder) {

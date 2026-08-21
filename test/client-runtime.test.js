@@ -148,6 +148,11 @@ test("committed Access-key secrets lost with their response recover through list
     provider: "email",
   };
   await database.adapter.insertAuthUser({ ...auth, id: auth.userId, isAuthenticated: 1, isGuest: 0 });
+  const sessionToken = "response-loss-owner-session";
+  await database.adapter.insertAuthSession({
+    token: sessionToken, userId: auth.userId, provider: auth.provider,
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+  });
   let issueCommittedResolve;
   let rotationCommittedResolve;
   let issueCommitted = new Promise((resolve) => { issueCommittedResolve = resolve; });
@@ -165,15 +170,15 @@ test("committed Access-key secrets lost with their response recover through list
   const handlers = {
     "accessKeys.issue": async (message) => {
       issueCalls += 1;
-      const result = await runClientAccessKeyOperation(database, auth, message);
+      const result = await runClientAccessKeyOperation(database, auth, message, sessionToken);
       lostIssueToken = result.data.token;
       issueCommittedResolve(result.data.accessKey);
       return neverRespond();
     },
-    "accessKeys.list": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message)),
+    "accessKeys.list": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
     "accessKeys.rotate": async (message) => {
       rotationCalls += 1;
-      const result = await runClientAccessKeyOperation(database, auth, message);
+      const result = await runClientAccessKeyOperation(database, auth, message, sessionToken);
       if (rotationCalls === 1) {
         lostRotationToken = result.data.token;
         rotationCommittedResolve(result.data.accessKey);
@@ -181,8 +186,8 @@ test("committed Access-key secrets lost with their response recover through list
       }
       return responseFor(message, result);
     },
-    "accessKeys.revoke": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message)),
-    "accessKeys.delete": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message)),
+    "accessKeys.revoke": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
+    "accessKeys.delete": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
   };
   const browser = installBrowserFakes(auth, { handlers });
   try {
