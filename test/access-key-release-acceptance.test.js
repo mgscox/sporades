@@ -424,6 +424,7 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
   const projectDir = path.join(root, projectName);
   let dev;
   let client;
+  let deployedContainerId = null;
   const captured = [];
   const httpCapture = [];
   const cliCapture = [];
@@ -551,6 +552,9 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     const containerPort = await reservePort();
     const deployed = await runCli(["deploy", "--port", String(containerPort), "--json"], projectDir, { timeout: 300_000 });
     assert.equal(deployed.code, 0, deployed.stderr || deployed.stdout);
+    const deployedBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    assert.match(deployedBinding.containerId, /^[a-f0-9]{12,64}$/);
+    deployedContainerId = deployedBinding.containerId;
     cliCapture.push(deployed);
     const deployment = lastJsonLine(deployed.stdout);
     const containerUrl = deployment.data.url;
@@ -763,7 +767,7 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     client?.close();
     await dev?.stop();
     await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
-    await run("docker", ["rm", "-f", projectName]).catch(() => null);
+    if (deployedContainerId) await run("docker", ["rm", "-f", deployedContainerId]).catch(() => null);
     await chmod(root, 0o700).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
