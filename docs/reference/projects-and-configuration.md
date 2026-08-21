@@ -309,6 +309,11 @@ newer state. Unknown event types are forward-compatible and safe to ignore. The
 verified raw provider value is sensitive: do not log or persist it by default;
 store only bounded fields required by deliberate Capsule policy. Sporades stores
 no second raw-event history and routine Job inspection omits the durable payload.
+The reserved Job retains that payload while work is unresolved and for 30 days
+after successful settlement, then replaces it with a non-sensitive marker while
+keeping the digest-backed terminal replay tombstone. Failed, exhausted,
+cancelled, queued, delayed, and running deliveries remain explicit unresolved
+exceptions; Sporades never pretends discarded repair evidence was resolved.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

@@ -99,6 +99,170 @@ type RuntimeConfig = LooseRecord;
 // stop comparing this value between the two bundles.
 export const RESERVED_JOB_NAME_PREFIX = "_sporades";
 export const STRIPE_EVENT_JOB = "_sporades.stripe-event";
+export const STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+export const STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
+
+const REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+const STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1_000;
+const STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2_147_483_647;
+
+export function stripeEventPayloadRetentionDeadline(settledAt: string) {
+  if (!isCanonicalJobTimestamp(settledAt)) return null;
+  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS)
+    ?? new Date(MAX_JOB_TIMESTAMP_MS).toISOString();
+}
+
+/** Internal privacy maintenance for the reserved Stripe Event Job only. */
+export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, options: LooseRecord = {}) {
+  const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE) {
+    throw jobError("STRIPE_EVENT_PAYLOAD_CLEANUP_INVALID", "Invalid Stripe Event payload cleanup batch.", "Use the runtime-owned bounded cleanup batch.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  const nowIso = database.clock.now().toISOString();
+  let assignedCount = 0;
+  let redactedCount = 0;
+
+  // Older successful reserved Jobs predate the deadline column. Assign their deadline in bounded
+  // CAS writes from the durable settlement time; malformed or unresolved rows remain retained.
+  const unassigned = await adapter.prepare(sql(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+    "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+    "ORDER BY [completedAt] ASC, [id] ASC LIMIT ?",
+  )).all(STRIPE_EVENT_JOB, batchSize);
+  for (const row of unassigned) {
+    const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+    if (deadline === null) {
+      // A malformed legacy settlement is unresolved privacy state. Classify it once with the
+      // empty sentinel so activation cannot spin, but retain its payload for explicit repair.
+      await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? " +
+        "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+        "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+      )).run(row.id, STRIPE_EVENT_JOB);
+      continue;
+    }
+    const changed = await adapter.prepare(sql(
+      "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
+      "AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL " +
+      "AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+    )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
+    assignedCount += Number(changed?.changes ?? 0);
+  }
+
+  const due = await adapter.prepare(sql(
+    "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? " +
+    "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' " +
+    "AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?",
+  )).all(STRIPE_EVENT_JOB, nowIso, batchSize);
+  for (const row of due) {
+    // Status, exact deadline, settlement time and absent claim form the CAS. Concurrent runtimes
+    // cannot cross a retry/lease transition or redact work that has become unresolved.
+    const changed = await adapter.prepare(sql(
+      "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? " +
+      "WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? " +
+      "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? " +
+      "AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso);
+    redactedCount += Number(changed?.changes ?? 0);
+  }
+
+  const moreUnassigned = await adapter.prepare(sql(
+    "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+    "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1",
+  )).get(STRIPE_EVENT_JOB);
+  const next = await adapter.prepare(sql(
+    "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+    "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' " +
+    "ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1",
+  )).get(STRIPE_EVENT_JOB);
+  const nextCleanupAt = moreUnassigned
+    ? nowIso
+    : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+  return Object.freeze({ assignedCount, redactedCount, nextCleanupAt });
+}
+
+export function scheduleStripeEventPayloadCleanup(database: LooseRecord, dueAt: number | null) {
+  if (database.__jobStopped) return;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    if (dueAt !== null) {
+      database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null
+        ? dueAt
+        : Math.min(database.__stripeEventPayloadCleanupRequestedAt, dueAt);
+    }
+    return;
+  }
+  if (dueAt !== null && database.__stripeEventPayloadCleanupTimer && database.__stripeEventPayloadCleanupDueAt !== null
+    && database.__stripeEventPayloadCleanupDueAt <= dueAt) return;
+  installStripeEventPayloadCleanupTimer(database, dueAt);
+}
+
+function installStripeEventPayloadCleanupTimer(database: LooseRecord, dueAt: number | null) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = dueAt;
+  if (dueAt === null) return;
+  database.__stripeEventPayloadCleanupTimer = database.clock.setTimer(async () => {
+    database.__stripeEventPayloadCleanupTimer = null;
+    database.__stripeEventPayloadCleanupDueAt = null;
+    if (!database.__jobStopped) await startStripeEventPayloadCleanup(database);
+  }, Math.min(STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS, Math.max(0, dueAt - database.clock.now().getTime())));
+}
+
+export function startStripeEventPayloadCleanup(database: LooseRecord) {
+  if (database.__jobStopped) return undefined;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    const now = database.clock.now().getTime();
+    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null
+      ? now
+      : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now);
+    return database.__stripeEventPayloadCleanupPromise;
+  }
+  const cleanup = runStripeEventPayloadCleanupChain(database);
+  database.__stripeEventPayloadCleanupPromise = cleanup;
+  cleanup.finally(() => {
+    if (database.__stripeEventPayloadCleanupPromise === cleanup) database.__stripeEventPayloadCleanupPromise = null;
+  }).catch(() => {});
+  return cleanup;
+}
+
+async function runStripeEventPayloadCleanupChain(database: LooseRecord) {
+  while (!database.__jobStopped) {
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    let nextDueAt: number | null;
+    try {
+      const result = await cleanupExpiredStripeEventPayloads(database);
+      nextDueAt = result.nextCleanupAt === null ? null : Date.parse(result.nextCleanupAt);
+    } catch (error: any) {
+      try {
+        await database.log.emit({
+          category: "platform", event: "stripe.event_payload_cleanup.failed", level: "error",
+          message: "Stripe Event payload cleanup failed",
+          data: { code: String(error?.code ?? "STRIPE_EVENT_PAYLOAD_CLEANUP_FAILED").slice(0, 80) },
+        });
+      } catch { }
+      nextDueAt = database.clock.now().getTime() + STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS;
+    }
+    if (database.__jobStopped) return;
+    const requestedAt = database.__stripeEventPayloadCleanupRequestedAt;
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
+    const dueAt = requestedAt === null ? nextDueAt : nextDueAt === null ? requestedAt : Math.min(nextDueAt, requestedAt);
+    installStripeEventPayloadCleanupTimer(database, dueAt);
+    return;
+  }
+}
+
+export function stopStripeEventPayloadCleanup(database: LooseRecord) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = null;
+  database.__stripeEventPayloadCleanupRequestedAt = null;
+  return database.__stripeEventPayloadCleanupPromise
+    ? Promise.resolve(database.__stripeEventPayloadCleanupPromise).then(() => undefined)
+    : undefined;
+}
 
 export function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
   const schedules: any[] = [];
@@ -623,7 +787,11 @@ export async function ensureJobStorage(sqlite: LooseRecord) {
   // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
   // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
   // "PRAGMA"` before the Job queue existed.
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  await sqlite.exec(sql(
+    "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] " +
+    "ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])",
+  ));
   await sqlite.exec(
     sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"),
   );

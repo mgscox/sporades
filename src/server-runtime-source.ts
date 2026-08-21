@@ -117,7 +117,8 @@ import {
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
   normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload,
   RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
-  STRIPE_EVENT_JOB,
+  scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup,
+  STRIPE_EVENT_JOB, stripeEventPayloadRetentionDeadline,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
@@ -1681,6 +1682,8 @@ function activateCurrentUserJobExecution(database: LooseRecord, recoveryAt: numb
   try { scheduleJobLeaseRecoveryAt(database, recoveryAt); }
   catch (error) { failures.push(error); }
   try { scheduleCurrentUserJobWorker(database, true); }
+  catch (error) { failures.push(error); }
+  try { startStripeEventPayloadCleanup(database); }
   catch (error) { failures.push(error); }
   if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
   if (failures.length === 1) throw failures[0];
@@ -5949,7 +5952,8 @@ function stopCurrentUserJobWorker(database: LooseRecord) {
   database.__jobLeaseRecoveryDueAt = null;
   database.__jobLeaseRecoveryRequestedAt = null;
   for (const activeClaim of database.__jobAbortControllers?.values?.() ?? []) (activeClaim?.controller ?? activeClaim)?.abort?.();
-  const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise]
+  const payloadCleanupSettlement = stopStripeEventPayloadCleanup(database);
+  const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise, payloadCleanupSettlement]
     .filter(Boolean)
     .map((pending) => Promise.resolve(pending));
   if (settlements.length === 0) return undefined;
@@ -6089,7 +6093,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try { return await handler.handler(privilegedCtx, jobPayload); }
@@ -6112,10 +6116,21 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        await database.adapter.prepare(sql(
-          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
-          "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
-        )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB
+          ? stripeEventPayloadRetentionDeadline(completedAt)
+          : null;
+        const settled = row.handler === STRIPE_EVENT_JOB
+          ? await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? " +
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+          )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken)
+          : await database.adapter.prepare(sql(
+            "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
+            "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
+          )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && payloadRetentionUntil !== null) {
+          scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
+        }
       } catch (error: any) {
         if (database.__jobStopped && !handlerStarted) {
           await relinquishUnstartedJobClaim(database, row.id, claimToken);

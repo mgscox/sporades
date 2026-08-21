@@ -1648,6 +1648,8 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "MAX_JOB_TIMESTAMP_MS",
   "RESERVED_JOB_NAME_PREFIX",
   "STRIPE_EVENT_JOB",
+  "STRIPE_EVENT_PAYLOAD_RETENTION_MS",
+  "STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE",
   "PASSWORD_RESET_MAIL_JOB",
   "PASSWORD_RESET_REQUEST_JOB",
   "PRIVILEGED_AUDIT_SCHEMA",
@@ -1745,6 +1747,8 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.STRIPE_EVENT_JOB.type, "string");
+    assert.equal(bundled.STRIPE_EVENT_PAYLOAD_RETENTION_MS.type, "number");
+    assert.equal(bundled.STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE.type, "number");
     assert.equal(bundled.PRIVILEGED_AUDIT_ACTOR_KINDS.type, "Set");
     assert.equal(bundled.SIDE_EFFECT_SQL_KEYWORDS.type, "Set");
     assert.ok(bundled.SIDE_EFFECT_SQL_KEYWORDS.values.length > 5);

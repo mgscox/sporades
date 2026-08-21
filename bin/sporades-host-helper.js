@@ -179,6 +179,8 @@ var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2c
 
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
+var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
 var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
 var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");

@@ -111,8 +111,12 @@ The separately exported server-only `sporades/server/stripe` boundary for Sporad
 _Avoid_: Stripe client, payment proxy, browser Stripe SDK
 
 **Verified Stripe event**:
-A bounded server-only value produced only after the official Stripe verifier accepts the exact callback bytes and `Stripe-Signature` header within its five-minute tolerance. It preserves the stable provider Event identity, type, creation time, live/test mode, relevant object identity, and frozen verified provider value. Admission stores it only as one idempotent runtime-owned Privileged Job payload within the retained Capsule database; changing the configured Capsule name does not change that Job identity. It grants no user, Session, Team, Capsule role, or browser authority and does not itself change Capsule billing state.
+A bounded server-only value produced only after the official Stripe verifier accepts the exact callback bytes and `Stripe-Signature` header within its five-minute tolerance. It preserves the stable provider Event identity, type, creation time, live/test mode, relevant object identity, and frozen verified provider value. Admission stores it only as one idempotent runtime-owned Privileged Job payload within the retained Capsule database; changing the configured Capsule name does not change that Job identity. Successful delivery starts a fixed 30-day payload deadline, after which the runtime leaves only a non-sensitive terminal replay tombstone. Unresolved Jobs retain the value for retry or repair. It grants no user, Session, Team, Capsule role, or browser authority and does not itself change Capsule billing state.
 _Avoid_: webhook request, payment notification, trusted billing state
+
+**Stripe Event payload tombstone**:
+The successful reserved Job row retained after its 30-day raw-payload deadline. It contains lifecycle metadata and the pre-existing digest-only idempotency key, but no Verified Stripe event or handler result. It preserves callback replay admission without re-running the settled Capsule consequence. Failed, exhausted, cancelled, queued, delayed, and running Jobs are unresolved and are not tombstones.
+_Avoid_: deleted Job, webhook archive, provider event record
 
 **Stripe-event subscription**:
 The optional single Capsule policy handler declared with `stripeEvents: stripeEvent(handler)`. The runtime-owned Stripe Event Job invokes it with a Verified Stripe event under the userless Privileged server role and its existing audit, retry, cancellation, and revocation lifecycle. The handler owns idempotent, order-independent Capsule consequences; unknown event types may be ignored and no subscription, entitlement, access, invoice, Customer, Team, order, export, erasure, or retention state is created automatically.

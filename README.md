@@ -175,6 +175,9 @@ Sporades currently includes:
   Generated policy ignores unknown events and tells authors to
   make deliberate consequences idempotent and order-independent, reject stale
   later-arriving observations, and avoid logging or retaining raw provider data.
+  A successful reserved Stripe Event Job retains its verified payload for 30
+  days, then bounded runtime cleanup leaves only the digest-backed terminal
+  replay tombstone. Unresolved deliveries retain their retry/repair payload.
   The catalogue owns each Price mode; browser input owns neither mode nor Stripe
   identity. Existing and non-blank Capsules remain unchanged.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
