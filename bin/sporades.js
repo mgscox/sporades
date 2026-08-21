@@ -7235,31 +7235,47 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   const sql = adapter.dialect.sql;
   const nowIso = database.clock.now().toISOString();
   let assignedCount = 0;
+  let classifiedCount = 0;
   let redactedCount = 0;
-  const unassigned = await adapter.prepare(sql(
-    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, batchSize);
-  for (const row of unassigned) {
-    const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-    if (deadline === null) {
-      await adapter.prepare(sql(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(row.id, STRIPE_EVENT_JOB);
-      continue;
-    }
-    const changed = await adapter.prepare(sql(
-      "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-    )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
-    assignedCount += Number(changed?.changes ?? 0);
-  }
+  let remaining = batchSize;
   const due = await adapter.prepare(sql(
     "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, nowIso, batchSize);
+  )).all(STRIPE_EVENT_JOB, nowIso, remaining);
   for (const row of due) {
     const changed = await adapter.prepare(sql(
       "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
     )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso);
-    redactedCount += Number(changed?.changes ?? 0);
+    const mutations = Number(changed?.changes ?? 0);
+    redactedCount += mutations;
+    remaining -= mutations;
+  }
+  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, remaining);
+  for (const observed of unassigned) {
+    if (remaining === 0) break;
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      const changed = deadline === null ? await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        if (deadline === null) classifiedCount += mutations;
+        else assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      row = await adapter.prepare(sql(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
   }
   const moreUnassigned = await adapter.prepare(sql(
     "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1"
@@ -7268,7 +7284,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1"
   )).get(STRIPE_EVENT_JOB);
   const nextCleanupAt = moreUnassigned ? nowIso : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
-  return Object.freeze({ assignedCount, redactedCount, nextCleanupAt });
+  return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
 }
 function scheduleStripeEventPayloadCleanup(database, dueAt) {
   if (database.__jobStopped) return;

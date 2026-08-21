@@ -42,6 +42,31 @@ function stripeEvent(providerEventId) {
   });
 }
 
+function withMalformedSettlementRepairRace(adapter, id, repairedCompletedAt) {
+  const prepare = adapter.prepare.bind(adapter);
+  let repaired = false;
+  return {
+    ...adapter,
+    dialect: adapter.dialect,
+    prepare(statement) {
+      const prepared = prepare(statement);
+      if (!/SET\s+[\[\"]?payloadRetentionUntil[\]\"]?\s*=\s*''/i.test(String(statement))) return prepared;
+      return {
+        ...prepared,
+        async run(...args) {
+          if (!repaired && args[0] === id) {
+            repaired = true;
+            await prepare(adapter.dialect.sql(
+              "UPDATE [sporades_jobs] SET [completedAt]=? WHERE [id]=? AND [payloadRetentionUntil] IS NULL",
+            )).run(repairedCompletedAt, id);
+          }
+          return await prepared.run(...args);
+        },
+      };
+    },
+  };
+}
+
 async function postStripe(database, body) {
   const signature = Stripe.webhooks.generateTestHeaderString({ payload: body, secret: webhookSecret });
   const request = Object.assign(Readable.from([body]), {
@@ -127,6 +152,14 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
         assert.match((await readStoredJob(adapter, id)).payload, new RegExp(`raw_private_${id}`));
       }
       assert.equal((await readStoredJob(adapter, "malformed-settlement")).payloadRetentionUntil, "");
+      const malformedInspection = (await inspectRuntimeJobs(adapter)).find((job) => job.id === "malformed-settlement");
+      assert.deepEqual(malformedInspection.payloadRetention, {
+        state: "unresolved",
+        code: "INVALID_COMPLETED_AT",
+        deadline: null,
+      });
+      assert.equal("payload" in malformedInspection, false);
+      assert.doesNotMatch(JSON.stringify(malformedInspection), /evt_private|raw_private|providerEventId/);
 
       const replay = await adapter.prepare(adapter.dialect.sql(
         "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt]) " +
@@ -134,6 +167,65 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
       )).run("replayed", STRIPE_EVENT_JOB, "__provider_callback__", "__privileged__", "{}", "queued", dueAt, 0, "stripe-event:digest-due-a", dueAt);
       assert.equal(Number(replay?.changes ?? 0), 0);
       assert.equal((await readStoredJob(adapter, "due-a")).status, "succeeded");
+    });
+  });
+
+  test(`${engine.name}: malformed settlement classification loses safely to canonical repair`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (adapter) => {
+      await ensureJobStorage(adapter);
+      await insertReservedJob(adapter, { id: "repair-race", status: "succeeded", completedAt: "not-a-timestamp" });
+      const repairedCompletedAt = "2029-12-01T00:00:00.000Z";
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+      const raced = withMalformedSettlementRepairRace(adapter, "repair-race", repairedCompletedAt);
+
+      const classified = await cleanupExpiredStripeEventPayloads({ adapter: raced, clock });
+      assert.equal(classified.assignedCount, 1, "cleanup reselects after the stale malformed CAS loses");
+      assert.equal(classified.redactedCount, 0);
+      let stored = await readStoredJob(adapter, "repair-race");
+      assert.equal(stored.completedAt, repairedCompletedAt);
+      assert.equal(stored.payloadRetentionUntil, "2029-12-31T00:00:00.000Z");
+      assert.match(stored.payload, /raw_private_repair-race/);
+
+      const expired = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(expired.redactedCount, 1);
+      stored = await readStoredJob(adapter, "repair-race");
+      assert.deepEqual(JSON.parse(stored.payload), { kind: "stripe-event", retained: false });
+      assert.equal(stored.payloadRedactedAt, "2030-01-01T00:00:00.000Z");
+    });
+  });
+
+  test(`${engine.name}: one cleanup invocation shares its 100-row mutation budget`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (initialAdapter, controls) => {
+      let adapter = initialAdapter;
+      await ensureJobStorage(adapter);
+      for (let index = 0; index < 60; index += 1) {
+        await insertReservedJob(adapter, {
+          id: `budget-due-${String(index).padStart(3, "0")}`,
+          status: "succeeded",
+          completedAt: "2029-11-01T00:00:00.000Z",
+          payloadRetentionUntil: "2029-12-01T00:00:00.000Z",
+        });
+        await insertReservedJob(adapter, {
+          id: `budget-unassigned-${String(index).padStart(3, "0")}`,
+          status: "succeeded",
+          completedAt: "2029-11-01T00:00:00.000Z",
+        });
+      }
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+      const first = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.deepEqual({ assigned: first.assignedCount, redacted: first.redactedCount }, { assigned: 40, redacted: 60 });
+      assert.equal(first.assignedCount + first.redactedCount, 100);
+
+      adapter = await controls.restart();
+      const second = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.deepEqual({ assigned: second.assignedCount, redacted: second.redactedCount }, { assigned: 20, redacted: 40 });
+      const third = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.deepEqual({ assigned: third.assignedCount, redacted: third.redactedCount }, { assigned: 0, redacted: 20 });
+      assert.equal(third.nextCleanupAt, null);
+      const retained = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [payloadRedactedAt] IS NULL",
+      )).all(STRIPE_EVENT_JOB);
+      assert.deepEqual(retained, []);
     });
   });
 }

@@ -7,7 +7,8 @@ Changes since v0.8.6.
 ### 🚀 Features
 
 - Bound successful reserved Stripe Event Job payloads to 30 days with
-  restart-safe, adapter-portable cleanup and digest-backed replay tombstones.
+  restart-safe, adapter-portable cleanup, safe unresolved-retention inspection,
+  one shared bounded mutation budget, and digest-backed replay tombstones.
 - Add transaction-bound trusted reads (9d23493).
 - Add user-owned scoped Access keys with explicit Bearer admission, immutable
   Credential provenance, Session-only browser management, private-File and

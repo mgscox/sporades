@@ -122,40 +122,17 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
   const sql = adapter.dialect.sql;
   const nowIso = database.clock.now().toISOString();
   let assignedCount = 0;
+  let classifiedCount = 0;
   let redactedCount = 0;
+  let remaining = batchSize;
 
-  // Older successful reserved Jobs predate the deadline column. Assign their deadline in bounded
-  // CAS writes from the durable settlement time; malformed or unresolved rows remain retained.
-  const unassigned = await adapter.prepare(sql(
-    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
-    "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
-    "ORDER BY [completedAt] ASC, [id] ASC LIMIT ?",
-  )).all(STRIPE_EVENT_JOB, batchSize);
-  for (const row of unassigned) {
-    const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-    if (deadline === null) {
-      // A malformed legacy settlement is unresolved privacy state. Classify it once with the
-      // empty sentinel so activation cannot spin, but retain its payload for explicit repair.
-      await adapter.prepare(sql(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? " +
-        "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
-        "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
-      )).run(row.id, STRIPE_EVENT_JOB);
-      continue;
-    }
-    const changed = await adapter.prepare(sql(
-      "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
-      "AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL " +
-      "AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
-    )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
-    assignedCount += Number(changed?.changes ?? 0);
-  }
-
+  // Expired deadlines have privacy priority over legacy classification. Every successful CAS,
+  // regardless of mutation kind, consumes this invocation's one shared budget.
   const due = await adapter.prepare(sql(
     "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? " +
     "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' " +
     "AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?",
-  )).all(STRIPE_EVENT_JOB, nowIso, batchSize);
+  )).all(STRIPE_EVENT_JOB, nowIso, remaining);
   for (const row of due) {
     // Status, exact deadline, settlement time and absent claim form the CAS. Concurrent runtimes
     // cannot cross a retry/lease transition or redact work that has become unresolved.
@@ -165,7 +142,54 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
       "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? " +
       "AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
     )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso);
-    redactedCount += Number(changed?.changes ?? 0);
+    const mutations = Number(changed?.changes ?? 0);
+    redactedCount += mutations;
+    remaining -= mutations;
+  }
+
+  // Older successful reserved Jobs predate the deadline column. Assign their deadline from the
+  // durable settlement time only after due redaction, using whatever shared budget remains.
+  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+    "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+    "ORDER BY [completedAt] ASC, [id] ASC LIMIT ?",
+  )).all(STRIPE_EVENT_JOB, remaining);
+  for (const observed of unassigned) {
+    if (remaining === 0) break;
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      const changed = deadline === null
+        ? await adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? " +
+          "AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) " +
+          "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+          "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+        )).run(row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt)
+        : await adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +
+          "AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) " +
+          "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+          "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+        )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        if (deadline === null) classifiedCount += mutations;
+        else assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      // The observed settlement may have been repaired concurrently. Reselect once and apply the
+      // canonical deadline (or exact new malformed classification) instead of overwriting repair.
+      row = await adapter.prepare(sql(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? " +
+        "AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL " +
+        "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL",
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
   }
 
   const moreUnassigned = await adapter.prepare(sql(
@@ -180,7 +204,7 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
   const nextCleanupAt = moreUnassigned
     ? nowIso
     : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
-  return Object.freeze({ assignedCount, redactedCount, nextCleanupAt });
+  return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
 }
 
 export function scheduleStripeEventPayloadCleanup(database: LooseRecord, dueAt: number | null) {
@@ -1020,6 +1044,27 @@ export function jobActorProvider(auth: LooseRecord) {
   return auth?.isGuest ? "anonymous" : "authenticated";
 }
 
+function stripeEventPayloadRetentionState(row: LooseRecord) {
+  if (String(row.handler) !== STRIPE_EVENT_JOB) return undefined;
+  if (row.payloadRedactedAt !== null && row.payloadRedactedAt !== undefined && row.payloadRedactedAt !== "") {
+    return Object.freeze({
+      state: "redacted",
+      deadline: isCanonicalJobTimestamp(row.payloadRetentionUntil) ? String(row.payloadRetentionUntil) : null,
+      redactedAt: isCanonicalJobTimestamp(row.payloadRedactedAt) ? String(row.payloadRedactedAt) : null,
+    });
+  }
+  if (row.status !== "succeeded") {
+    return Object.freeze({ state: "unresolved", code: "JOB_NOT_SUCCESSFULLY_SETTLED", deadline: null });
+  }
+  if (row.payloadRetentionUntil === "") {
+    return Object.freeze({ state: "unresolved", code: "INVALID_COMPLETED_AT", deadline: null });
+  }
+  if (isCanonicalJobTimestamp(row.payloadRetentionUntil)) {
+    return Object.freeze({ state: "retained", deadline: String(row.payloadRetentionUntil) });
+  }
+  return Object.freeze({ state: "unresolved", code: "RETENTION_DEADLINE_UNASSIGNED", deadline: null });
+}
+
 /** Read the bounded operator view of every Job in one adapter snapshot. */
 export async function inspectRuntimeJobs(adapter: LooseRecord) {
   const decode = (row: LooseRecord, field: string, value: unknown, fallback: unknown) => {
@@ -1039,19 +1084,23 @@ export async function inspectRuntimeJobs(adapter: LooseRecord) {
       if (/no such table|does not exist|unknown table/i.test(message)) return [];
       throw error;
     }
-    return rows.map((row) => ({
-      id: String(row.id), handler: String(row.handler), status: String(row.status),
-      enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId), credential: readJobCredentialProvenance(row) },
-      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
-      attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
-      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,
-      availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
-      completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
-      leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
-      // until the runtime has a separate safe-result metadata classifier.
-      result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
-    }));
+    return rows.map((row) => {
+      const retention = stripeEventPayloadRetentionState(row);
+      return {
+        id: String(row.id), handler: String(row.handler), status: String(row.status),
+        enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId), credential: readJobCredentialProvenance(row) },
+        actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
+        attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
+        idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,
+        availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
+        completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
+        leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
+        ...(retention ? { payloadRetention: retention } : {}),
+        // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
+        // until the runtime has a separate safe-result metadata classifier.
+        result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
+      };
+    });
   };
   if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
   return await adapter.withReadOnlySnapshot(read);

@@ -127,8 +127,21 @@ provider delivery into apparent success. Resolve that lifecycle before treating
 the provider data as settled. Sporades exposes no generic Job-payload read,
 delete, or status-rewrite API.
 
+A legacy successful Stripe Event Job with an absent or noncanonical
+`completedAt` is also unresolved: its raw payload remains retained with no
+deadline. Operator Job inspection reports `payloadRetention.state` as
+`unresolved`, code `INVALID_COMPLETED_AT`, and `deadline: null`; it never reveals
+the payload or provider identity. Sporades intentionally exposes no generic Job
+editor. If a supported storage recovery or migration restores a canonical
+`completedAt`, the next cleanup pass reselects the row and derives the ordinary
+30-day deadline. Exact compare-and-set classification cannot overwrite a
+concurrent repair.
+
 Cleanup runs at runtime activation, after restart, and at the next deadline. It
-processes at most 100 rows per pass and uses exact terminal-state/deadline/lease
+performs at most 100 successful row mutations in total per invocation. It
+redacts already-due rows first, then spends only the remaining shared budget
+assigning or classifying legacy deadlines. Further restart-safe passes drain a
+larger mixed backlog. Exact terminal-state/deadline/lease
 compare-and-set guards, so overlapping runtimes are restart-safe and cannot
 redact pending work. Successful cleanup emits no log. Failures expose only a
 bounded runtime error code—never a Job ID, provider Event ID, object ID,
@@ -368,6 +381,14 @@ envelope with the Capsule name and all Jobs ordered newest first. The bounded
 operational state includes handler, status, actor, provenance, attempts, retry
 policy, lifecycle timestamps, and safe result or failure metadata. Input
 payloads and idempotency-key values are omitted.
+
+Reserved Stripe Event Jobs additionally include a non-sensitive
+`payloadRetention` projection. `retained` includes the canonical deadline;
+`redacted` includes the deadline and redaction time; and `unresolved` includes
+an opaque reason code and an absent deadline. The unresolved codes are
+`JOB_NOT_SUCCESSFULLY_SETTLED`, `RETENTION_DEADLINE_UNASSIGNED`, and
+`INVALID_COMPLETED_AT`. None disclose provider values or make inspection a
+repair API.
 
 This first operator surface intentionally has no filters, cursor, pagination,
 human renderer, or offline inspection. Pipe the JSON through tools such as

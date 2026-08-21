@@ -8,6 +8,7 @@ export declare function stripeEventPayloadRetentionDeadline(settledAt: string): 
 /** Internal privacy maintenance for the reserved Stripe Event Job only. */
 export declare function cleanupExpiredStripeEventPayloads(database: LooseRecord, options?: LooseRecord): Promise<Readonly<{
     assignedCount: number;
+    classifiedCount: number;
     redactedCount: number;
     nextCleanupAt: any;
 }>>;
