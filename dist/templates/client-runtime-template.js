@@ -816,7 +816,7 @@ function createConnection() {
         });
         pending.delete(id);
       }
-      if (!pageRetired) setTimeout(open, 500);
+      if (!pageRetired) setTimeout(() => { if (!pageRetired) open(); }, 500);
     });
     return openedSocket;
   }

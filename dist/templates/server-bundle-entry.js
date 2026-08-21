@@ -57,6 +57,10 @@ const runtimeConfig = {
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
 if (sporadesAction) {
+    // The action protocol owns stdout as one JSON envelope. Container runtimes normally mirror
+    // structured logs to stdout, but action-owned audits still persist to the JSONL/index sinks and
+    // must not corrupt the CLI/Host-helper response frame.
+    process.env.SPORADES_LOG_STDOUT = "0";
     const accessKeyActions = ACCESS_KEY_OPERATOR_ACTIONS;
     if (!["jobs.inspect", "schedules.inspect", ...accessKeyActions].includes(sporadesAction)) {
         process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");

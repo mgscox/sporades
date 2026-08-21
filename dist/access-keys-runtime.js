@@ -404,7 +404,7 @@ export async function resolveAccessKeyCredential(database, request, sessionToken
     };
 }
 export function accessKeyAuthenticationError(reason, limited = false) {
-    const error = commandError(limited ? "Too many authentication attempts." : "Unauthenticated.", limited ? "Retry the request later." : "Provide a valid Access key and retry the request.", limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED");
+    const error = commandError(limited ? "Too many authentication attempts." : "Unauthenticated.", limited ? "Retry the request later." : "Provide a valid Access key and retry the request.", limited ? "RATE_LIMITED" : "UNAUTHENTICATED");
     error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
     error.sporadesAccessKeyReason = reason;
     return error;

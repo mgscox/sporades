@@ -635,7 +635,7 @@ function endpointErrorStatus(error) {
         return 401;
     if (error?.code === "FORBIDDEN")
         return 403;
-    if (error?.code === "AUTH_RATE_LIMITED")
+    if (error?.code === "RATE_LIMITED")
         return 429;
     if (isPayloadTooLargeError(error))
         return 413;

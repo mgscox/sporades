@@ -1196,7 +1196,7 @@ test("the generated Bundle runs audited Access-key operator actions without cred
     assert.equal(forgedSource.ok, false);
     assert.equal(forgedSource.error.code, "INVALID_ACCESS_KEY_ACTION_INPUT");
     const listed = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
-      cwd: dir, input: { userId: "bundle-owner", options: {} },
+      cwd: dir, input: { userId: "bundle-owner", options: {} }, env: { SPORADES_LOG_STDOUT: "1" },
     })).stdout);
     assert.equal(listed.ok, true, JSON.stringify(listed));
     assert.equal(listed.data.accessKeys[0].id, "bundle-key");

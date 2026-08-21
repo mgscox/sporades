@@ -118,6 +118,21 @@ test("a stale socket close cannot fail an Access-key request on its replacement"
   } finally { browser.cleanup(); }
 });
 
+test("page retirement cancels an already queued reconnect", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.get();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const socket = browser.sockets[0];
+    socket.readyState = 3;
+    socket.emit("close", {});
+    browser.emitWindow("pagehide", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(browser.sockets.length, 1, "a retired page must not reconnect after its queued timer settles");
+  } finally { browser.cleanup(); }
+});
+
 test("committed Access-key secrets lost with their response recover through list and fresh rotation", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-client-access-key-response-loss-"));
   const definition = capsule({ name: "client-access-key-response-loss", accessKeys: { scopes: ["requests:read"] } });
@@ -1132,6 +1147,7 @@ function installBrowserFakes(auth, options = {}) {
   const sockets = [];
   const sent = [];
   const handlers = options.handlers ?? {};
+  const windowListeners = new Map();
 
   globalThis.localStorage = {
     getItem(key) {
@@ -1151,6 +1167,11 @@ function installBrowserFakes(auth, options = {}) {
       assign(url) {
         storage.set("assignedLocation", url);
       },
+    },
+    addEventListener(type, listener) {
+      const listeners = windowListeners.get(type) ?? [];
+      listeners.push(listener);
+      windowListeners.set(type, listeners);
     },
   };
   globalThis.WebSocket = class FakeWebSocket {
@@ -1261,6 +1282,12 @@ function installBrowserFakes(auth, options = {}) {
 
     }
 
+    close() {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      this.emit("close", {});
+    }
+
     emit(type, event) {
       for (const listener of this.listeners.get(type) ?? []) {
         listener(event);
@@ -1272,6 +1299,9 @@ function installBrowserFakes(auth, options = {}) {
     storage,
     sockets,
     sent,
+    emitWindow(type, event) {
+      for (const listener of windowListeners.get(type) ?? []) listener(event);
+    },
     openSockets() {
       for (const socket of sockets) {
         socket.readyState = globalThis.WebSocket.OPEN;

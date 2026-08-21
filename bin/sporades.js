@@ -839,7 +839,7 @@ function createConnection() {
         });
         pending.delete(id);
       }
-      if (!pageRetired) setTimeout(open, 500);
+      if (!pageRetired) setTimeout(() => { if (!pageRetired) open(); }, 500);
     });
     return openedSocket;
   }
@@ -6622,7 +6622,7 @@ function accessKeyAuthenticationError(reason, limited = false) {
   const error = commandError(
     limited ? "Too many authentication attempts." : "Unauthenticated.",
     limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
-    limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED"
+    limited ? "RATE_LIMITED" : "UNAUTHENTICATED"
   );
   error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
   error.sporadesAccessKeyReason = reason;
@@ -10015,7 +10015,7 @@ function writeEndpointError(response, error) {
 function endpointErrorStatus(error) {
   if (error?.code === "UNAUTHENTICATED") return 401;
   if (error?.code === "FORBIDDEN") return 403;
-  if (error?.code === "AUTH_RATE_LIMITED") return 429;
+  if (error?.code === "RATE_LIMITED") return 429;
   if (isPayloadTooLargeError(error)) return 413;
   if (isClientRequestError(error)) return 400;
   return 500;

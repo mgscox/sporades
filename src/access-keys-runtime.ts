@@ -409,7 +409,7 @@ export function accessKeyAuthenticationError(reason: string, limited = false) {
   const error: LooseRecord = commandError(
     limited ? "Too many authentication attempts." : "Unauthenticated.",
     limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
-    limited ? "AUTH_RATE_LIMITED" : "UNAUTHENTICATED",
+    limited ? "RATE_LIMITED" : "UNAUTHENTICATED",
   );
   error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
   error.sporadesAccessKeyReason = reason;

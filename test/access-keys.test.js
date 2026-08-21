@@ -555,7 +555,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     });
     assert.equal(limited.status, 429);
     assert.equal(limited.headers.get("cache-control"), "no-store");
-    assert.equal((await limited.json()).error.code, "AUTH_RATE_LIMITED");
+    assert.equal((await limited.json()).error.code, "RATE_LIMITED");
 
     const unwrapped = await requestEndpoint(database, "/webhook", {
       headers: { authorization: `Bearer ${issued.data.token}` },
