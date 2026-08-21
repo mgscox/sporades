@@ -287,6 +287,8 @@ guard and independent Capsule billing-holder policy. The activated callback
 verifies the exact bounded request bytes and `Stripe-Signature` header before
 parsing. Each accepted provider Event identity commits one idempotent Privileged
 Job before the route returns `200`; retries receive the same Job identity.
+That identity is scoped by the retained Capsule database, not the mutable
+configured Capsule name, so a rename and restart cannot admit the Event again.
 Admission does not wait for or perform Capsule subscription, entitlement, or
 access consequences.
 

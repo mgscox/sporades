@@ -1230,6 +1230,7 @@ test("public docs agree on narrow Checkout, Customer Portal, callback admission,
   assert.match(projects, /Job repeats policy admission[\s\S]{0,160}Customer resolution/);
   assert.match(projects, /exact bounded request bytes[\s\S]{0,160}Stripe-Signature/i);
   assert.match(projects, /idempotent Privileged[\s\S]{0,120}before the route returns `200`/i);
+  assert.match(projects, /retained Capsule database[\s\S]{0,120}configured Capsule name[\s\S]{0,120}rename and restart/i);
   assert.match(context, /Verified Stripe event/);
   assert.match(context, /grants no user, Session, Team, Capsule role, or browser authority/);
   assert.match(context, /Stripe-event subscription/);

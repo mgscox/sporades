@@ -15646,7 +15646,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled ? options?.createStripeCallbackEndpoint?.(
     paymentsConfig,
     serverEnv,
-    String(config.name ?? "capsule"),
     options?.stripeCallbackAdmissionFault
   ) : null;
   if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {

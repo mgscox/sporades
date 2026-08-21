@@ -169,6 +169,38 @@ test("Stripe retries and concurrent duplicates acknowledge one durable Job", asy
   });
 });
 
+test("Stripe retries retain one durable Job after the Capsule config name changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-rename-"));
+  const databasePath = path.join(dir, "data.db");
+  const body = stripeEvent("evt_runtime_rename_1");
+  let firstDatabase;
+  let renamedDatabase;
+  try {
+    firstDatabase = await openDevDatabase(databasePath, "", serverEnv, {
+      name: "stripe-before-rename",
+      payments: { stripe },
+    }, {}, { createStripeCallbackEndpoint });
+    const first = await postStripe(firstDatabase, body);
+    assert.equal(first.response.status, 200);
+    const firstJobId = JSON.parse(first.response.body).jobId;
+    await firstDatabase.close();
+    firstDatabase = null;
+
+    renamedDatabase = await openDevDatabase(databasePath, "", serverEnv, {
+      name: "stripe-after-rename",
+      payments: { stripe },
+    }, {}, { createStripeCallbackEndpoint });
+    const repeated = await postStripe(renamedDatabase, body);
+    assert.equal(repeated.response.status, 200);
+    assert.equal(JSON.parse(repeated.response.body).jobId, firstJobId);
+    assert.equal((await inspectRuntimeJobs(renamedDatabase.adapter)).length, 1);
+  } finally {
+    await firstDatabase?.close();
+    await renamedDatabase?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent Stripe delivery across Postgres runtimes converges on one Job", {
   skip: POSTGRES_SKIP_REASON,
 }, async () => {

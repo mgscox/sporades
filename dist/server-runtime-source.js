@@ -506,7 +506,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         : extractEndpoints(serverSource);
     const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
     const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
-        ? options?.createStripeCallbackEndpoint?.(paymentsConfig, serverEnv, String(config.name ?? "capsule"), options?.stripeCallbackAdmissionFault)
+        ? options?.createStripeCallbackEndpoint?.(paymentsConfig, serverEnv, options?.stripeCallbackAdmissionFault)
         : null;
     if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
         throw commandError("Stripe callback integration is unavailable.", "Build and run this Capsule with matching Sporades generated runtime artifacts.", "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE");

@@ -10,7 +10,6 @@ const STRIPE_EVENT_RETRY = Object.freeze({ maxAttempts: 5, delayMs: 1_000 });
 export function createStripeCallbackEndpoint(
   payments: LooseRecord | undefined,
   serverEnv: LooseRecord,
-  capsuleIdentity: string,
   admissionFault?: (boundary: string, details: LooseRecord) => void | Promise<void>,
 ) {
   const config = payments?.stripe;
@@ -35,7 +34,7 @@ export function createStripeCallbackEndpoint(
         throw error;
       }
       const identity = createHash("sha256")
-        .update(JSON.stringify([capsuleIdentity, event.providerEventId]))
+        .update(JSON.stringify(["stripe-event", event.providerEventId]))
         .digest("hex");
       const admitted = await ctx.jobs.enqueue(
         STRIPE_EVENT_JOB,

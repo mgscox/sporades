@@ -1,5 +1,5 @@
 type LooseRecord = Record<string, any>;
-export declare function createStripeCallbackEndpoint(payments: LooseRecord | undefined, serverEnv: LooseRecord, capsuleIdentity: string, admissionFault?: (boundary: string, details: LooseRecord) => void | Promise<void>): {
+export declare function createStripeCallbackEndpoint(payments: LooseRecord | undefined, serverEnv: LooseRecord, admissionFault?: (boundary: string, details: LooseRecord) => void | Promise<void>): {
     name: string;
     runtimeOwnedStripeCallback: boolean;
     method: string;

@@ -580,7 +580,6 @@ export async function openDevDatabase(
     ? options?.createStripeCallbackEndpoint?.(
         paymentsConfig,
         serverEnv,
-        String(config.name ?? "capsule"),
         options?.stripeCallbackAdmissionFault,
       )
     : null;

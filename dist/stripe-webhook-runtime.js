@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createStripePaymentIntegration } from "./stripe-payment-integration.js";
 import { STRIPE_EVENT_JOB } from "./jobs-runtime.js";
 const STRIPE_EVENT_RETRY = Object.freeze({ maxAttempts: 5, delayMs: 1_000 });
-export function createStripeCallbackEndpoint(payments, serverEnv, capsuleIdentity, admissionFault) {
+export function createStripeCallbackEndpoint(payments, serverEnv, admissionFault) {
     const config = payments?.stripe;
     if (!config?.enabled)
         return null;
@@ -27,7 +27,7 @@ export function createStripeCallbackEndpoint(payments, serverEnv, capsuleIdentit
                 throw error;
             }
             const identity = createHash("sha256")
-                .update(JSON.stringify([capsuleIdentity, event.providerEventId]))
+                .update(JSON.stringify(["stripe-event", event.providerEventId]))
                 .digest("hex");
             const admitted = await ctx.jobs.enqueue(STRIPE_EVENT_JOB, event, { idempotencyKey: `stripe-event:${identity}`, retry: STRIPE_EVENT_RETRY });
             await admissionFault?.("after-enqueue", { jobId: admitted.id, providerEventId: event.providerEventId });
