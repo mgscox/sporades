@@ -80,10 +80,17 @@ try {
   };
   const testcases = [...junit.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
     .map((match) => testcase(match[1], match[2] ?? ""));
-  const successfulSuites = [...junit.matchAll(/<testsuite\b([^>]*)>/g)]
-    .filter((match) => ["errors", "failures", "skipped"].every((name) =>
-      Number(new RegExp(`\\b${name}="(\\d+)"`).exec(match[1])?.[1] ?? -1) === 0))
-    .map((match) => decodeXml(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? ""));
+  const suites = [...junit.matchAll(/<testsuite\b([^>]*)>/g)].map((match) => ({
+    name: decodeXml(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? ""),
+    tests: Number(/\btests="(\d+)"/.exec(match[1])?.[1] ?? -1),
+    disabled: Number(/\bdisabled="(\d+)"/.exec(match[1])?.[1] ?? -1),
+    errors: Number(/\berrors="(\d+)"/.exec(match[1])?.[1] ?? -1),
+    failures: Number(/\bfailures="(\d+)"/.exec(match[1])?.[1] ?? -1),
+    skipped: Number(/\bskipped="(\d+)"/.exec(match[1])?.[1] ?? -1),
+  }));
+  const successfulSuites = suites
+    .filter((suite) => suite.tests > 0 && suite.disabled === 0 && suite.errors === 0 && suite.failures === 0 && suite.skipped === 0)
+    .map(({ name }) => name);
   const allowedOptionalSmoke = (name) =>
     name === "ctx.mail sends through Mailjet's generic authenticated STARTTLS endpoint" ||
     name.startsWith("real Container serves a complete ") ||
@@ -123,7 +130,7 @@ try {
   const totals = Object.fromEntries(["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"].map((name) => [name, metric(name)]));
   const metricsAreValid = Object.values(totals).every((value) => Number.isInteger(value) && value >= 0);
   const accountedTests = totals.pass + totals.fail + totals.cancelled + totals.skipped + totals.todo;
-  if (!metricsAreValid || totals.tests !== accountedTests || totals.tests !== testcases.length ||
+  if (!metricsAreValid || totals.tests !== accountedTests || totals.tests !== testcases.length + suites.length ||
     totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
     throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify({ suiteExitCode: suite.status, totals, failedCases: failedCases.map(({ name }) => name) })}`);
   }
