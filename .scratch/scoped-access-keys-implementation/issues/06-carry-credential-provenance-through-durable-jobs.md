@@ -14,3 +14,10 @@
 - [x] Legacy Job rows migrate deterministically to Session provenance using retained actor-provider information and a documented compatibility fallback.
 - [x] SQLite, service-backed libSQL, and PostgreSQL tests cover migration, enqueue rollback, restart, retry, child propagation, post-revocation execution, owner deletion, inspection, and stable key attribution after name reuse.
 - [x] Source runtime, generated Bundle/runtime declarations, operator inspection, log attribution, and generated-source parity all expose the same Job contract.
+
+## Completion evidence
+
+- Implementation and review repairs: `9d1cd62`, `5023593`, `5f984a4`, `f0945a8`, `04d5528`.
+- Focused SQLite, service-backed libSQL, gated PostgreSQL, restart/retry/child, current Table/File/Team authority, malformed retained-state, generated-Bundle, inspection, and secret-exclusion proofs passed.
+- Independent Standards and Spec reviews were clean at `04d5528`.
+- The mandatory release gate at implementation commit `82ac350` required and passed the cross-engine Access-key Job lifecycle and generated-Bundle cases.

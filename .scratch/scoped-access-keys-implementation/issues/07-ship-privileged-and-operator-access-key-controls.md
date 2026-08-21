@@ -15,3 +15,10 @@
 - [x] Human and JSON output validate hostile/malformed envelopes, remain bounded and redacted, and provide upgrade guidance when CLI, Host helper, and generated Bundle action versions disagree.
 - [x] Every Privileged inspection and mutation emits the existing structured security audit with exact execution source, target IDs, outcome, safe code, and no bearer material.
 - [x] Focused CLI and Host-helper tests cover Dev, Container, Hosted routing, confirmations, non-interactive behavior, running-Capsule failures, action compatibility, generated binaries, and absence of issue/rotate commands.
+
+## Completion evidence
+
+- Implementation and review repairs: `08161a6`, `a8a6e99`, `16669ee`, `1c201e4`.
+- Focused Privileged lifetime, rollback-preserved audit, hostile-envelope redaction, exact target/source attribution, Dev/Container/Hosted routing, confirmation, generated-binary, and stopped-Capsule tests passed.
+- Independent Standards and Spec reviews were clean at `1c201e4`.
+- The mandatory release gate at implementation commit `82ac350` subsequently passed the generated-Bundle operator action, packed-package, and real CLI → Host helper → container-exec acceptance proofs.
