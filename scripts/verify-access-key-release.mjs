@@ -13,7 +13,12 @@ const postgresUrl = process.env.SPORADES_POSTGRES_TEST_URL;
 if (!postgresUrl) {
   throw new Error("SPORADES_POSTGRES_TEST_URL must identify the dedicated PostgreSQL test database.");
 }
-const parsedPostgres = new URL(postgresUrl);
+let parsedPostgres;
+try { parsedPostgres = new URL(postgresUrl); }
+catch { throw new Error("SPORADES_POSTGRES_TEST_URL must be a valid PostgreSQL URL; its value was not logged."); }
+if (!/^postgres(?:ql)?:$/.test(parsedPostgres.protocol)) {
+  throw new Error("SPORADES_POSTGRES_TEST_URL must use the PostgreSQL URL scheme.");
+}
 const databaseName = parsedPostgres.pathname.replace(/^\//, "");
 if (!databaseName || databaseName === "postgres") {
   throw new Error("SPORADES_POSTGRES_TEST_URL must name a dedicated non-default PostgreSQL test database.");
@@ -59,16 +64,63 @@ try {
   ], "complete test suite");
 
   const junit = readFileSync(junitPath, "utf8");
-  for (const forbiddenSkip of [
-    "Set SPORADES_POSTGRES_TEST_URL",
-    "Set SPORADES_ACCESS_KEY_ACCEPTANCE=1",
-  ]) {
-    if (junit.includes(forbiddenSkip)) throw new Error(`Mandatory release proof was skipped: ${forbiddenSkip}`);
+  const decodeXml = (value) => value
+    .replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+  const testcases = [...junit.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].map((match) => {
+    const name = decodeXml(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? "");
+    const skipped = /<skipped\b([^>]*)\/?>(?:<\/skipped>)?/.exec(match[2]);
+    return {
+      name,
+      skipped: Boolean(skipped),
+      skipType: skipped ? decodeXml(/\btype="([^"]*)"/.exec(skipped[1])?.[1] ?? "skipped") : null,
+      reason: skipped ? decodeXml(/\bmessage="([^"]*)"/.exec(skipped[1])?.[1] ?? "") : null,
+    };
+  });
+  const allowedOptionalSmoke = (name) =>
+    name === "ctx.mail sends through Mailjet's generic authenticated STARTTLS endpoint" ||
+    name.startsWith("real Container serves a complete ") ||
+    name === "real browser clicks the generated Facebook control and performs a top-level protocol redirect" ||
+    name.startsWith("sporades host bootstrap can run against an opt-in real SSH Host server") ||
+    name.startsWith("sporades host register can run against an opt-in real SSH Host server") ||
+    name.startsWith("sporades host logs can read a real Host server") ||
+    name.startsWith("sporades host list can run against an opt-in real SSH Host server") ||
+    name.startsWith("sporades host push can restart a real Hosted Capsule") ||
+    name === "sporades deploy does not require changing local runtime data ownership" ||
+    name === "sporades host helper reports remediation when data ownership cannot be prepared" ||
+    name === "Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is available";
+  const skippedCases = testcases.filter((entry) => entry.skipped);
+  const todoCases = skippedCases.filter((entry) => entry.skipType === "todo");
+  const unexplainedSkips = skippedCases.filter((entry) => entry.skipType === "todo" || !allowedOptionalSmoke(entry.name));
+  if (todoCases.length || unexplainedSkips.length) {
+    throw new Error(`Release verification found non-allowlisted skips/todos: ${JSON.stringify(unexplainedSkips)}`);
+  }
+  const requiredCases = [
+    "a linked Session carries one scoped canary through real Dev and fresh Container runtimes",
+    "Database adapter conformance (auth storage): SQLite",
+    "Database adapter conformance (auth storage): libSQL",
+    "Database adapter conformance (auth storage): Postgres",
+    "Access-key Job lifecycle is stable across PostgreSQL restart",
+    "every statement the runtime storage bootstrap emits quotes the identifiers it names",
+    "every statement the conformance specification drives the adapter to emit quotes the identifiers it names",
+    "the generated Bundle runs audited Access-key operator actions without credential material",
+    "the packed package exposes the complete server and client Access-key contract",
+  ];
+  const missingRequiredCases = requiredCases.filter((name) => !testcases.some((entry) => entry.name === name && !entry.skipped));
+  if (missingRequiredCases.length) {
+    throw new Error(`Release verification did not execute required cases: ${JSON.stringify(missingRequiredCases)}`);
   }
   const metric = (name) => Number(new RegExp(`<!-- ${name} (\\d+) -->`).exec(junit)?.[1] ?? NaN);
   const totals = Object.fromEntries(["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"].map((name) => [name, metric(name)]));
-  if (!Number.isInteger(totals.tests) || totals.fail !== 0 || totals.cancelled !== 0) {
+  if (!Number.isInteger(totals.tests) || totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
     throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify(totals)}`);
+  }
+  const decodedJunit = decodeXml(junit.replaceAll("<![CDATA[", "").replaceAll("]]>", ""));
+  const acceptanceDiagnosticText = /\{"devPort":\d+,"containerPort":\d+,"userId":"[^"]+","keyId":"[^"]+","jobId":"[^"]+","hostedActionContract":"cli-to-host-helper-to-container-exec-to-generated-bundle","scannedBearerCount":\d+,"retainedBearerFiles":\d+\}/.exec(decodedJunit)?.[0];
+  if (!acceptanceDiagnosticText) throw new Error("Release acceptance did not emit its safe diagnostic evidence.");
+  const acceptanceEvidence = JSON.parse(acceptanceDiagnosticText);
+  if (acceptanceEvidence.scannedBearerCount < 1 || acceptanceEvidence.retainedBearerFiles !== 0) {
+    throw new Error("Release acceptance bearer-retention evidence was incomplete.");
   }
   process.stdout.write(`${JSON.stringify({
     ok: true,
@@ -78,6 +130,8 @@ try {
     acceptance: "required",
     generatedManifest: "passed",
     documentationBuild: "passed",
+    allowedOptionalSkips: skippedCases.map(({ name, reason }) => ({ name, reason })),
+    acceptanceEvidence,
     totals,
   })}\n`);
 } finally {

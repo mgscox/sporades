@@ -41,13 +41,13 @@ export default capsule({
   middleware: [(ctx) => Object.assign(ctx, { admittedCredential: ctx.credential })],
   jobs: {
     capture: job(async (ctx, payload) => {
-      await ctx.db.records.all();
+      const records = await ctx.db.records.all();
       await ctx.db.jobRuns.insert({
         ownerId: ctx.auth.userId,
         credentialKind: ctx.credential.kind,
         credentialId: ctx.credential.kind === "access-key" ? ctx.credential.id : "",
         credentialName: ctx.credential.kind === "access-key" ? ctx.credential.name : "",
-        records: "authority-evaluated",
+        records: records.length.toString(),
       });
       return { payload };
     }),
@@ -608,7 +608,7 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
       credentialKind: "access-key",
       credentialId: issued.data.accessKey.id,
       credentialName: "release canary",
-      records: "authority-evaluated",
+      records: "1",
     }]);
 
     const jobs = await runCli(["deploy", "jobs"], projectDir);
