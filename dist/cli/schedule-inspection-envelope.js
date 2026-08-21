@@ -3,15 +3,44 @@ const SCHEDULE_DIAGNOSTIC_FIELDS = new Set([
     "latestOccurrence", "latestOccurrence.scheduledFor", "latestOccurrence.jobId",
     "latestOccurrence.errorCode", "latestOccurrence.outcome",
 ]);
-const ACCESS_KEY_BEARER_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
+const SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES = 4096;
+const SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH = 128;
+function scheduleNameDigest(value) {
+    return process.getBuiltinModule("node:crypto").createHash("sha256").update(value, "utf8").digest("hex");
+}
 function boundedScheduleDiagnostic(candidate) {
     const scheduleName = candidate?.scheduleName;
     const field = candidate?.field;
-    if (candidate?.code !== "SCHEDULE_INSPECTION_INVALID_STATE" || typeof scheduleName !== "string" ||
-        !/^[A-Za-z][A-Za-z0-9_-]*$/.test(scheduleName) || Buffer.byteLength(scheduleName, "utf8") > 128 ||
-        ACCESS_KEY_BEARER_PATTERN.test(scheduleName) || typeof field !== "string" || !SCHEDULE_DIAGNOSTIC_FIELDS.has(field))
+    if (candidate?.code !== "SCHEDULE_INSPECTION_INVALID_STATE" || typeof field !== "string" || !SCHEDULE_DIAGNOSTIC_FIELDS.has(field))
         return undefined;
-    return { code: candidate.code, scheduleName, field };
+    if (typeof scheduleName === "string" && /^[A-Za-z][A-Za-z0-9_-]*$/.test(scheduleName)) {
+        const scheduleNameBytes = Buffer.byteLength(scheduleName, "utf8");
+        if (scheduleNameBytes <= SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES)
+            return { code: candidate.code, scheduleName, field };
+        return {
+            code: candidate.code,
+            scheduleNamePrefix: scheduleName.slice(0, SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH),
+            scheduleNameSha256: scheduleNameDigest(scheduleName),
+            scheduleNameBytes,
+            field,
+        };
+    }
+    if (typeof candidate?.scheduleNamePrefix === "string"
+        && /^[A-Za-z][A-Za-z0-9_-]*$/.test(candidate.scheduleNamePrefix)
+        && candidate.scheduleNamePrefix.length === SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH
+        && typeof candidate?.scheduleNameSha256 === "string"
+        && /^[a-f0-9]{64}$/.test(candidate.scheduleNameSha256)
+        && Number.isInteger(candidate?.scheduleNameBytes)
+        && candidate.scheduleNameBytes > SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES) {
+        return {
+            code: candidate.code,
+            scheduleNamePrefix: candidate.scheduleNamePrefix,
+            scheduleNameSha256: candidate.scheduleNameSha256,
+            scheduleNameBytes: candidate.scheduleNameBytes,
+            field,
+        };
+    }
+    return undefined;
 }
 export function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
     if (envelope?.ok === false) {
