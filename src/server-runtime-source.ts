@@ -67,7 +67,9 @@ import {
   accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
   accessKeySecretWasDisclosed,
   dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
+  grantPrivilegedAccessKeyAccess,
   publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
+  revokePrivilegedAccessKeyAccess,
 } from "./access-keys-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
@@ -1942,10 +1944,12 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
           // The callback boundary, not the trailing audit writes, defines the
           // lifetime of userless Team inspection. Detached inspection promises
           // must fail closed while this run records its completion event.
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
         } catch (error: any) {
           callbackError = error;
           callbackSettled = true;
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           throw error;
         }
@@ -1986,6 +1990,7 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
           );
         } finally {
           auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
@@ -2033,6 +2038,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  grantPrivilegedAccessKeyAccess(privilegedContext);
   privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;

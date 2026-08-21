@@ -819,6 +819,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     issueAccessKeyRecord(row: LooseRecord) {
       let outcome: LooseRecord | null = null;
       let reserved = false;
+      let createdAt = row.createdAt;
       const sequence = chainMaybePromise([
         // Secret-bearing writes share one narrow lock so a rotation UPDATE can
         // never lose a cross-owner selector race by aborting its transaction.
@@ -843,6 +844,12 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           reserved = result.changes !== 0;
           if (!reserved) outcome = { status: "limit" };
         }),
+        () => {
+          createdAt = typeof row.issuanceTime === "function" ? row.issuanceTime() : row.createdAt;
+          if (!outcome && row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(createdAt)) {
+            outcome = { status: "invalid-expiry" };
+          }
+        },
         () => outcome ?? thenIfPromise(this.prepare(
           sql(
             "SELECT [id] FROM [sporades_auth_users] " +
@@ -875,7 +882,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           ),
         ).run(
           row.id, row.ownerUserId, row.name, row.reservedName, row.grantsJson, row.secretVersion,
-          row.selector, row.verifierDigest, row.lifecycleRevision, row.createdAt, row.expiresAt,
+          row.selector, row.verifierDigest, row.lifecycleRevision, createdAt, row.expiresAt,
         ), (inserted: LooseRecord) => {
           if (inserted.changes !== 0) outcome = { status: "issued" };
         }),

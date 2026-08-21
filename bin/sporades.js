@@ -6261,6 +6261,7 @@ var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2c
 var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
 var accessKeySecretDisclosedContexts = /* @__PURE__ */ new WeakSet();
 var accessKeyOwnerSessionTokens = /* @__PURE__ */ new WeakMap();
+var activePrivilegedAccessKeyContexts = /* @__PURE__ */ new WeakSet();
 function accessKeyCrypto() {
   return process.getBuiltinModule("node:crypto");
 }
@@ -6322,6 +6323,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const secret = createAccessKeySecret();
+        let issuedAt = normalized.createdAt;
         const record = {
           id: accessKeyCrypto().randomUUID(),
           ownerUserId: context.auth.userId,
@@ -6334,6 +6336,10 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
           lifecycleRevision: 1,
           createdAt: normalized.createdAt,
           expiresAt: normalized.expiresAt,
+          issuanceTime: () => {
+            issuedAt = database.clock.now().toISOString();
+            return issuedAt;
+          },
           ...accessKeyOwnerSessionTokens.has(context) ? {
             sessionToken: accessKeyOwnerSessionTokens.get(context),
             sessionValidationTime: () => database.clock.now().toISOString()
@@ -6342,7 +6348,8 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
-        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
+        record.createdAt = issuedAt;
+        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt);
         accessKeySecretDisclosedContexts.add(context);
         await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
         return { accessKey, token: secret.token };
@@ -6413,7 +6420,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
 function createPrivilegedAccessKeysApi(database, contextGetter) {
   const requireContext = () => {
     const current = contextGetter();
-    if (!current?.__privilegedRunActive) {
+    if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
       throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
     }
     return current;
@@ -6518,6 +6525,12 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
       });
     }
   };
+}
+function grantPrivilegedAccessKeyAccess(context) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.add(context);
+}
+function revokePrivilegedAccessKeyAccess(context) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.delete(context);
 }
 async function runPrivilegedAccessKeyOperation(database, context, operation, target, callback) {
   const details = () => ({
@@ -6930,6 +6943,9 @@ function clearAccessKeyFailure(database, kind, key) {
   accessKeyLimiter(database, kind).delete(key);
 }
 function throwAccessKeyIssueError(status) {
+  if (status === "invalid-expiry") {
+    throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+  }
   if (status === "session-ineligible") {
     throw commandError(
       "Access-key owner Session is no longer active.",
@@ -15172,6 +15188,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     issueAccessKeyRecord(row) {
       let outcome = null;
       let reserved = false;
+      let createdAt = row.createdAt;
       const sequence = chainMaybePromise([
         // Secret-bearing writes share one narrow lock so a rotation UPDATE can
         // never lose a cross-owner selector race by aborting its transaction.
@@ -15191,6 +15208,12 @@ function createSharedDatabaseAdapterMethods(dialect) {
           reserved = result.changes !== 0;
           if (!reserved) outcome = { status: "limit" };
         }),
+        () => {
+          createdAt = typeof row.issuanceTime === "function" ? row.issuanceTime() : row.createdAt;
+          if (!outcome && row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(createdAt)) {
+            outcome = { status: "invalid-expiry" };
+          }
+        },
         () => outcome ?? thenIfPromise(this.prepare(
           sql(
             "SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = ? AND [isGuest] = ?"
@@ -15223,7 +15246,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           row.selector,
           row.verifierDigest,
           row.lifecycleRevision,
-          row.createdAt,
+          createdAt,
           row.expiresAt
         ), (inserted) => {
           if (inserted.changes !== 0) outcome = { status: "issued" };
@@ -18281,10 +18304,12 @@ function createContextPrivilegedApi(database, contextGetter) {
         try {
           callbackResult = await callback(privilegedContext);
           callbackSettled = true;
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
         } catch (error) {
           callbackError = error;
           callbackSettled = true;
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           throw error;
         }
@@ -18319,6 +18344,7 @@ function createContextPrivilegedApi(database, contextGetter) {
           );
         } finally {
           auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
@@ -18364,6 +18390,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  grantPrivilegedAccessKeyAccess(privilegedContext);
   privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
   privilegedContext.mail = database.mail;
   return privilegedContext;

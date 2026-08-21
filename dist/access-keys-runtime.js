@@ -6,6 +6,7 @@ const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a
 const accessKeyLifecycleAuditEventsByContext = new WeakMap();
 const accessKeySecretDisclosedContexts = new WeakSet();
 const accessKeyOwnerSessionTokens = new WeakMap();
+const activePrivilegedAccessKeyContexts = new WeakSet();
 function accessKeyCrypto() {
     return process.getBuiltinModule("node:crypto");
 }
@@ -73,6 +74,7 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
             const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
             for (let attempt = 0; attempt < 5; attempt += 1) {
                 const secret = createAccessKeySecret();
+                let issuedAt = normalized.createdAt;
                 const record = {
                     id: accessKeyCrypto().randomUUID(),
                     ownerUserId: context.auth.userId,
@@ -85,6 +87,10 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                     lifecycleRevision: 1,
                     createdAt: normalized.createdAt,
                     expiresAt: normalized.expiresAt,
+                    issuanceTime: () => {
+                        issuedAt = database.clock.now().toISOString();
+                        return issuedAt;
+                    },
                     ...(accessKeyOwnerSessionTokens.has(context)
                         ? {
                             sessionToken: accessKeyOwnerSessionTokens.get(context),
@@ -97,7 +103,8 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                     continue;
                 if (outcome.status !== "issued")
                     throwAccessKeyIssueError(outcome.status);
-                const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
+                record.createdAt = issuedAt;
+                const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt);
                 accessKeySecretDisclosedContexts.add(context);
                 await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
                 return { accessKey, token: secret.token };
@@ -173,7 +180,7 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
 export function createPrivilegedAccessKeysApi(database, contextGetter) {
     const requireContext = () => {
         const current = contextGetter();
-        if (!current?.__privilegedRunActive) {
+        if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
             throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
         }
         return current;
@@ -284,6 +291,14 @@ export function createPrivilegedAccessKeysApi(database, contextGetter) {
             });
         },
     };
+}
+export function grantPrivilegedAccessKeyAccess(context) {
+    if (context && typeof context === "object")
+        activePrivilegedAccessKeyContexts.add(context);
+}
+export function revokePrivilegedAccessKeyAccess(context) {
+    if (context && typeof context === "object")
+        activePrivilegedAccessKeyContexts.delete(context);
 }
 async function runPrivilegedAccessKeyOperation(database, context, operation, target, callback) {
     const details = () => ({
@@ -767,6 +782,9 @@ function clearAccessKeyFailure(database, kind, key) {
     accessKeyLimiter(database, kind).delete(key);
 }
 function throwAccessKeyIssueError(status) {
+    if (status === "invalid-expiry") {
+        throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+    }
     if (status === "session-ineligible") {
         throw commandError("Access-key owner Session is no longer active.", "Sign in again before issuing an Access key.", "UNAUTHENTICATED");
     }

@@ -236,11 +236,13 @@ test("detached Privileged Access-key reads and mutations lose authority when the
   let releaseRead, releaseLookup;
   const readGate = new Promise((resolve) => { releaseRead = resolve; });
   const lookupGate = new Promise((resolve) => { releaseLookup = resolve; });
-  let detachedRead, detachedRevoke;
+  let detachedRead, detachedRevoke, retainedContext, retainedAccessKeys;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "detached-access-keys" }, {
     accessKeys: { scopes: ["requests:read"] },
     hooks: {
       init: (ctx) => ctx.privileged.run({ operation: "detached-probe", targetResourceKind: "access-key" }, (privilegedCtx) => {
+        retainedContext = privilegedCtx;
+        retainedAccessKeys = privilegedCtx.accessKeys;
         detachedRead = privilegedCtx.accessKeys.list(owner.userId);
         detachedRevoke = privilegedCtx.accessKeys.revoke("detached-key");
         return null;
@@ -262,12 +264,15 @@ test("detached Privileged Access-key reads and mutations lose authority when the
     database.adapter.listAccessKeyRecordsForOwner = async (...args) => { await readGate; return originalList(...args); };
     database.adapter.findAccessKeyRecordById = async (...args) => { await lookupGate; return originalFind(...args); };
     await database.init();
+    retainedContext.__privilegedRunActive = true;
+    const forgedRead = retainedAccessKeys.list(owner.userId);
+    const forgedRevoke = retainedAccessKeys.revoke("detached-key");
     releaseRead(); releaseLookup();
-    const [readResult, revokeResult] = await Promise.allSettled([detachedRead, detachedRevoke]);
-    assert.equal(readResult.status, "rejected");
-    assert.equal(readResult.reason.code, "FORBIDDEN");
-    assert.equal(revokeResult.status, "rejected");
-    assert.equal(revokeResult.reason.code, "FORBIDDEN");
+    const results = await Promise.allSettled([detachedRead, detachedRevoke, forgedRead, forgedRevoke]);
+    for (const result of results) {
+      assert.equal(result.status, "rejected");
+      assert.equal(result.reason.code, "FORBIDDEN");
+    }
     database.adapter.findAccessKeyRecordById = originalFind;
     assert.equal((await originalFind("detached-key")).revokedAt, null, "detached destructive work must not commit");
   } finally {

@@ -1297,6 +1297,59 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key issuance rechecks expiry after acquiring its serialization locks",
+    async run(adapter) {
+      const record = {
+        id: "access-key-issuance-expiry-race",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "issuance-expiry-race",
+        reservedName: "issuance-expiry-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "issuanceexpiryrace000",
+        verifierDigest: "a6".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: LATER,
+      };
+      const beforeLedger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(record.ownerUserId);
+      let releaseLock;
+      let lockAcquired;
+      const acquired = new Promise((resolve) => { lockAcquired = resolve; });
+      const release = new Promise((resolve) => { releaseLock = resolve; });
+      const blocker = adapter.withTransaction(async (tx) => {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_auth_access_key_locks] " +
+          "SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?",
+        )).run("selector");
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+      let checkedAt = NOW;
+      const issuance = adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        ...record,
+        issuanceTime: () => checkedAt,
+      }));
+      checkedAt = LATER;
+      releaseLock();
+      const [, outcome] = await Promise.all([blocker, issuance]);
+      assert.equal(outcome.status, "invalid-expiry");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))
+        .some((candidate) => candidate.id === record.id), false);
+      const afterLedger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(record.ownerUserId);
+      assert.deepEqual(
+        { currentCount: Number(afterLedger.currentCount), totalCount: Number(afterLedger.totalCount) },
+        { currentCount: Number(beforeLedger.currentCount), totalCount: Number(beforeLedger.totalCount) },
+      );
+    },
+  },
+  {
     name: "Access-key rotation rechecks expiry after acquiring its serialization locks",
     async run(adapter) {
       const record = {

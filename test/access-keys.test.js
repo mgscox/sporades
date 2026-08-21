@@ -725,6 +725,47 @@ test("Access-key admission and coalesced best-effort usage telemetry stay outsid
   }
 });
 
+test("Access-key issuance returns and persists its authoritative serialized timestamp", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-issuance-time-"));
+  let now = new Date("2026-08-20T12:00:00.000Z");
+  const definition = capsule({
+    name: "access-key-issuance-time",
+    accessKeys: { scopes: ["requests:read"] },
+    mutations: { issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)) },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition, {
+    clock: { now: () => now },
+  });
+  try {
+    const auth = await seedLinkedUser(database);
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    database.adapter.withTransaction = (callback) => originalWithTransaction(async (transactionAdapter) => {
+      const originalIssue = transactionAdapter.issueAccessKeyRecord.bind(transactionAdapter);
+      transactionAdapter.issueAccessKeyRecord = (row) => {
+        now = new Date("2026-08-20T13:00:00.000Z");
+        return originalIssue(row);
+      };
+      try {
+        return await callback(transactionAdapter);
+      } finally {
+        transactionAdapter.issueAccessKeyRecord = originalIssue;
+      }
+    });
+    const issued = await runMutation(database, auth, "issueKey", [{
+      name: "serialized-time",
+      expiresAt: "2026-08-20T14:00:00.000Z",
+    }]);
+    assert.equal(issued.error, null, JSON.stringify(issued.error));
+    assert.equal(issued.data.accessKey.createdAt, "2026-08-20T13:00:00.000Z");
+    assert.equal(issued.data.accessKey.status, "active");
+    const stored = await database.adapter.findAccessKeyRecordById(issued.data.accessKey.id);
+    assert.equal(stored.createdAt, "2026-08-20T13:00:00.000Z");
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("owners rotate, expire, revoke, delete, paginate, and recover immutable Access keys", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-lifecycle-"));
   let now = new Date("2026-08-20T12:00:00.000Z");

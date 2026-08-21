@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, grantPrivilegedAccessKeyAccess, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, revokePrivilegedAccessKeyAccess, } from "./access-keys-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
@@ -1844,11 +1844,13 @@ function createContextPrivilegedApi(database, contextGetter) {
                     // The callback boundary, not the trailing audit writes, defines the
                     // lifetime of userless Team inspection. Detached inspection promises
                     // must fail closed while this run records its completion event.
+                    revokePrivilegedAccessKeyAccess(privilegedContext);
                     privilegedContext.__privilegedRunActive = false;
                 }
                 catch (error) {
                     callbackError = error;
                     callbackSettled = true;
+                    revokePrivilegedAccessKeyAccess(privilegedContext);
                     privilegedContext.__privilegedRunActive = false;
                     throw error;
                 }
@@ -1892,6 +1894,7 @@ function createContextPrivilegedApi(database, contextGetter) {
                 }
                 finally {
                     auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
+                    revokePrivilegedAccessKeyAccess(privilegedContext);
                     privilegedContext.__privilegedRunActive = false;
                     revokePrivilegedDbAccess(privilegedContext);
                 }
@@ -1940,6 +1943,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
     privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
     privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+    grantPrivilegedAccessKeyAccess(privilegedContext);
     privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
     privilegedContext.mail = database.mail;
     return privilegedContext;

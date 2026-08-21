@@ -149,6 +149,8 @@ export declare function createPrivilegedAccessKeysApi(database: LooseRecord, con
         deleted: boolean;
     }>;
 };
+export declare function grantPrivilegedAccessKeyAccess(context: LooseRecord): void;
+export declare function revokePrivilegedAccessKeyAccess(context: LooseRecord): void;
 export declare function readAccessKeyAuthorization(request: LooseRecord): {
     token: string;
     selector: string;

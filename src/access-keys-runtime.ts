@@ -14,6 +14,7 @@ const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a
 const accessKeyLifecycleAuditEventsByContext = new WeakMap<object, LooseRecord[]>();
 const accessKeySecretDisclosedContexts = new WeakSet<object>();
 const accessKeyOwnerSessionTokens = new WeakMap<object, string>();
+const activePrivilegedAccessKeyContexts = new WeakSet<object>();
 
 function accessKeyCrypto() {
   return process.getBuiltinModule("node:crypto");
@@ -99,6 +100,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
       const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const secret = createAccessKeySecret();
+        let issuedAt = normalized.createdAt;
         const record = {
           id: accessKeyCrypto().randomUUID(),
           ownerUserId: context.auth.userId,
@@ -111,6 +113,10 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
           lifecycleRevision: 1,
           createdAt: normalized.createdAt,
           expiresAt: normalized.expiresAt,
+          issuanceTime: () => {
+            issuedAt = database.clock.now().toISOString();
+            return issuedAt;
+          },
           ...(accessKeyOwnerSessionTokens.has(context)
             ? {
               sessionToken: accessKeyOwnerSessionTokens.get(context),
@@ -121,7 +127,8 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
-        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], normalized.createdAt);
+        record.createdAt = issuedAt;
+        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt);
         accessKeySecretDisclosedContexts.add(context);
         await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
         return { accessKey, token: secret.token };
@@ -195,7 +202,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
 export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   const requireContext = () => {
     const current = contextGetter();
-    if (!current?.__privilegedRunActive) {
+    if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
       throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
     }
     return current;
@@ -297,6 +304,14 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
       });
     },
   };
+}
+
+export function grantPrivilegedAccessKeyAccess(context: LooseRecord) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.add(context);
+}
+
+export function revokePrivilegedAccessKeyAccess(context: LooseRecord) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.delete(context);
 }
 
 async function runPrivilegedAccessKeyOperation<Result>(
@@ -802,6 +817,9 @@ function clearAccessKeyFailure(database: LooseRecord, kind: string, key: string)
 }
 
 function throwAccessKeyIssueError(status: string): never {
+  if (status === "invalid-expiry") {
+    throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+  }
   if (status === "session-ineligible") {
     throw commandError(
       "Access-key owner Session is no longer active.",
