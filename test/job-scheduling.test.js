@@ -10,6 +10,7 @@ import { createControllableRuntimeClock, createPostgresDatabaseAdapter, enqueueS
 import { inspectRuntimeSchedules } from "../dist/jobs-runtime.js";
 import { job, mutation, schedule } from "../dist/server.js";
 import { runMutation } from "../dist/server-runtime-source.js";
+import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 async function seedRetainedScheduleGeneration(database, nextOccurrence) {
@@ -2921,22 +2922,21 @@ test("libSQL persists and reconciles Schedule state through the configured adapt
 });
 
 test("Postgres persists Schedule state through the configured adapter", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." }, async () => {
-  const admin = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
-  await admin.exec("DROP TABLE IF EXISTS sporades_schedule_occurrences, sporades_schedule_legacy_adoption, sporades_schedules, sporades_jobs, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, sporades_auth_oauth_states, sporades_user_preferences, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, sporades_log_events");
-  await admin.close();
-  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
-  const config = { name: "scheduled", services: { database: { kind: "database", engine: "postgres" } } };
-  const options = { clock, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL } };
-  const database = await openDevDatabase("unused.db", "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
-  try {
-    await database.init();
-    assert.equal(
-      (await database.adapter
-        .prepare(database.adapter.dialect.sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?"))
-        .get("durable")).nextOccurrence,
-      "2030-01-01T00:01:00.000Z",
-    );
-  } finally { await database.shutdown(); await database.close(); }
+  await withPostgresAdapter(async () => {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+    const config = { name: "scheduled", services: { database: { kind: "database", engine: "postgres" } } };
+    const options = { clock, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL } };
+    const database = await openDevDatabase("unused.db", "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
+    try {
+      await database.init();
+      assert.equal(
+        (await database.adapter
+          .prepare(database.adapter.dialect.sql("SELECT [nextOccurrence] FROM [sporades_schedules] WHERE [name]=?"))
+          .get("durable")).nextOccurrence,
+        "2030-01-01T00:01:00.000Z",
+      );
+    } finally { await database.shutdown(); await database.close(); }
+  });
 });
 
 test("Scheduled provenance is present at the atomic enqueue boundary", async () => {
@@ -3237,7 +3237,7 @@ test("Capsule code cannot forge Schedule provenance through context properties",
     assert.equal(result.ok, true);
     const row = database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs WHERE id=?").get(result.data.id);
     assert.deepEqual({ ...row }, { scheduleName: null, scheduledFor: null });
-    assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker" });
+    assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker", credential: { kind: "session" } });
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

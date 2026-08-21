@@ -8,7 +8,7 @@ import { job, mutation, String, table } from "../dist/server.js";
 
 const auth = (userId) => ({ userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" });
 
-test("captured Jobs fail for missing actors and re-evaluate ACL at execution time", async () => {
+test("captured Jobs keep their admitted actor snapshot after deletion and re-evaluate ACL at execution time", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-captured-jobs-"));
   let allowWrites = true;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, {
@@ -30,8 +30,8 @@ test("captured Jobs fail for missing actors and re-evaluate ACL at execution tim
     const missingState = await runMutation(database, auth("gone"), "get", [missing.data.id]);
     const deniedState = await runMutation(database, auth("denied"), "get", [denied.data.id]);
     assert.equal(missingState.data.status, "failed");
-    assert.equal(missingState.data.failure.code, "JOB_ACTOR_UNAVAILABLE");
-    assert.equal(missingState.data.attempts, 1, "a missing captured actor is terminal even when retry attempts remain");
+    assert.equal(missingState.data.failure.code, "JOB_FAILED");
+    assert.equal(missingState.data.attempts, 3, "owner deletion does not revoke already admitted work or its retry policy");
     assert.equal(deniedState.data.status, "failed");
     assert.equal(database.adapter.prepare("SELECT count(*) AS count FROM notes").get().count, 0);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }

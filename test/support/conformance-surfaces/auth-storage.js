@@ -70,6 +70,50 @@ const SWEPT_USER = {
   provider: "email",
 };
 
+const ACCESS_KEY_TRANSITION_USER = {
+  id: "auth-user-access-key-transition",
+  createdAt: NOW,
+  displayName: "Access Key Transition User",
+  email: "access-key-transition@example.com",
+  picture: null,
+  isAuthenticated: 1,
+  isGuest: 0,
+  provider: "email",
+};
+
+const ACCESS_KEY_RESET_USER = {
+  id: "auth-user-access-key-reset",
+  createdAt: NOW,
+  displayName: "Access Key Reset User",
+  email: "access-key-reset@example.com",
+  picture: null,
+  isAuthenticated: 1,
+  isGuest: 0,
+  provider: "email",
+};
+
+const ACCESS_KEY_COLLISION_USER = {
+  id: "auth-user-access-key-collision",
+  createdAt: NOW,
+  displayName: "Access Key Collision User",
+  email: "access-key-collision@example.com",
+  picture: null,
+  isAuthenticated: 1,
+  isGuest: 0,
+  provider: "email",
+};
+
+const ACCESS_KEY_RESTART_USER = {
+  id: "auth-user-access-key-restart",
+  createdAt: NOW,
+  displayName: "Access Key Restart User",
+  email: "access-key-restart@example.com",
+  picture: null,
+  isAuthenticated: 1,
+  isGuest: 0,
+  provider: "email",
+};
+
 // A fourth Sporades user, created by a case rather than seeded, so that `insertAuthUser` can be
 // shown to store a row that was not there before and `updateAuthUserProfile` and `linkAuthUser`
 // can rewrite one without disturbing a user another case reads.
@@ -144,6 +188,10 @@ async function prepareAuthStorage(adapter) {
   await adapter.insertAuthUser(SIGNED_IN_USER);
   await adapter.insertAuthUser(BYSTANDER_USER);
   await adapter.insertAuthUser(SWEPT_USER);
+  await adapter.insertAuthUser(ACCESS_KEY_TRANSITION_USER);
+  await adapter.insertAuthUser(ACCESS_KEY_RESET_USER);
+  await adapter.insertAuthUser(ACCESS_KEY_COLLISION_USER);
+  await adapter.insertAuthUser(ACCESS_KEY_RESTART_USER);
   await seedReservedAuthUser(adapter);
 }
 
@@ -1012,6 +1060,940 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key lifecycle methods preserve owner, selector, and revocation invariants",
+    async run(adapter) {
+      const record = {
+        id: "access-key-conformance",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "conformance-reader",
+        reservedName: "conformance-reader",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "abcdefghijklmnopqrstuv",
+        verifierDigest: "ab".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      assert.equal((await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        ...record,
+        id: "access-key-name-collision",
+        selector: "bcdefghijklmnopqrstuvw",
+      }))).status, "name-conflict");
+
+      const listed = await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id);
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].id, record.id);
+      assert.equal(listed[0].grantsJson, record.grantsJson);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 0);
+
+      const inspected = await adapter.findAccessKeyRecordById(record.id);
+      assert.equal(inspected.id, record.id);
+      assert.equal(inspected.ownerUserId, SIGNED_IN_USER.id);
+      assert.equal(inspected.grantsJson, record.grantsJson);
+      assert.equal(inspected.selector, undefined);
+      assert.equal(inspected.verifierDigest, undefined);
+      assert.equal(await adapter.findAccessKeyRecordById("unknown-access-key-id"), null);
+
+      const authenticated = await adapter.findAccessKeyAuthenticationRecord(record.selector);
+      assert.equal(authenticated.id, record.id);
+      assert.equal(authenticated.ownerDisplayName, SIGNED_IN_USER.displayName);
+      assert.equal(Number(authenticated.ownerIsAuthenticated), 1);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("unknown-selector-value"), null);
+      assert.equal((await adapter.touchAccessKeyLastUsed(record.id, LATER, NOW)).changes, 1);
+      assert.equal((await adapter.touchAccessKeyLastUsed(record.id, NEXT_MONTH, LATER)).changes, 0);
+
+      const revoked = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: record.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+      }));
+      assert.equal(revoked.revokedAt, LATER);
+      assert.equal(revoked.revocationCause, "owner");
+      assert.equal(Number(revoked.lifecycleRevision), 2);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      const idempotent = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: record.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+      assert.equal(idempotent.revokedAt, LATER);
+      assert.equal(Number(idempotent.lifecycleRevision), 2);
+      assert.equal(await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: BYSTANDER_USER.id,
+        id: record.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      })), null);
+
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(SIGNED_IN_USER.id);
+      assert.equal(Number(ledger.currentCount), 0);
+      assert.equal(Number(ledger.totalCount), 1);
+
+      const reused = { ...record, id: "access-key-name-reused", selector: "cdefghijklmnopqrstuvwx" };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(reused)), { status: "issued" });
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(reused.selector)).id, reused.id);
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: reused.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+    },
+  },
+  {
+    name: "Access-key issuance serializes same-name contenders and rolls back quota reservations",
+    async run(adapter) {
+      const contender = (suffix) => ({
+        id: `access-key-contender-${suffix}`,
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "concurrent-reader",
+        reservedName: "concurrent-reader",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: suffix === "a" ? "defghijklmnopqrstuvwxy" : "efghijklmnopqrstuvwxyz",
+        verifierDigest: (suffix === "a" ? "cd" : "de").repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      const outcomes = await Promise.all([
+        adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender("a"))),
+        adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender("b"))),
+      ]);
+      assert.deepEqual(outcomes.map((outcome) => outcome.status).sort(), ["issued", "name-conflict"]);
+      const winner = (await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id))
+        .find((row) => row.name === "concurrent-reader");
+      assert.ok(winner);
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: SIGNED_IN_USER.id,
+        id: winner.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+
+      const rollbackMarker = new Error("rollback Access-key issuance");
+      await assert.rejects(
+        adapter.withTransaction(async (tx) => {
+          assert.deepEqual(await tx.issueAccessKeyRecord({
+            ...contender("a"),
+            id: "access-key-rolled-back",
+            name: "rolled-back-reader",
+            reservedName: "rolled-back-reader",
+            selector: "fghijklmnopqrstuvwxyza",
+          }), { status: "issued" });
+          throw rollbackMarker;
+        }),
+        rollbackMarker,
+      );
+      assert.equal(
+        (await adapter.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id)).some((row) => row.id === "access-key-rolled-back"),
+        false,
+      );
+    },
+  },
+  {
+    name: "Access-key rotation CAS, bulk retirement, and revoked-history deletion preserve lifecycle invariants",
+    async run(adapter) {
+      const record = {
+        id: "access-key-complete-lifecycle",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "complete-lifecycle",
+        reservedName: "complete-lifecycle",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "hijklmnopqrstuvwxyzabc",
+        verifierDigest: "ac".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      const rotated = await adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "ijklmnopqrstuvwxyzabcd",
+        verifierDigest: "bd".repeat(32),
+        rotatedAt: LATER,
+      }));
+      assert.equal(rotated.status, "rotated");
+      assert.equal(rotated.rotatedAt, LATER);
+      assert.equal(Number(rotated.record.lifecycleRevision), 2);
+      assert.equal(rotated.record.name, record.name);
+      assert.equal(rotated.record.grantsJson, record.grantsJson);
+      assert.equal(rotated.record.expiresAt, record.expiresAt);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord("ijklmnopqrstuvwxyzabcd")).id, record.id);
+      assert.equal((await adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "jklmnopqrstuvwxyzabcde",
+        verifierDigest: "ce".repeat(32),
+        rotatedAt: "2026-08-01T10:00:00.000Z",
+      }))).status, "revision-conflict");
+
+      const bulk = await adapter.withTransaction((tx) => tx.bulkRevokeAccessKeysForOwner({
+        ownerUserId: record.ownerUserId,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner-unlinked",
+      }));
+      assert.ok(bulk.revokedCount >= 1);
+      const retired = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId)).find((row) => row.id === record.id);
+      assert.equal(retired.revocationCause, "owner-unlinked");
+      assert.equal(Number(retired.lifecycleRevision), 3);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("ijklmnopqrstuvwxyzabcd"), null);
+      const deleted = await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+      }));
+      assert.deepEqual({ status: deleted.status, id: deleted.id }, { status: "deleted", id: record.id });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId)).some((row) => row.id === record.id), false);
+
+      const competing = {
+        ...record,
+        id: "access-key-competing-rotation",
+        name: "competing-rotation",
+        reservedName: "competing-rotation",
+        selector: "klmnopqrstuvwxyzabcdef",
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(competing)), { status: "issued" });
+      const rotations = await Promise.all([
+        adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+          ownerUserId: competing.ownerUserId,
+          id: competing.id,
+          lifecycleRevision: 1,
+          secretVersion: 1,
+          selector: "lmnopqrstuvwxyzabcdefg",
+          verifierDigest: "df".repeat(32),
+          rotatedAt: LATER,
+        })),
+        adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+          ownerUserId: competing.ownerUserId,
+          id: competing.id,
+          lifecycleRevision: 1,
+          secretVersion: 1,
+          selector: "mnopqrstuvwxyzabcdefgh",
+          verifierDigest: "e1".repeat(32),
+          rotatedAt: LATER,
+        })),
+      ]);
+      assert.deepEqual(rotations.map((outcome) => outcome.status).sort(), ["revision-conflict", "rotated"]);
+      await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: competing.ownerUserId,
+        id: competing.id,
+        revokedAt: NEXT_MONTH,
+        revocationCause: "owner",
+      }));
+      await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({ ownerUserId: competing.ownerUserId, id: competing.id }));
+    },
+  },
+  {
+    name: "Access-key issuance rechecks expiry after acquiring its serialization locks",
+    async run(adapter) {
+      const record = {
+        id: "access-key-issuance-expiry-race",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "issuance-expiry-race",
+        reservedName: "issuance-expiry-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "issuanceexpiryrace000",
+        verifierDigest: "a6".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: LATER,
+      };
+      const beforeLedger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(record.ownerUserId);
+      let releaseLock;
+      let lockAcquired;
+      const acquired = new Promise((resolve) => { lockAcquired = resolve; });
+      const release = new Promise((resolve) => { releaseLock = resolve; });
+      const blocker = adapter.withTransaction(async (tx) => {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_auth_access_key_locks] " +
+          "SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?",
+        )).run("selector");
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+      let checkedAt = NOW;
+      const issuance = adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        ...record,
+        issuanceTime: () => checkedAt,
+      }));
+      checkedAt = LATER;
+      releaseLock();
+      const [, outcome] = await Promise.all([blocker, issuance]);
+      assert.equal(outcome.status, "invalid-expiry");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))
+        .some((candidate) => candidate.id === record.id), false);
+      const afterLedger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(record.ownerUserId);
+      assert.deepEqual(
+        { currentCount: Number(afterLedger.currentCount), totalCount: Number(afterLedger.totalCount) },
+        { currentCount: Number(beforeLedger.currentCount), totalCount: Number(beforeLedger.totalCount) },
+      );
+    },
+  },
+  {
+    name: "Access-key rotation rechecks expiry after acquiring its serialization locks",
+    async run(adapter) {
+      const record = {
+        id: "access-key-rotation-expiry-race",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "rotation-expiry-race",
+        reservedName: "rotation-expiry-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "rotationexpiryrace0000",
+        verifierDigest: "b7".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: LATER,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      let releaseLock;
+      let lockAcquired;
+      const acquired = new Promise((resolve) => { lockAcquired = resolve; });
+      const release = new Promise((resolve) => { releaseLock = resolve; });
+      const blocker = adapter.withTransaction(async (tx) => {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_auth_access_key_locks] " +
+          "SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?",
+        )).run("selector");
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+      let checkedAt = NOW;
+      const rotation = adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "rotationexpirynew00000",
+        verifierDigest: "c8".repeat(32),
+        rotationTime: () => checkedAt,
+      }));
+      checkedAt = LATER;
+      releaseLock();
+      const [, outcome] = await Promise.all([blocker, rotation]);
+      assert.equal(outcome.status, "not-active");
+      assert.equal(outcome.rotatedAt, LATER);
+      const retained = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))
+        .find((candidate) => candidate.id === record.id);
+      assert.equal(Number(retained.lifecycleRevision), 1);
+      assert.equal(retained.rotatedAt, null);
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(record.selector)).id, record.id);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("rotationexpirynew00000"), null);
+    },
+  },
+  {
+    name: "Access-key revocation timestamps after acquiring its owner serialization lock",
+    async run(adapter) {
+      const record = {
+        id: "access-key-revocation-time-race",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "revocation-time-race",
+        reservedName: "revocation-time-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "revocationtimerace0000",
+        verifierDigest: "d9".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      let releaseLock;
+      let lockAcquired;
+      const acquired = new Promise((resolve) => { lockAcquired = resolve; });
+      const release = new Promise((resolve) => { releaseLock = resolve; });
+      const blocker = adapter.withTransaction(async (tx) => {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_auth_access_key_owners] " +
+          "SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
+        )).run(record.ownerUserId);
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+      let checkedAt = NOW;
+      const revocation = adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        revokedAt: NOW,
+        revocationTime: () => checkedAt,
+        revocationCause: "owner",
+      }));
+      checkedAt = LATER;
+      releaseLock();
+      const [, revoked] = await Promise.all([blocker, revocation]);
+      assert.equal(revoked.revokedAt, LATER);
+      assert.equal(revoked.rotatedAt, null);
+      assert.equal(Number(revoked.lifecycleRevision), 2);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+    },
+  },
+  {
+    name: "Access-key rotation normalizes a cross-owner selector race",
+    async run(adapter) {
+      const left = {
+        id: "access-key-selector-race-left",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "selector-race-left",
+        reservedName: "selector-race-left",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "selectorraceleft0000000",
+        verifierDigest: "d1".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      const right = {
+        ...left,
+        id: "access-key-selector-race-right",
+        ownerUserId: ACCESS_KEY_COLLISION_USER.id,
+        name: "selector-race-right",
+        reservedName: "selector-race-right",
+        selector: "selectorraceright000000",
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(left)), { status: "issued" });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(right)), { status: "issued" });
+      const selector = "sharedrotationselector0";
+      const results = await Promise.all([left, right].map((record, index) =>
+        adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+          ownerUserId: record.ownerUserId,
+          id: record.id,
+          lifecycleRevision: 1,
+          secretVersion: 1,
+          selector,
+          verifierDigest: `${index + 2}a`.repeat(32),
+          rotatedAt: LATER,
+        }))));
+      assert.deepEqual(results.map((result) => result.status).sort(), ["rotated", "selector-conflict"]);
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(selector)).id,
+        results[0].status === "rotated" ? left.id : right.id);
+      for (const record of [left, right]) {
+        await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+          ownerUserId: record.ownerUserId,
+          id: record.id,
+          revokedAt: NEXT_MONTH,
+          revocationCause: "owner",
+        }));
+        await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({ ownerUserId: record.ownerUserId, id: record.id }));
+      }
+    },
+  },
+  {
+    name: "Access-key issuance serializes with unlink and owner deletion transitions",
+    async run(adapter) {
+      const raced = {
+        id: "access-key-owner-transition-race",
+        ownerUserId: ACCESS_KEY_TRANSITION_USER.id,
+        name: "owner-transition-race",
+        reservedName: "owner-transition-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "ownertransitionrace000",
+        verifierDigest: "d2".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      let releaseTransition;
+      let transitionLocked;
+      const locked = new Promise((resolve) => { transitionLocked = resolve; });
+      const release = new Promise((resolve) => { releaseTransition = resolve; });
+      const transition = adapter.withTransaction(async (tx) => {
+          await tx.bulkRevokeAccessKeysForOwner({
+            ownerUserId: raced.ownerUserId,
+            revokedAt: LATER,
+            revocationCause: "owner-unlinked",
+          });
+          transitionLocked();
+          await release;
+          await tx.updateAuthUserProfile({
+            id: raced.ownerUserId,
+            displayName: ACCESS_KEY_TRANSITION_USER.displayName,
+            picture: null,
+            isAuthenticated: 0,
+            isGuest: 1,
+          });
+      });
+      await locked;
+      const issue = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(raced));
+      releaseTransition();
+      const [, issueOutcome] = await Promise.all([transition, issue]);
+      assert.equal(issueOutcome.status, "owner-ineligible");
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(raced.ownerUserId);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 0,
+        totalCount: 0,
+      });
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(raced.selector), null);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(raced.ownerUserId)).every((row) => row.revokedAt !== null), true);
+
+      await adapter.linkAuthUser({ ...ACCESS_KEY_TRANSITION_USER, isAuthenticated: 1, isGuest: 0 });
+      const afterRelink = await adapter.listAccessKeyRecordsForOwner(raced.ownerUserId);
+      assert.equal(afterRelink.every((row) => row.revokedAt !== null), true);
+
+      const deletedOwnerKey = { ...raced, id: "access-key-owner-deleted", name: "owner-deleted", reservedName: "owner-deleted", selector: "ownerdeletedselector000" };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(deletedOwnerKey)), { status: "issued" });
+      const deletionContender = {
+        ...raced,
+        id: "access-key-owner-delete-contender",
+        name: "owner-delete-contender",
+        reservedName: "owner-delete-contender",
+        selector: "ownerdeletecontender00",
+      };
+      let releaseDeletion;
+      let deletionLocked;
+      const deletionReady = new Promise((resolve) => { deletionLocked = resolve; });
+      const deletionRelease = new Promise((resolve) => { releaseDeletion = resolve; });
+      const deletion = adapter.withTransaction(async (tx) => {
+        await tx.bulkRevokeAccessKeysForOwner({
+          ownerUserId: raced.ownerUserId,
+          revokedAt: NEXT_MONTH,
+          revocationCause: "owner-deleted",
+        });
+        deletionLocked();
+        await deletionRelease;
+        await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_users] WHERE [id] = ?")).run(raced.ownerUserId);
+      });
+      await deletionReady;
+      const issueDuringDeletion = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(deletionContender));
+      releaseDeletion();
+      const [, deletionIssueOutcome] = await Promise.all([deletion, issueDuringDeletion]);
+      assert.equal(deletionIssueOutcome.status, "owner-ineligible");
+      const deletedHistory = (await adapter.listAccessKeyRecordsForOwner(raced.ownerUserId)).find((row) => row.id === deletedOwnerKey.id);
+      assert.equal(deletedHistory.revocationCause, "owner-deleted");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(deletedOwnerKey.selector), null);
+    },
+  },
+  {
+    name: "Session and Access-key password-reset retirement commits and rolls back atomically",
+    async run(adapter) {
+      const record = {
+        id: "access-key-reset-atomicity",
+        ownerUserId: ACCESS_KEY_RESET_USER.id,
+        name: "reset-atomicity",
+        reservedName: "reset-atomicity",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "resetatomicityselector00",
+        verifierDigest: "d3".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      await adapter.insertEmailCredential({
+        email: ACCESS_KEY_RESET_USER.email,
+        userId: ACCESS_KEY_RESET_USER.id,
+        passwordHash: "old-reset-hash",
+        passwordSalt: "old-reset-salt",
+        createdAt: NOW,
+      });
+      for (const selector of ["reset-atomicity-primary", "reset-atomicity-sibling"]) {
+        await adapter.insertPasswordResetCode({
+          selector,
+          verifierHash: `${selector}-hash`,
+          email: ACCESS_KEY_RESET_USER.email,
+          userId: ACCESS_KEY_RESET_USER.id,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        });
+      }
+      await adapter.insertAuthSession({ token: "session-reset-atomicity", userId: record.ownerUserId, provider: "email", createdAt: NOW, expiresAt: NEXT_MONTH });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      const rollback = new Error("rollback reset retirement");
+      await assert.rejects(adapter.withTransaction(async (tx) => {
+        await tx.deletePasswordResetCode("reset-atomicity-primary");
+        await tx.updateEmailCredentialPassword(ACCESS_KEY_RESET_USER.email, "new-reset-hash", "new-reset-salt");
+        await tx.deletePasswordResetCodesForUser(record.ownerUserId);
+        await tx.deleteAuthSessionsForUser(record.ownerUserId);
+        await tx.bulkRevokeAccessKeysForOwner({ ownerUserId: record.ownerUserId, revokedAt: LATER, revocationCause: "password-reset" });
+        throw rollback;
+      }), rollback);
+      assert.equal((await adapter.findPasswordResetCode("reset-atomicity-primary")).userId, record.ownerUserId);
+      assert.equal((await adapter.findPasswordResetCode("reset-atomicity-sibling")).userId, record.ownerUserId);
+      assert.equal((await adapter.findEmailCredentialWithUser(ACCESS_KEY_RESET_USER.email)).passwordHash, "old-reset-hash");
+      assert.equal((await adapter.readAuthSessionWithUser("session-reset-atomicity")).userId, record.ownerUserId);
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(record.selector)).id, record.id);
+
+      await adapter.withTransaction(async (tx) => {
+        await tx.deletePasswordResetCode("reset-atomicity-primary");
+        await tx.updateEmailCredentialPassword(ACCESS_KEY_RESET_USER.email, "new-reset-hash", "new-reset-salt");
+        await tx.deletePasswordResetCodesForUser(record.ownerUserId);
+        await tx.deleteAuthSessionsForUser(record.ownerUserId);
+        await tx.bulkRevokeAccessKeysForOwner({ ownerUserId: record.ownerUserId, revokedAt: NEXT_MONTH, revocationCause: "password-reset" });
+      });
+      assert.equal(await adapter.findPasswordResetCode("reset-atomicity-primary"), null);
+      assert.equal(await adapter.findPasswordResetCode("reset-atomicity-sibling"), null);
+      assert.equal((await adapter.findEmailCredentialWithUser(ACCESS_KEY_RESET_USER.email)).passwordHash, "new-reset-hash");
+      assert.equal(await adapter.readAuthSessionWithUser("session-reset-atomicity"), null);
+      const retired = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))[0];
+      assert.equal(retired.revocationCause, "password-reset");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+
+      const staleSessionToken = "session-reset-issuance-race";
+      await adapter.insertAuthSession({
+        token: staleSessionToken,
+        userId: record.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      const contender = {
+        ...record,
+        id: "access-key-reset-issuance-contender",
+        name: "reset-issuance-contender",
+        reservedName: "reset-issuance-contender",
+        selector: "resetissuancecontend00",
+        verifierDigest: "e3".repeat(32),
+        sessionToken: staleSessionToken,
+      };
+      let releaseReset;
+      let resetLocked;
+      const resetHasLock = new Promise((resolve) => { resetLocked = resolve; });
+      const resetRelease = new Promise((resolve) => { releaseReset = resolve; });
+      const reset = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSessionsForUser(record.ownerUserId);
+        await tx.bulkRevokeAccessKeysForOwner({
+          ownerUserId: record.ownerUserId,
+          revokedAt: NEXT_MONTH,
+          revocationCause: "password-reset",
+        });
+        resetLocked();
+        await resetRelease;
+      });
+      await resetHasLock;
+      const issuance = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender));
+      releaseReset();
+      const [, issuanceOutcome] = await Promise.all([reset, issuance]);
+      assert.equal(issuanceOutcome.status, "session-ineligible");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(contender.selector), null);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))
+        .some((candidate) => candidate.id === contender.id), false);
+    },
+  },
+  {
+    name: "Access-key rotation validates its bound Session inside the lifecycle transaction",
+    async run(adapter) {
+      const sessionToken = "session-stale-access-key-rotation";
+      const record = {
+        id: "access-key-stale-session-rotation",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "stale-session-rotation",
+        reservedName: "stale-session-rotation",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "stalerotationold00000",
+        verifierDigest: "f4".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      await adapter.insertAuthSession({
+        token: sessionToken,
+        userId: record.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      let releaseSessionRetirement;
+      let sessionRetirementLocked;
+      const sessionRetirementHasLock = new Promise((resolve) => { sessionRetirementLocked = resolve; });
+      const sessionRetirementRelease = new Promise((resolve) => { releaseSessionRetirement = resolve; });
+      const sessionRetirement = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSession(sessionToken);
+        sessionRetirementLocked();
+        await sessionRetirementRelease;
+      });
+      await sessionRetirementHasLock;
+      const rotation = adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "stalerotationnew00000",
+        verifierDigest: "f5".repeat(32),
+        rotatedAt: LATER,
+        sessionToken,
+        sessionValidationTime: () => LATER,
+      }));
+      releaseSessionRetirement();
+      const [, outcome] = await Promise.all([sessionRetirement, rotation]);
+      assert.equal(outcome.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(record.selector)).id, record.id);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("stalerotationnew00000"), null);
+      const retained = await adapter.findAccessKeyRecordById(record.id);
+      assert.equal(Number(retained.lifecycleRevision), 1);
+      assert.equal(retained.rotatedAt, null);
+    },
+  },
+  {
+    name: "Access-key owner operations revalidate their bound Session and current linked owner",
+    async run(adapter) {
+      const sessionToken = "session-stale-access-key-owner-operations";
+      const active = {
+        id: "access-key-stale-session-active",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "stale-session-active",
+        reservedName: "stale-session-active",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "staleowneractive00000",
+        verifierDigest: "f6".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      const history = {
+        ...active,
+        id: "access-key-stale-session-history",
+        name: "stale-session-history",
+        reservedName: "stale-session-history",
+        selector: "staleownerhistory0000",
+        verifierDigest: "f7".repeat(32),
+      };
+      await adapter.insertAuthSession({
+        token: sessionToken,
+        userId: active.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(active)), { status: "issued" });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(history)), { status: "issued" });
+      const historicalRevocation = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+      }));
+      assert.equal(historicalRevocation.id, history.id);
+
+      const sessionOptions = { sessionToken, sessionValidationTime: () => LATER };
+      await adapter.updateAuthUserProfile({
+        id: active.ownerUserId,
+        displayName: SIGNED_IN_USER.displayName,
+        picture: SIGNED_IN_USER.picture,
+        isAuthenticated: 0,
+        isGuest: 1,
+      });
+      const unlinkedListing = await adapter.withTransaction((tx) =>
+        tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
+      const unlinkedRotation = await adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "unlinkedownerrotate000",
+        verifierDigest: "f8".repeat(32),
+        rotatedAt: LATER,
+        ...sessionOptions,
+      }));
+      const unlinkedRevocation = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+        ...sessionOptions,
+      }));
+      const unlinkedDeletion = await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        ...sessionOptions,
+      }));
+      assert.equal(unlinkedListing.status, "session-ineligible");
+      assert.equal(unlinkedRotation.status, "session-ineligible");
+      assert.equal(unlinkedRevocation.status, "session-ineligible");
+      assert.equal(unlinkedDeletion.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(active.selector)).id, active.id);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("unlinkedownerrotate000"), null);
+      assert.equal((await adapter.findAccessKeyRecordById(active.id)).revokedAt, null);
+      assert.equal((await adapter.findAccessKeyRecordById(history.id)).revocationCause, "owner");
+      await adapter.linkAuthUser({ ...SIGNED_IN_USER, isAuthenticated: 1, isGuest: 0 });
+
+      let releaseSessionRetirement;
+      let sessionRetirementLocked;
+      const sessionRetirementHasLock = new Promise((resolve) => { sessionRetirementLocked = resolve; });
+      const sessionRetirementRelease = new Promise((resolve) => { releaseSessionRetirement = resolve; });
+      const sessionRetirement = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSession(sessionToken);
+        sessionRetirementLocked();
+        await sessionRetirementRelease;
+      });
+      await sessionRetirementHasLock;
+      const listing = adapter.withTransaction((tx) => tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
+      const revocation = adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+        ...sessionOptions,
+      }));
+      const deletion = adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        ...sessionOptions,
+      }));
+      releaseSessionRetirement();
+      const [, listed, revoked, deleted] = await Promise.all([sessionRetirement, listing, revocation, deletion]);
+      assert.equal(listed.status, "session-ineligible");
+      assert.equal(revoked.status, "session-ineligible");
+      assert.equal(deleted.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(active.selector)).id, active.id);
+      assert.equal((await adapter.findAccessKeyRecordById(active.id)).revokedAt, null);
+      assert.equal((await adapter.findAccessKeyRecordById(history.id)).revocationCause, "owner");
+    },
+  },
+  {
+    name: "rotated Access-key credentials remain singular for restart proof",
+    async run(adapter) {
+      const record = {
+        id: "access-key-restart-rotated",
+        ownerUserId: ACCESS_KEY_RESTART_USER.id,
+        name: "restart-rotated",
+        reservedName: "restart-rotated",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "restartoldselector00000",
+        verifierDigest: "d4".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      const rotated = await adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "restartnewselector00000",
+        verifierDigest: "d5".repeat(32),
+        rotatedAt: LATER,
+      }));
+      assert.equal(rotated.status, "rotated");
+    },
+  },
+  {
+    name: "Access-key current quota rejects the next issue without corrupting owner counters",
+    async run(adapter) {
+      for (let index = 0; index < 100; index += 1) {
+        const suffix = String(index).padStart(3, "0");
+        const selector = Buffer.from(`quota-${suffix}`).toString("base64url").padEnd(22, "x").slice(0, 22);
+        const outcome = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+          id: `access-key-quota-${suffix}`,
+          ownerUserId: BYSTANDER_USER.id,
+          name: `quota-${suffix}`,
+          reservedName: `quota-${suffix}`,
+          grantsJson: JSON.stringify(["requests:read"]),
+          secretVersion: 1,
+          selector,
+          verifierDigest: "ef".repeat(32),
+          lifecycleRevision: 1,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        }));
+        assert.deepEqual(outcome, { status: "issued" });
+      }
+      const rejected = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        id: "access-key-quota-overflow",
+        ownerUserId: BYSTANDER_USER.id,
+        name: "quota-overflow",
+        reservedName: "quota-overflow",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "ghijklmnopqrstuvwxyzab",
+        verifierDigest: "fa".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      }));
+      assert.deepEqual(rejected, { status: "limit" });
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(BYSTANDER_USER.id);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 100,
+        totalCount: 100,
+      });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 100);
+    },
+  },
+  {
+    name: "Access-key retained quota rejects record 1001 without corrupting historical counters",
+    async run(adapter) {
+      for (let index = 0; index < 1000; index += 1) {
+        const suffix = String(index).padStart(4, "0");
+        const id = `access-key-retained-${suffix}`;
+        const issued = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+          id,
+          ownerUserId: SWEPT_USER.id,
+          name: "reusable-retained-name",
+          reservedName: "reusable-retained-name",
+          grantsJson: JSON.stringify(["requests:read"]),
+          secretVersion: 1,
+          selector: `r${index.toString(36).padStart(21, "0")}`,
+          verifierDigest: "fb".repeat(32),
+          lifecycleRevision: 1,
+          createdAt: NOW,
+          expiresAt: NEXT_MONTH,
+        }));
+        assert.deepEqual(issued, { status: "issued" });
+        const revoked = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+          ownerUserId: SWEPT_USER.id,
+          id,
+          revokedAt: LATER,
+          revocationCause: "owner",
+        }));
+        assert.equal(revoked.id, id);
+      }
+      const rejected = await adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+        id: "access-key-retained-overflow",
+        ownerUserId: SWEPT_USER.id,
+        name: "reusable-retained-name",
+        reservedName: "reusable-retained-name",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "roverflow00000000000000",
+        verifierDigest: "fc".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      }));
+      assert.deepEqual(rejected, { status: "limit" });
+      const ledger = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [currentCount], [totalCount] FROM [sporades_auth_access_key_owners] WHERE [ownerUserId] = ?",
+      )).get(SWEPT_USER.id);
+      assert.deepEqual({ currentCount: Number(ledger.currentCount), totalCount: Number(ledger.totalCount) }, {
+        currentCount: 0,
+        totalCount: 1000,
+      });
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(SWEPT_USER.id)).length, 1000);
+    },
+  },
+  {
     // A DDL method, so ADR-0034 lets the engines emit different statement text for it — Postgres
     // uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition probes
     // `PRAGMA table_info` first. What they may not differ on is what a Capsule boot finds
@@ -1061,6 +2043,31 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       assert.equal((await adapter.readAuthSessionWithUser("session-after-ensure"))?.userId, REGISTERED_USER.id);
       assert.equal((await adapter.insertOAuthState({ state: "oauth-state-after-ensure", sessionToken: "session-oauth", returnTo: "/", redirectUri: "https://example.com/auth/callback", createdAt: NOW })).changes, 1);
       assert.equal((await adapter.consumeOAuthState("oauth-state-after-ensure")).provider, "google");
+    },
+  },
+  {
+    name: "Access-key owner rows and indexed credentials survive an adapter restart",
+    async run(adapter, engineContext) {
+      if (!engineContext?.restart) return;
+      const restarted = await engineContext.restart();
+      assert.equal((await restarted.listAccessKeyRecordsForOwner(BYSTANDER_USER.id)).length, 100);
+      const persisted = await restarted.findAccessKeyAuthenticationRecord(
+        Buffer.from("quota-000").toString("base64url").padEnd(22, "x").slice(0, 22),
+      );
+      assert.equal(persisted.id, "access-key-quota-000");
+      assert.equal(persisted.ownerUserId, BYSTANDER_USER.id);
+      assert.equal(await restarted.findAccessKeyAuthenticationRecord("restartoldselector00000"), null);
+      assert.equal((await restarted.findAccessKeyAuthenticationRecord("restartnewselector00000")).id, "access-key-restart-rotated");
+      const resetHistory = (await restarted.listAccessKeyRecordsForOwner(ACCESS_KEY_RESET_USER.id))[0];
+      assert.equal(resetHistory.revocationCause, "password-reset");
+      const storedResetHistory = await restarted.prepare(restarted.dialect.sql(
+        "SELECT [selector], [verifierDigest] FROM [sporades_auth_access_keys] WHERE [id] = ?",
+      )).get(resetHistory.id);
+      assert.deepEqual({ selector: storedResetHistory.selector, verifierDigest: storedResetHistory.verifierDigest }, {
+        selector: null,
+        verifierDigest: null,
+      });
+      assert.equal((await restarted.listAccessKeyRecordsForOwner(SIGNED_IN_USER.id)).some((row) => row.id === "access-key-complete-lifecycle"), false);
     },
   },
 ];

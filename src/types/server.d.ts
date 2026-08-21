@@ -115,6 +115,7 @@ export type AclHelpers = {
 /** Runtime context available while evaluating table ACL rules. */
 export type TableAclContext = {
   auth: AuthContext;
+  credential: CredentialProvenance;
   acl: AclHelpers;
   [key: string]: unknown;
 };
@@ -151,6 +152,7 @@ export type FileAclOperation = "read" | "publicUrl" | "delete";
  */
 export type FileAclContext = {
   auth: AuthContext;
+  credential: CredentialProvenance;
   acl: AclHelpers;
 };
 
@@ -171,7 +173,7 @@ export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
 
 export type CapsuleFilesDefinition = {
-  acl?: FileAclRules;
+  acl?: FileAclRules; accessKeys?: CapsuleFileAccessKeyPolicy;
 };
 
 /**
@@ -295,6 +297,73 @@ export type AuthContext = {
   provider: string;
 };
 
+export type SessionCredentialProvenance = Readonly<{ kind: "session" }>;
+export type AccessKeyCredentialProvenance = Readonly<{ kind: "access-key"; id: string; name: string }>;
+export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCredentialProvenance;
+export type CredentialKind = CredentialProvenance["kind"];
+
+export type AccessKeyStatus = "active" | "expired" | "revoked";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted";
+
+export type AccessKeySummary = {
+  id: string;
+  name: string;
+  grants: string[];
+  effectiveScopes: string[];
+  status: AccessKeyStatus;
+  createdAt: string;
+  expiresAt: string | null;
+  rotatedAt: string | null;
+  revokedAt: string | null;
+  revocationCause: AccessKeyRevocationCause | null;
+  lastUsedAt: string | null;
+  lifecycleRevision: number;
+};
+
+export type IssueAccessKeyInput = {
+  name: string;
+  grants?: string[];
+  expiresAt?: string | null;
+};
+
+export type RotateAccessKeyOptions = {
+  lifecycleRevision: number;
+};
+
+export type ListAccessKeysOptions = {
+  cursor?: string;
+  limit?: number;
+  status?: AccessKeyStatus;
+};
+
+export type CurrentUserAccessKeysApi = {
+  issue(input: IssueAccessKeyInput): Promise<{ accessKey: AccessKeySummary; token: string }>;
+  rotate(id: string, options: RotateAccessKeyOptions): Promise<{ accessKey: AccessKeySummary; token: string }>;
+  list(options?: ListAccessKeysOptions): Promise<{
+    accessKeys: AccessKeySummary[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+  }>;
+  revoke(id: string): Promise<{ accessKey: AccessKeySummary }>;
+  delete(id: string): Promise<{ id: string; deleted: true }>;
+};
+
+export type PrivilegedAccessKeySummary = AccessKeySummary & { ownerUserId: string };
+
+export type PrivilegedAccessKeysApi = {
+  list(ownerUserId: string, options?: ListAccessKeysOptions): Promise<{
+    accessKeys: PrivilegedAccessKeySummary[];
+    declaredScopes: string[];
+    nextCursor: string | null;
+    totalCount: number;
+  }>;
+  inspect(id: string): Promise<{ accessKey: PrivilegedAccessKeySummary }>;
+  revoke(id: string): Promise<{ accessKey: PrivilegedAccessKeySummary }>;
+  revokeAll(ownerUserId: string): Promise<{ ownerUserId: string; revokedCount: number; accessKeys: PrivilegedAccessKeySummary[] }>;
+  delete(id: string): Promise<{ id: string; ownerUserId: string; deleted: true }>;
+};
+
 export type RequireAuthOptions = {
   /** Require a linked account instead of allowing an Anonymous session. */
   linked?: boolean;
@@ -377,8 +446,8 @@ export type ServerAuthApi = {
   /** Report which account a Reset code belongs to. Does not spend the code. */
   verifyPasswordResetCode(code: string): Promise<{ email: string }>;
   /**
-   * Spend a Reset code and set the new password. Revokes every Session for that
-   * user and does not create a new one.
+   * Spend a Reset code and set the new password. Atomically revokes every
+   * Session and current Access key for that user and does not create a new one.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };
@@ -581,13 +650,15 @@ export type PrivilegedAuthContext = AuthContext & {
  * admin, Sporades user, session, team member, service account, or browser
  * credential.
  */
-export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "privileged" | "teams"> & {
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "credential" | "privileged" | "teams" | "accessKeys"> & {
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
   jobs: JobApi;
   schedules: ScheduleInspectionApi;
   teams: PrivilegedTeamsApi;
+  /** Operator-only Access-key metadata and retirement. Never exposes issuance, rotation, or bearer secrets. */
+  accessKeys: PrivilegedAccessKeysApi;
 };
 
 /**
@@ -608,9 +679,13 @@ export type PrivilegedApi<Schema extends SchemaDefinition = SchemaDefinition> = 
  * Runtime-owned context passed to queries, mutations, endpoints, messages,
  * middleware, and hooks.
  */
-export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> = {
+export type CapsuleContext<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Credential extends CredentialProvenance = CredentialProvenance,
+> = {
   db: DatabaseFromSchema<Schema>;
   auth: AuthContext;
+  credential: Credential;
   env: Record<string, string>;
   /** Normalized non-secret payment configuration. Secret values remain in `env` and are resolved only by the server integration. */
   payments: Readonly<{ stripe: Readonly<{ enabled: false }> | StripeEnabledPaymentsConfig }> | undefined;
@@ -627,6 +702,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   serverAuth: ServerAuthApi;
   /** Runtime-owned current-user Teams with normal linked-user authorization. */
   teams: CurrentUserTeamsApi;
+  /** Runtime-owned Access keys issued and managed by the current linked Session owner. */
+  accessKeys: CurrentUserAccessKeysApi;
 };
 
 /** Immutable exact bytes from one bounded Custom endpoint request-body read. */
@@ -648,7 +725,10 @@ export type EndpointRequest = {
   readonly bodyBytes: EndpointBodyBytes;
 };
 
-export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> & {
+export type EndpointContext<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Credential extends CredentialProvenance = CredentialProvenance,
+> = CapsuleContext<Schema, Credential> & {
   request: EndpointRequest;
 };
 
@@ -756,8 +836,8 @@ export type MutationHook<Schema extends SchemaDefinition = SchemaDefinition, Res
 
 /** Capsule lifecycle hooks around named mutations. */
 export type CapsuleHooks<Schema extends SchemaDefinition = SchemaDefinition> = {
-  init?: (ctx: CapsuleContext<Schema>) => MaybePromise<void>;
-  shutdown?: (ctx: CapsuleContext<Schema>) => MaybePromise<void>;
+  init?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
+  shutdown?: (ctx: Omit<CapsuleContext<Schema>, "credential">) => MaybePromise<void>;
   beforeMutation?: MutationHook<Schema>[];
   afterMutation?: MutationHook<Schema>[];
 };
@@ -805,7 +885,7 @@ export type JobStatus = "queued" | "delayed" | "running" | "succeeded" | "failed
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
 /** Server-only state for a known Job, including provenance and execution actor. */
 export type JobState = JobSummary & {
-  enqueuedBy: { mode: "user"; userId: string } | { mode: "schedule"; scheduleName: string; scheduledFor: string };
+  enqueuedBy: { mode: "user"; userId: string; credential: CredentialProvenance } | { mode: "schedule"; scheduleName: string; scheduledFor: string };
   actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
   result?: JsonValue;
   failure?: { code: string; message: string };
@@ -824,7 +904,8 @@ export type JobApi = {
   get(id: string): Promise<JobState | null>;
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
-export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+export type JobHandlerContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> | PrivilegedContext<Schema>;
+export type JobDefinition<Handler = (ctx: JobHandlerContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
 export type ScheduleLatestOccurrence =
   | { scheduledFor: string; outcome: "enqueued"; jobId: string }
   | { scheduledFor: string; outcome: "payload-failed"; errorCode: string };
@@ -881,13 +962,14 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
+  accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
-  queries?: Record<string, QueryDefinition<QueryHandler<Schema, any>>>;
-  mutations?: Record<string, MutationDefinition<any>>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
+  queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
+  mutations?: Record<string, MutationDefinition<MutationHandler | AuthGuardedHandler<(...args: any[]) => any>>>;
+  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>>;
-  messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
+  messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   jobs?: Record<string, JobDefinition<any>>;
   schedules?: Record<string, ScheduleDefinition>;
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
@@ -920,15 +1002,48 @@ export function capsule<const Schema extends SchemaDefinition, const Definition 
   definition: Definition & { schema?: Schema },
 ): Capsule<Definition>;
 
-/**
- * Require the current request to have a valid Sporades session.
- *
- * By default Anonymous sessions are accepted. Pass `{ linked: true }` when the
- * operation must require email, Google, or another linked provider.
- */
+/** Synchronously require an authenticated user from an already-admitted context. */
+export function requireUserAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export function requireAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
+export type DeclarativeRequireAuthOptions = {
+  linked?: boolean;
+  credentials?: readonly CredentialKind[];
+  scopes?: readonly string[];
+};
+/** @internal */
+declare const authGuardedHandlerBrand: unique symbol;
+/** Type-preserving result of a declarative Auth guard. Runtime admission metadata is private. */
+export type AuthGuardedHandler<Handler extends (...args: any[]) => any> = Handler & {
+  readonly [authGuardedHandlerBrand]: true;
+};
+/** Declaratively require an admitted credential before middleware and handler execution. */
+export function requireAuth<Handler extends (...args: any[]) => any>(handler: Handler): AuthGuardedHandler<Handler>;
+/** A single literal credential kind narrows ctx.credential in the guarded handler. */
+export function requireAuth<
+  const Kind extends CredentialKind,
+  Handler extends (...args: any[]) => any,
+>(
+  options: DeclarativeRequireAuthOptions & { credentials: readonly [Kind] },
+  handler: Handler extends (ctx: infer Context, ...args: infer Args) => infer Result
+    ? (ctx: Omit<Context, "credential"> & {
+        credential: Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance;
+      }, ...args: Args) => Result
+    : never,
+): AuthGuardedHandler<
+  Handler extends (ctx: infer Context, ...args: infer Args) => infer Result
+    ? (ctx: Omit<Context, "credential"> & {
+        credential: Kind extends "session" ? SessionCredentialProvenance : AccessKeyCredentialProvenance;
+      }, ...args: Args) => Result
+    : never
+>;
+export function requireAuth<Handler extends (...args: any[]) => any>(
+  options: DeclarativeRequireAuthOptions,
+  handler: Handler,
+): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
-export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
+export function endpoint(options: EndpointOptions, handler: EndpointHandler): EndpointDefinition<EndpointHandler>;
+export function endpoint<Handler extends (...args: any[]) => any>(options: EndpointOptions, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>>;
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
@@ -938,16 +1053,19 @@ export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): QueryDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
+export function query<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): QueryDefinition<AuthGuardedHandler<Handler>>;
 /** Define a named mutation for client-initiated writes or commands. */
 export function mutation<const Args extends unknown[] = string[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): MutationDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
+export function mutation<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MutationDefinition<AuthGuardedHandler<Handler>>;
 /** Define a server-mediated App message handler. */
-export function message<Handler extends MessageHandler>(handler: Handler): MessageDefinition<Handler>;
+export function message(handler: MessageHandler): MessageDefinition<MessageHandler>;
+export function message<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MessageDefinition<AuthGuardedHandler<Handler>>;
 /** Declare a named server-only Job handler in `capsule({ jobs })`. */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
-  handler: (ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>,
-): JobDefinition<(ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>>;
+  handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,
+): JobDefinition<(ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>>;
 /**
  * Declare a named server-only recurring Privileged Job in
  * `capsule({ schedules })`. The map key is its durable identity. Expressions use
@@ -973,3 +1091,6 @@ export function Date(): FieldBuilder<string | globalThis.Date | null>;
 export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 /** Reference field storing the row id of another table. */
 export function Reference(targetTable: string): ReferenceFieldBuilder;
+
+/** Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules. */
+export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };

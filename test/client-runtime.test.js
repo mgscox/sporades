@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
+import { capsule } from "../dist/server.js";
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
-import { normalizeJourneyPolicy, normalizeJourneyState } from "../dist/server-runtime-source.js";
+import { normalizeJourneyPolicy, normalizeJourneyState, openDevDatabase, runClientAccessKeyOperation } from "../dist/server-runtime-source.js";
 
 async function importClientRuntime(options = {}) {
   const source = createClientRuntimeSource(options);
@@ -18,6 +22,219 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "privileged"), false);
   assert.equal(Object.hasOwn(runtime.auth, "runPrivileged"), false);
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
+});
+
+test("framework-neutral Access-key management uses request results without retaining one-time secrets", async () => {
+  const calls = [];
+  let summary = {
+    id: "key-1", name: "bot", grants: ["requests:*"], effectiveScopes: ["requests:read"], status: "active",
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null, rotatedAt: null, revokedAt: null,
+    revocationCause: null, lastUsedAt: null, lifecycleRevision: 1,
+  };
+  let rotateCalls = 0;
+  const neverRespond = () => new Promise(() => {});
+  const handlers = {
+    "accessKeys.issue": async (message) => { calls.push(message); return neverRespond(); },
+    "accessKeys.list": async (message) => {
+      calls.push(message);
+      return { type: "accessKeys.list.result", data: { accessKeys: [summary], declaredScopes: ["requests:read"], nextCursor: null, totalCount: 1 }, error: null };
+    },
+    "accessKeys.rotate": async (message) => {
+      calls.push(message);
+      rotateCalls += 1;
+      summary = { ...summary, lifecycleRevision: summary.lifecycleRevision + 1 };
+      if (rotateCalls === 1) return neverRespond();
+      return { type: "accessKeys.rotate.result", data: { accessKey: summary, token: "spk_1_recovered-rotation" }, error: null };
+    },
+    "accessKeys.revoke": async (message) => {
+      calls.push(message);
+      summary = { ...summary, status: "revoked", revocationCause: "owner" };
+      return { type: "accessKeys.revoke.result", data: { accessKey: summary }, error: null };
+    },
+    "accessKeys.delete": async (message) => {
+      calls.push(message);
+      return { type: "accessKeys.delete.result", data: { id: summary.id, deleted: true }, error: null };
+    },
+  };
+  const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false }, { handlers });
+  try {
+    const runtime = await importClientRuntime();
+    assert.deepEqual(Object.keys(runtime.accessKeys).sort(), ["delete", "issue", "list", "revoke", "rotate"]);
+    const lostIssue = runtime.accessKeys.issue({ name: "bot", grants: ["requests:*"] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets.at(-1).readyState = 3;
+    browser.sockets.at(-1).emit("close", {});
+    assert.equal((await lostIssue).error.code, "TRANSPORT_CLOSED");
+    const listed = await runtime.accessKeys.list({ status: "active" });
+    assert.equal(listed.data.accessKeys[0].id, summary.id, "a committed issue is recoverable as metadata after response loss");
+    const lostRotation = runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets.at(-1).readyState = 3;
+    browser.sockets.at(-1).emit("close", {});
+    assert.equal((await lostRotation).error.code, "TRANSPORT_CLOSED");
+    const afterLostRotation = await runtime.accessKeys.list();
+    assert.equal(afterLostRotation.data.accessKeys[0].lifecycleRevision, 2);
+    const recovered = await runtime.accessKeys.rotate(summary.id, { lifecycleRevision: 2 });
+    assert.equal(recovered.data.token, "spk_1_recovered-rotation");
+    assert.equal(JSON.stringify(await runtime.accessKeys.list()).includes("recovered-rotation"), false);
+    await runtime.accessKeys.revoke(summary.id);
+    await runtime.accessKeys.delete(summary.id);
+    assert.deepEqual(calls.map(({ type }) => type), [
+      "accessKeys.issue", "accessKeys.list", "accessKeys.rotate", "accessKeys.list", "accessKeys.rotate", "accessKeys.list",
+      "accessKeys.revoke", "accessKeys.delete",
+    ]);
+    assert.deepEqual(calls[0].input, { name: "bot", grants: ["requests:*"] });
+    assert.deepEqual(calls[1].options, { status: "active" });
+    assert.deepEqual(calls[2].options, { lifecycleRevision: 1 });
+    assert.equal(calls[2].accessKeyId, summary.id);
+  } finally { browser.cleanup(); }
+});
+
+test("a stale socket close cannot fail an Access-key request on its replacement", async () => {
+  const summary = {
+    id: "key-replacement", name: "replacement", grants: ["*"], effectiveScopes: ["requests:read"], status: "active",
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null, rotatedAt: null, revokedAt: null,
+    revocationCause: null, lastUsedAt: null, lifecycleRevision: 1,
+  };
+  const browser = installBrowserFakes({ ...anonymousAuth, isAuthenticated: true, isGuest: false }, { handlers: {
+    "accessKeys.list": async () => ({
+      type: "accessKeys.list.result",
+      data: { accessKeys: [summary], declaredScopes: ["requests:read"], nextCursor: null, totalCount: 1 },
+      error: null,
+    }),
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal((await runtime.accessKeys.list()).error, null);
+    const staleSocket = browser.sockets.at(-1);
+    staleSocket.readyState = 2;
+    const replacementRequest = runtime.accessKeys.list();
+    assert.notEqual(browser.sockets.at(-1), staleSocket);
+    staleSocket.readyState = 3;
+    staleSocket.emit("close", {});
+    const result = await replacementRequest;
+    assert.equal(result.error, null);
+    assert.equal(result.data.accessKeys[0].id, summary.id);
+  } finally { browser.cleanup(); }
+});
+
+test("page retirement cancels an already queued reconnect", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.get();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const socket = browser.sockets[0];
+    socket.readyState = 3;
+    socket.emit("close", {});
+    browser.emitWindow("pagehide", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(browser.sockets.length, 1, "a retired page must not reconnect after its queued timer settles");
+  } finally { browser.cleanup(); }
+});
+
+test("committed Access-key secrets lost with their response recover through list and fresh rotation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-client-access-key-response-loss-"));
+  const definition = capsule({ name: "client-access-key-response-loss", accessKeys: { scopes: ["requests:read"] } });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  const auth = {
+    ...anonymousAuth,
+    userId: "response-loss-owner",
+    createdAt: "2026-08-20T12:00:00.000Z",
+    displayName: "Response Loss Owner",
+    email: "response-loss@example.com",
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  await database.adapter.insertAuthUser({ ...auth, id: auth.userId, isAuthenticated: 1, isGuest: 0 });
+  const sessionToken = "response-loss-owner-session";
+  await database.adapter.insertAuthSession({
+    token: sessionToken, userId: auth.userId, provider: auth.provider,
+    createdAt: "2026-08-20T12:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+  let issueCommittedResolve;
+  let rotationCommittedResolve;
+  let issueCommitted = new Promise((resolve) => { issueCommittedResolve = resolve; });
+  let rotationCommitted = new Promise((resolve) => { rotationCommittedResolve = resolve; });
+  let lostIssueToken;
+  let lostRotationToken;
+  let issueCalls = 0;
+  let rotationCalls = 0;
+  const neverRespond = () => new Promise(() => {});
+  const responseFor = (message, result) => ({
+    type: result.error ? "error" : `${message.type}.result`,
+    data: result.data,
+    error: result.error,
+  });
+  const handlers = {
+    "accessKeys.issue": async (message) => {
+      issueCalls += 1;
+      const result = await runClientAccessKeyOperation(database, auth, message, sessionToken);
+      lostIssueToken = result.data.token;
+      issueCommittedResolve(result.data.accessKey);
+      return neverRespond();
+    },
+    "accessKeys.list": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
+    "accessKeys.rotate": async (message) => {
+      rotationCalls += 1;
+      const result = await runClientAccessKeyOperation(database, auth, message, sessionToken);
+      if (rotationCalls === 1) {
+        lostRotationToken = result.data.token;
+        rotationCommittedResolve(result.data.accessKey);
+        return neverRespond();
+      }
+      return responseFor(message, result);
+    },
+    "accessKeys.revoke": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
+    "accessKeys.delete": async (message) => responseFor(message, await runClientAccessKeyOperation(database, auth, message, sessionToken)),
+  };
+  const browser = installBrowserFakes(auth, { handlers });
+  try {
+    const runtime = await importClientRuntime();
+    const lostIssue = runtime.accessKeys.issue({ name: "real-response-loss", grants: ["requests:read"] });
+    const issuedSummary = await issueCommitted;
+    const issueSocket = browser.sockets.at(-1);
+    issueSocket.readyState = 3;
+    issueSocket.emit("close", {});
+    assert.equal((await lostIssue).error.code, "TRANSPORT_CLOSED");
+    assert.equal(issueCalls, 1, "a lost issuance response is never replayed");
+
+    const listedAfterIssue = await runtime.accessKeys.list();
+    assert.equal(listedAfterIssue.data.accessKeys[0].id, issuedSummary.id);
+    assert.equal(JSON.stringify(listedAfterIssue).includes(lostIssueToken), false);
+
+    const lostRotation = runtime.accessKeys.rotate(issuedSummary.id, { lifecycleRevision: issuedSummary.lifecycleRevision });
+    const rotatedSummary = await rotationCommitted;
+    const rotationSocket = browser.sockets.at(-1);
+    rotationSocket.readyState = 3;
+    rotationSocket.emit("close", {});
+    assert.equal((await lostRotation).error.code, "TRANSPORT_CLOSED");
+    assert.equal(rotationCalls, 1, "a lost rotation response is never replayed");
+
+    const listedAfterRotation = await runtime.accessKeys.list();
+    assert.equal(listedAfterRotation.data.accessKeys[0].lifecycleRevision, rotatedSummary.lifecycleRevision);
+    const authState = await runtime.auth.get();
+    const retainedClientState = JSON.stringify({
+      authState,
+      list: listedAfterRotation,
+      sent: browser.sent,
+      storage: [...browser.storage],
+    });
+    assert.equal(retainedClientState.includes(lostIssueToken), false);
+    assert.equal(retainedClientState.includes(lostRotationToken), false);
+
+    const recovered = await runtime.accessKeys.rotate(issuedSummary.id, { lifecycleRevision: rotatedSummary.lifecycleRevision });
+    assert.match(recovered.data.token, /^spk_1_/);
+    assert.notEqual(recovered.data.token, lostRotationToken);
+    assert.equal(rotationCalls, 2);
+    await runtime.accessKeys.revoke(issuedSummary.id);
+    await runtime.accessKeys.delete(issuedSummary.id);
+  } finally {
+    browser.cleanup();
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("framework-neutral query subscriptions structurally isolate argument tuples while sharing canonical equals", async () => {
@@ -935,6 +1152,7 @@ function installBrowserFakes(auth, options = {}) {
   const sockets = [];
   const sent = [];
   const handlers = options.handlers ?? {};
+  const windowListeners = new Map();
 
   globalThis.localStorage = {
     getItem(key) {
@@ -954,6 +1172,11 @@ function installBrowserFakes(auth, options = {}) {
       assign(url) {
         storage.set("assignedLocation", url);
       },
+    },
+    addEventListener(type, listener) {
+      const listeners = windowListeners.get(type) ?? [];
+      listeners.push(listener);
+      windowListeners.set(type, listeners);
     },
   };
   globalThis.WebSocket = class FakeWebSocket {
@@ -1064,6 +1287,12 @@ function installBrowserFakes(auth, options = {}) {
 
     }
 
+    close() {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      this.emit("close", {});
+    }
+
     emit(type, event) {
       for (const listener of this.listeners.get(type) ?? []) {
         listener(event);
@@ -1075,6 +1304,9 @@ function installBrowserFakes(auth, options = {}) {
     storage,
     sockets,
     sent,
+    emitWindow(type, event) {
+      for (const listener of windowListeners.get(type) ?? []) listener(event);
+    },
     openSockets() {
       for (const socket of sockets) {
         socket.readyState = globalThis.WebSocket.OPEN;

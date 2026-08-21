@@ -590,9 +590,32 @@ export async function ensureJobStorage(sqlite) {
     // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
     // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
     // "PRAGMA"` before the Job queue existed.
-    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
+    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"]])
         await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
     await sqlite.exec(sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''"));
+    const legacyRows = await sqlite.prepare(sqlite.dialect.sql("SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] " +
+        "WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)")).all(privilegedAuthUserId());
+    for (const row of legacyRows) {
+        let user = null;
+        try {
+            user = await sqlite.prepare(sqlite.dialect.sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?")).get(row.actorUserId);
+        }
+        catch (error) {
+            if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error)))
+                throw error;
+        }
+        const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
+        const authSnapshot = captureJobAuthSnapshot(user ? {
+            userId: user.id,
+            displayName: user.displayName,
+            email: user.email,
+            picture: user.picture,
+            isAuthenticated: Boolean(user.isAuthenticated),
+            isGuest: Boolean(user.isGuest),
+            provider,
+        } : legacyJobAuthFallback(row.actorUserId, provider));
+        await sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_jobs] SET [authSnapshotJson] = COALESCE([authSnapshotJson], ?), [credentialJson] = COALESCE([credentialJson], ?) WHERE [id] = ?")).run(JSON.stringify(authSnapshot), JSON.stringify({ kind: "session" }), row.id);
+    }
 }
 export async function scheduleSummary(sqlite, row) {
     const invalid = (field) => {
@@ -682,9 +705,131 @@ export function boundedJobJson(value, limit, code, label) {
         throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
     return serialized;
 }
+const JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+function boundedJobIdentityString(value, field, maximum, nullable = false) {
+    if (nullable && value === null)
+        return null;
+    if (typeof value !== "string" || value.length > maximum) {
+        throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", `Keep ${field} within its runtime-owned bound.`);
+    }
+    return value;
+}
+/** Canonical bounded AuthContext persisted at the successful enqueue boundary. */
+export function canonicalJobAuthSnapshot(auth) {
+    const snapshot = {
+        userId: boundedJobIdentityString(auth?.userId, "userId", 256),
+        displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
+        email: boundedJobIdentityString(auth?.email, "email", 320, true),
+        picture: boundedJobIdentityString(auth?.picture, "picture", 4096, true),
+        isAuthenticated: auth?.isAuthenticated,
+        isGuest: auth?.isGuest,
+        provider: boundedJobIdentityString(auth?.provider, "provider", 64),
+    };
+    if (typeof snapshot.isAuthenticated !== "boolean" || typeof snapshot.isGuest !== "boolean") {
+        throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+    }
+    const serialized = JSON.stringify(snapshot);
+    if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
+        throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
+    }
+    return snapshot;
+}
+function truncateJobDisplayName(value) {
+    let truncated = value.slice(0, 512);
+    const finalCodeUnit = truncated.charCodeAt(truncated.length - 1);
+    if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff)
+        truncated = truncated.slice(0, -1);
+    return truncated || "Job enqueuer";
+}
+/**
+ * Bounds profile metadata at the enqueue/migration boundary without rejecting Auth profiles that
+ * were valid before durable Job provenance introduced narrower storage limits. Authority-bearing
+ * identity fields remain strict; only display metadata is shortened or omitted.
+ */
+export function captureJobAuthSnapshot(auth) {
+    if (typeof auth?.displayName !== "string" ||
+        !(auth?.email === null || typeof auth?.email === "string") ||
+        !(auth?.picture === null || typeof auth?.picture === "string"))
+        return canonicalJobAuthSnapshot(auth);
+    // Validate exact authority/provenance fields before applying any compatibility fallback.
+    boundedJobIdentityString(auth?.userId, "userId", 256);
+    boundedJobIdentityString(auth?.provider, "provider", 64);
+    if (typeof auth?.isAuthenticated !== "boolean" || typeof auth?.isGuest !== "boolean") {
+        return canonicalJobAuthSnapshot(auth);
+    }
+    const bounded = {
+        ...auth,
+        displayName: auth.displayName.length > 512 ? truncateJobDisplayName(auth.displayName) : auth.displayName,
+        email: auth.email !== null && auth.email.length > 320 ? null : auth.email,
+        picture: auth.picture !== null && auth.picture.length > 4096 ? null : auth.picture,
+    };
+    try {
+        return canonicalJobAuthSnapshot(bounded);
+    }
+    catch (error) {
+        if (error?.code !== "INVALID_JOB_IDENTITY")
+            throw error;
+        // Escaped JSON can exceed the aggregate byte budget while every field is individually bounded.
+        return canonicalJobAuthSnapshot({ ...bounded, displayName: "Job enqueuer", email: null, picture: null });
+    }
+}
+/** Canonical Credential provenance; secret material and granted scopes have no accepted field. */
+export function canonicalJobCredentialProvenance(credential) {
+    if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind"))
+        return { kind: "session" };
+    if (credential?.kind === "access-key" && Object.keys(credential).every((key) => ["kind", "id", "name"].includes(key))) {
+        return {
+            kind: "access-key",
+            id: boundedJobIdentityString(credential.id, "credential.id", 256),
+            name: boundedJobIdentityString(credential.name, "credential.name", 256),
+        };
+    }
+    throw jobError("INVALID_JOB_CREDENTIAL", "Job Credential provenance is invalid.", "Enqueue from a runtime-issued Session or Access-key context.");
+}
+export function legacyJobAuthFallback(userId, provider) {
+    const normalizedProvider = jobActorProvider({ provider, isGuest: provider === "anonymous" });
+    return {
+        userId: boundedJobIdentityString(userId, "userId", 256),
+        displayName: "Job enqueuer",
+        email: null,
+        picture: null,
+        isAuthenticated: normalizedProvider !== "anonymous",
+        isGuest: normalizedProvider === "anonymous",
+        provider: normalizedProvider,
+    };
+}
+export function readJobAuthSnapshot(row) {
+    let snapshot;
+    if (row?.authSnapshotJson) {
+        try {
+            snapshot = canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
+        }
+        catch {
+            throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+        }
+    }
+    else {
+        snapshot = canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+    }
+    if (snapshot.userId !== row?.actorUserId) {
+        throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair the mismatched Job actor snapshot before retrying execution.");
+    }
+    return snapshot;
+}
+export function readJobCredentialProvenance(row) {
+    if (row?.credentialJson) {
+        try {
+            return canonicalJobCredentialProvenance(JSON.parse(String(row.credentialJson)));
+        }
+        catch {
+            throw jobError("JOB_CREDENTIAL_INVALID", "Stored Job Credential provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+        }
+    }
+    return { kind: "session" };
+}
 export function jobState(row, includeDetail) {
     const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-    const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+    const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId, credential: readJobCredentialProvenance(row) };
     const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
     if (includeDetail && row.result)
         state.result = JSON.parse(row.result);
@@ -730,7 +875,7 @@ export async function inspectRuntimeJobs(adapter) {
         }
         return rows.map((row) => ({
             id: String(row.id), handler: String(row.handler), status: String(row.status),
-            enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
+            enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId), credential: readJobCredentialProvenance(row) },
             actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
             attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
             idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,

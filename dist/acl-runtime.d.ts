@@ -95,8 +95,11 @@ export declare function safePrivilegedAuditErrorCode(value: any, outcome?: strin
 export declare function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined): LooseRecord;
 export declare function normalizeFileAcl(aclRules: LooseRecord | undefined): LooseRecord;
 export declare function createTableAclContext(context: any, database: any): any;
-export declare function createFileAclContext(auth: LooseRecord, database: LooseRecord): Readonly<{
+export declare function createFileAclContext(auth: LooseRecord, database: LooseRecord, credential?: LooseRecord): Readonly<{
     auth: Readonly<{
+        [x: string]: any;
+    }>;
+    credential: Readonly<{
         [x: string]: any;
     }>;
     acl: Readonly<{
@@ -133,7 +136,7 @@ export declare function createFileAclContext(auth: LooseRecord, database: LooseR
         }>;
     }>;
 }>;
-export declare function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord): boolean | Promise<boolean>;
+export declare function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord, credential?: LooseRecord): boolean | Promise<boolean>;
 export declare function grantPrivilegedDbAccess(context: any): any;
 export declare function revokePrivilegedDbAccess(context: any): any;
 export declare function runTableWriteWithAcl(database: any, table: LooseRecord, operation: string, previous: any, next: any, contextGetter: any, write: () => any): any;

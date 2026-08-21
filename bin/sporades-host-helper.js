@@ -163,8 +163,23 @@ function validatePublicTreeFileSet(files) {
 // src/server-runtime-source.ts
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+// src/auth-admission.ts
+var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+var ACCESS_KEY_SCOPE_LIMIT = 1024;
+var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
+
+// src/access-key-contract.ts
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
+
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
 var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
 var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 
@@ -219,7 +234,7 @@ function privilegedAuditLevelForOutcome(outcome) {
   return "info";
 }
 function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
   if (source === null || source === void 0 || source === "") {
     if (outcome === "errored") {
       return "UNKNOWN_ERROR";
@@ -261,6 +276,160 @@ var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+
+// src/cli/access-key-operator-envelope.ts
+import { createInterface } from "node:readline/promises";
+var ACCESS_KEY_OPERATOR_ACTIONS = [
+  "access-keys.list",
+  "access-keys.inspect",
+  "access-keys.revoke",
+  "access-keys.revoke-all",
+  "access-keys.delete"
+];
+var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
+var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
+var JSON_STRING_MAX_BYTE_EXPANSION = 6;
+var ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;
+var ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = JSON_STRING_MAX_BYTE_EXPANSION * ((ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT + 1) * ACCESS_KEY_SCOPE_LIMIT * ACCESS_KEY_SCOPE_BYTE_LIMIT + ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT * ACCESS_KEY_GRANT_LIMIT * ACCESS_KEY_GRANT_BYTE_LIMIT) + ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM;
+var ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER = ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT + 1024 * 1024;
+var SAFE_ERRORS = {
+  UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
+  FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
+  ACCESS_KEY_DELETE_REQUIRES_REVOKED: { message: "Access key must be revoked before deletion.", hint: "Revoke the key, then delete its history." },
+  ACCESS_KEY_LIMIT_REACHED: { message: "Access-key limit reached.", hint: "Retire an existing key before retrying." },
+  ACCESS_KEY_NAME_CONFLICT: { message: "Access-key name is already in use.", hint: "Choose a unique name." },
+  ACCESS_KEY_NOT_ACTIVE: { message: "Access key is not active.", hint: "Inspect current metadata before retrying." },
+  ACCESS_KEY_NOT_FOUND: { message: "Access key was not found.", hint: "Refresh metadata and use an exact immutable key ID." },
+  ACCESS_KEY_REVISION_CONFLICT: { message: "Access-key revision changed.", hint: "Refresh metadata and retry." },
+  ACCESS_KEY_SECRET_CONFLICT: { message: "Access-key generation conflicted.", hint: "Retry the operation." },
+  INVALID_ACCESS_KEY_EXPIRY: { message: "Access-key expiry is invalid.", hint: "Use a valid future expiry." },
+  INVALID_ACCESS_KEY_GRANTS: { message: "Access-key grants are invalid.", hint: "Use the Capsule's declared scope vocabulary." },
+  INVALID_ACCESS_KEY_LIST_OPTIONS: { message: "Access-key list options are invalid.", hint: "Use supported cursor, limit, and status filters." },
+  INVALID_ACCESS_KEY_NAME: { message: "Access-key name is invalid.", hint: "Use a valid unique name." },
+  INVALID_ACCESS_KEY_ACTION_INPUT: { message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_UNSUPPORTED: { message: "Unsupported Access-key operator action.", hint: "Upgrade the Sporades CLI and generated Bundle together." },
+  ACCESS_KEY_ACTION_FAILED: { message: "Access-key operator action failed.", hint: "Check the Privileged audit events and retry the operation." },
+  HOST_HELPER_UPGRADE_REQUIRED: { message: "The Host helper does not support this Access-key action.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." },
+  HOSTED_CAPSULE_NOT_RUNNING: { message: "The Hosted Capsule is not running.", hint: "Start the Hosted Capsule, then retry the operation." },
+  HOSTED_ACCESS_KEY_RESPONSE_INVALID: { message: "Hosted Access-key action returned an invalid response.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." }
+};
+function plain(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function exactKeys(value, required, optional = []) {
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key)) && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+function boundedString(value, maximum = 256) {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum;
+}
+function optionalString(value, maximum = 512) {
+  return value === null || boundedString(value, maximum);
+}
+function stringList(value, maximumItems, maximumItemBytes) {
+  return Array.isArray(value) && value.length <= maximumItems && value.every((item) => boundedString(item, maximumItemBytes));
+}
+function optionalRevocationCause(value) {
+  return value === null || typeof value === "string" && REVOCATION_CAUSES.has(value);
+}
+function encodedWithinLimit(value, maximum) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8") <= maximum;
+  } catch {
+    return false;
+  }
+}
+function validateAccessKeyOperatorActionInput(action, value, invalid) {
+  if (typeof action !== "string" || !ACTIONS.has(action) || !plain(value) || !encodedWithinLimit(value, 16 * 1024)) return invalid();
+  if (action === "access-keys.list") {
+    if (!exactKeys(value, ["userId", "options"]) || !boundedString(value.userId) || !plain(value.options) || !exactKeys(value.options, [], ["cursor", "limit", "status"])) return invalid();
+    const options = {};
+    if (value.options.cursor !== void 0) {
+      if (!boundedString(value.options.cursor, 512)) return invalid();
+      options.cursor = value.options.cursor;
+    }
+    if (value.options.limit !== void 0) {
+      if (!Number.isInteger(value.options.limit) || value.options.limit < 1 || value.options.limit > 100) return invalid();
+      options.limit = value.options.limit;
+    }
+    if (value.options.status !== void 0) {
+      if (typeof value.options.status !== "string" || !STATUSES.has(value.options.status)) return invalid();
+      options.status = value.options.status;
+    }
+    return { userId: value.userId, options };
+  }
+  if (action === "access-keys.revoke-all") {
+    if (!exactKeys(value, ["userId"]) || !boundedString(value.userId)) return invalid();
+    return { userId: value.userId };
+  }
+  if (!exactKeys(value, ["keyId"]) || !boundedString(value.keyId)) return invalid();
+  return { keyId: value.keyId };
+}
+function canonicalCapsule(value, invalid) {
+  if (!plain(value) || !exactKeys(value, ["name"]) || !boundedString(value.name)) return invalid();
+  return { name: value.name };
+}
+function canonicalSummary(value, invalid) {
+  const fields = [
+    "id",
+    "ownerUserId",
+    "name",
+    "grants",
+    "effectiveScopes",
+    "status",
+    "createdAt",
+    "expiresAt",
+    "rotatedAt",
+    "revokedAt",
+    "revocationCause",
+    "lastUsedAt",
+    "lifecycleRevision"
+  ];
+  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT) || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
+  return Object.fromEntries(fields.map((field) => [field, value[field]]));
+}
+function canonicalSuccessData(action, value, input, invalid) {
+  if (!plain(value)) return invalid();
+  const capsule = canonicalCapsule(value.capsule, invalid);
+  if (action === "access-keys.list") {
+    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid();
+    return { capsule, accessKeys, declaredScopes: [...value.declaredScopes], nextCursor: value.nextCursor, totalCount: value.totalCount };
+  }
+  if (["access-keys.inspect", "access-keys.revoke"].includes(action)) {
+    if (!exactKeys(value, ["capsule", "accessKey"])) return invalid();
+    const accessKey = canonicalSummary(value.accessKey, invalid);
+    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && accessKey.status !== "revoked") return invalid();
+    return { capsule, accessKey };
+  }
+  if (action === "access-keys.revoke-all") {
+    if (!exactKeys(value, ["capsule", "ownerUserId", "revokedCount", "accessKeys"]) || value.ownerUserId !== input.userId || !Number.isSafeInteger(value.revokedCount) || value.revokedCount < 0 || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100) return invalid();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId || item.status !== "revoked" || item.revocationCause !== "operator") || accessKeys.length !== value.revokedCount) return invalid();
+    return { capsule, ownerUserId: value.ownerUserId, revokedCount: value.revokedCount, accessKeys };
+  }
+  if (!exactKeys(value, ["capsule", "id", "ownerUserId", "deleted"]) || value.id !== input.keyId || !boundedString(value.ownerUserId) || value.deleted !== true) return invalid();
+  return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
+}
+function canonicalError(value, invalid) {
+  if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid();
+  return { code: value.code, ...SAFE_ERRORS[value.code] };
+}
+function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
+  if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean") return invalid();
+  const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
+  if (value.ok) {
+    if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
+    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
+  }
+  if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid();
+  return { ok: false, data: null, error: canonicalError(value.error, invalid) };
+}
 
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
@@ -426,13 +595,59 @@ function writeEnvelope(result, failed = false) {
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.8.6";
+var CLI_VERSION = "0.8.7";
 
 // src/cli/schedule-inspection-envelope.ts
+var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
+  "name",
+  "expression",
+  "timezone",
+  "missedRun",
+  "enabled",
+  "exhausted",
+  "nextOccurrence",
+  "latestOccurrence",
+  "latestOccurrence.scheduledFor",
+  "latestOccurrence.jobId",
+  "latestOccurrence.errorCode",
+  "latestOccurrence.outcome"
+]);
+var SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES = 4096;
+var SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH = 128;
+function scheduleNameDigest(value) {
+  return process.getBuiltinModule("node:crypto").createHash("sha256").update(value, "utf8").digest("hex");
+}
+function boundedScheduleDiagnostic(candidate) {
+  const scheduleName = candidate?.scheduleName;
+  const field = candidate?.field;
+  if (candidate?.code !== "SCHEDULE_INSPECTION_INVALID_STATE" || typeof field !== "string" || !SCHEDULE_DIAGNOSTIC_FIELDS.has(field)) return void 0;
+  if (typeof scheduleName === "string" && /^[A-Za-z][A-Za-z0-9_-]*$/.test(scheduleName)) {
+    const scheduleNameBytes = Buffer.byteLength(scheduleName, "utf8");
+    if (scheduleNameBytes <= SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES) return { code: candidate.code, scheduleName, field };
+    return {
+      code: candidate.code,
+      scheduleNamePrefix: scheduleName.slice(0, SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH),
+      scheduleNameSha256: scheduleNameDigest(scheduleName),
+      scheduleNameBytes,
+      field
+    };
+  }
+  if (typeof candidate?.scheduleNamePrefix === "string" && /^[A-Za-z][A-Za-z0-9_-]*$/.test(candidate.scheduleNamePrefix) && candidate.scheduleNamePrefix.length === SCHEDULE_DIAGNOSTIC_NAME_PREFIX_LENGTH && typeof candidate?.scheduleNameSha256 === "string" && /^[a-f0-9]{64}$/.test(candidate.scheduleNameSha256) && Number.isInteger(candidate?.scheduleNameBytes) && candidate.scheduleNameBytes > SCHEDULE_DIAGNOSTIC_INLINE_NAME_BYTES) {
+    return {
+      code: candidate.code,
+      scheduleNamePrefix: candidate.scheduleNamePrefix,
+      scheduleNameSha256: candidate.scheduleNameSha256,
+      scheduleNameBytes: candidate.scheduleNameBytes,
+      field
+    };
+  }
+  return void 0;
+}
 function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
   if (envelope?.ok === false) {
     const source = envelope.error;
-    const diagnostics = source?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof source.scheduleName === "string" && typeof source.field === "string" ? { code: source.code, scheduleName: source.scheduleName, field: source.field } : void 0;
+    const candidate = source?.diagnostics ?? source;
+    const diagnostics = boundedScheduleDiagnostic(candidate);
     return { ok: false, data: null, error: {
       message: diagnostics ? "Persisted Schedule state is malformed." : "Schedule inspection failed.",
       hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Capsule and retry the command.",
@@ -1048,13 +1263,45 @@ function validateClaimedReleaseFiles(files) {
 // src/cli/sporades-host-helper.ts
 var CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 var RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
+var CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
+  "173.245.48.0/20",
+  "103.21.244.0/22",
+  "103.22.200.0/22",
+  "103.31.4.0/22",
+  "141.101.64.0/18",
+  "108.162.192.0/18",
+  "190.93.240.0/20",
+  "188.114.96.0/20",
+  "197.234.240.0/22",
+  "198.41.128.0/17",
+  "162.158.0.0/15",
+  "104.16.0.0/13",
+  "104.24.0.0/14",
+  "172.64.0.0/13",
+  "131.0.72.0/22",
+  "2400:cb00::/32",
+  "2606:4700::/32",
+  "2803:f800::/32",
+  "2405:b500::/32",
+  "2405:8100::/32",
+  "2a06:98c0::/29",
+  "2c0f:f248::/32"
+]);
 var hostHelperConfig = defaultHostHelperConfig();
+var HOSTED_ACCESS_KEY_ACTIONS = /* @__PURE__ */ new Set([
+  "access-keys.list",
+  "access-keys.inspect",
+  "access-keys.revoke",
+  "access-keys.revoke-all",
+  "access-keys.delete"
+]);
 main().catch((error) => {
   writeEnvelope(
     {
       ok: false,
       data: null,
       error: {
+        ...error.code ? { code: error.code } : {},
         message: error.message,
         hint: error.hint ?? "Check the Host helper request and retry the command.",
         ...error.diagnostics ? { diagnostics: error.diagnostics } : {}
@@ -1127,6 +1374,10 @@ async function main() {
     inspectCapsuleSchedules(request);
     return;
   }
+  if (HOSTED_ACCESS_KEY_ACTIONS.has(request.action)) {
+    runCapsuleAccessKeyAction(request);
+    return;
+  }
   if (request.action === "host.stats") {
     await statsHost(request);
     return;
@@ -1156,14 +1407,33 @@ function inspectCapsuleSchedules(request) {
   validateScheduleInspectionRequest(request);
   inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
     throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-  }));
+  }), [], true);
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
+function runCapsuleAccessKeyAction(request) {
+  const exactKeys2 = (value, keys) => Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
+  if (!exactKeys2(request, ["action", "host", "capsule", "accessKeys"]) || !request.host || typeof request.host !== "object" || Array.isArray(request.host) || !exactKeys2(request.host, ["alias", "domain", "scheme", "remoteRoot"]) || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule) || !exactKeys2(request.capsule, ["subname"])) {
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
+  }
+  const accessKeys = validateAccessKeyOperatorActionInput(request.action, request.accessKeys, () => {
+    throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
+  });
+  inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, request.action, accessKeys, () => {
+    throw Object.assign(helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."), { code: "HOSTED_ACCESS_KEY_RESPONSE_INVALID" });
+  }), [
+    "--sporades-action-input",
+    Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url")
+  ]);
+}
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = [], preserveBoundedDiagnostics = false) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
-    throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+    if (label === "Access-key") error.code = "HOSTED_CAPSULE_NOT_RUNNING";
+    throw error;
   }
-  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action]);
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
+    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : void 0
+  });
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());
@@ -1171,7 +1441,11 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
   }
   const bounded = sanitize(envelope);
-  if (!bounded.ok) throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  if (!bounded.ok) {
+    const error = helperError(bounded.error.message, bounded.error.hint, preserveBoundedDiagnostics ? bounded.error.diagnostics : void 0);
+    if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
+    throw error;
+  }
   writeEnvelope(bounded);
 }
 function versionHost(request) {
@@ -3866,7 +4140,7 @@ function ensureHostedBaseImage(lifecycle) {
   }
 }
 function runDocker(args, options = {}) {
-  const result = spawnSync2("docker", args, { encoding: "utf8" });
+  const result = spawnSync2("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {} });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -3952,11 +4226,22 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
   await provisionRouteLogFile(route);
-  const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4e3}`}`;
+  const cloudflareOrigin = route.tls?.mode === "cloudflare-origin";
+  const proxyLine = [
+    `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4e3}`} {`,
+    `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin ? "{http.request.header.CF-Connecting-IP}" : "{http.request.remote.host}"}`,
+    "  }"
+  ].join("\n");
+  const routeHandler = renderRunningRouteHandler(route, proxyLine);
+  const guardedHandler = cloudflareOrigin ? [
+    `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,
+    "respond @sporadesUntrustedCloudflareSource 403",
+    routeHandler
+  ].join("\n  ") : routeHandler;
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    renderRoute(route, renderRunningRouteHandler(route, proxyLine))
+    renderRoute(route, guardedHandler)
   );
 }
 function renderRunningRouteHandler(route, proxyLine) {

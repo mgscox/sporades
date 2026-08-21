@@ -67,9 +67,9 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
-import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type JourneyRecord } from "sporades/client";
+import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 const dormantStripe = createStripePaymentIntegration({ enabled: false });
 const disabledCheckout: Promise<StripePaymentsDisabledResult> = dormantStripe.createCheckoutSession({});
@@ -143,6 +143,7 @@ typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
 const app = capsule({
   name: "typed island",
+  accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
     admitJoin: async (ctx, input) => {
@@ -159,6 +160,7 @@ const app = capsule({
     },
   },
   files: {
+    accessKeys: { read: { scopes: ["todos:read"] } },
     acl: {
       read: ({ file, ctx }) => {
         file.path.toUpperCase();
@@ -198,6 +200,9 @@ const app = capsule({
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {
+      // @ts-expect-error A Job may run as the Privileged server role, which has no ordinary Credential provenance.
+      ctx.credential.kind;
+      if ("credential" in ctx) ctx.credential.kind satisfies "session" | "access-key";
       const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";
       await ctx.mail.send({ to: "recipient@example.com", subject: "Job report", textBody: text || "empty" });
       const queued = await ctx.jobs.enqueue("summarise", { text }, { idempotencyKey: text });
@@ -281,6 +286,22 @@ const app = capsule({
     },
   ],
   queries: {
+    sessionGuarded: query(requireAuth({ credentials: ["session"], scopes: ["todos:read"] }, (ctx) => {
+      ctx.credential.kind satisfies "session";
+      // @ts-expect-error Session provenance has no Access-key attribution ID.
+      ctx.credential.id;
+      return ctx.auth.userId;
+    })),
+    accessKeyGuarded: query(requireAuth({ credentials: ["access-key"] }, (ctx) => {
+      ctx.credential.kind satisfies "access-key";
+      ctx.credential.id.toUpperCase();
+      ctx.credential.name.toUpperCase();
+      return ctx.auth.userId;
+    })),
+    anyCredentialGuarded: query(requireAuth((ctx) => {
+      ctx.credential.kind satisfies "session" | "access-key";
+      return ctx.auth.userId;
+    })),
     todos: query(async (ctx) => {
       await ctx.mail.send({ to: "recipient@example.com", subject: "Query", textBody: "Query" });
       return ctx.db.todos
@@ -318,6 +339,30 @@ const app = capsule({
       const left = await ctx.teams.leave(renamed.team.id);
       const deleted = await ctx.teams.delete(renamed.team.id);
       return result.teams.map((team) => team.id).concat(renamed.team.id, members.members[0]?.userId ?? "", joinLink.valid ? "valid" : "invalid", joined.team.role, roleUpdate.updated ? "roles" : "", promoted.updated ? "promoted" : "", demoted.updated ? "demoted" : "", removed.removed ? "removed" : "", left.left ? "left" : "", deleted.deleted ? "deleted" : "");
+    }),
+    ownAccessKeys: query(async (ctx) => {
+      const issued = await ctx.accessKeys.issue({
+        name: "typed-key",
+        grants: ["todos:read"],
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      issued.token.toUpperCase();
+      issued.accessKey.effectiveScopes.map((scope) => scope.toUpperCase());
+      const listed = await ctx.accessKeys.list({ status: "active", limit: 25 });
+      listed.declaredScopes.map((scope) => scope.toUpperCase());
+      listed.nextCursor?.toUpperCase();
+      const revoked = await ctx.accessKeys.revoke(issued.accessKey.id);
+      const rotated = await ctx.accessKeys.rotate(issued.accessKey.id, { lifecycleRevision: issued.accessKey.lifecycleRevision });
+      rotated.token.toUpperCase();
+      const deleted = await ctx.accessKeys.delete(revoked.accessKey.id);
+      deleted.deleted satisfies true;
+      revoked.accessKey.lifecycleRevision.valueOf();
+      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | null;
+      // @ts-expect-error Access-key grants are immutable after issuance.
+      ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
+      // @ts-expect-error Access-key status filters are a closed vocabulary.
+      await ctx.accessKeys.list({ status: "disabled" });
+      return listed.totalCount;
     }),
     privilegedTodos: query(async (ctx) => {
       const rows = await ctx.privileged.run({
@@ -373,6 +418,7 @@ const app = capsule({
       await Promise.resolve();
       const me = requireAuth(ctx);
       me.userId.toUpperCase();
+      requireUserAuth(ctx).userId.toUpperCase();
       const linkedUser = requireAuth(ctx, { linked: true });
       linkedUser.isGuest.valueOf();
       // @ts-expect-error requireAuth options accept a boolean linked flag only.
@@ -415,6 +461,10 @@ const app = capsule({
         count: ctx.db.todos.all().length,
       };
     }),
+    guarded: endpoint({ method: "GET", path: "/guarded" }, requireAuth({ credentials: ["session"] }, (ctx) => ({
+      status: 200,
+      body: ctx.request.method + ":" + ctx.credential.kind,
+    }))),
   },
   messages: {
     typing: message(async (ctx, data) => {
@@ -451,6 +501,14 @@ const app = capsule({
     },
   },
 });
+
+const guarded = requireAuth((ctx) => ctx.credential.kind);
+// @ts-expect-error Auth guard branding is type-only and not a public runtime property.
+guarded.__sporadesAuthGuardedHandler;
+// @ts-expect-error Unguarded handlers cannot use an incompatible query context.
+query((ctx: { nope: number }) => ctx.nope);
+// @ts-expect-error Unguarded handlers cannot use an incompatible Custom-endpoint context.
+endpoint({ method: "GET", path: "/invalid-context" }, (ctx: { nope: number }) => ctx.nope);
 
 const hooks = createHooks({
   useState<State>(initial: State | (() => State)): [State, (nextState: State) => void] {
@@ -514,6 +572,14 @@ const authSubscription = auth.subscribe((state) => {
 });
 authSubscription.unsubscribe();
 auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" });
+accessKeys.issue({ name: "bot", grants: ["requests:*"] }).then((result) => result.data?.token.toUpperCase());
+accessKeys.list({ status: "active", limit: 20 }).then((result) => result.data?.accessKeys.map((key) => key.effectiveScopes));
+accessKeys.rotate("key-id", { lifecycleRevision: 1 });
+accessKeys.revoke("key-id");
+accessKeys.delete("key-id");
+const accessKeyErrorCode: AccessKeyErrorCode = "ACCESS_KEY_REVISION_CONFLICT";
+const accessKeyTransportErrorCode: AccessKeyErrorCode = "TRANSPORT_CLOSED";
+accessKeyErrorCode.toLowerCase();
 // @ts-expect-error browser auth API does not expose privileged server-role authority.
 auth.privileged;
 // @ts-expect-error browser file API cannot run privileged file operations.

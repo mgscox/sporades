@@ -151,7 +151,7 @@ A Capsule-defined app-message handler declared with `message((ctx, data) => ...)
 _Avoid_: socket listener, raw WebSocket handler
 
 **Job**:
-A durable unit of background work owned by a Capsule or by Sporades platform code. Jobs run under an explicit server-side actor, such as a captured Sporades user identity or the Privileged server role, and Capsule server code may inspect known Job state through runtime-owned APIs rather than modelling Jobs as app tables.
+A durable unit of background work owned by a Capsule or by Sporades platform code. Ordinary user Jobs persist the complete bounded Auth context and Session-or-Access-key Credential provenance captured when enqueue commits; they never persist the credential secret, grants, or matched scopes. Jobs run under that historical user actor or the Privileged server role, while resource and Team authorization still uses current state.
 _Avoid_: task, worker request, background mutation
 
 **Job queue**:
@@ -159,7 +159,7 @@ The runtime-owned background-work surface that stores, runs, retries, and expose
 _Avoid_: worker pool, message bus, queue table
 
 **Job state**:
-The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, and safe failure or result metadata. It is the inspection surface app code sees instead of raw queue internals.
+The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, safe failure or result metadata, execution actor, and user-mode enqueue Credential provenance. It is the inspection surface app code sees instead of raw queue internals.
 _Avoid_: queue internals, worker details, job row
 
 Job state progresses through `delayed`, `queued`, `running`, `succeeded`, `failed`, or `cancelled`; only `queued` means ready to run.
@@ -252,12 +252,33 @@ _Avoid_: provider email, social user, OAuth profile
 The stable, provider-issued identifier for one external identity, such as Google's verified `sub` claim. It is meaningful only together with its provider and does not change when profile email or display details change.
 _Avoid_: email key, username, profile ID
 
+**Access key**:
+A runtime-owned, user-owned, named credential for scoped programmatic access. Its attribution ID, single linked-user owner, human-readable name, grant expressions, and optional expiry are fixed at issuance; moving automation, renaming it, or changing its authority requires a new key. The name is unique among its owner's current Access keys. Active and expired keys remain current and reserve their names; irrevocably revoked keys are historical and release their names for reuse. Only a linked, non-guest Sporades user may own one, and the key remains usable only while its owner still qualifies as linked. It authenticates that user with no greater authority than the user and its granted scopes allow; it does not create a separate user, Bot identity, Team member, or Capsule role.
+_Avoid_: passwordless login, Session token, unscoped API key, Bot identity, service account
+
+**Access key scope**:
+A non-empty, unique, case-sensitive authority label declared centrally in the bundled Capsule definition that limits what an Access key may request. A Capsule may declare at most 1,024 scopes, each no more than 256 UTF-8 bytes. Declarations are concrete strings without `*`; they form the Capsule's canonical scope vocabulary and can change only with the bundled definition, never through runtime management. Immutable Access-key grants are unique expressions that may contain `*` anywhere, matched case-sensitively across the whole declaration at runtime; one key may carry at most 128 expressions, each no more than 256 UTF-8 bytes. Omitted grants normalize to `*`, including against an empty current vocabulary; an explicit empty grant set is invalid, and other issuance expressions must match a current declaration. Newly declared matching scopes deliberately enter existing wildcard grants. Removing a declaration makes matching retained grants inactive without rewriting them; restoring the exact declaration reactivates them. A handler requires concrete declared scopes, all of which must match at least one Access-key grant; omitting requirements means no scope requirement. Credential guards admit any credential kind unless narrowed, and a permitted Session satisfies Access-key scope requirements without grants before ordinary user authorization continues. Scopes only narrow authority where Capsule code explicitly checks them: they neither grant nor automatically map onto ACL, Team, File, or other platform authority. Sporades enforces mechanical matching and snapshots successful admission for the work, while the Capsule developer owns the vocabulary and its correspondence to actual behavior.
+_Avoid_: Capsule role, Team application role, ACL rule, permission inference
+
+**Access key lifecycle**:
+An Access key is active, expired, or revoked. Optional expiry is checked whenever the key authenticates; once crossed, the key cannot be extended, rotated, or revived. Revocation is irreversible, makes the key historical, releases its per-user name, and discards its stored credential material; it may be requested directly or caused by account-recovery password reset, loss of the owner's linked status, or owner deletion. Relinking never revives a key. Lifecycle changes prevent subsequent credential checks but do not cancel work that already passed its credential check. There is no reversible disabled state. Rotation is the sole non-terminal mutation: one atomic secret replacement on an active key that preserves its immutable attribution identity, owner, name, grant expressions, and expiry; the old secret fails every credential check begun after the rotation commits. Expired and revoked records are not automatically pruned; only revoked historical records may be explicitly deleted.
+_Avoid_: pause, suspension, reactivation, unrevocation, replacement identity
+
+**Access key management**:
+The runtime-owned lifecycle interface through which a current linked user inspects, issues, rotates, revokes, and deletes only their own Access keys using an interactive Session. An Access key cannot manage Access keys. Capsules render their own management experience over the interface rather than receiving a framework-owned page. Inside an explicit audited `ctx.privileged.run(...)`, the separate Privileged projection may list one exact owner's metadata, inspect or revoke an exact key, revoke one exact owner's current keys, and delete revoked history; it cannot issue, rotate, or receive bearer tokens. The `sporades access-keys` operator commands reach that projection only through a running Dev, Container, or Hosted Capsule using immutable owner/key IDs and the shared generated-Bundle action seam. Read operations require no confirmation; destructive operations require an interactive confirmation or `--yes`, with exact owner-ID confirmation for bulk revocation. `--json` never implies consent, and stopped-Capsule database access is not supported.
+Operator action envelopes are strict per-action allowlists that bind returned IDs to the request. The running Capsule derives execution-source attribution from its runtime session, while each Privileged Access-key projection call emits a runtime-owned terminal audit with the exact action and resolved owner/key target; caller-supplied Privileged metadata cannot substitute for it.
+_Avoid_: key self-escalation, universal API-key page, operator-issued key, Capsule-owned credential table
+
+**Credential provenance**:
+The runtime-owned, request-scoped description of how the current Sporades user authenticated: exactly one Session or one named Access key. It is always present on an ordinary user context and remains distinct from the user actor; presenting both credential kinds is an authentication error rather than precedence or merged authority. An invalid or malformed Access-key attempt fails without downgrading to Session or Anonymous authority. A credential check snapshots the current user profile and credential metadata for the admitted work; later changes appear on subsequent checks rather than mutating work already admitted. Capsule code may use stable user and Access-key IDs plus captured display names for attribution, while authorization continues to use the owning user together with the key's scopes. Private File reads remain Session-only unless the Capsule declares `files.accessKeys.read`; that opt-in may require concrete central scopes or omit them, and successful Bearer admission then applies the same owner and File ACL rules with frozen Access-key provenance.
+_Avoid_: separate API user, Bot identity, actor override, user impersonation
+
 **OAuth attempt**:
 A short-lived, single-use runtime record binding one provider authorization request to its Session, exact callback URI, same-origin return URL, nonce, and PKCE verifier. The callback spends the attempt before any provider or account work, including cancellation and failure.
 _Avoid_: reusable state, client OAuth session
 
 **Reset code**:
-A short-lived, single-use runtime record binding one email credential to one password reset attempt. The code is a selector/verifier pair; the runtime stores the selector and only a hash of the verifier. Verification is repeatable and does not spend the code; confirming a new password spends it, deletes the user's other outstanding Reset codes, and revokes that user's Sessions.
+A short-lived, single-use runtime record binding one email credential to one password reset attempt. The code is a selector/verifier pair; the runtime stores the selector and only a hash of the verifier. Verification is repeatable and does not spend the code; confirming a new password spends it, deletes the user's other outstanding Reset codes, and atomically revokes that user's Sessions and all current Access keys.
 _Avoid_: reset token, oobCode, magic link (it authorizes a password change, not a sign-in)
 
 **Session provenance**:

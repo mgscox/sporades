@@ -21,7 +21,7 @@ import {
   PASSWORD_RESET_MAX_TTL_MS, PASSWORD_RESET_MIN_TTL_MS, PASSWORD_RESET_THROTTLE_FIELD,
   PRIVILEGED_AUTH_USER_ID, appleOAuthOriginEligible, assertNotReservedAuthUserId,
   authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, authProvidersForClient, authStatus,
-  confirmPasswordReset, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
+  confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, createSessionToken, currentEmailSignInThrottleState,
   emailAuthDisabledError, emitAuthDeniedLog, hashEmailPassword,
   invalidEmailCredentialsError, isReservedAuthUserId, mailNotConfiguredError,
   normalizeEmailCredentials, normalizePasswordResetPath, normalizeReturnTo, normalizeSimulatedText,
@@ -58,6 +58,21 @@ import {
 } from "./http-runtime.js";
 import { chainMaybePromise, isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
+import {
+  accessKeyGrantsSatisfyScopes,
+  normalizeCapsuleAuthDefinition,
+  readAuthRequirements,
+  validateCapsuleAuthRequirements,
+} from "./auth-admission.js";
+import {
+  accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
+  accessKeySecretWasDisclosed,
+  dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
+  grantPrivilegedAccessKeyAccess,
+  publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
+  revokePrivilegedAccessKeyAccess,
+} from "./access-keys-runtime.js";
+import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9. The four names the shared Database adapter method set resolves in the Log index's
 // storage module — `ensureLogStorage()` and the three statements that write, prune and read the
 // index. The log sink in this file needs none of them: it reaches the same three through
@@ -95,11 +110,12 @@ import {
 } from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
+  canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
   commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
   dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
   finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
   jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence,
-  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload,
+  normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload,
   RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
   STRIPE_EVENT_JOB,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
@@ -475,6 +491,7 @@ export async function replaceRuntimeDatabase(currentDatabase: LooseRecord, candi
   }
   try {
     candidateDatabase.__preflightJobExecutionActivation?.();
+    await candidateDatabase.__publishAccessKeyScopes?.();
   } catch (preflightError) {
     try { await shutdownAndCloseDatabase(candidateDatabase); }
     catch (cleanupError) {
@@ -553,6 +570,10 @@ export async function openDevDatabase(
   capsuleDefinition: any = null,
   options: LooseRecord = {},
 ) {
+  if (capsuleDefinition) {
+    capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
+    validateCapsuleAuthRequirements(capsuleDefinition);
+  }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -627,7 +648,9 @@ export async function openDevDatabase(
   const mutations: any[] = (capsuleDefinition
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
     : extractMutationHandlers(serverSource)) as any[];
-  const messages = extractMessageHandlers(serverSource);
+  const messages = capsuleDefinition
+    ? handlersFromCapsuleDefinition(capsuleDefinition.messages, "message")
+    : extractMessageHandlers(serverSource);
   let database: LooseRecord;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
@@ -637,7 +660,8 @@ export async function openDevDatabase(
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
-  const contextMiddleware = extractContextMiddleware(serverSource);
+  const contextMiddleware = capsuleDefinition?.middleware?.map((middleware: Function) => middleware.toString())
+    ?? extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
   const rowCache = new Map();
@@ -650,6 +674,8 @@ export async function openDevDatabase(
     messages,
     jobs,
     schedules,
+    accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
+    securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
@@ -708,6 +734,9 @@ export async function openDevDatabase(
       }
       : undefined,
     fileAcl,
+    fileAccessKeyRead: capsuleDefinition?.files?.accessKeys?.read
+      ? Object.freeze({ scopes: Object.freeze([...(capsuleDefinition.files.accessKeys.read.scopes ?? [])]) })
+      : null,
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -783,12 +812,16 @@ export async function openDevDatabase(
       preflightCurrentUserJobExecution(database);
     },
   };
+  database.__publishAccessKeyScopes = () => database.adapter.writeSystemMetadata(
+    "accessKeyScopes",
+    JSON.stringify(database.accessKeyScopes ?? []),
+  );
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
       if (database.lifecycleHooks.init !== undefined) {
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
-        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+        await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
       }
       database.__scheduleTimers = new Set();
       database.__activeScheduleOccurrences = new Set();
@@ -811,8 +844,11 @@ export async function openDevDatabase(
         // releases recovery plus one normal pass to rediscover durable work.
         activateCurrentUserJobExecution(database, earliestFutureLeaseAt);
       }
-      database.__runtimeInitialized = true;
       await recoverReconciledSchedules(database, reconciled.recoveredOccurrences);
+      // A fresh initial runtime publishes here. Dev replacement candidates are
+      // deferred and publish only after activation preflight succeeds.
+      if (!database.__jobActivationDeferred) await database.__publishAccessKeyScopes();
+      database.__runtimeInitialized = true;
     } catch (error) {
       database.__scheduleStopped = true;
       abortSchedulePayloadFactories(database);
@@ -853,7 +889,7 @@ export async function openDevDatabase(
         await settleActiveScheduleWork(database);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
           if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
         }
       } catch (error) {
         shutdownRejected = true;
@@ -880,6 +916,13 @@ export async function openDevDatabase(
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
+  if (options?.runtimeActionOnly) {
+    const retainedScopes = await sqlite.readSystemMetadata("accessKeyScopes");
+    try {
+      const parsed = retainedScopes ? JSON.parse(retainedScopes.value) : [];
+      database.accessKeyScopes = Array.isArray(parsed) && parsed.every((scope) => typeof scope === "string") ? parsed : [];
+    } catch { database.accessKeyScopes = []; }
+  }
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
@@ -887,10 +930,12 @@ export async function openDevDatabase(
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
-  await recoverInvalidRetainedJobState(database);
-  await recoverExpiredJobLeases(database);
-  assertValidReferenceTargets(schema);
-  await sqlite.migrateAppSchema(schema);
+  if (!options?.runtimeActionOnly) {
+    await recoverInvalidRetainedJobState(database);
+    await recoverExpiredJobLeases(database);
+    assertValidReferenceTargets(schema);
+    await sqlite.migrateAppSchema(schema);
+  }
 
   return database;
 }
@@ -1513,7 +1558,7 @@ export async function enqueueScheduledOccurrence(database: LooseRecord, definiti
 
 function createScheduleMutationContext(database: LooseRecord, definition: any, scheduledFor: string) {
   const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
-  return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+  return createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" }, { ordinaryCredential: false });
 }
 
 async function enqueueResolvedScheduledOccurrence(database: LooseRecord, definition: any, scheduledFor: string, payload: any, context: LooseRecord) {
@@ -1554,6 +1599,15 @@ async function recoverExpiredJobLeases(database: LooseRecord) {
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
         "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate,
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+      continue;
+    }
+    const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
+    if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
+      const ownership = jobClaimOwnership(row.claimToken);
+      await database.adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+        "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate,
+      )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership.params);
       continue;
     }
     const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
@@ -1686,6 +1740,20 @@ function scheduleJobLeaseRecoveryTimer(database: LooseRecord, dueAt: number | nu
 const RUNTIME_CLAIM_LEASE_MS = 30_000;
 
 function invalidStoredJobFailure(row: LooseRecord, referenceInstant: Date) {
+  if (row.scheduleName !== null && row.scheduleName !== undefined && row.actorUserId !== privilegedAuthUserId()) {
+    return { code: "JOB_ACTOR_SNAPSHOT_INVALID", message: "Stored Job actor provenance is invalid." };
+  }
+  if (row.actorUserId !== privilegedAuthUserId()) {
+    try {
+      readJobAuthSnapshot(row);
+      readJobCredentialProvenance(row);
+    } catch (error: any) {
+      if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(error?.code)) {
+        return { code: error.code, message: error.message };
+      }
+      throw error;
+    }
+  }
   if (!isCanonicalJobTimestamp(row.availableAt)) {
     return { code: "JOB_AVAILABLE_AT_INVALID", message: "The stored Job availability time is invalid." };
   }
@@ -1735,7 +1803,7 @@ async function recoverInvalidRetainedJobState(database: LooseRecord) {
   const failedAt = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql(
-    "SELECT [id], [status], [availableAt], [attempts], [retryJson] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
+    "SELECT * FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')",
   )).all();
   await database.jobRecoveryFault?.("after-scan", { jobIds: rows.map((row: LooseRecord) => String(row.id)) });
   for (const row of rows) {
@@ -1832,12 +1900,20 @@ function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; ev
         : rest.length > 0
           ? { data, args: rest }
           : null;
+    const attributedData = context.attribution
+      ? {
+          ...(structuredData && typeof structuredData === "object" && !Array.isArray(structuredData)
+            ? structuredData
+            : structuredData === null ? {} : { value: structuredData }),
+          ...context.attribution,
+        }
+      : structuredData;
     database.log.emit({
       category: context.category ?? "app",
       event: context.event ?? "ctx.log",
       level,
       message: String(message ?? ""),
-      data: structuredData,
+      data: attributedData,
       request: context.request ?? null,
       release: context.release ?? null,
       correlation: context.correlation ?? null,
@@ -1878,6 +1954,9 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
       }
 
       const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
+      const auditMetadataOwner = database.__rootDatabase ?? database;
+      auditMetadataOwner.__privilegedAuditMetadataByContext ??= new WeakMap();
+      auditMetadataOwner.__privilegedAuditMetadataByContext.set(privilegedContext, auditDetails.metadata);
       let callbackResult;
       let callbackError;
       let callbackSettled = false;
@@ -1891,10 +1970,12 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
           // The callback boundary, not the trailing audit writes, defines the
           // lifetime of userless Team inspection. Detached inspection promises
           // must fail closed while this run records its completion event.
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
         } catch (error: any) {
           callbackError = error;
           callbackSettled = true;
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           throw error;
         }
@@ -1934,6 +2015,8 @@ function createContextPrivilegedApi(database: LooseRecord, contextGetter: () => 
               : undefined,
           );
         } finally {
+          auditMetadataOwner.__privilegedAuditMetadataByContext.delete(privilegedContext);
+          revokePrivilegedAccessKeyAccess(privilegedContext);
           privilegedContext.__privilegedRunActive = false;
           revokePrivilegedDbAccess(privilegedContext);
         }
@@ -1948,7 +2031,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
     __privilegedRunActive: true,
     __jobEnqueuedBy: context.auth?.userId ?? null,
     __jobParentContext: context,
-    auth: {
+    auth: Object.freeze({
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
       email: null,
@@ -1956,11 +2039,20 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       isAuthenticated: false,
       isGuest: false,
       provider: "privileged-server-role",
-    },
+    }),
   };
+  if (context.__accessKeyOperatorExecutionSource) {
+    Object.defineProperty(privilegedContext, "__accessKeyOperatorExecutionSource", {
+      value: context.__accessKeyOperatorExecutionSource,
+      enumerable: false,
+    });
+  }
   // User-scoped and mutating Team operations remain unavailable. This is the
   // separate userless inspection projection, not inherited Team authority.
   delete privilegedContext.teams;
+  delete privilegedContext.accessKeys;
+  delete privilegedContext.credential;
+  delete privilegedContext.__sporadesAccessKeyGrants;
   const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
   const scheduleProvenance = provenanceStore?.get(context);
   if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
@@ -1972,8 +2064,67 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
+  grantPrivilegedAccessKeyAccess(privilegedContext);
+  privilegedContext.accessKeys = createPrivilegedAccessKeysApi(
+    database,
+    () => holder.current,
+    (transactionAdapter: LooseRecord) => createTransactionDatabase(database, transactionAdapter),
+  );
   privilegedContext.mail = database.mail;
   return privilegedContext;
+}
+
+export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, action: string, input: LooseRecord = {}, executionSource = "runtime-action") {
+  const boundedInput = validateAccessKeyOperatorActionInput(action, input, () => {
+    throw commandError("Invalid Access-key operator action input.", "Upgrade the Sporades CLI and generated Bundle together.", "INVALID_ACCESS_KEY_ACTION_INPUT");
+  });
+  const boundedExecutionSource = ["operator-cli-dev", "operator-cli-container", "operator-cli-hosted"].includes(executionSource)
+    ? executionSource
+    : "runtime-action";
+  const metadata = {
+    executionSource: boundedExecutionSource,
+    ...(typeof boundedInput.userId === "string" ? { ownerUserId: boundedInput.userId } : {}),
+    ...(typeof boundedInput.keyId === "string" ? { accessKeyId: boundedInput.keyId } : {}),
+  };
+  let context: LooseRecord | undefined;
+  try {
+    return await database.adapter.withTransaction(async (transactionAdapter: LooseRecord) => {
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      let actionFailed = false;
+      try {
+        context = createMutationContext(transactionDatabase, {
+          userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
+          isAuthenticated: false, isGuest: false, provider: "operator",
+        }, { ordinaryCredential: false });
+        Object.defineProperty(context, "__accessKeyOperatorExecutionSource", { value: boundedExecutionSource, enumerable: false });
+        return await context.privileged.run({
+          operation: "access-keys.operator-dispatch",
+          surface: boundedExecutionSource,
+          targetResourceKind: "access-key",
+          metadata: { ...metadata, requestedAction: action },
+        }, async (privilegedContext: LooseRecord) => {
+          switch (action) {
+            case "access-keys.list": return await privilegedContext.accessKeys.list(boundedInput.userId, boundedInput.options);
+            case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(boundedInput.keyId);
+            case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(boundedInput.keyId);
+            case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(boundedInput.userId);
+            case "access-keys.delete": return await privilegedContext.accessKeys.delete(boundedInput.keyId);
+            default: throw commandError("Unsupported Access-key operator action.", "Upgrade the Sporades CLI and generated Bundle together.", "ACCESS_KEY_ACTION_UNSUPPORTED");
+          }
+        });
+      } catch (error) {
+        actionFailed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(transactionDatabase, context, actionFailed, actionFailed);
+      }
+    });
+  } catch (error: any) {
+    database.rowCache.clear();
+    await reindexPrivilegedAuditEventsAfterRollback(database, context);
+    if (error?.code === "PRIVILEGED_RUN_FAILED" && publicAccessKeyManagementError(error.cause)) throw error.cause;
+    throw error;
+  }
 }
 export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();
@@ -2480,6 +2631,12 @@ function handlersFromCapsuleDefinition(definitions: any, kind: string) {
     }));
 }
 
+function materializeHandler(handler: LooseRecord): Function {
+  return typeof handler.handler === "function"
+    ? handler.handler
+    : new Function(`return (${handler.handlerSource});`)();
+}
+
 function mutationHandlersFromCapsuleDefinition(serverSource: any, capsuleDefinition: any) {
   const sourceHandlers = new Map(
     extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]),
@@ -2790,10 +2947,26 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   }
 
   try {
-    writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
+    const result = await runEndpoint(database, endpoint, requestUrl, request);
+    const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
+      || (request as LooseRecord).__sporadesSecretDisclosed
+      ? { "cache-control": "private, no-store", pragma: "no-cache" }
+      : undefined;
+    writeEndpointResult(response, result, sensitiveResponseHeaders);
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
+    } else if (error?.sporadesAccessKeyFailure) {
+      emitAuthDeniedLog(database as LooseRecord, { data: {
+        requirement: "access-key",
+        reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+        handler: { kind: "endpoint", path: requestUrl.pathname },
+        actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
+      } });
+    }
+    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || error?.sporadesAccessKeyFailure) {
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("pragma", "no-cache");
     }
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
@@ -2831,13 +3004,16 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     typeof endpoint.handler === "function"
       ? endpoint.handler
       : new Function(`return (${endpoint.handlerSource});`)();
+  const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
   const endpointRequest = await readEndpointRequest(
     database,
     requestUrl,
     request,
     !(endpoint as LooseRecord).runtimeOwnedStripeCallback,
   );
-  const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
+  const requirements = readAuthRequirements(handler);
+  const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
+  if (requirements) delete endpointRequest.headers.authorization;
   const session = runtimeOwnedProviderCallback
     ? { auth: {
         userId: privilegedAuthUserId(),
@@ -2848,21 +3024,54 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
         isGuest: false,
         provider: "privileged-server-role",
       } }
-    : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+    : hasAuthorization
+      ? null
+      : await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  const accessKeyAdmission = hasAuthorization
+    ? await resolveAccessKeyCredential(
+      database,
+      request,
+      readEndpointSessionToken(endpointRequest.headers, endpointRequest.query),
+    )
+    : null;
+  if (accessKeyAdmission) {
+    const admissionContext = {
+      auth: accessKeyAdmission.auth,
+      credential: accessKeyAdmission.credential,
+      __sporadesAccessKeyGrants: accessKeyAdmission.grants,
+      request: { path: endpointRequest.path },
+    };
+    admitCredentialHandler(handler, admissionContext, "endpoint");
+    (request as LooseRecord).__sporadesAccessKeyAdmitted = true;
+    (request as LooseRecord).__sporadesAccessKeyAttribution = {
+      actor: { userId: admissionContext.auth.userId },
+      ...accessKeyCredentialLogAttribution(admissionContext),
+    };
+    emitAccessKeyAdmittedAudit(database, { ...admissionContext, kind: "endpoint" }, accessKeyAdmission.record);
+    await recordAccessKeyUsage(database, accessKeyAdmission);
+  }
   let context: LooseRecord | undefined;
   try {
     const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createEndpointContext(transactionDatabase, endpointRequest, session);
+        const resolvedSession = (accessKeyAdmission ?? session) as LooseRecord;
+        context = createEndpointContext(transactionDatabase, endpointRequest, resolvedSession, {
+          ordinaryCredential: !runtimeOwnedProviderCallback,
+          credential: accessKeyAdmission?.credential,
+          accessKeyGrants: accessKeyAdmission?.grants,
+        });
         if ((endpoint as LooseRecord).runtimeOwnedStripeCallback) {
           Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
         }
         if (!runtimeOwnedProviderCallback) {
+          if (!accessKeyAdmission) admitCredentialHandler(handler, context, "endpoint");
           context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
         }
-        return await handler(context);
+        const result = await handler(context);
+        if (accessKeySecretWasDisclosed(context)) (request as LooseRecord).__sporadesSecretDisclosed = true;
+        return result;
       } catch (error) {
         handlerFailed = true;
         throw error;
@@ -2871,11 +3080,13 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       }
     });
     commitPendingJobCancellationAborts(context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return result;
   } catch (error) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     throw error;
@@ -2959,10 +3170,14 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
   };
 }
 
-function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord) {
-  const auth = session.auth;
+function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord, options: LooseRecord = {}) {
+  const auth = protectContextIdentity(session.auth);
+  const credential = options.ordinaryCredential === false
+    ? null
+    : protectContextIdentity(options.credential ?? { kind: "session" });
   const context: LooseRecord = {
     auth,
+    ...(credential ? { credential } : {}),
     env: database.serverEnv,
     payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
@@ -2970,6 +3185,12 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
         method: endpointRequest.method,
         path: endpointRequest.path,
       },
+      ...(credential?.kind === "access-key" ? {
+        attribution: {
+          actor: { userId: auth.userId },
+          credential: { kind: credential.kind, id: credential.id, name: credential.name },
+        },
+      } : {}),
     }),
     request: {
       method: endpointRequest.method,
@@ -2980,6 +3201,12 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       bodyBytes: endpointRequest.bodyBytes,
     },
   };
+  if (credential?.kind === "session" && typeof session.token === "string") {
+    bindAccessKeyOwnerSession(context, session.token);
+  }
+  if (options.accessKeyGrants) {
+    Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -2992,6 +3219,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -3017,6 +3245,23 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     },
   };
   return context;
+}
+
+function protectContextIdentity(value: LooseRecord) {
+  const target = Object.freeze({ ...value });
+  const tampered = () => {
+    throw commandError(
+      "Invalid Capsule context middleware result.",
+      "Runtime-owned Auth and Credential values are immutable.",
+      "INVALID_CONTEXT_MIDDLEWARE_RESULT",
+    );
+  };
+  return new Proxy(target, {
+    set: tampered,
+    defineProperty: tampered,
+    deleteProperty: tampered,
+    setPrototypeOf: tampered,
+  });
 }
 
 function createContextHolder(context: LooseRecord) {
@@ -3078,10 +3323,13 @@ async function drainPendingLogWrites(database: LooseRecord) {
 }
 
 async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
+  const canonicalAuth = baseContext.auth;
+  const canonicalCredential = baseContext.credential;
   let context: LooseRecord = {
     ...baseContext,
     kind,
   };
+  transferAccessKeyRuntimeState(baseContext, context);
   const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
   holder.current = context;
   if (!context.__sporadesContextHolder) {
@@ -3092,8 +3340,22 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     });
   }
   for (const middlewareSource of database.contextMiddleware) {
+    const previousContext = context;
     const result = await runContextMiddleware(middlewareSource, context);
-    context = result ?? context;
+    const middlewareContext = result ?? context;
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
+      throw commandError(
+        "Invalid Capsule context middleware result.",
+        "Context middleware must preserve the runtime-owned Auth and Credential values.",
+        "INVALID_CONTEXT_MIDDLEWARE_RESULT",
+      );
+    }
+    context = { ...middlewareContext, auth: canonicalAuth };
+    if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
+      context.credential = canonicalCredential;
+    } else {
+      delete context.credential;
+    }
     holder.current = context;
     if (!context.__sporadesContextHolder) {
       Object.defineProperty(context, "__sporadesContextHolder", {
@@ -3102,11 +3364,55 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
         configurable: true,
       });
     }
-    if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
-      context.__pendingAclWrites = baseContext.__pendingAclWrites;
+    if (previousContext.__pendingAclWrites && !context.__pendingAclWrites) {
+      context.__pendingAclWrites = previousContext.__pendingAclWrites;
     }
+    transferAccessKeyRuntimeState(previousContext, context);
   }
   return context;
+}
+
+function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: string) {
+  const requirements = readAuthRequirements(handler);
+  if (!requirements) {
+    return;
+  }
+  const auth = context?.auth;
+  const credentialKind = context?.credential?.kind ?? "session";
+  if (auth?.isAuthenticated !== true || (requirements.linked && auth?.isGuest === true)) {
+    const error: LooseRecord = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
+    if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
+    throw error;
+  }
+  if (!requirements.credentials.includes(credentialKind)) {
+    const error: LooseRecord = commandError(
+      "Forbidden.",
+      "The authenticated credential is not permitted for this operation.",
+      "FORBIDDEN",
+    );
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "credential");
+    if (credentialKind === "access-key" || requirements.credentials.includes("access-key")) {
+      error.sporadesAccessKeyFailure = "forbidden";
+    }
+    throw error;
+  }
+  if (
+    credentialKind === "access-key"
+    && !accessKeyGrantsSatisfyScopes(context.__sporadesAccessKeyGrants ?? [], requirements.scopes)
+  ) {
+    const error: LooseRecord = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+    error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
+    error.sporadesAccessKeyFailure = "forbidden";
+    throw error;
+  }
+}
+
+function endpointHasAuthorization(request: LooseRecord) {
+  if (Array.isArray(request?.rawHeaders)) {
+    return request.rawHeaders.some((value: unknown, index: number) => index % 2 === 0 && String(value).toLowerCase() === "authorization");
+  }
+  return request?.headers?.authorization !== undefined;
 }
 
 function runContextMiddleware(middlewareSource: any, context: any) {
@@ -3601,6 +3907,45 @@ type TrustedRefreshTransport = {
   disconnected(connectionId: string): void;
 };
 
+export async function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord, sessionToken?: string | null) {
+  const context = { kind: "message", auth, credential: { kind: "session" } };
+  bindAccessKeyOwnerSession(context, sessionToken);
+  const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
+  const operation = message.type.slice("accessKeys.".length);
+  try {
+    const data = operation === "list"
+      ? await accessKeys.list(message.options)
+      : operation === "issue"
+        ? await accessKeys.issue(message.input)
+        : operation === "rotate"
+          ? await accessKeys.rotate(message.accessKeyId, message.options)
+          : operation === "revoke"
+            ? await accessKeys.revoke(message.accessKeyId)
+            : await accessKeys.delete(message.accessKeyId);
+    return { data, error: null };
+  } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    const publicError = publicAccessKeyManagementError(error);
+    if (publicError) return { data: null, error: publicError };
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.management.failed",
+        level: "error",
+        message: "Access-key browser management failed internally.",
+        data: { operation: `accessKeys.${operation}`, outcome: "failed" },
+      });
+    } catch { }
+    return {
+      data: null,
+      error: {
+        message: "Could not manage Access keys.",
+        hint: "Retry the Access-key operation.",
+      },
+    };
+  }
+}
+
 export function createWebSocketHub(getDatabase: () => any, trustedRefresh: TrustedRefreshTransport | null = null) {
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
@@ -3905,6 +4250,17 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     client.session = resolvedSession;
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
+      return;
+    }
+
+    if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
+      const result = await runClientAccessKeyOperation(database, client.session.auth, message, client.session.token);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.error ? "error" : `${message.type}.result`,
+        data: result.data,
+        error: result.error,
+      });
       return;
     }
 
@@ -4417,7 +4773,9 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
+      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+        sessionToken: client.session.token,
+      });
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
         setTimeout(refreshQueries, 0);
@@ -4429,6 +4787,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       const messageName = message.message ?? message.name;
       const result = await runAppMessage(database, client.session.auth, messageName, message.data, {
         sendAppMessage,
+        sessionToken: client.session.token,
       });
       sendJson(client, {
         id: message.id ?? null,
@@ -4510,7 +4869,9 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result: any = await runQuery(database, client.session.auth, subscription.name, subscription.args);
+      const result: any = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+        sessionToken: client.session.token,
+      });
       const data =
         subscription.style === "direct"
           ? (result.data ?? result.rows)
@@ -4792,20 +5153,28 @@ function sendJsonWithCompletion(client: LooseRecord, message: LooseRecord, timeo
   });
 }
 
-export async function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs: unknown = []): Promise<any> {
+export async function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs: unknown = [], options: LooseRecord = {}): Promise<any> {
   let args;
   try {
     args = normalizeQueryArguments(rawArgs);
   } catch {
     return { rows: null, data: null, error: invalidQueryArgumentsError() };
   }
+  const customHandler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
+  const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
   try {
-    context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
+    context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+    if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
+    context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    }
     return {
       rows: null as any,
       error: {
+        ...(error?.code ? { code: error.code } : {}),
         message: error.message,
         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
       },
@@ -4817,7 +5186,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     return { data: context.env, error: null };
   }
 
-  const customResult = await runCustomQuery(database, context, queryName, args);
+  const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
   if (customResult) {
     return customResult;
   }
@@ -4851,17 +5220,14 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
 }
 
-async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[]) {
+async function runCustomQuery(database: LooseRecord, context: any, queryName: any, args: readonly unknown[], resolvedHandler: Function | null = null) {
   const handler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   if (!handler) {
     return null;
   }
 
   try {
-    const queryHandler =
-      typeof handler.handler === "function"
-        ? handler.handler
-        : new Function(`return (${handler.handlerSource});`)();
+    const queryHandler = resolvedHandler ?? materializeHandler(handler);
     const data = await queryHandler(context, ...args);
     assertJsonCompatible(data);
     return { data, error: null as any };
@@ -4942,7 +5308,7 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
   }
 }
 
-export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any) {
+export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
   const writeState = { didWrite: false };
@@ -4951,14 +5317,17 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
       try {
-        context = createMutationContext(transactionDatabase, auth);
+        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
+        const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
+        const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+        if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
         context = await applyContextMiddleware(transactionDatabase, context, "mutation");
 
         for (const hookSource of database.mutationHooks.beforeMutation) {
           await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
         }
 
-        result = await runCustomMutation(transactionDatabase, context, mutationName, args);
+        result = await runCustomMutation(transactionDatabase, context, mutationName, args, mutationHandler);
         if (!result) {
           result = mutationName.startsWith("update")
             ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
@@ -4982,6 +5351,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       }
     });
     commitPendingJobCancellationAborts(context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     if (writeState.didWrite) {
@@ -4991,6 +5361,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     return committed;
   } catch (error: any) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     database.rowCache.clear();
@@ -5005,16 +5376,13 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   }
 }
 
-async function runCustomMutation(database: LooseRecord, context: any, mutationName: any, args: any): Promise<any> {
+async function runCustomMutation(database: LooseRecord, context: any, mutationName: any, args: any, resolvedHandler: Function | null = null): Promise<any> {
   const handler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
   if (!handler) {
     return null;
   }
 
-  const mutationHandler =
-    typeof handler.handler === "function"
-      ? handler.handler
-      : new Function(`return (${handler.handlerSource});`)();
+  const mutationHandler = resolvedHandler ?? materializeHandler(handler);
   let result;
   try {
     result = await mutationHandler(context, ...args);
@@ -5066,14 +5434,15 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     if (data !== undefined) {
       assertJsonCompatible(data);
     }
-    const createHandler = new Function(`return (${handler.handlerSource});`);
+    const messageHandler = materializeHandler(handler);
+    admitCredentialHandler(messageHandler, { auth, credential: { kind: "session" } }, "message");
     const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage, options.sessionToken);
         context = await applyContextMiddleware(transactionDatabase, context, "message");
-        const result = await createHandler()(context, data);
+        const result = await messageHandler(context, data);
         if (result !== undefined) {
           assertJsonCompatible(result);
         }
@@ -5086,11 +5455,13 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       }
     });
     commitPendingJobCancellationAborts(context);
+    await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
     dropPendingJobCancellationAborts(context);
+    dropAccessKeyLifecycleAuditEvents(context);
     flushTeamSecurityEvents(database, context, { deniedOnly: true });
     dropPendingJobDispatch(context);
     if (error?.sporadesAuthDenialLogData) {
@@ -5129,8 +5500,8 @@ function isAllAppMessageScope(scope: any) {
   return scope === "all" || scope?.scope === "all";
 }
 
-function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any) {
-  const context = createMutationContext(database, auth);
+function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any, sessionToken?: string | null) {
+  const context = createMutationContext(database, auth, { sessionToken });
   context.messages = {
     send(appMessage: { type: any; scope: any; data: undefined; }) {
       validateAppMessageType(appMessage?.type);
@@ -5163,14 +5534,29 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: {
   }
 }
 
-function createMutationContext(database: LooseRecord, auth: any) {
+function createMutationContext(database: LooseRecord, auth: any, options: LooseRecord = {}) {
+  auth = protectContextIdentity(auth);
+  const credential = options.ordinaryCredential === false
+    ? null
+    : protectContextIdentity(options.credential ?? { kind: "session" });
   const context: LooseRecord = {
     auth,
+    ...(credential ? { credential } : {}),
     env: database.serverEnv,
     payments: database.paymentsConfig,
-    log: createEndpointLogger(database),
+    log: createEndpointLogger(database, credential ? {
+      attribution: {
+        actor: { userId: auth.userId },
+        credential: credential.kind === "access-key"
+          ? { kind: credential.kind, id: credential.id, name: credential.name }
+          : { kind: "session" },
+      },
+    } : {}),
     __pendingAclWrites: [],
   };
+  if (typeof options.sessionToken === "string") {
+    bindAccessKeyOwnerSession(context, options.sessionToken);
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -5183,6 +5569,7 @@ function createMutationContext(database: LooseRecord, auth: any) {
     },
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -5273,15 +5660,22 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (!jobRetryHorizonFits(firstAttemptInstant, retry, retry.maxAttempts, Boolean(scheduleProvenance && retry.maxAttempts === 1))) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
+      const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential
+        ? null
+        : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
+      const credentialJson = scheduleProvenance || !provenanceContext?.credential
+        ? null
+        : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
       // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
       // misreport handler work that is already durable.
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
-          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
           (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""),
-        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
@@ -5514,7 +5908,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
-          const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
+          const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx: any) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
@@ -5522,27 +5916,13 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             finally { database.__runtimeJobAttempts.delete(privilegedCtx); }
           });
         } else {
-          const user = await database.adapter.prepare(
-            sql(
-              "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] " +
-              "FROM [sporades_auth_users] WHERE [id] = ?",
-            ),
-          ).get(row.actorUserId);
+          const auth = readJobAuthSnapshot(row);
+          const credential = readJobCredentialProvenance(row);
           if (database.__jobStopped) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;
           }
-          if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
-          const auth = {
-            userId: user.id,
-            displayName: user.displayName,
-            email: user.email,
-            picture: user.picture,
-            isAuthenticated: Boolean(user.isAuthenticated),
-            isGuest: Boolean(user.isGuest),
-            provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
-          };
-          const context = createMutationContext(database, auth); context.signal = abortController.signal;
+          const context = createMutationContext(database, auth, { credential }); context.signal = abortController.signal;
           handlerStarted = true;
           database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
           try { result = await handler.handler(context, jobPayload); }

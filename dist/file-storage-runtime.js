@@ -828,8 +828,8 @@ export async function fileRowForOwner(database, fileId, ownerId) {
     }
     return await database.adapter.fileRowForOwner(reference, ownerId);
 }
-export async function fileRowForActor(database, auth, fileReference) {
-    const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+export async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+    const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
     return resolved.ok ? resolved.row : null;
 }
 export function fileMetadataFromRow(row) {
@@ -940,13 +940,13 @@ async function resolveLiveFileReference(database, ownerId, reference) {
     }
     return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
 }
-async function resolveAccessibleFileReference(database, auth, reference, operation) {
+async function resolveAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
     const resolved = await resolvePrivilegedLiveFileReference(database, reference);
     if (!resolved.ok || !resolved.row)
         return resolved;
     if (resolved.row.ownerId === auth?.userId)
         return resolved;
-    const allowed = await applyFileAcl(database, operation, resolved.row, auth);
+    const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
     return { ok: true, row: allowed ? resolved.row : null };
 }
 export async function resolvePrivilegedLiveFileReference(database, reference) {

@@ -88,6 +88,7 @@ import { isPromiseLike } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
+import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 // The privileged audit event's contract. All three were serialized into the generated bundle's
 // constant preamble until batch 7; they are declarations inside this module's carried text now, and
 // the preamble no longer writes them. They stay exported because the constant probe in
@@ -384,7 +385,7 @@ function privilegedAuditLevelForOutcome(outcome) {
     return "info";
 }
 export function safePrivilegedAuditErrorCode(value, outcome = "started") {
-    const source = value && typeof value === "object" && "code" in value ? value.code : value;
+    const source = value && typeof value === "object" ? ("code" in value ? value.code : null) : value;
     if (source === null || source === undefined || source === "") {
         if (outcome === "errored") {
             return "UNKNOWN_ERROR";
@@ -489,22 +490,26 @@ export function createTableAclContext(context, database) {
         acl: createAclHelpers(database, context),
     };
 }
-export function createFileAclContext(auth, database) {
+export function createFileAclContext(auth, database, credential = { kind: "session" }) {
     // A File request has no trusted Capsule handler context. Its policy gets the
     // same constrained, read-only ACL decisions as a table rule, but only the
     // authenticated actor: no db API, mutable Teams API, request, or privileged
     // capability can cross this boundary.
-    const context = { auth: Object.freeze({ ...auth }) };
+    const context = {
+        auth: Object.freeze({ ...auth }),
+        credential: Object.freeze({ ...credential }),
+    };
     return Object.freeze({
         auth: context.auth,
+        credential: context.credential,
         acl: createAclHelpers(database, context),
     });
 }
-export function applyFileAcl(database, operation, row, auth) {
+export function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
     const rule = database.fileAcl?.resolve?.(operation);
     if (!rule)
         return false;
-    const context = createFileAclContext(auth, database);
+    const context = createFileAclContext(auth, database, credential);
     const input = Object.freeze({
         ctx: context,
         operation,
@@ -871,6 +876,7 @@ function emitFileAclDeniedLog(database, { context, operation, row }) {
                 isAuthenticated: context?.auth?.isAuthenticated ?? null,
                 isGuest: context?.auth?.isGuest ?? null,
             },
+            ...accessKeyCredentialLogAttribution(context),
         },
     });
 }
@@ -891,6 +897,7 @@ function createAclDenialLogData({ context, table, operation, row = null, previou
             isAuthenticated: context?.auth?.isAuthenticated ?? null,
             isGuest: context?.auth?.isGuest ?? null,
         },
+        ...accessKeyCredentialLogAttribution(context),
         row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
     };
 }

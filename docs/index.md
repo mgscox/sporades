@@ -20,6 +20,8 @@ features:
     details: Run the same normalized release in Dev sessions, local Container sessions, and on Host servers.
   - title: Agent Operable
     details: Use deterministic commands, structured JSON, actionable errors, and explicit inspection surfaces.
+  - title: Scoped Automation
+    details: Give automation a named, user-owned Access key without inventing a Bot login or a second authorization model.
 ---
 
 ## Start here

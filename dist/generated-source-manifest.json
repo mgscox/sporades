@@ -9,11 +9,15 @@
       "scripts/generated-source-manifest.mjs",
       "scripts/write-cli-version.mjs",
       "scripts/write-generated-source-manifest.mjs",
+      "src/access-key-contract.ts",
+      "src/access-keys-runtime.ts",
       "src/acl-runtime.ts",
+      "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
       "src/bundle-pipeline.ts",
       "src/capsule-services.ts",
+      "src/cli/access-key-operator-envelope.ts",
       "src/cli/cli-help.ts",
       "src/cli/cli-support.ts",
       "src/cli/cli-version.ts",
@@ -77,16 +81,28 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "63b43c54f3b9b1d9eda3190c15e3fa0edcd35dd7035bffc7f47e78633f792e1e"
+    "digest": "3ec0ec1b546c7b0e8c29ccd1cbc6136861e36e2e200badf05a5048c1dad706b6"
   },
   "outputs": {
     "files": [
       "bin/sporades-host-helper.js",
       "bin/sporades.js",
+      "dist/access-key-contract.d.ts",
+      "dist/access-key-contract.d.ts.map",
+      "dist/access-key-contract.js",
+      "dist/access-key-contract.js.map",
+      "dist/access-keys-runtime.d.ts",
+      "dist/access-keys-runtime.d.ts.map",
+      "dist/access-keys-runtime.js",
+      "dist/access-keys-runtime.js.map",
       "dist/acl-runtime.d.ts",
       "dist/acl-runtime.d.ts.map",
       "dist/acl-runtime.js",
       "dist/acl-runtime.js.map",
+      "dist/auth-admission.d.ts",
+      "dist/auth-admission.d.ts.map",
+      "dist/auth-admission.js",
+      "dist/auth-admission.js.map",
       "dist/auth-runtime.d.ts",
       "dist/auth-runtime.d.ts.map",
       "dist/auth-runtime.js",
@@ -103,6 +119,10 @@
       "dist/capsule-services.d.ts.map",
       "dist/capsule-services.js",
       "dist/capsule-services.js.map",
+      "dist/cli/access-key-operator-envelope.d.ts",
+      "dist/cli/access-key-operator-envelope.d.ts.map",
+      "dist/cli/access-key-operator-envelope.js",
+      "dist/cli/access-key-operator-envelope.js.map",
       "dist/cli/cli-help.d.ts",
       "dist/cli/cli-help.d.ts.map",
       "dist/cli/cli-help.js",
@@ -332,6 +352,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "aec3e572ab40b4624a0c031c6b8df764631b8ee50af74c9a4f45864bcb71721c"
+    "digest": "8b56dbc7422d79d771c74eb1c4ebd5ab98d0a8beb613eb3d7079a52f6d911ad0"
   }
 }

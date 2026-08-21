@@ -92,6 +92,8 @@ import { chainMaybePromise } from "./maybe-promise.js";
 import {
   normalizeOrigin, readLimitedRequestBody, singleHttpHeader, writeEndpointError,
 } from "./http-runtime.js";
+import { decorateRequireAuth, normalizeRequireUserAuthOptions } from "./auth-admission.js";
+import { accessKeyCredentialLogAttribution, createAccessKeyTables, emitAccessKeyOwnerTransitionAudits, runAccessKeyOwnerSecurityTransition } from "./access-keys-runtime.js";
 
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/auth-runtime.js` loaded as an ES module, and the esbuild IIFE
@@ -188,13 +190,24 @@ export function readEndpointSessionToken(headers: { [x: string]: any; }, query: 
   return headers["x-sporades-session-token"] ?? null;
 }
 
-export function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
-  const linked = options?.linked === true;
+export function requireUserAuth(context: LooseRecord, options: LooseRecord = {}) {
+  const linked = normalizeRequireUserAuthOptions(options).linked;
   const auth = context?.auth;
   if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
     return auth;
   }
   throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
+}
+
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
+export function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
+  if (typeof context === "function") {
+    return decorateRequireAuth({}, context);
+  }
+  if (typeof options === "function") {
+    return decorateRequireAuth(context, options);
+  }
+  return requireUserAuth(context, options);
 }
 
 function createUnauthenticatedError(logData: any = null) {
@@ -205,7 +218,7 @@ function createUnauthenticatedError(logData: any = null) {
   return error;
 }
 
-function createAuthDenialLogData(context: LooseRecord, requirement: string) {
+export function createAuthDenialLogData(context: LooseRecord, requirement: string) {
   return {
     requirement,
     handler: {
@@ -217,6 +230,7 @@ function createAuthDenialLogData(context: LooseRecord, requirement: string) {
       isAuthenticated: context?.auth?.isAuthenticated ?? null,
       isGuest: context?.auth?.isGuest ?? null,
     },
+    ...accessKeyCredentialLogAttribution(context),
   };
 }
 
@@ -2198,7 +2212,7 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
   // credential write. A second contender can have passed the preflight before
   // the first transaction commits, so its deletion result decides whether it
   // may continue.
-  return await database.adapter.withTransaction(async (tx: LooseRecord) => {
+  const outcome = await database.adapter.withTransaction(async (tx: LooseRecord) => {
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -2214,8 +2228,69 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
     // Evicting every Session for the account is the point of the reset: an
     // attacker holding a live Session must not outlive the password change.
     await tx.deleteAuthSessionsForUser(row.userId);
-    return { ok: true };
+    const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
+      ownerUserId: row.userId,
+      revocationTime: () => database.clock.now().toISOString(),
+      revocationCause: "password-reset",
+    });
+    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
   });
+  if (!outcome.ok) return outcome;
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: "auth.confirmPasswordReset",
+    ownerUserId: outcome.ownerUserId,
+    actor: { kind: "password-reset-code" },
+    revocationCause: "password-reset",
+    records: outcome.revokedAccessKeys.records,
+  });
+  return { ok: true };
+}
+
+export async function unlinkCurrentAuthUser(database: LooseRecord, context: LooseRecord) {
+  const auth = requireOwnerSecuritySessionContext(context);
+  return runAccessKeyOwnerSecurityTransition(database, {
+    operation: "auth.unlinkCurrentUser",
+    ownerUserId: auth.userId,
+    actor: { userId: auth.userId },
+    credential: { kind: "session" },
+    revocationCause: "owner-unlinked",
+  }, async (tx: LooseRecord) => {
+    await tx.deletePasswordResetCodesForUser(auth.userId);
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(auth.userId);
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(auth.userId);
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_auth_users] SET [email] = NULL, [isAuthenticated] = ?, [isGuest] = ?, [provider] = ? WHERE [id] = ?",
+    )).run(0, 1, "guest", auth.userId);
+  });
+}
+
+export async function deleteCurrentAuthUser(database: LooseRecord, context: LooseRecord) {
+  const auth = requireOwnerSecuritySessionContext(context);
+  return runAccessKeyOwnerSecurityTransition(database, {
+    operation: "auth.deleteCurrentUser",
+    ownerUserId: auth.userId,
+    actor: { userId: auth.userId },
+    credential: { kind: "session" },
+    revocationCause: "owner-deleted",
+  }, async (tx: LooseRecord) => {
+    await tx.deletePasswordResetCodesForUser(auth.userId);
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(auth.userId);
+    await tx.deleteAuthSessionsForUser(auth.userId);
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(auth.userId);
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_auth_users] WHERE [id] = ?")).run(auth.userId);
+  });
+}
+
+function requireOwnerSecuritySessionContext(context: LooseRecord) {
+  const auth = requireUserAuth(context, { linked: true });
+  if (!["query", "mutation", "endpoint", "message"].includes(context?.kind) || context?.credential?.kind !== "session") {
+    throw commandError(
+      "Owner security changes require a linked Session.",
+      "Sign in interactively and retry the owner operation.",
+      "FORBIDDEN",
+    );
+  }
+  return auth;
 }
 
 export function passwordResetMailBody(link: string) {
@@ -3288,7 +3363,7 @@ export function resolvePasswordResetConfig(config: LooseRecord) {
 // transaction and fail everything after it. The Postgres dialect asks the engine not to raise the
 // error at all, but storage bootstrap still runs before the migration transaction opens; it has to
 // stay there.
-export function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
+export function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig: LooseRecord | null = null) {
   const sql = sqlite.dialect.sql;
   return chainMaybePromise([
     () =>
@@ -3306,6 +3381,7 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: Loose
           ")",
         ),
       ),
+    () => createAccessKeyTables(sqlite),
     () =>
       sqlite.exec(
         sql(
@@ -3321,35 +3397,31 @@ export function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: Loose
     () => ensureSessionLifecycleColumns(sqlite),
     () => ensureSessionProvenanceColumn(sqlite),
     () => createProviderIdentityTables(sqlite),
-    ...(authConfig?.providers?.email?.enabled
-      ? [
-        () =>
-          sqlite.exec(
-            sql(
-              "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
-              "[email] TEXT PRIMARY KEY, " +
-              "[userId] TEXT NOT NULL, " +
-              "[passwordHash] TEXT NOT NULL, " +
-              "[passwordSalt] TEXT NOT NULL, " +
-              "[createdAt] TEXT NOT NULL" +
-              ")",
-            ),
-          ),
-        () =>
-          sqlite.exec(
-            sql(
-              "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] (" +
-              "[selector] TEXT PRIMARY KEY, " +
-              "[verifierHash] TEXT NOT NULL, " +
-              "[email] TEXT NOT NULL, " +
-              "[userId] TEXT NOT NULL, " +
-              "[createdAt] TEXT NOT NULL, " +
-              "[expiresAt] TEXT NOT NULL" +
-              ")",
-            ),
-          ),
-      ]
-      : []),
+    () =>
+      sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_email_credentials] (" +
+          "[email] TEXT PRIMARY KEY, " +
+          "[userId] TEXT NOT NULL, " +
+          "[passwordHash] TEXT NOT NULL, " +
+          "[passwordSalt] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL" +
+          ")",
+        ),
+      ),
+    () =>
+      sqlite.exec(
+        sql(
+          "CREATE TABLE IF NOT EXISTS [sporades_auth_password_reset_codes] (" +
+          "[selector] TEXT PRIMARY KEY, " +
+          "[verifierHash] TEXT NOT NULL, " +
+          "[email] TEXT NOT NULL, " +
+          "[userId] TEXT NOT NULL, " +
+          "[createdAt] TEXT NOT NULL, " +
+          "[expiresAt] TEXT NOT NULL" +
+          ")",
+        ),
+      ),
     () =>
       sqlite.exec(
         sql(

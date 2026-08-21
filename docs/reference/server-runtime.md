@@ -265,42 +265,167 @@ error-on-conflict behavior.
 
 ### Gate Handlers With requireAuth
 
-`requireAuth` is the canonical way to gate a handler on authentication. Call it
-at the top of any query, mutation, endpoint, or app message handler instead of
-hand-writing `ctx.auth` checks:
+Use declarative `requireAuth(handler)` when a query, mutation, Custom endpoint,
+or App message must reject an Anonymous Session before Capsule middleware or
+handler work begins. Use `requireUserAuth(ctx)` for a synchronous check at a
+specific point inside already-admitted work:
 
 ```ts
-import { capsule, endpoint, mutation, query, requireAuth } from "sporades/server";
+import { capsule, endpoint, mutation, query, requireAuth, requireUserAuth } from "sporades/server";
 
 export default capsule({
+  accessKeys: {
+    scopes: ["projects:read", "projects:delete"],
+  },
   queries: {
-    myProjects: query((ctx) => {
-      const auth = requireAuth(ctx);
+    myProjects: query(requireAuth({ scopes: ["projects:read"] }, (ctx) => {
+      const auth = requireUserAuth(ctx);
       return ctx.db.projects.where("ownerId", auth.userId).all();
-    }),
+    })),
   },
   mutations: {
-    deleteAccountData: mutation((ctx) => {
+    deleteAccountData: mutation(requireAuth({
+      linked: true,
+      credentials: ["session"],
+      scopes: ["projects:delete"],
+    }, (ctx) => {
       // Reject guest sessions too: require a linked (non-guest) user.
-      const auth = requireAuth(ctx, { linked: true });
+      const auth = requireUserAuth(ctx, { linked: true });
       ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
         ctx.db.projects.delete(project.id);
       });
-    }),
+    })),
   },
   endpoints: {
-    profile: endpoint({ method: "GET", path: "/profile" }, (ctx) => ({
+    profile: endpoint({ method: "GET", path: "/profile" }, requireAuth((ctx) => ({
       status: 200,
-      body: requireAuth(ctx),
-    })),
+      body: { auth: ctx.auth, credential: ctx.credential },
+    }))),
   },
 });
 ```
 
-On success `requireAuth(ctx)` returns the session's `AuthContext`, so `userId`
-and profile fields are available without re-reading `ctx.auth`. On failure it
-throws a structured auth error that reaches the client through the normal
-handler error pipeline with the stable `UNAUTHENTICATED` code:
+Omitting `credentials` admits any supported credential kind; omitting `scopes`
+requires no scope. Credential lists are OR requirements and scope lists are AND
+requirements. A permitted Session satisfies declared scope requirements. A
+guarded Custom endpoint also accepts a scoped Access key through
+`Authorization: Bearer spk_1_<selector>_<verifier>` when `"access-key"` is an
+allowed credential kind. Queries, mutations, App messages, and unwrapped
+Custom endpoints retain their existing Session behavior; an unwrapped endpoint
+owns its own `Authorization` schemes and Sporades does not interpret them.
+
+Declare the Capsule's concrete, case-sensitive scope vocabulary once in
+`capsule({ accessKeys: { scopes } })`. Declarations cannot contain `*`. A guard
+may require only declared concrete scopes. Invalid, duplicate, wildcard, or
+undeclared values fail Capsule registration rather than weakening admission.
+
+Ordinary user contexts expose immutable identity and provenance separately.
+For interactive work `ctx.credential` is `{ kind: "session" }`. An admitted
+Access key receives the current owning user's `ctx.auth` with provider
+`"access-key"` and `{ kind: "access-key", id, name }` provenance. Middleware,
+table ACL, Team policy, and Capsule code therefore authorize the real owner and
+can separately attribute the named API access. They may inspect these values
+but cannot replace or mutate them.
+
+### Manage Access keys
+
+A linked, non-guest Session manages only its own keys through `ctx.accessKeys`:
+
+```ts
+mutations: {
+  issueAutomationKey: mutation((ctx) => ctx.accessKeys.issue({
+    name: "invoice-importer",
+    grants: ["projects:read"],
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  })),
+  revokeAutomationKey: mutation((ctx, id: string) => ctx.accessKeys.revoke(id)),
+  rotateAutomationKey: mutation((ctx, id: string, lifecycleRevision: number) =>
+    ctx.accessKeys.rotate(id, { lifecycleRevision })),
+  deleteAutomationKeyHistory: mutation((ctx, id: string) => ctx.accessKeys.delete(id)),
+},
+queries: {
+  myAutomationKeys: query((ctx) => ctx.accessKeys.list({ status: "active" })),
+},
+```
+
+`issue()` returns the complete token once. Persist it in the caller's secret
+store immediately; Sporades stores only an indexed selector and verifier
+digest. Later `list()` and `revoke()` results contain safe metadata, never the
+token. Names are unique among an owner's current keys. Owner, name, grants, and
+optional expiry are immutable; omitted grants default to `*`, meaning any
+scope declared by this Capsule. Grant wildcards are matched at request time, so
+`projects:*` satisfies both `projects:read` and `projects:delete`.
+
+`rotate()` compare-and-swaps the listed `lifecycleRevision`, preserves the
+key's ID, owner, name, grants, and expiry, and returns a replacement token once.
+The previous token stops authenticating after rotation commits. Refresh the
+list and rotate again if an issue or rotation response is lost; Sporades never
+stores plaintext for replay. Revocation is irreversible and idempotent. Only a
+revoked historical key may be deleted; active and expired keys continue to
+reserve their names until revoked.
+
+Password-reset confirmation retires every current key for that owner in the
+same Auth transaction that changes the password and revokes Sessions. Ordinary
+password changes do not retire keys. Losing linked status or deleting the
+owner retires every current key in the same owner-security transaction with a
+distinct cause, and a later relink cannot revive a retired credential.
+
+Access keys cannot manage Access keys. Neither can Anonymous or guest Sessions,
+Jobs, Schedules, or lifecycle hooks. A key authenticates its linked owner; it is
+not a synthetic user and grants never add authority the owner lacks.
+
+An explicit `ctx.privileged.run(...)` callback receives a separate
+`ctx.accessKeys` projection with only `list(ownerUserId, options?)`,
+`inspect(keyId)`, `revoke(keyId)`, `revokeAll(ownerUserId)`, and
+`delete(keyId)`. Its summaries add only `ownerUserId`; they never expose owner
+profile data or bearer credential material. It has no issue or rotation method.
+The Privileged projection cannot issue, rotate, or receive bearer tokens.
+Every projection call emits its own runtime-owned terminal Privileged audit
+with the exact action and runtime-resolved owner/key target, in addition to the
+surrounding run boundary. Capsule-supplied operation metadata cannot replace
+that action audit.
+
+Operators use the same projection through a running Capsule:
+
+```text
+sporades access-keys list --user-id <user-id> --session dev
+sporades access-keys inspect <key-id> --session container
+sporades access-keys revoke <key-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys revoke-all --user-id <user-id> --session hosted --host <alias> --subname <name> --yes
+sporades access-keys delete <key-id> --session dev --yes
+```
+
+Dev, Container, and Hosted commands all invoke the generated Bundle action;
+the CLI and Host helper do not open Auth tables or duplicate lifecycle SQL.
+Action inputs and responses use per-action allowlisted schemas, bind returned
+owner/key IDs to the request, and reject unknown fields. Execution source comes
+from the running Capsule's trusted runtime session, not from action input.
+Stopped Capsules are rejected. List and inspect need no confirmation. Revoke
+and delete prompt unless `--yes` is present; bulk revocation requires the exact
+owner ID at the prompt or `--yes`. `--json` never implies consent.
+
+Bearer parsing is strict and applies only to guarded Custom endpoints. Invalid,
+malformed, expired, revoked, dual Session-plus-Bearer, or owner-ineligible
+credentials fail as opaque HTTP `401` responses without fallback. A valid key
+with a disallowed credential kind or insufficient scope fails as opaque `403`.
+Access-key failures carry a Bearer challenge where applicable and `no-store`;
+successful key-authenticated responses default to `private, no-store`.
+Credential lookup and scope admission finish before Capsule work opens its
+database transaction. The admitted Auth and Credential snapshot then remains
+stable for that work. Approximate `lastUsedAt` telemetry is attempted outside
+the work transaction at most once per key per runtime process per hour, and a
+telemetry failure cannot fail admitted Capsule work.
+
+Runtime denial/failure events and `ctx.log` entries produced after successful
+Access-key admission carry reserved actor and Credential attribution. Capsule
+log data cannot replace the admitted key ID or name. Lifecycle audit events
+record the operation, execution source, outcome, stable owner/key IDs, and
+issuance grants without recording token material.
+
+On success `requireUserAuth(ctx)` returns the context's `AuthContext`, so
+`userId` and profile fields remain available without copying `ctx.auth`. On
+failure it throws a structured auth error with the stable `UNAUTHENTICATED`
+code:
 
 ```json
 { "ok": false, "error": { "code": "UNAUTHENTICATED", "message": "Unauthenticated.", "hint": "Sign in and retry the request." } }
@@ -309,8 +434,10 @@ handler error pipeline with the stable `UNAUTHENTICATED` code:
 Custom endpoints reply with HTTP `401` and the same structured error body.
 Clients can route users to sign-in on the `UNAUTHENTICATED` code alone.
 
-`requireAuth(ctx, { linked: true })` additionally requires a linked, non-guest
-user, so Anonymous-session guests cannot perform account-level actions.
+`requireUserAuth(ctx, { linked: true })` additionally requires a linked,
+non-guest user. The older inline spelling `requireAuth(ctx, { linked: true })`
+remains indefinitely compatible, but is deprecated by name so it is not
+confused with declarative credential admission.
 
 The public denial text stays opaque about server internals. Each denial also
 emits a structured `auth.denied` platform log entry with diagnostic context
@@ -615,9 +742,12 @@ is the live Sporades session behind the request or App message, including
 Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
 file ownership, and authorization checks.
 
-The Job Queue uses a captured user identity for background work that should stay
-accountable to the user who authorized it after the original request ends. That
-is different from system-owned work.
+The Job Queue uses the bounded Auth and Credential snapshot captured when
+enqueue commits for background work that should stay accountable to the user
+and named access method that authorized it after the original request ends.
+Retries and child Jobs preserve that historical attribution even after key or
+owner lifecycle changes; current ACL and Team state still decides resource
+authority. That is different from system-owned work.
 
 Use the Privileged server role only for trusted userless work that must run
 inside the Capsule without pretending to be a Sporades user:

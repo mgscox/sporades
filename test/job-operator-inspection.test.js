@@ -21,6 +21,7 @@ test("operator Job inspection returns one deterministic bounded snapshot", async
     assert.deepEqual(jobs.map((job) => job.id), ["b", "a"]);
     assert.deepEqual(Object.keys(jobs[0]), ["id", "handler", "status", "enqueuedBy", "actor", "attempts", "retry", "idempotencyKeyPresent", "availableAt", "createdAt", "startedAt", "completedAt", "failedAt", "cancelRequestedAt", "leaseExpiresAt", "attemptHistory", "result", "failure"]);
     assert.deepEqual(jobs[0].actor, { mode: "privileged-server-role" });
+    assert.deepEqual(jobs[0].enqueuedBy, { mode: "user", userId: "u2", credential: { kind: "session" } });
     assert.equal("payload" in jobs[1], false);
     assert.equal("idempotencyKey" in jobs[1], false);
     assert.equal(jobs[1].idempotencyKeyPresent, true);

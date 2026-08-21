@@ -222,3 +222,13 @@ test("the recording adapter counts a direct call and not a method's internal ste
   assert.equal(recording.inner(), 1);
   assert.deepEqual([...called].sort(), ["inner", "outer"]);
 });
+
+test("the recording adapter counts lifecycle methods called through a transaction adapter", async () => {
+  const called = new Set();
+  const transactionAdapter = { rotateAccessKeyRecord() { return { status: "rotated" }; } };
+  const adapter = { async withTransaction(operation) { return operation(transactionAdapter); } };
+  const recording = recordDirectAdapterCalls(adapter, called);
+
+  assert.deepEqual(await recording.withTransaction((tx) => tx.rotateAccessKeyRecord()), { status: "rotated" });
+  assert.deepEqual([...called].sort(), ["rotateAccessKeyRecord", "withTransaction"]);
+});

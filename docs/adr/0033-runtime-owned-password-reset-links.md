@@ -2,7 +2,8 @@
 
 Sporades owns the password reset token lifecycle in the server runtime and
 leaves every user-visible surface to the Capsule. The runtime generates,
-stores, verifies, and consumes Reset codes and revokes Sessions; the Capsule
+stores, verifies, and consumes Reset codes and revokes Sessions and current
+Access keys; the Capsule
 owns the reset page, its route, its styling, and the email copy. Capsule code
 never chooses the entropy source, the stored representation, the expiry, or the
 comparison, and the browser never receives anything but an opaque Reset code it
@@ -126,10 +127,11 @@ cannon against the Capsule's SMTP reputation.
 ## Confirmation is an Auth transaction
 
 Spending the Reset code, writing the new password hash and salt, deleting the
-user's other outstanding Reset codes, and deleting every `sporades_auth_sessions`
-row for that Sporades user happen in one Auth transaction. A failure leaves the
-code unspent and the old password and Sessions intact; success evicts every
-existing Session, including an attacker's, which is the point of the reset.
+user's other outstanding Reset codes, deleting every `sporades_auth_sessions`
+row, and retiring every current Access key for that Sporades user happen in one
+Auth transaction. A failure leaves the code unspent and the old password,
+Sessions, and Access keys intact; success evicts every existing Session,
+including an attacker's, and retires every current Access key.
 
 The browser that completed the reset is not signed in as a side effect. It
 keeps its Anonymous session and the Capsule sends the user through the normal

@@ -186,6 +186,14 @@ export const auth = {
   },
 };
 
+export const accessKeys = {
+  list(options = {}) { return connect().accessKeysList(options); },
+  issue(input) { return connect().accessKeysIssue(input); },
+  rotate(id, options) { return connect().accessKeysRotate(id, options); },
+  revoke(id) { return connect().accessKeysRevoke(id); },
+  delete(id) { return connect().accessKeysDelete(id); },
+};
+
 export const files = {
   upload(fileOrFiles, options = {}) {
     return connect().upload(fileOrFiles, options);
@@ -720,8 +728,9 @@ function createConnection() {
     if (typeof connectionToken === "string" && connectionToken.length > 0) {
       url.searchParams.set("connectionToken", connectionToken);
     }
-    socket = new WebSocket(url);
-    socket.addEventListener("open", () => {
+    const openedSocket = new WebSocket(url);
+    socket = openedSocket;
+    openedSocket.addEventListener("open", () => {
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
       if (journeyConsentOptions) {
@@ -739,7 +748,7 @@ function createConnection() {
         });
       }
     });
-    socket.addEventListener("message", (event) => {
+    openedSocket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
         const refreshSequence = message.data.sequence;
@@ -787,20 +796,35 @@ function createConnection() {
         return;
       }
       if (pending.has(message.id)) {
-        pending.get(message.id)(message);
+        pending.get(message.id).resolve(message);
         pending.delete(message.id);
       }
     });
-    socket.addEventListener("close", () => {
+    openedSocket.addEventListener("close", () => {
       stopJourneyCapture();
-      if (!pageRetired) setTimeout(open, 500);
+      for (const [id, entry] of pending) {
+        if (entry.socket !== openedSocket) continue;
+        entry.resolve({
+          id,
+          type: "error",
+          data: null,
+          error: {
+            code: "TRANSPORT_CLOSED",
+            message: "The Sporades connection closed before the operation completed.",
+            hint: "Reconnect and inspect current state before retrying a one-time operation.",
+          },
+        });
+        pending.delete(id);
+      }
+      if (!pageRetired) setTimeout(() => { if (!pageRetired) open(); }, 500);
     });
-    return socket;
+    return openedSocket;
   }
 
-  function send(message) {
+  function send(message, onSocket = null) {
     const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
+    onSocket?.(activeSocket);
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
@@ -832,8 +856,9 @@ function createConnection() {
   function request(type, fields = {}) {
     const id = nextId++;
     return new Promise((resolve) => {
-      pending.set(id, resolve);
-      send({ id, type, ...fields });
+      const entry = { resolve, socket: null };
+      pending.set(id, entry);
+      send({ id, type, ...fields }, (activeSocket) => { entry.socket = activeSocket; });
     });
   }
 
@@ -888,6 +913,10 @@ function createConnection() {
       } : null,
       error: message.error ?? null,
     };
+  }
+
+  function publicResult(message) {
+    return { data: message.data ?? null, error: message.error ?? null };
   }
 
   function notifyAuthStateListeners(message) {
@@ -1121,6 +1150,11 @@ function createConnection() {
     confirmPasswordReset(code, newPassword) {
       return request("auth.confirmPasswordReset", { code, newPassword });
     },
+    accessKeysList(options) { return request("accessKeys.list", { options }).then(publicResult); },
+    accessKeysIssue(input) { return request("accessKeys.issue", { input }).then(publicResult); },
+    accessKeysRotate(id, options) { return request("accessKeys.rotate", { accessKeyId: id, options }).then(publicResult); },
+    accessKeysRevoke(id) { return request("accessKeys.revoke", { accessKeyId: id }).then(publicResult); },
+    accessKeysDelete(id) { return request("accessKeys.delete", { accessKeyId: id }).then(publicResult); },
     subscribeNormalizedQuery(name, listener, args) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
       if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");

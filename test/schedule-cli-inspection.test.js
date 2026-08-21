@@ -8,12 +8,38 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { sanitizeScheduleInspectionEnvelope } from "../dist/cli/schedule-inspection-envelope.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "sporades.js");
 const run = (cwd) => spawnSync(process.execPath, [cli, "schedules"], { cwd, encoding: "utf8" });
 const runCommand = (args, cwd, env = {}) => spawnSync(process.execPath, [cli, ...args], { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
 const remoteEnvelope = { ok: true, data: { capsule: { name: "scheduled" }, schedules: [{ name: "daily", expression: "0 9 * * *", timezone: "UTC", missedRun: "skip", enabled: true, nextOccurrence: "2030-01-02T09:00:00.000Z", latestOccurrence: null }] }, error: null };
+
+test("Schedule inspection diagnostics remain bounded and idempotent", () => {
+  const sanitize = (error) => sanitizeScheduleInspectionEnvelope({ ok: false, data: null, error }, () => { throw new Error("invalid"); });
+  const canonical = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "daily", field: "nextOccurrence" });
+  assert.deepEqual(sanitize(canonical.error), canonical);
+  const longName = `Schedule_${"x".repeat(129)}`;
+  const longNameDiagnostic = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: longName, field: "nextOccurrence" });
+  assert.equal(longNameDiagnostic.error.diagnostics.scheduleName, longName);
+  const tokenShapedName = `spk_1_${"a".repeat(22)}_${"b".repeat(43)}`;
+  const tokenShapedDiagnostic = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: tokenShapedName, field: "nextOccurrence" });
+  assert.equal(tokenShapedDiagnostic.error.diagnostics.scheduleName, tokenShapedName);
+
+  const hugeName = `Schedule_${"x".repeat(100_000)}`;
+  const summarized = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: hugeName, field: "nextOccurrence" });
+  assert.deepEqual(sanitize(summarized.error), summarized);
+  assert.equal(summarized.error.diagnostics.scheduleName, undefined);
+  assert.equal(summarized.error.diagnostics.scheduleNamePrefix, hugeName.slice(0, 128));
+  assert.match(summarized.error.diagnostics.scheduleNameSha256, /^[a-f0-9]{64}$/);
+  assert.equal(summarized.error.diagnostics.scheduleNameBytes, Buffer.byteLength(hugeName, "utf8"));
+  assert.ok(JSON.stringify(summarized).length < 640);
+
+  const invalidField = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "daily", field: "secretField" });
+  assert.equal(invalidField.error.diagnostics, undefined);
+  assert.ok(JSON.stringify(invalidField).length < 256);
+});
 
 async function project(name = "scheduled") {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedules-cli-"));

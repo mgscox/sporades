@@ -1,0 +1,924 @@
+import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
+import {
+  ACCESS_KEY_CLIENT_ADDRESS_HEADER,
+  ACCESS_KEY_GRANT_BYTE_LIMIT,
+  ACCESS_KEY_GRANT_LIMIT,
+  ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT,
+} from "./access-key-contract.js";
+import { chainMaybePromise } from "./maybe-promise.js";
+import { commandError } from "./runtime-errors.js";
+
+type LooseRecord = Record<string, any>;
+
+const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
+const accessKeyLifecycleAuditEventsByContext = new WeakMap<object, LooseRecord[]>();
+const accessKeySecretDisclosedContexts = new WeakSet<object>();
+const accessKeyOwnerSessionTokens = new WeakMap<object, string>();
+const activePrivilegedAccessKeyContexts = new WeakSet<object>();
+
+function accessKeyCrypto() {
+  return process.getBuiltinModule("node:crypto");
+}
+
+export const ACCESS_KEY_CURRENT_LIMIT = 100;
+export const ACCESS_KEY_RETAINED_LIMIT = 1000;
+export { ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT } from "./access-key-contract.js";
+const PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = new Set([
+  "UNAUTHENTICATED", "FORBIDDEN", "ACCESS_KEY_DELETE_REQUIRES_REVOKED", "ACCESS_KEY_LIMIT_REACHED",
+  "ACCESS_KEY_NAME_CONFLICT", "ACCESS_KEY_NOT_ACTIVE", "ACCESS_KEY_NOT_FOUND", "ACCESS_KEY_REVISION_CONFLICT",
+  "ACCESS_KEY_SECRET_CONFLICT", "INVALID_ACCESS_KEY_EXPIRY", "INVALID_ACCESS_KEY_GRANTS",
+  "INVALID_ACCESS_KEY_LIST_OPTIONS", "INVALID_ACCESS_KEY_NAME",
+]);
+
+export function publicAccessKeyManagementError(error: LooseRecord) {
+  if (!PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES.has(error?.code)) return null;
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.hint ? { hint: error.hint } : {}),
+  };
+}
+
+export function createAccessKeyTables(adapter: LooseRecord) {
+  const sql = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_keys] (" +
+      "[id] TEXT PRIMARY KEY, " +
+      "[ownerUserId] TEXT NOT NULL, " +
+      "[name] TEXT NOT NULL, " +
+      "[reservedName] TEXT, " +
+      "[grantsJson] TEXT NOT NULL, " +
+      "[secretVersion] INTEGER NOT NULL, " +
+      "[selector] TEXT, " +
+      "[verifierDigest] TEXT, " +
+      "[lifecycleRevision] INTEGER NOT NULL, " +
+      "[createdAt] TEXT NOT NULL, " +
+      "[expiresAt] TEXT, " +
+      "[rotatedAt] TEXT, " +
+      "[revokedAt] TEXT, " +
+      "[revocationCause] TEXT, " +
+      "[lastUsedAt] TEXT" +
+      ")",
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_secret] " +
+      "ON [sporades_auth_access_keys] ([secretVersion], [selector])",
+    )),
+    () => adapter.exec(sql(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_auth_access_keys_current_name] " +
+      "ON [sporades_auth_access_keys] ([ownerUserId], [reservedName])",
+    )),
+    () => adapter.exec(sql(
+      "CREATE INDEX IF NOT EXISTS [sporades_auth_access_keys_owner_listing] " +
+      "ON [sporades_auth_access_keys] ([ownerUserId], [createdAt], [id])",
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_owners] (" +
+      "[ownerUserId] TEXT PRIMARY KEY, " +
+      "[currentCount] INTEGER NOT NULL, " +
+      "[totalCount] INTEGER NOT NULL, " +
+      "[operationRevision] INTEGER NOT NULL" +
+      ")",
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_auth_access_key_locks] (" +
+      "[name] TEXT PRIMARY KEY, [operationRevision] INTEGER NOT NULL" +
+      ")",
+    )),
+    () => adapter.prepare(sql(
+      "INSERT INTO [sporades_auth_access_key_locks] ([name], [operationRevision]) VALUES (?, ?) " +
+      "ON CONFLICT ([name]) DO NOTHING",
+    )).run("selector", 0),
+  ]);
+}
+
+export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+  return {
+    async issue(input: unknown) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyIssue(input, database.accessKeyScopes ?? [], database.clock.now());
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        let issuedAt = normalized.createdAt;
+        const record = {
+          id: accessKeyCrypto().randomUUID(),
+          ownerUserId: context.auth.userId,
+          name: normalized.name,
+          reservedName: normalized.name,
+          grantsJson: JSON.stringify(normalized.grants),
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          lifecycleRevision: 1,
+          createdAt: normalized.createdAt,
+          expiresAt: normalized.expiresAt,
+          issuanceTime: () => {
+            issuedAt = database.clock.now().toISOString();
+            return issuedAt;
+          },
+          ...(accessKeyOwnerSessionTokens.has(context)
+            ? {
+              sessionToken: accessKeyOwnerSessionTokens.get(context),
+              sessionValidationTime: () => database.clock.now().toISOString(),
+            }
+            : {}),
+        };
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status !== "issued") throwAccessKeyIssueError(outcome.status);
+        record.createdAt = issuedAt;
+        const accessKey = accessKeySummary(record, database.accessKeyScopes ?? [], issuedAt);
+        accessKeySecretDisclosedContexts.add(context);
+        await emitOwnerAccessKeyAudit(database, "access-key.issued", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError(
+        "Could not generate a unique Access key.",
+        "Retry Access-key issuance.",
+        "ACCESS_KEY_SECRET_CONFLICT",
+      );
+    },
+    async list(options: unknown = {}) {
+      const context = requireOwnerSessionContext(contextGetter());
+      const normalized = normalizeAccessKeyListOptions(options);
+      const rows = await withAccessKeyTransaction(database, (adapter) => adapter.listAccessKeyRecordsForOwner(
+        context.auth.userId,
+        {
+          sessionToken: accessKeyOwnerSessionTokens.get(context),
+          sessionValidationTime: () => database.clock.now().toISOString(),
+        },
+      ));
+      if (!Array.isArray(rows) && rows?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("listing");
+      return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+    },
+    async revoke(id: unknown) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const outcome = await withAccessKeyTransaction(database, (adapter) =>
+        adapter.revokeAccessKeyRecord({
+          ownerUserId: context.auth.userId,
+          id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "owner",
+          sessionToken: accessKeyOwnerSessionTokens.get(context),
+          sessionValidationTime: () => database.clock.now().toISOString(),
+        }));
+      if (outcome?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("revoking");
+      if (!outcome) throw accessKeyNotFoundError();
+      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt);
+      await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
+      return { accessKey };
+    },
+    async rotate(id: unknown, options: unknown) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      if (!isPlainObject(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
+        throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
+      }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const secret = createAccessKeySecret();
+        const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
+          ownerUserId: context.auth.userId,
+          id,
+          lifecycleRevision: options.lifecycleRevision,
+          secretVersion: 1,
+          selector: secret.selector,
+          verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
+          rotationTime: () => database.clock.now().toISOString(),
+          ...(accessKeyOwnerSessionTokens.has(context)
+            ? {
+              sessionToken: accessKeyOwnerSessionTokens.get(context),
+              sessionValidationTime: () => database.clock.now().toISOString(),
+            }
+            : {}),
+        }));
+        if (outcome.status === "selector-conflict") continue;
+        if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("rotating");
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
+        if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
+        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt);
+        accessKeySecretDisclosedContexts.add(context);
+        await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
+        return { accessKey, token: secret.token };
+      }
+      throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
+    },
+    async delete(id: unknown) {
+      const context = requireOwnerSessionContext(contextGetter());
+      if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+        ownerUserId: context.auth.userId,
+        id,
+        sessionToken: accessKeyOwnerSessionTokens.get(context),
+        sessionValidationTime: () => database.clock.now().toISOString(),
+      }));
+      if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("deleting");
+      if (outcome.status === "not-found") throw accessKeyNotFoundError();
+      if (outcome.status === "requires-revoked") {
+        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+      }
+      await emitOwnerAccessKeyAudit(database, "access-key.deleted", context, { id, name: outcome.record.name, grants: [] });
+      return { id, deleted: true };
+    },
+  };
+}
+
+export function createPrivilegedAccessKeysApi(
+  database: LooseRecord,
+  contextGetter: () => LooseRecord,
+  transactionDatabaseFactory?: (adapter: LooseRecord) => LooseRecord,
+) {
+  const requireContext = () => {
+    const current = contextGetter();
+    if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
+      throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
+    }
+    return current;
+  };
+  const requireId = (value: unknown) => {
+    requireContext();
+    if (typeof value !== "string" || !value || Buffer.byteLength(value, "utf8") > 256) throw accessKeyNotFoundError();
+    return value;
+  };
+  return {
+    async list(ownerUserId: unknown, options: unknown = {}) {
+      const owner = requireId(ownerUserId);
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.list", { ownerUserId: owner }, async (operationDatabase) => {
+        const normalized = normalizeAccessKeyListOptions(options);
+        const rows = await operationDatabase.adapter.listAccessKeyRecordsForOwner(owner);
+        const page = accessKeyListPage(rows, operationDatabase.accessKeyScopes ?? [], operationDatabase.clock.now(), normalized);
+        requireContext();
+        return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
+      });
+    },
+    async inspect(id: unknown) {
+      const context = requireContext();
+      requireId(id);
+      const target: LooseRecord = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", target, async (operationDatabase) => {
+        const row = await operationDatabase.adapter.findAccessKeyRecordById(id);
+        if (row?.ownerUserId) target.ownerUserId = row.ownerUserId;
+        requireContext();
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, operationDatabase.accessKeyScopes ?? [], operationDatabase.clock.now().toISOString()) };
+      });
+    },
+    async revoke(id: unknown) {
+      const context = requireContext();
+      requireId(id);
+      const target: LooseRecord = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", target, async (operationDatabase) => {
+        const existing = await operationDatabase.adapter.findAccessKeyRecordById(id);
+        if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
+        requireContext();
+        if (!existing) throw accessKeyNotFoundError();
+        const row = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
+          requireContext();
+          const result = await adapter.revokeAccessKeyRecord({
+            ownerUserId: existing.ownerUserId,
+            id,
+            revocationTime: () => operationDatabase.clock.now().toISOString(),
+            revocationCause: "operator",
+          });
+          requireContext();
+          return result;
+        });
+        if (!row) throw accessKeyNotFoundError();
+        return { accessKey: privilegedAccessKeySummary(row, operationDatabase.accessKeyScopes ?? [], row.revokedAt) };
+      }, { atomicWrite: true, transactionDatabaseFactory });
+    },
+    async revokeAll(ownerUserId: unknown) {
+      const owner = requireId(ownerUserId);
+      const context = requireContext();
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async (operationDatabase) => {
+        const outcome = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
+          requireContext();
+          const result = await adapter.bulkRevokeAccessKeysForOwner({
+            ownerUserId: owner,
+            revocationTime: () => operationDatabase.clock.now().toISOString(),
+            revocationCause: "operator",
+          });
+          requireContext();
+          return result;
+        });
+        return {
+          ownerUserId: owner,
+          revokedCount: outcome.revokedCount,
+          accessKeys: outcome.records.map((row: LooseRecord) => privilegedAccessKeySummary({
+            ...row,
+            revokedAt: outcome.revokedAt,
+            revocationCause: "operator",
+            lifecycleRevision: Number(row.lifecycleRevision) + 1,
+          }, operationDatabase.accessKeyScopes ?? [], outcome.revokedAt)),
+        };
+      }, { atomicWrite: true, transactionDatabaseFactory });
+    },
+    async delete(id: unknown) {
+      const context = requireContext();
+      requireId(id);
+      const target: LooseRecord = { accessKeyId: id };
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", target, async (operationDatabase) => {
+        const existing = await operationDatabase.adapter.findAccessKeyRecordById(id);
+        if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
+        requireContext();
+        if (!existing) throw accessKeyNotFoundError();
+        const outcome = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
+          requireContext();
+          const result = await adapter.deleteRevokedAccessKeyRecord({ ownerUserId: existing.ownerUserId, id });
+          requireContext();
+          return result;
+        });
+        if (outcome.status === "not-found") throw accessKeyNotFoundError();
+        if (outcome.status === "requires-revoked") {
+          throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+        }
+        return { id, ownerUserId: existing.ownerUserId, deleted: true };
+      }, { atomicWrite: true, transactionDatabaseFactory });
+    },
+  };
+}
+
+export function grantPrivilegedAccessKeyAccess(context: LooseRecord) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.add(context);
+}
+
+export function revokePrivilegedAccessKeyAccess(context: LooseRecord) {
+  if (context && typeof context === "object") activePrivilegedAccessKeyContexts.delete(context);
+}
+
+async function runPrivilegedAccessKeyOperation<Result>(
+  database: LooseRecord,
+  context: LooseRecord,
+  operation: string,
+  target: LooseRecord,
+  callback: (operationDatabase: LooseRecord) => Promise<Result>,
+  options: {
+    atomicWrite?: boolean;
+    transactionDatabaseFactory?: (adapter: LooseRecord) => LooseRecord;
+  } = {},
+): Promise<Result> {
+  const details = () => ({
+    actorKind: "privileged-server-role",
+    operation,
+    surface: context.__accessKeyOperatorExecutionSource ?? context.kind ?? "server-handler",
+    targetResourceKind: "access-key",
+    source: "runtime",
+    metadata: { ...target, actionOwned: true },
+  });
+  const outerMetadata = (database.__rootDatabase ?? database).__privilegedAuditMetadataByContext?.get(context);
+  const execute = async (operationDatabase: LooseRecord, auditErrorsInTransaction = true) => {
+    let result: Result;
+    try {
+      result = await callback(operationDatabase);
+    } catch (error: any) {
+      if (outerMetadata) Object.assign(outerMetadata, target);
+      if (!auditErrorsInTransaction) throw error;
+      const explicitCode = privilegedAccessKeySafeErrorCode(error);
+      const event = await operationDatabase.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
+      recordPrivilegedAccessKeyAuditForRollback(operationDatabase, context, event);
+      throw error;
+    }
+    if (outerMetadata) Object.assign(outerMetadata, target);
+    const event = await operationDatabase.audit.emit({ ...details(), outcome: "completed" });
+    recordPrivilegedAccessKeyAuditForRollback(operationDatabase, context, event);
+    return result;
+  };
+  if (!options.atomicWrite || database.__transactionActive) return execute(database);
+  if (typeof options.transactionDatabaseFactory !== "function") {
+    throw new Error("Privileged Access-key writes require a runtime transaction database factory.");
+  }
+  try {
+    return await database.adapter.withTransaction((adapter: LooseRecord) =>
+      execute(options.transactionDatabaseFactory!(adapter), false));
+  } catch (error: any) {
+    if (outerMetadata) Object.assign(outerMetadata, target);
+    const event = await database.audit.emit({
+      ...details(), outcome: "errored", safeErrorCode: privilegedAccessKeySafeErrorCode(error),
+    });
+    recordPrivilegedAccessKeyAuditForRollback(database, context, event);
+    throw error;
+  }
+}
+
+function privilegedAccessKeySafeErrorCode(error: any) {
+  return typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
+}
+
+function recordPrivilegedAccessKeyAuditForRollback(database: LooseRecord, context: LooseRecord, event: LooseRecord) {
+  if (!database.__transactionActive || event?.category !== "audit" || !String(event.event ?? "").startsWith("privileged.")) return;
+  const transactionContext = context.__jobParentContext ?? context;
+  if (!Array.isArray(transactionContext.__privilegedAuditEvents)) {
+    Object.defineProperty(transactionContext, "__privilegedAuditEvents", { value: [], enumerable: false, configurable: true });
+  }
+  transactionContext.__privilegedAuditEvents.push(event);
+}
+
+export function readAccessKeyAuthorization(request: LooseRecord) {
+  const values: string[] = [];
+  if (Array.isArray(request?.rawHeaders)) {
+    for (let index = 0; index < request.rawHeaders.length; index += 2) {
+      if (String(request.rawHeaders[index]).toLowerCase() === "authorization") {
+        values.push(String(request.rawHeaders[index + 1] ?? ""));
+      }
+    }
+  } else {
+    const value = request?.headers?.authorization;
+    if (Array.isArray(value)) values.push(...value.map(String));
+    else if (value !== undefined) values.push(String(value));
+  }
+  if (values.length === 0) return null;
+  if (values.length !== 1) throw accessKeyAuthenticationError("malformed");
+  const value = values[0];
+  if (/[,\u0000-\u001f\u007f]/.test(value)) throw accessKeyAuthenticationError("malformed");
+  const matched = value.match(/^Bearer (spk_1_([A-Za-z0-9_-]{22})_([A-Za-z0-9_-]{43}))$/i);
+  if (!matched || !matched[1].startsWith("spk_1_")) throw accessKeyAuthenticationError("malformed");
+  return { token: matched[1], selector: matched[2], verifier: matched[3] };
+}
+
+export async function resolveAccessKeyCredential(database: LooseRecord, request: LooseRecord, sessionToken: unknown) {
+  const source = accessKeySourceBucket(database, request);
+  assertAccessKeyFailureLimit(database, "source", source, 30, 60_000);
+  let parsed;
+  try {
+    parsed = readAccessKeyAuthorization(request);
+  } catch (error) {
+    recordAccessKeyFailure(database, "source", source, 60_000);
+    throw error;
+  }
+  if (!parsed) return null;
+  if (sessionToken !== null && sessionToken !== undefined) {
+    recordAccessKeyFailure(database, "source", source, 60_000);
+    throw accessKeyAuthenticationError("dual");
+  }
+  const selectorFingerprint = accessKeySelectorFingerprint(parsed.selector);
+  assertAccessKeyFailureLimit(database, "selector", selectorFingerprint, 10, 5 * 60_000);
+  const row = await database.adapter.findAccessKeyAuthenticationRecord(parsed.selector);
+  const candidateDigest = Buffer.from(accessKeyVerifierDigest(parsed.selector, parsed.verifier), "hex");
+  let storedDigest = UNKNOWN_ACCESS_KEY_DIGEST;
+  if (typeof row?.verifierDigest === "string" && /^[a-f0-9]{64}$/i.test(row.verifierDigest)) {
+    storedDigest = Buffer.from(row.verifierDigest, "hex");
+  }
+  const verified = accessKeyCrypto().timingSafeEqual(candidateDigest, storedDigest);
+  const now = database.clock.now();
+  let failure: string | null = null;
+  if (!verified || !row) failure = "invalid";
+  else if (row.revokedAt) failure = "revoked";
+  else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
+  else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
+  if (failure) {
+    recordAccessKeyFailure(database, "source", source, 60_000);
+    recordAccessKeyFailure(database, "selector", selectorFingerprint, 5 * 60_000);
+    throw accessKeyAuthenticationError(failure);
+  }
+  clearAccessKeyFailure(database, "selector", selectorFingerprint);
+  return {
+    auth: protectAccessKeyValue({
+      userId: row.ownerUserId,
+      displayName: row.ownerDisplayName,
+      email: row.ownerEmail ?? null,
+      picture: row.ownerPicture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "access-key",
+    }),
+    credential: protectAccessKeyValue({ kind: "access-key", id: row.id, name: row.name }),
+    grants: JSON.parse(row.grantsJson),
+    record: row,
+    admittedAt: now.toISOString(),
+  };
+}
+
+export function accessKeyAuthenticationError(reason: string, limited = false) {
+  const error: LooseRecord = commandError(
+    limited ? "Too many authentication attempts." : "Unauthenticated.",
+    limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
+    limited ? "RATE_LIMITED" : "UNAUTHENTICATED",
+  );
+  error.sporadesAccessKeyFailure = limited ? "limited" : "invalid";
+  error.sporadesAccessKeyReason = reason;
+  return error;
+}
+
+export function emitAccessKeyAdmittedAudit(database: LooseRecord, context: LooseRecord, record: LooseRecord) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "access-key.admitted",
+    level: "info",
+    message: "Access key admitted for its owner.",
+    data: {
+      actor: { userId: context.auth.userId },
+      credential: { kind: "access-key", id: context.credential.id, name: context.credential.name },
+      accessKey: { id: record.id, name: record.name },
+      handler: { kind: context.kind, path: context.request?.path ?? null },
+    },
+  });
+}
+
+export function accessKeyCredentialLogAttribution(context: LooseRecord | null | undefined) {
+  if (context?.credential?.kind !== "access-key") return {};
+  return {
+    credential: {
+      kind: "access-key",
+      id: context.credential.id,
+      name: context.credential.name,
+    },
+  };
+}
+
+export async function recordAccessKeyUsage(database: LooseRecord, admission: LooseRecord) {
+  const root = database.__rootDatabase ?? database;
+  const touches: Map<string, number> = root.__accessKeyUsageTouches ??= new Map();
+  const admittedAtMs = Date.parse(admission.admittedAt);
+  const previous = touches.get(admission.record.id);
+  if (previous !== undefined && admittedAtMs - previous < 60 * 60_000) return;
+  touches.delete(admission.record.id);
+  touches.set(admission.record.id, admittedAtMs);
+  for (const [id, touchedAt] of touches) {
+    if (admittedAtMs - touchedAt >= 60 * 60_000 || touches.size > 10_000) touches.delete(id);
+    else break;
+  }
+  try {
+    const coalesceBefore = new Date(admittedAtMs - 60 * 60_000).toISOString();
+    await database.adapter.touchAccessKeyLastUsed(admission.record.id, admission.admittedAt, coalesceBefore);
+  } catch { }
+}
+
+export function createAccessKeySecret() {
+  const selector = accessKeyCrypto().randomBytes(16).toString("base64url");
+  const verifier = accessKeyCrypto().randomBytes(32).toString("base64url");
+  return { selector, verifier, token: `spk_1_${selector}_${verifier}` };
+}
+
+export function accessKeyVerifierDigest(selector: string, verifier: string) {
+  return accessKeyCrypto().createHash("sha256")
+    .update("sporades-access-key-v1\0", "utf8")
+    .update(Buffer.from(selector, "base64url"))
+    .update(Buffer.from(verifier, "base64url"))
+    .digest("hex");
+}
+
+function requireOwnerSessionContext(context: LooseRecord) {
+  if (
+    !["query", "mutation", "endpoint", "message"].includes(context?.kind)
+    || context?.credential?.kind !== "session"
+    || !accessKeyOwnerSessionTokens.has(context)
+    || context?.auth?.isAuthenticated !== true
+    || context?.auth?.isGuest === true
+  ) {
+    throw commandError(
+      "Access-key owner approval requires a linked Session.",
+      "Sign in interactively and retry the Access-key operation.",
+      context?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED",
+    );
+  }
+  return context;
+}
+
+function normalizeAccessKeyIssue(input: unknown, declaredScopes: readonly string[], now: Date) {
+  if (!isPlainObject(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
+    throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const name = typeof input.name === "string" ? input.name.trim() : "";
+  if (!name || Array.from(name).length > 128) {
+    throw commandError("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
+  }
+  const grants = normalizeAccessKeyGrants(input.grants, declaredScopes);
+  let expiresAt: string | null = null;
+  if (input.expiresAt !== undefined && input.expiresAt !== null) {
+    const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= now.getTime()) {
+      throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+    }
+    expiresAt = new Date(parsed).toISOString();
+  }
+  return { name, grants, expiresAt, createdAt: now.toISOString() };
+}
+
+function normalizeAccessKeyGrants(value: unknown, declaredScopes: readonly string[]) {
+  const grants = value === undefined ? ["*"] : value;
+  if (!Array.isArray(grants) || grants.length === 0 || grants.length > ACCESS_KEY_GRANT_LIMIT) {
+    throw invalidAccessKeyGrantsError();
+  }
+  const result: string[] = [];
+  for (const grant of grants) {
+    if (
+      typeof grant !== "string"
+      || !grant
+      || Buffer.byteLength(grant, "utf8") > ACCESS_KEY_GRANT_BYTE_LIMIT
+      || result.includes(grant)
+      || (grant !== "*" && !declaredScopes.some((scope) => scopeGrantMatches(grant, scope)))
+    ) {
+      throw invalidAccessKeyGrantsError();
+    }
+    result.push(grant);
+  }
+  result.sort();
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT) throw invalidAccessKeyGrantsError();
+  return result;
+}
+
+function normalizeAccessKeyListOptions(value: unknown) {
+  if (!isPlainObject(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
+    throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  const limit = value.limit === undefined ? 50 : value.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw commandError("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  if (value.status !== undefined && !["active", "expired", "revoked"].includes(value.status)) {
+    throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+  }
+  let cursor: LooseRecord | null = null;
+  if (value.cursor !== undefined) {
+    try {
+      cursor = JSON.parse(Buffer.from(value.cursor, "base64url").toString("utf8"));
+    } catch {
+      cursor = null;
+    }
+    if (!isPlainObject(cursor) || typeof cursor.createdAt !== "string" || typeof cursor.id !== "string") {
+      throw commandError("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    }
+  }
+  return { cursor, limit, status: value.status ?? null };
+}
+
+function accessKeyListPage(rows: LooseRecord[], declaredScopes: readonly string[], now: Date, options: LooseRecord) {
+  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
+  if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
+  const totalCount = summaries.length;
+  if (options.cursor) {
+    summaries = summaries.filter((summary) =>
+      summary.createdAt < options.cursor.createdAt
+      || (summary.createdAt === options.cursor.createdAt && summary.id < options.cursor.id));
+  }
+  const page = summaries.slice(0, options.limit);
+  const next = summaries.length > options.limit ? page.at(-1) : null;
+  return {
+    accessKeys: page,
+    declaredScopes: [...declaredScopes].sort(),
+    nextCursor: next ? Buffer.from(JSON.stringify({ createdAt: next.createdAt, id: next.id }), "utf8").toString("base64url") : null,
+    totalCount,
+  };
+}
+
+function accessKeySummary(row: LooseRecord, declaredScopes: readonly string[], now: string) {
+  const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
+  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
+  return {
+    id: row.id,
+    name: row.name,
+    grants: [...grants],
+    effectiveScopes: [...declaredScopes].filter((scope) => accessKeyGrantsSatisfyScopes(grants, [scope])).sort(),
+    status,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt ?? null,
+    rotatedAt: row.rotatedAt ?? null,
+    revokedAt: row.revokedAt ?? null,
+    revocationCause: row.revocationCause ?? null,
+    lastUsedAt: row.lastUsedAt ?? null,
+    lifecycleRevision: Number(row.lifecycleRevision),
+  };
+}
+
+function privilegedAccessKeySummary(row: LooseRecord, declaredScopes: readonly string[], now: string) {
+  return { ...accessKeySummary(row, declaredScopes, now), ownerUserId: row.ownerUserId };
+}
+
+function withAccessKeyTransaction(database: LooseRecord, operation: (adapter: LooseRecord) => any) {
+  return database.__transactionActive
+    ? operation(database.adapter)
+    : database.adapter.withTransaction(operation);
+}
+
+async function emitOwnerAccessKeyAudit(database: LooseRecord, event: string, context: LooseRecord, accessKey: LooseRecord) {
+  const issued = event === "access-key.issued";
+  const rotated = event === "access-key.rotated";
+  const deleted = event === "access-key.deleted";
+  const input = {
+    category: "platform",
+    event,
+    level: "info",
+    message: issued ? "Access key issued by its owner." : rotated ? "Access key rotated by its owner." : deleted ? "Access-key history deleted by its owner." : "Access key revoked by its owner.",
+    data: {
+      operation: issued ? "accessKeys.issue" : rotated ? "accessKeys.rotate" : deleted ? "accessKeys.delete" : "accessKeys.revoke",
+      executionSource: "server-context",
+      outcome: "succeeded",
+      actor: { userId: context.auth.userId },
+      credential: { kind: "session" },
+      accessKey: {
+        id: accessKey.id,
+        ...(accessKey.name ? { name: accessKey.name } : {}),
+        ...(issued || rotated ? { grants: [...accessKey.grants] } : {}),
+      },
+    },
+  };
+  if (database.__transactionActive) {
+    const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
+    if (events.length === 0) accessKeyLifecycleAuditEventsByContext.set(context, events);
+    events.push(input);
+    return;
+  }
+  try {
+    await database.log?.emit?.(input);
+  } catch { }
+}
+
+export async function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined) {
+  if (!context) return;
+  const events = accessKeyLifecycleAuditEventsByContext.get(context);
+  if (!Array.isArray(events) || !context) return;
+  accessKeyLifecycleAuditEventsByContext.delete(context);
+  for (const event of events) {
+    try {
+      await database.log?.emit?.(event);
+    } catch { }
+  }
+}
+
+export function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined) {
+  if (context) accessKeyLifecycleAuditEventsByContext.delete(context);
+}
+
+export function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord) {
+  const events = accessKeyLifecycleAuditEventsByContext.get(previousContext);
+  if (events) {
+    accessKeyLifecycleAuditEventsByContext.delete(previousContext);
+    accessKeyLifecycleAuditEventsByContext.set(nextContext, events);
+  }
+  if (accessKeySecretDisclosedContexts.has(previousContext)) {
+    accessKeySecretDisclosedContexts.delete(previousContext);
+    accessKeySecretDisclosedContexts.add(nextContext);
+  }
+  const sessionToken = accessKeyOwnerSessionTokens.get(previousContext);
+  if (sessionToken) {
+    accessKeyOwnerSessionTokens.delete(previousContext);
+    accessKeyOwnerSessionTokens.set(nextContext, sessionToken);
+  }
+}
+
+export function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown) {
+  if (context && typeof context === "object" && typeof sessionToken === "string") {
+    accessKeyOwnerSessionTokens.set(context, sessionToken);
+  }
+}
+
+export function accessKeySecretWasDisclosed(context: LooseRecord | undefined) {
+  return Boolean(context && accessKeySecretDisclosedContexts.has(context));
+}
+
+export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord) {
+  for (const record of input.records ?? []) {
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "access-key.revoked",
+        level: "info",
+        message: "Access key retired by an owner security transition.",
+        data: {
+          operation: input.operation,
+          executionSource: "auth-runtime",
+          outcome: "succeeded",
+          actor: input.actor,
+          target: { ownerUserId: input.ownerUserId },
+          ...(input.credential ? { credential: input.credential } : {}),
+          accessKey: { id: record.id, name: record.name },
+          revocationCause: input.revocationCause,
+        },
+      });
+    } catch { }
+  }
+}
+
+export async function runAccessKeyOwnerSecurityTransition(
+  database: LooseRecord,
+  input: LooseRecord,
+  transition: (adapter: LooseRecord) => any,
+) {
+  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted") {
+    throw new TypeError("An owner security transition requires owner-unlinked or owner-deleted.");
+  }
+  const outcome = await database.adapter.withTransaction(async (adapter: LooseRecord) => {
+    const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
+      ownerUserId: input.ownerUserId,
+      revocationTime: () => database.clock.now().toISOString(),
+      revocationCause: input.revocationCause,
+    });
+    const result = await transition(adapter);
+    return { result, revokedAccessKeys };
+  });
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: input.operation,
+    ownerUserId: input.ownerUserId,
+    actor: input.actor,
+    credential: input.credential,
+    revocationCause: input.revocationCause,
+    records: outcome.revokedAccessKeys.records,
+  });
+  return outcome.result;
+}
+
+function protectAccessKeyValue(value: LooseRecord) {
+  const target = Object.freeze({ ...value });
+  const tampered = () => { throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT"); };
+  return new Proxy(target, { set: tampered, defineProperty: tampered, deleteProperty: tampered, setPrototypeOf: tampered });
+}
+
+function accessKeySelectorFingerprint(selector: string) {
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
+}
+
+function accessKeySourceBucket(database: LooseRecord, request: LooseRecord) {
+  const forwarded = database.securitySession === "hosted"
+    ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER]
+    : null;
+  const trustedClientAddress = typeof forwarded === "string"
+    && forwarded.length > 0
+    && Buffer.byteLength(forwarded, "utf8") <= 128
+    && !/[,\s\u0000-\u001f\u007f]/.test(forwarded)
+    ? forwarded
+    : null;
+  return accessKeyCrypto().createHash("sha256")
+    .update("sporades-access-key-source-limit\0")
+    .update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown"))
+    .digest("hex");
+}
+
+function accessKeyLimiter(database: LooseRecord, kind: string) {
+  const root = database.__rootDatabase ?? database;
+  root.__accessKeyFailureLimiters ??= { source: new Map(), selector: new Map() };
+  return root.__accessKeyFailureLimiters[kind];
+}
+
+function assertAccessKeyFailureLimit(database: LooseRecord, kind: string, key: string, limit: number, windowMs: number) {
+  const state = accessKeyLimiter(database, kind).get(key);
+  const now = database.clock.now().getTime();
+  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+}
+
+function recordAccessKeyFailure(database: LooseRecord, kind: string, key: string, windowMs: number) {
+  const limiter = accessKeyLimiter(database, kind);
+  const now = database.clock.now().getTime();
+  const previous = limiter.get(key);
+  const state = !previous || now - previous.startedAt >= windowMs
+    ? { count: 1, startedAt: now, lastSeenAt: now }
+    : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
+  limiter.delete(key);
+  limiter.set(key, state);
+  for (const [candidate, candidateState] of limiter) {
+    if (now - candidateState.lastSeenAt > 15 * 60_000 || limiter.size > 10_000) limiter.delete(candidate);
+    else break;
+  }
+}
+
+function clearAccessKeyFailure(database: LooseRecord, kind: string, key: string) {
+  accessKeyLimiter(database, kind).delete(key);
+}
+
+function throwAccessKeyIssueError(status: string): never {
+  if (status === "invalid-expiry") {
+    throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+  }
+  if (status === "session-ineligible") {
+    throw commandError(
+      "Access-key owner Session is no longer active.",
+      "Sign in again before issuing an Access key.",
+      "UNAUTHENTICATED",
+    );
+  }
+  if (status === "owner-ineligible") {
+    throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
+  }
+  if (status === "name-conflict") {
+    throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
+  }
+  throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+}
+
+function throwAccessKeyOwnerSessionInactive(action: string): never {
+  throw commandError(
+    "Access-key owner Session is no longer active.",
+    `Sign in again before ${action} Access keys.`,
+    "UNAUTHENTICATED",
+  );
+}
+
+function accessKeyNotFoundError() {
+  return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
+}
+
+function invalidAccessKeyGrantsError() {
+  return commandError(
+    "Invalid Access-key grants.",
+    "Use 1 through 128 unique grant expressions that match the Capsule's declared scopes.",
+    "INVALID_ACCESS_KEY_GRANTS",
+  );
+}
+
+function isPlainObject(value: unknown): value is LooseRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}

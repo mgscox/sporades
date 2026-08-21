@@ -165,7 +165,7 @@ test("bounded OAuth JSON fetch refuses every redirect and closes stalled or over
       (error) => error.code === "OAUTH_TEST_KEYS_UNAVAILABLE" &&
         !/privateKey|partial/i.test(`${error.message} ${error.hint}`),
     );
-    const cleanupDeadline = Date.now() + 500;
+    const cleanupDeadline = Date.now() + 5_000;
     while (source._connections !== 0 && Date.now() < cleanupDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }

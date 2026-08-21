@@ -28,6 +28,7 @@ import {
   inspectRuntimeSchedules,
   openDevDatabase,
   prepareHttpSecurity,
+  runRuntimeAccessKeyOperatorAction,
   routeEndpoint,
   routeRuntimeHealth,
   routeSporadesAuth,
@@ -36,6 +37,8 @@ import {
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
+import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
+import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import {
   sporadesCapsuleModuleUrl,
@@ -52,6 +55,16 @@ export { sporadesConfig, sporadesServerEnv, sporadesSealedServerEnv, sporadesSer
 
 const sporadesActionIndex = process.argv.indexOf("--sporades-action");
 const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
+const sporadesActionInputIndex = process.argv.indexOf("--sporades-action-input");
+let sporadesActionInput: any = {};
+if (sporadesActionInputIndex >= 0) {
+  try {
+    const encoded = process.argv[sporadesActionInputIndex + 1] ?? "";
+    if (Buffer.byteLength(encoded, "utf8") > 24 * 1024) throw new Error("oversized");
+    sporadesActionInput = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  }
+  catch { sporadesActionInput = null; }
+}
 // Loaded through a variable rather than a literal so esbuild leaves the import for the runtime to
 // perform. Resolving it at build time would both inline the Capsule into the graph and evaluate it
 // on the one-shot action path, which ADR-0028 requires stay unevaluated.
@@ -68,19 +81,50 @@ const runtimeConfig = {
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
 if (sporadesAction) {
-  if (!["jobs.inspect", "schedules.inspect"].includes(sporadesAction)) {
+  // The action protocol owns stdout as one JSON envelope. Container runtimes normally mirror
+  // structured logs to stdout, but action-owned audits still persist to the JSONL/index sinks and
+  // must not corrupt the CLI/Host-helper response frame.
+  process.env.SPORADES_LOG_STDOUT = "0";
+  const accessKeyActions: readonly string[] = ACCESS_KEY_OPERATOR_ACTIONS;
+  if (!["jobs.inspect", "schedules.inspect", ...accessKeyActions].includes(sporadesAction)) {
     process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
     process.exit(1);
   }
-  const adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+  if (accessKeyActions.includes(sporadesAction)) {
+    sporadesActionInput = validateAccessKeyOperatorActionInput(sporadesAction, sporadesActionInput, () => {
+      process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: "INVALID_ACCESS_KEY_ACTION_INPUT", message: "Invalid Access-key operator action input.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
+      process.exit(1);
+      throw new Error("unreachable");
+    });
+  }
+  const adapter = accessKeyActions.includes(sporadesAction) ? null : await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+  let actionDatabase: any = null;
   try {
-    const items = adapter ? await (sporadesAction === "jobs.inspect" ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
-    const key = sporadesAction === "jobs.inspect" ? "jobs" : "schedules";
-    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\n");
+    if (accessKeyActions.includes(sporadesAction)) {
+      actionDatabase = await openDevDatabase(databasePath, "", runtimeServerEnv, runtimeConfig, {
+        accessKeys: { scopes: sporadesConfig.accessKeys?.scopes ?? [] },
+      }, { serviceEnv: runtimeServiceEnv, runtimeActionOnly: true });
+      const session = runtimeConfig.__sporadesSession;
+      const executionSource = session === "hosted" ? "operator-cli-hosted" : session === "container" ? "operator-cli-container" : session === "dev" || session === "public-dev" ? "operator-cli-dev" : "runtime-action";
+      const result = await runRuntimeAccessKeyOperatorAction(actionDatabase, sporadesAction, sporadesActionInput, executionSource);
+      process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, ...result }, error: null }) + "\n");
+    } else {
+      const items = adapter ? await (sporadesAction === "jobs.inspect" ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
+      const key = sporadesAction === "jobs.inspect" ? "jobs" : "schedules";
+      process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\n");
+    }
   } catch (error: any) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? (sporadesAction === "jobs.inspect" ? "JOB_INSPECTION_FAILED" : "SCHEDULE_INSPECTION_FAILED"), message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) } }) + "\n");
+    const fallbackCode = sporadesAction === "jobs.inspect" ? "JOB_INSPECTION_FAILED" : sporadesAction === "schedules.inspect" ? "SCHEDULE_INSPECTION_FAILED" : "ACCESS_KEY_ACTION_FAILED";
+    const accessKeyError = accessKeyActions.includes(sporadesAction) ? publicAccessKeyManagementError(error) : null;
+    const publicError = accessKeyActions.includes(sporadesAction)
+      ? accessKeyError ?? { code: fallbackCode, message: "Access-key operator action failed.", hint: "Check the Privileged audit events and retry the operation." }
+      : { code: error.code ?? fallbackCode, message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) };
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: publicError }) + "\n");
     process.exitCode = 1;
-  } finally { await adapter?.close(); }
+  } finally {
+    if (actionDatabase) await shutdownAndCloseDatabase(actionDatabase).catch(() => {});
+    await adapter?.close();
+  }
   process.exit();
 }
 const database: any = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {

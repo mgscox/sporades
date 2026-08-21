@@ -159,6 +159,11 @@ test("concurrent reset confirmations spend a Reset code once before changing the
       sessionRevocations += 1;
       return { changes: 2 };
     },
+    async bulkRevokeAccessKeysForOwner(input) {
+      assert.equal(input.ownerUserId, row.userId);
+      assert.equal(input.revocationCause, "password-reset");
+      return { revokedCount: 0 };
+    },
     async withTransaction(run) {
       activeTransactions += 1;
       try {
@@ -225,6 +230,9 @@ test("a stale Reset code cannot consume a newly issued sibling", async () => {
       sessionRevocations += 1;
       return { changes: 1 };
     },
+    async bulkRevokeAccessKeysForOwner() {
+      throw new Error("stale contender must not revoke Access keys");
+    },
     async withTransaction(run) {
       return await run(adapter);
     },
@@ -256,6 +264,19 @@ test("confirming a reset revokes every existing Session for that account", async
       password: "original-password",
     });
     assert.equal(attacker.ok, true, attacker.error?.message);
+    assert.deepEqual(await database.adapter.withTransaction((tx) => tx.issueAccessKeyRecord({
+      id: "password-reset-access-key",
+      ownerUserId: registered.auth.userId,
+      name: "reset-retired-key",
+      reservedName: "reset-retired-key",
+      grantsJson: JSON.stringify(["*"]),
+      secretVersion: 1,
+      selector: "resetselector0000000000",
+      verifierDigest: "ab".repeat(32),
+      lifecycleRevision: 1,
+      createdAt: "2026-08-20T12:00:00.000Z",
+      expiresAt: null,
+    })), { status: "issued" });
 
     const session = await resolveAnonymousSession(database, null);
     const code = await issueCode(database, session, "evicted@example.com");
@@ -266,6 +287,19 @@ test("confirming a reset revokes every existing Session for that account", async
       const resolved = await resolveAnonymousSession(database, token);
       assert.equal(resolved.auth.isAuthenticated, false, `${label} Session must not survive the reset`);
     }
+    const retired = (await database.adapter.listAccessKeyRecordsForOwner(registered.auth.userId))[0];
+    assert.equal(retired.revocationCause, "password-reset");
+    assert.equal(retired.revokedAt !== null, true);
+    assert.equal(retired.lifecycleRevision, 2);
+    assert.equal(await database.adapter.findAccessKeyAuthenticationRecord("resetselector0000000000"), null);
+    const retirementAudit = (await database.log.tail(50)).find((event) =>
+      event.event === "access-key.revoked" && event.data?.accessKey?.id === "password-reset-access-key");
+    assert.equal(retirementAudit.data.operation, "auth.confirmPasswordReset");
+    assert.deepEqual(retirementAudit.data.actor, { kind: "password-reset-code" });
+    assert.deepEqual(retirementAudit.data.target, { ownerUserId: registered.auth.userId });
+    assert.equal("credential" in retirementAudit.data, false);
+    assert.equal(retirementAudit.data.revocationCause, "password-reset");
+    assert.equal(retirementAudit.data.accessKey.name, "reset-retired-key");
   });
 });
 

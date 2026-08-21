@@ -4,16 +4,19 @@ Use the server authoring interface to define tables, queries, mutations,
 authorization policy, middleware, and HTTP integration endpoints.
 
 Start at the narrowest server seam: declare one table, expose one query, then
-add the mutation that changes it. Apply ACL policy at the table and
-`requireAuth` at handlers that must reject Anonymous sessions. Use middleware
-only for behaviour genuinely shared across handlers.
+add the mutation that changes it. Apply ACL policy at the table and wrap
+handlers that must reject Anonymous sessions with declarative
+`requireAuth(handler)`. Use `requireUserAuth(ctx)` for an inline user check;
+the older inline `requireAuth(ctx)` spelling remains a deprecated compatible
+alias. Use middleware only for behaviour genuinely shared across handlers.
 
 Server handlers receive runtime-owned `ctx` capabilities. Keep secrets in
 Sealed Server env, use the current actor by default, and enter the Privileged
 server role only for explicitly userless system work.
 
-Work through [tables, queries, mutations, `requireAuth`, Server env, middleware,
-and actor selection](../reference/server-runtime.md#building-the-server-side).
+Work through [tables, queries, mutations, `requireAuth`, `requireUserAuth`,
+Credential provenance, Server env, middleware, and actor
+selection](../reference/server-runtime.md#building-the-server-side).
 For inbound HTTP integrations, continue with
 [Custom HTTP endpoints](../reference/server-runtime.md#custom-http-endpoints).
 

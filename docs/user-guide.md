@@ -39,6 +39,7 @@ That is the complete starting loop. Everything below extends it.
 - [Build server behaviour](./guide/server.md)
 - [Build the browser client](./guide/client.md)
 - [Add authentication](./guide/auth.md)
+- [Give automation scoped Access keys](./guide/auth.md#access-keys-for-named-api-access)
 - [Upload and publish files](./guide/files.md)
 - [Use Built-in Teams for explicit collaboration](./reference/teams.md)
 - [Add realtime activity or App messages](./guide/realtime.md)

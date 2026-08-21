@@ -11,6 +11,7 @@
   "out": "docs/api",
   "readme": "none",
   "cleanOutputDir": true,
+  "excludeInternal": true,
   "hideGenerator": true,
   "gitRevision": "main",
   "disableGit": true,

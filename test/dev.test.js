@@ -5391,7 +5391,11 @@ export default capsule({
   endpoints: {
     authState: endpoint({ method: "GET", path: "/integrations/auth" }, (ctx) => ({
       status: 200,
-      body: ctx.auth,
+      body: {
+        auth: ctx.auth,
+        credential: ctx.credential,
+        authorization: ctx.request.headers.authorization ?? null,
+      },
     })),
   },
 });
@@ -5410,19 +5414,28 @@ export default capsule({
 
       const missingTokenResponse = await fetch(`${started.data.url}/integrations/auth`);
       assert.equal(missingTokenResponse.status, 200);
-      const missingTokenAuth = await missingTokenResponse.json();
+      const missingTokenResult = await missingTokenResponse.json();
+      const missingTokenAuth = missingTokenResult.auth;
       assert.equal(missingTokenAuth.provider, "anonymous");
       assert.equal(missingTokenAuth.isGuest, true);
       assert.notEqual(missingTokenAuth.userId, existingAuth.userId);
+      assert.deepEqual(missingTokenResult.credential, { kind: "session" });
+      assert.equal(missingTokenResult.authorization, null);
 
       const invalidTokenResponse = await fetch(`${started.data.url}/integrations/auth`, {
-        headers: { "x-sporades-session-token": "not-a-real-session" },
+        headers: {
+          authorization: "Bearer capsule-owned-value",
+          "x-sporades-session-token": "not-a-real-session",
+        },
       });
       assert.equal(invalidTokenResponse.status, 200);
-      const invalidTokenAuth = await invalidTokenResponse.json();
+      const invalidTokenResult = await invalidTokenResponse.json();
+      const invalidTokenAuth = invalidTokenResult.auth;
       assert.equal(invalidTokenAuth.provider, "anonymous");
       assert.equal(invalidTokenAuth.isGuest, true);
       assert.notEqual(invalidTokenAuth.userId, existingAuth.userId);
+      assert.deepEqual(invalidTokenResult.credential, { kind: "session" });
+      assert.equal(invalidTokenResult.authorization, "Bearer capsule-owned-value");
     } finally {
       socket?.close();
       child.kill("SIGTERM");
@@ -6768,8 +6781,13 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
       assert.deepEqual(JSON.parse(listResult.stdout).data.tables, [
         "notes",
         "sporades",
+        "sporades_auth_access_key_locks",
+        "sporades_auth_access_key_owners",
+        "sporades_auth_access_keys",
+        "sporades_auth_email_credentials",
         "sporades_auth_identities",
         "sporades_auth_oauth_states",
+        "sporades_auth_password_reset_codes",
         "sporades_auth_sessions",
         "sporades_auth_users",
         "sporades_file_buckets",
@@ -10137,8 +10155,13 @@ test("sporades db list returns tables from the running dev session database", as
         data: {
           tables: [
             "sporades",
+            "sporades_auth_access_key_locks",
+            "sporades_auth_access_key_owners",
+            "sporades_auth_access_keys",
+            "sporades_auth_email_credentials",
             "sporades_auth_identities",
             "sporades_auth_oauth_states",
+            "sporades_auth_password_reset_codes",
             "sporades_auth_sessions",
             "sporades_auth_users",
             "sporades_file_buckets",
@@ -10201,7 +10224,32 @@ test("sporades db dump returns structured table data from the running dev sessio
                   value:
                     '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}],"uniqueConstraints":[]}]}',
                 },
+                { key: "accessKeyScopes", value: "[]" },
               ],
+            },
+            {
+              name: "sporades_auth_access_key_locks",
+              columns: ["name", "operationRevision"],
+              rows: [{ name: "selector", operationRevision: 0 }],
+            },
+            {
+              name: "sporades_auth_access_key_owners",
+              columns: ["ownerUserId", "currentCount", "totalCount", "operationRevision"],
+              rows: [],
+            },
+            {
+              name: "sporades_auth_access_keys",
+              columns: [
+                "id", "ownerUserId", "name", "reservedName", "grantsJson", "secretVersion", "selector",
+                "verifierDigest", "lifecycleRevision", "createdAt", "expiresAt", "rotatedAt", "revokedAt",
+                "revocationCause", "lastUsedAt",
+              ],
+              rows: [],
+            },
+            {
+              name: "sporades_auth_email_credentials",
+              columns: ["email", "userId", "passwordHash", "passwordSalt", "createdAt"],
+              rows: [],
             },
             {
               name: "sporades_auth_identities",
@@ -10221,6 +10269,11 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "nonce",
                 "pkceVerifier",
               ],
+              rows: [],
+            },
+            {
+              name: "sporades_auth_password_reset_codes",
+              columns: ["selector", "verifierHash", "email", "userId", "createdAt", "expiresAt"],
               rows: [],
             },
             {
@@ -10302,6 +10355,8 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "claimToken",
                 "scheduleName",
                 "scheduledFor",
+                "authSnapshotJson",
+                "credentialJson",
               ],
               rows: [],
             },
@@ -10360,8 +10415,13 @@ test("sporades db query runs read-only SQL against the running dev session datab
           columns: ["name"],
           rows: [
             { name: "sporades" },
+            { name: "sporades_auth_access_key_locks" },
+            { name: "sporades_auth_access_key_owners" },
+            { name: "sporades_auth_access_keys" },
+            { name: "sporades_auth_email_credentials" },
             { name: "sporades_auth_identities" },
             { name: "sporades_auth_oauth_states" },
+            { name: "sporades_auth_password_reset_codes" },
             { name: "sporades_auth_sessions" },
             { name: "sporades_auth_users" },
             { name: "sporades_file_buckets" },

@@ -37,6 +37,7 @@ export declare function createRuntimeLogSink(options: {
     recent(limit?: number): any;
     tail(limit?: number): any[];
 };
+export declare function runRuntimeAccessKeyOperatorAction(database: LooseRecord, action: string, input?: LooseRecord, executionSource?: string): Promise<any>;
 export declare function createLogEnvelope(input: {
     config: LooseRecord;
     timestamp: any;
@@ -106,6 +107,59 @@ type TrustedRefreshTransport = {
     received(connectionId: string, sequence: number): void;
     disconnected(connectionId: string): void;
 };
+export declare function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord, sessionToken?: string | null): Promise<{
+    data: {
+        accessKeys: {
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        }[];
+        declaredScopes: string[];
+        nextCursor: string | null;
+        totalCount: number;
+    } | {
+        accessKey: {
+            id: any;
+            name: any;
+            grants: any[];
+            effectiveScopes: string[];
+            status: string;
+            createdAt: any;
+            expiresAt: any;
+            rotatedAt: any;
+            revokedAt: any;
+            revocationCause: any;
+            lastUsedAt: any;
+            lifecycleRevision: number;
+        };
+    } | {
+        id: string;
+        deleted: boolean;
+    };
+    error: null;
+} | {
+    data: null;
+    error: {
+        hint?: any;
+        code: any;
+        message: any;
+    };
+} | {
+    data: null;
+    error: {
+        message: string;
+        hint: string;
+    };
+}>;
 export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null): {
     createConnectionToken(): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
@@ -150,8 +204,8 @@ export declare function sendEmailPasswordResetLink(database: LooseRecord, sessio
     ok: boolean;
     error?: undefined;
 }>;
-export declare function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs?: unknown): Promise<any>;
-export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
+export declare function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs?: unknown, options?: LooseRecord): Promise<any>;
+export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options?: LooseRecord): Promise<any>;
 export declare function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options?: LooseRecord): Promise<any>;
 export declare function runCurrentUserJobWorker(database: LooseRecord): Promise<void>;
 //# sourceMappingURL=server-runtime-source.d.ts.map

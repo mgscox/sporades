@@ -8,8 +8,10 @@ Durable background work, Schedule declarations, runtime behavior, and CLI inspec
 
 Declare durable server-only work with `job()` and enqueue it from a trusted
 mutation, Custom endpoint, or App message handler through `ctx.jobs`. Enqueue
-captures the current Sporades user; browser credentials are not stored with the
-Job.
+captures the current Sporades user and whether that user entered through a
+Session or a named Access key. The runtime persists only the bounded `AuthContext` and
+`CredentialProvenance`; it never stores a bearer token, selector, verifier,
+grants, or matched scopes in the Job row.
 
 ```ts
 import { capsule, job, mutation } from "sporades/server";
@@ -38,6 +40,23 @@ committed handler outcome; the durable Job recovers on a later worker wake or
 runtime restart. Supply an idempotency key when callers can retry a workflow;
 repeating the same key for the same handler and captured user returns the
 retained Job.
+
+Retries, restart recovery, and child Jobs rehydrate the exact committed,
+bounded Auth and Credential snapshot. At capture, profile display metadata
+that predates the Job storage bounds is deterministically shortened or omitted;
+authority-bearing user and provider identity remains exact. Later profile
+edits, Access-key rotation, revocation or deletion, unlinking, owner deletion,
+and reuse of the same key name do not rewrite or cancel already-admitted work.
+This historical identity is attribution, not restored authority: Table and
+File ACLs and Team operations still evaluate current rows, resources,
+membership, and roles when the Job runs.
+
+Databases created before Credential provenance receive a deterministic Session
+snapshot at startup. Migration uses the retained actor provider and a bounded
+capture of the current user profile when one exists; an absent legacy profile
+falls back to the bounded `Job enqueuer` display name, null email and picture,
+and guest/auth flags derived from the retained provider. The fallback does not
+invent an Access key.
 
 Jobs may use a one-time future `availableAt` and become `delayed` until then;
 this is not recurring scheduling. A bounded `retry` policy records attempts and
@@ -88,6 +107,8 @@ attempt with a missing or noncanonical lease fails terminally with
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
 duplicate-safe and use idempotency keys for caller retries.
+Durable queued and delayed Job state remains stored and recovers on runtime
+restart.
 
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
 clears immediate, delayed, and retry worker timers plus the retained-lease
@@ -138,11 +159,12 @@ preserves and reports both failures.
 cursor-based listing by actor. Current-user inspection sees only Jobs for its
 captured execution actor. Privileged inspection through an explicit
 `ctx.privileged.run(...)` may see all Jobs. In either view, `enqueuedBy` is
-provenance—the user who caused the Job to be created—and is distinct from the
+provenance—the user and Session-or-Access-key credential that caused the Job
+to be created—and is distinct from the
 captured current-user or Privileged server role actor under which the handler
-executes. If a captured user no longer exists when execution begins, the Job
-fails terminally with `JOB_ACTOR_UNAVAILABLE`; remaining retry attempts are not
-consumed.
+executes. Owner deletion does not erase or prevent execution of the bounded
+historical snapshot, but it can make current resource and membership checks
+deny the work.
 
 One-time delayed availability is Job Queue behavior. For recurring work,
 Capsule server code declares a named Schedule alongside its named Jobs:

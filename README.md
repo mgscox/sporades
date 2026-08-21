@@ -51,6 +51,9 @@ sporades host push --restart
   logs, database inspection, and non-interactive commands are first-class.
 - **Comprehensive SDK**: built-in authentication, database, user preferences,
   and storage.
+- **Named automation without fake users**: linked users can issue scoped Access
+  keys for API clients while Capsule code retains the real owner in `ctx.auth`
+  and distinguishes named API access through `ctx.credential`.
 - **Built-in collaboration, explicitly authorized**: runtime-owned Teams,
   email-bound Join links, membership application roles, and explicit Team ACL
   decisions—without a hidden current Team or automatic data partitioning.
@@ -66,6 +69,9 @@ sporades host push --restart
   command lookup, split into focused topic pages.
 - [Built-in Teams](https://mgscox.github.io/sporades/reference/teams): collaboration model, Join
   links, application roles, and explicit Team ACL decisions.
+- [Access-key server and operator reference](https://mgscox.github.io/sporades/reference/server-runtime#gate-handlers-with-requireauth):
+  scoped Bearer admission, user-owned lifecycle, Credential provenance, and
+  the bounded operator CLI.
 - [LLM documentation manifest](https://mgscox.github.io/sporades/llms.txt): release-matched Markdown
   sources for agents and other documentation tools.
 - [Architecture](https://mgscox.github.io/sporades/architecture): platform model, runtime modes, Host
@@ -178,6 +184,9 @@ Sporades currently includes:
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth,
   Microsoft OpenID Connect, Sign in with Apple, Facebook Login, and
   local identity simulation for tests and agents.
+- User-owned named Access keys with Capsule-declared scopes, explicit Custom
+  endpoint and private-File opt-in, one-time secret disclosure, Session-only
+  owner management, durable Job provenance, and audited operator retirement.
 - Runtime-owned current-user preferences exposed through `sporades/client`
   without app preference tables. Preferences follow the Sporades user identity,
   survive Anonymous account linking, and notify same-user connected clients when

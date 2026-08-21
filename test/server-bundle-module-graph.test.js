@@ -35,6 +35,7 @@ import ts from "typescript";
 
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
+import { createSqliteDatabaseAdapter } from "../dist/server-runtime-source.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -54,6 +55,8 @@ import { Boolean, Number, String, capsule, endpoint, job, mutation, query, sched
 
 export default capsule({
   name: "bundle-equivalence",
+  accessKeys: { scopes: ["files:read"] },
+  files: { accessKeys: { read: { scopes: ["files:read"] } } },
 
   schema: {
     notes: table({
@@ -94,7 +97,7 @@ export default capsule({
   },
 
   jobs: {
-    tally: job((ctx) => ({ notes: ctx.db.notes.all().length })),
+    tally: job((ctx) => ({ notes: ctx.db.notes.all().length, auth: ctx.auth, credential: ctx.credential })),
   },
 
   schedules: {
@@ -771,9 +774,11 @@ const SCHEDULES_DDL =
 const SCHEDULES_INSERT = "INSERT INTO [sporades_schedules] VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 const schedulesRow = (name) => [name, "fingerprint-1", "*/5 * * * *", "UTC", "skip", 1, "2026-01-01T00:00:00.000Z", null, null, null, null];
 
-function runBundleAction(bundlePath, action, { cwd, env = {} }) {
+function runBundleAction(bundlePath, action, { cwd, env = {}, input = null }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bundlePath, "--sporades-action", action], {
+    const args = [bundlePath, "--sporades-action", action];
+    if (input !== null) args.push("--sporades-action-input", Buffer.from(JSON.stringify(input), "utf8").toString("base64url"));
+    const child = spawn(process.execPath, args, {
       cwd,
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -927,6 +932,61 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
         "nosuch.messagetype:m23",
       ],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle admits an explicitly scoped Access key to private File bytes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-file-"));
+  try {
+    const config = capsuleConfig();
+    const source = await buildBundle({ config, serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const booted = await bootBundle({ source, dir });
+    let socket;
+    try {
+      socket = await openBundleSocket(booted.baseUrl);
+      socket.send({
+        id: "file-owner-signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: { email: "bundle-file-owner@example.com", password: "correct horse battery staple", name: "Bundle File Owner" },
+      });
+      assert.equal((await socket.waitFor((message) => message.id === "file-owner-signup")).error, null);
+      socket.send({
+        id: "file-upload",
+        type: "file.uploadUrl",
+        file: { name: "bundle-private.txt", path: "/bundle-private.txt", type: "text/plain", size: 12 },
+      });
+      const upload = await socket.waitFor((message) => message.id === "file-upload");
+      assert.equal(upload.error, null, JSON.stringify(upload));
+      const uploaded = await fetch(new URL(upload.data.uploadUrl, booted.baseUrl), { method: "PUT", body: "bundle bytes" });
+      assert.equal(uploaded.status, 200, await uploaded.text());
+
+      socket.send({
+        id: "file-key-issue",
+        type: "accessKeys.issue",
+        input: { name: "bundle-file-reader", grants: ["files:read"] },
+      });
+      const issued = await socket.waitFor((message) => message.id === "file-key-issue");
+      assert.equal(issued.error, null, JSON.stringify(issued));
+      const privateUrl = new URL(`/__sporades/files/private/${upload.data.file.id}?v=${encodeURIComponent(upload.data.file.version)}`, booted.baseUrl);
+      const response = await fetch(privateUrl, { headers: { authorization: `Bearer ${issued.data.token}` } });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), "bundle bytes");
+      assert.equal(response.headers.get("cache-control"), "private, no-store");
+
+      const malformed = await fetch(privateUrl, { headers: { authorization: "Bearer malformed" } });
+      assert.equal(malformed.status, 401);
+      assert.equal(malformed.headers.get("www-authenticate"), 'Bearer realm="sporades", error="invalid_token"');
+      assert.equal(JSON.stringify(await malformed.json()).includes(issued.data.token), false);
+    } finally {
+      socket?.close();
+      await booted.stop();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1145,6 +1205,84 @@ test("the bundle unseals a sealed Server env", async () => {
   }
 });
 
+test("the generated Bundle runs audited Access-key operator actions without credential material", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-action-"));
+  try {
+    const source = await buildBundle({ config: capsuleConfig({ __sporadesSession: "container" }), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const dir = path.join(root, "graph");
+    await mkdir(dir, { recursive: true });
+    await writePublicTree(dir, "<!doctype html><html><body></body></html>");
+    const booted = await bootBundle({ source, dir });
+    try { /* bootstraps runtime-owned storage */ } finally { await booted.stop(); }
+
+    const databasePath = path.join(dir, "data", "data.db");
+    const adapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      await adapter.insertAuthUser({
+        id: "bundle-owner", createdAt: "2026-08-20T12:00:00.000Z", displayName: "Private name",
+        email: "private@example.com", picture: null, isAuthenticated: 1, isGuest: 0, provider: "email",
+      });
+      await adapter.issueAccessKeyRecord({
+        id: "bundle-key", ownerUserId: "bundle-owner", name: "bundle automation", reservedName: "bundle automation",
+        grantsJson: JSON.stringify(["files:read"]), secretVersion: 1, selector: "not-a-real-selector",
+        verifierDigest: "0".repeat(64), lifecycleRevision: 1, createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null,
+      });
+    } finally { adapter.close(); }
+
+    const bundlePath = path.join(dir, "server.mjs");
+    const forgedSource = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", options: {}, executionSource: "operator-cli-hosted" },
+    })).stdout);
+    assert.equal(forgedSource.ok, false);
+    assert.equal(forgedSource.error.code, "INVALID_ACCESS_KEY_ACTION_INPUT");
+    const listed = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", options: {} }, env: { SPORADES_LOG_STDOUT: "1" },
+    })).stdout);
+    assert.equal(listed.ok, true, JSON.stringify(listed));
+    assert.equal(listed.data.accessKeys[0].id, "bundle-key");
+    assert.equal(listed.data.accessKeys[0].ownerUserId, "bundle-owner");
+    assert.deepEqual(listed.data.accessKeys[0].effectiveScopes, ["files:read"]);
+    assert.equal(/selector|verifier|digest|token|private@example/i.test(JSON.stringify(listed)), false);
+
+    const revoked = JSON.parse((await runBundleAction(bundlePath, "access-keys.revoke", {
+      cwd: dir, input: { keyId: "bundle-key" },
+    })).stdout);
+    assert.equal(revoked.ok, true, JSON.stringify(revoked));
+    assert.equal(revoked.data.accessKey.status, "revoked");
+    assert.equal(revoked.data.accessKey.revocationCause, "operator");
+
+    const corruptAdapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      corruptAdapter.prepare("UPDATE sporades_auth_access_keys SET grantsJson = ? WHERE id = ?")
+        .run("secret-adapter-detail", "bundle-key");
+    } finally { corruptAdapter.close(); }
+    const redacted = JSON.parse((await runBundleAction(bundlePath, "access-keys.list", {
+      cwd: dir, input: { userId: "bundle-owner", options: {} },
+    })).stdout);
+    assert.deepEqual(redacted, {
+      ok: false,
+      data: null,
+      error: {
+        code: "ACCESS_KEY_ACTION_FAILED",
+        message: "Access-key operator action failed.",
+        hint: "Check the Privileged audit events and retry the operation.",
+      },
+    });
+    assert.equal(JSON.stringify(redacted).includes("secret-adapter-detail"), false);
+
+    const auditAdapter = await createSqliteDatabaseAdapter(databasePath);
+    try {
+      const events = await auditAdapter.readRecentLogEvents(50);
+      const operatorEvents = events.filter((event) => String(event.data?.operation).startsWith("access-keys."));
+      assert.ok(operatorEvents.length >= 6);
+      assert.equal(operatorEvents.every((event) => event.data.surface === "operator-cli-container"), true);
+      assert.equal(/selector|verifier|digest|token|private@example/i.test(JSON.stringify(operatorEvents)), false, JSON.stringify(operatorEvents));
+    } finally { auditAdapter.close(); }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the bundle answers the one-shot Job and Schedule inspection actions on SQLite", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-action-sqlite-"));
   try {
@@ -1166,6 +1304,54 @@ test("the bundle answers the one-shot Job and Schedule inspection actions on SQL
       await booted.stop();
     }
     const bundlePath = path.join(dir, "server.mjs");
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data", "data.db"));
+    const accessKeyId = "bundle-access-key-id";
+    const accessKeyName = "bundle automation";
+    const actorUserId = "bundle-access-key-owner";
+    try {
+      const queued = adapter.prepare("SELECT id FROM sporades_jobs WHERE handler = 'tally'").get();
+      assert.ok(queued);
+      adapter.prepare(
+        "UPDATE sporades_jobs SET enqueuedByUserId = ?, actorUserId = ?, actorProvider = 'access-key', authSnapshotJson = ?, credentialJson = ?, status = 'queued', availableAt = ? WHERE id = ?",
+      ).run(
+        actorUserId,
+        actorUserId,
+        JSON.stringify({
+          userId: actorUserId,
+          displayName: "Bundle owner",
+          email: null,
+          picture: null,
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "access-key",
+        }),
+        JSON.stringify({ kind: "access-key", id: accessKeyId, name: accessKeyName }),
+        "2000-01-01T00:00:00.000Z",
+        queued.id,
+      );
+    } finally {
+      adapter.close();
+    }
+
+    const executor = await bootBundle({ source, dir });
+    try {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const state = JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout);
+        if (state.data?.jobs?.[0]?.status === "succeeded") break;
+        if (Date.now() > deadline) assert.fail(`generated Bundle did not execute retained Job: ${JSON.stringify(state)}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await executor.stop();
+    }
+    const resultAdapter = await createSqliteDatabaseAdapter(path.join(dir, "data", "data.db"));
+    let executedResult;
+    try {
+      executedResult = JSON.parse(resultAdapter.prepare("SELECT result FROM sporades_jobs WHERE handler = 'tally'").get().result);
+    } finally {
+      resultAdapter.close();
+    }
     const context = { literals: [[dir, "<dir>"]] };
     const jobs = normalize(JSON.parse((await runBundleAction(bundlePath, "jobs.inspect", { cwd: dir })).stdout), context);
     const schedules = normalize(JSON.parse((await runBundleAction(bundlePath, "schedules.inspect", { cwd: dir })).stdout), context);
@@ -1174,6 +1360,27 @@ test("the bundle answers the one-shot Job and Schedule inspection actions on SQL
     assert.equal(jobs.ok, true, JSON.stringify(jobs));
     assert.equal(jobs.data.jobs.length, 1, "expected the enqueued Job to be inspectable");
     assert.equal(jobs.data.jobs[0].handler, "tally");
+    assert.deepEqual(jobs.data.jobs[0].enqueuedBy, {
+      mode: "user",
+      userId: actorUserId,
+      credential: { kind: "access-key", id: accessKeyId, name: accessKeyName },
+    });
+    assert.deepEqual(executedResult, {
+      notes: 0,
+      auth: {
+        userId: actorUserId,
+        displayName: "Bundle owner",
+        email: null,
+        picture: null,
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "access-key",
+      },
+      credential: { kind: "access-key", id: accessKeyId, name: accessKeyName },
+    });
+    assert.equal(JSON.stringify(jobs).includes("Bearer "), false);
+    assert.equal(JSON.stringify(jobs).includes("selector"), false);
+    assert.equal(JSON.stringify(jobs).includes("verifier"), false);
     assert.equal(schedules.data.schedules.length, 1, "expected the declared Schedule to be inspectable");
     assert.equal(schedules.data.schedules[0].name, "tally");
 

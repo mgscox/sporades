@@ -121,6 +121,8 @@ test("the feature reference is split by lookup intent behind a compatible index"
   assert.match(jobs, /Inspect Jobs from the CLI/);
   assert.match(client, /Configure Microsoft sign-in/);
   assert.match(realtime, /User Journey Tracker/);
+  assert.match(realtime, /files\.accessKeys\.read/);
+  assert.match(realtime, /never replace ownership\s+or File ACL checks/i);
   assert.match(operations, /Sporades Doctor/);
 });
 
@@ -488,7 +490,7 @@ test("published docs describe the complete Job scheduling contract", async () =>
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
   assert.match(guide, /four-digit UTC timestamp/i);
-  assert.match(guide, /JOB_ACTOR_UNAVAILABLE[\s\S]*remaining retry attempts/i);
+  assert.match(guide, /owner deletion[\s\S]*(?:does not|without)[\s\S]*(?:cancel|prevent|rewrite)[\s\S]*(?:Job|snapshot|work)/i);
   assert.match(guide, /shutdown hook[\s\S]*mail closure[\s\S]*both failures/i);
   assert.match(guide, /import \{ capsule, job, schedule \} from "sporades\/server"/);
   assert.match(guide, /sendDigest:\s*job\(/);
@@ -864,7 +866,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(prd, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(prd, /query, mutation, Custom endpoint,\s+App message, context middleware, and supported mutation hook/);
   assert.match(prd, /current user identity/);
-  assert.match(prd, /captured user\s+identity/);
+  assert.match(prd, /captured bounded[\s\S]*Auth and Credential snapshot/);
   assert.match(prd, /Privileged server role/);
   for (const notA of ["Capsule role", "app admin", "Teams", "user", "session", "browser credential", "service account"]) {
     assert.match(prd, new RegExp(notA));
@@ -877,7 +879,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
 
   assert.match(userGuide, /Choosing a server actor/);
   assert.match(userGuide, /current user/);
-  assert.match(userGuide, /captured user\s+identity/);
+  assert.match(userGuide, /bounded Auth and Credential snapshot captured/i);
   assert.match(userGuide, /Privileged server role/);
   assert.match(userGuide, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(userGuide, /not a Capsule role, app admin, Team, user, session,\s+service account, or browser credential/);
@@ -1206,6 +1208,41 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
     assert(importIndex !== -1);
     assert(pushIndex !== -1);
     assert(importIndex < pushIndex);
+  }
+});
+
+test("canonical docs publish the bounded Access-key operator surface", async () => {
+  const [context, prd, serverReference, api, guide, architecture, navigation, userGuide, roadmap] = await Promise.all([
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/api/types/server.PrivilegedAccessKeysApi.html"),
+    readProjectFile("docs/guide/auth.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/.vitepress/config.mts"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/ROADMAP.md"),
+  ]);
+  for (const contents of [context, prd, serverReference]) {
+    assert.match(contents, /running (?:Dev, Container, or Hosted )?Capsule/i);
+    assert.match(contents, /cannot issue, rotate, or receive bearer/i);
+    assert.match(contents, /--yes/);
+    assert.match(contents, /--json.*(?:never|does not).*consent/is);
+  }
+  assert.match(serverReference, /sporades access-keys revoke-all --user-id/);
+  assert.match(serverReference, /Stopped Capsules are rejected/);
+  assert.match(api, /revokeAll/);
+  assert.doesNotMatch(api, />issue</);
+  assert.doesNotMatch(api, />rotate</);
+  assert.match(navigation, /Access keys[\s\S]*\/guide\/auth#access-keys-for-named-api-access/);
+  assert.match(userGuide, /Give automation scoped Access keys/);
+  assert.match(roadmap, /User-owned scoped Access keys \| implemented/);
+  assert.match(guide, /account:[\s\S]*body: \{ userId: ctx\.auth\.userId \}/);
+  assert.match(guide, /importedRows:[\s\S]*body: \{ userId: ctx\.auth\.userId, access: ctx\.credential\.name \}/);
+  for (const contents of [guide, architecture]) {
+    assert.match(contents, /do(?:es)? not create|without creating/i);
+    assert.match(contents, /ctx\.credential/);
+    assert.match(contents, /never|not recoverable/i);
   }
 });
 

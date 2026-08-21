@@ -63,6 +63,28 @@ Options:
   --json                  Write JSON output
   --help, -h              Show this help
 `,
+    "access-keys": `Usage: sporades access-keys <command> [options]
+
+Inspect and retire Access keys through a running Capsule.
+
+Commands:
+  list --user-id <id>       List one owner's Access-key metadata
+  inspect <key-id>          Inspect one Access key
+  revoke <key-id>           Revoke one Access key
+  revoke-all --user-id <id> Revoke one owner's current Access keys
+  delete <key-id>           Delete revoked Access-key history
+
+Options:
+  --session <name>    Session: dev, container, or hosted (default: dev)
+  --host <alias>      Host profile alias for a Hosted Capsule
+  --subname <name>    Hosted Capsule subname
+  --cursor <cursor>   Opaque list cursor
+  --limit <n>         List page size from 1 through 100
+  --status <status>   List active, expired, or revoked keys
+  --yes               Explicitly approve a destructive operation
+  --json              Write structured JSON; does not imply consent
+  --help, -h          Show this help
+`,
     security: `Usage: sporades security [options]
 
 Inspect effective Capsule security policy.
@@ -216,6 +238,7 @@ Options:
       create <name>  Scaffold a new Capsule
       dev            Start a local Dev session
       auth           Manage local auth configuration and simulation
+      access-keys    Inspect and retire Access keys through a running Capsule
       security       Inspect effective Capsule security policy
       doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env

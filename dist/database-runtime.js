@@ -159,6 +159,7 @@
 // there to say rather than what this comment can claim.
 import { randomUUID } from "node:crypto";
 import { assertNotReservedAuthUserId, authIdentityRowUnlessReserved, authIdentityRowsUnlessReserved, createAnonymousAuthTables, isReservedAuthUserId } from "./auth-runtime.js";
+import { ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT } from "./access-keys-runtime.js";
 import { createFileStorageTables } from "./file-storage-runtime.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
@@ -502,6 +503,10 @@ export function createSharedDatabaseAdapterMethods(dialect) {
     // records why: a statement that names a column in a style its table was not created with errors
     // outright on Postgres, and the runtime's own DDL goes through the same call so nothing folds.
     const sql = dialect.sql;
+    const eligibleAccessKeyOwnerSessionSql = sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] " +
+        "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
+        "WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? " +
+        "AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?");
     return {
         ensureSystemTable() {
             return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -641,6 +646,230 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         ensureAuthStorage(authConfig = null) {
             return createAnonymousAuthTables(this, authConfig);
+        },
+        issueAccessKeyRecord(row) {
+            let outcome = null;
+            let reserved = false;
+            let createdAt = row.createdAt;
+            const sequence = chainMaybePromise([
+                // Secret-bearing writes share one narrow lock so a rotation UPDATE can
+                // never lose a cross-owner selector race by aborting its transaction.
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?")).run("selector"),
+                () => this.prepare(sql("INSERT INTO [sporades_auth_access_key_owners] " +
+                    "([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) " +
+                    "ON CONFLICT ([ownerUserId]) DO NOTHING")).run(row.ownerUserId, 0, 0, 0),
+                () => thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_key_owners] " +
+                    "SET [currentCount] = [currentCount] + 1, [totalCount] = [totalCount] + 1, " +
+                    "[operationRevision] = [operationRevision] + 1 " +
+                    "WHERE [ownerUserId] = ? AND [currentCount] < ? AND [totalCount] < ?")).run(row.ownerUserId, ACCESS_KEY_CURRENT_LIMIT, ACCESS_KEY_RETAINED_LIMIT), (result) => {
+                    reserved = result.changes !== 0;
+                    if (!reserved)
+                        outcome = { status: "limit" };
+                }),
+                () => {
+                    createdAt = typeof row.issuanceTime === "function" ? row.issuanceTime() : row.createdAt;
+                    if (!outcome && row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(createdAt)) {
+                        outcome = { status: "invalid-expiry" };
+                    }
+                },
+                () => outcome ?? thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_users] " +
+                    "WHERE [id] = ? AND [isAuthenticated] = ? AND [isGuest] = ?")).get(row.ownerUserId, 1, 0), (owner) => {
+                    if (!owner)
+                        outcome = { status: "owner-ineligible" };
+                }),
+                () => {
+                    if (outcome || typeof row.sessionToken !== "string")
+                        return outcome;
+                    const checkedAt = typeof row.sessionValidationTime === "function"
+                        ? row.sessionValidationTime()
+                        : row.createdAt;
+                    return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+                        .get(row.sessionToken, row.ownerUserId, checkedAt, 1, 0), (session) => {
+                        if (!session)
+                            outcome = { status: "session-ineligible" };
+                    });
+                },
+                () => outcome ?? thenIfPromise(this.prepare(sql("INSERT INTO [sporades_auth_access_keys] " +
+                    "([id], [ownerUserId], [name], [reservedName], [grantsJson], [secretVersion], [selector], " +
+                    "[verifierDigest], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], " +
+                    "[revocationCause], [lastUsedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) " +
+                    "ON CONFLICT DO NOTHING")).run(row.id, row.ownerUserId, row.name, row.reservedName, row.grantsJson, row.secretVersion, row.selector, row.verifierDigest, row.lifecycleRevision, createdAt, row.expiresAt), (inserted) => {
+                    if (inserted.changes !== 0)
+                        outcome = { status: "issued" };
+                }),
+                () => outcome ?? thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [reservedName] = ?")).get(row.ownerUserId, row.reservedName), (nameCollision) => {
+                    outcome = { status: nameCollision ? "name-conflict" : "selector-conflict" };
+                }),
+                () => !reserved || outcome?.status === "issued" ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] " +
+                    "SET [currentCount] = [currentCount] - 1, [totalCount] = [totalCount] - 1, " +
+                    "[operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(row.ownerUserId),
+            ]);
+            return thenIfPromise(sequence, () => outcome);
+        },
+        listAccessKeyRecordsForOwner(ownerUserId, options = {}) {
+            let sessionEligible = true;
+            let rows = [];
+            const sequence = chainMaybePromise([
+                () => {
+                    if (typeof options.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof options.sessionValidationTime === "function"
+                        ? options.sessionValidationTime()
+                        : options.checkedAt;
+                    return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+                        .get(options.sessionToken, ownerUserId, checkedAt, 1, 0), (session) => {
+                        sessionEligible = Boolean(session);
+                    });
+                },
+                () => !sessionEligible ? undefined : thenIfPromise(this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+                    "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
+                    "WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC")).all(ownerUserId), (result) => { rows = result; }),
+            ]);
+            return thenIfPromise(sequence, () => sessionEligible ? rows : { status: "session-ineligible" });
+        },
+        findAccessKeyRecordById(id) {
+            return this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+                "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [id] = ?")).get(id) ?? null;
+        },
+        findAccessKeyAuthenticationRecord(selector) {
+            return this.prepare(sql("SELECT [k].*, [u].[displayName] AS [ownerDisplayName], [u].[email] AS [ownerEmail], " +
+                "[u].[picture] AS [ownerPicture], [u].[isAuthenticated] AS [ownerIsAuthenticated], " +
+                "[u].[isGuest] AS [ownerIsGuest] FROM [sporades_auth_access_keys] [k] " +
+                "LEFT JOIN [sporades_auth_users] [u] ON [u].[id] = [k].[ownerUserId] " +
+                "WHERE [k].[secretVersion] = ? AND [k].[selector] = ?")).get(1, selector) ?? null;
+        },
+        touchAccessKeyLastUsed(id, usedAt, coalesceBefore) {
+            return this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [lastUsedAt] = ? " +
+                "WHERE [id] = ? AND [revokedAt] IS NULL AND ([lastUsedAt] IS NULL OR [lastUsedAt] < ?)")).run(usedAt, id, coalesceBefore);
+        },
+        revokeAccessKeyRecord(input) {
+            let existing = null;
+            let revoked = false;
+            let revokedAt = input.revokedAt;
+            let sessionEligible = true;
+            const sequence = chainMaybePromise([
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 " +
+                    "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+                },
+                () => {
+                    if (typeof input.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof input.sessionValidationTime === "function"
+                        ? input.sessionValidationTime()
+                        : revokedAt;
+                    return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+                        .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
+                        sessionEligible = Boolean(session);
+                    });
+                },
+                () => !sessionEligible ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
+                () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, " +
+                    "[verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, " +
+                    "[lifecycleRevision] = [lifecycleRevision] + 1 " +
+                    "WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL")).run(revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
+                    revoked = result.changes !== 0;
+                }),
+                () => !revoked ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1 " +
+                    "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => !existing ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
+            ]);
+            return thenIfPromise(sequence, () => sessionEligible ? existing : { status: "session-ineligible" });
+        },
+        rotateAccessKeyRecord(input) {
+            let existing = null;
+            let status = "not-found";
+            let rotatedAt = input.rotatedAt;
+            const sequence = chainMaybePromise([
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?")).run("selector"),
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
+                },
+                () => {
+                    if (typeof input.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof input.sessionValidationTime === "function"
+                        ? input.sessionValidationTime()
+                        : rotatedAt;
+                    return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+                        .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
+                        if (!session)
+                            status = "session-ineligible";
+                    });
+                },
+                () => status === "session-ineligible" ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => {
+                    existing = row ?? null;
+                    if (!existing)
+                        status = "not-found";
+                    else if (existing.revokedAt || (existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(rotatedAt)))
+                        status = "not-active";
+                    else if (Number(existing.lifecycleRevision) !== Number(input.lifecycleRevision))
+                        status = "revision-conflict";
+                    else
+                        status = "ready";
+                }),
+                () => status !== "ready" ? undefined : thenIfPromise(this.prepare(sql("SELECT [id] FROM [sporades_auth_access_keys] WHERE [secretVersion] = ? AND [selector] = ?")).get(input.secretVersion, input.selector), (collision) => {
+                    if (collision)
+                        status = "selector-conflict";
+                }),
+                () => status !== "ready" ? undefined : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [secretVersion] = ?, [selector] = ?, [verifierDigest] = ?, " +
+                    "[rotatedAt] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
+                    "WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL")).run(input.secretVersion, input.selector, input.verifierDigest, rotatedAt, input.ownerUserId, input.id, input.lifecycleRevision), (result) => { status = result.changes === 1 ? "rotated" : "revision-conflict"; }),
+                () => status !== "rotated" ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
+            ]);
+            return thenIfPromise(sequence, () => ({ status, record: existing, rotatedAt }));
+        },
+        deleteRevokedAccessKeyRecord(input) {
+            let existing = null;
+            let status = "not-found";
+            const sequence = chainMaybePromise([
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    if (typeof input.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof input.sessionValidationTime === "function"
+                        ? input.sessionValidationTime()
+                        : input.checkedAt;
+                    return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+                        .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
+                        if (!session)
+                            status = "session-ineligible";
+                    });
+                },
+                () => status === "session-ineligible" ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => {
+                    existing = row ?? null;
+                    status = !existing ? "not-found" : existing.revokedAt ? "ready" : "requires-revoked";
+                }),
+                () => status !== "ready" ? undefined : thenIfPromise(this.prepare(sql("DELETE FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NOT NULL")).run(input.ownerUserId, input.id), (result) => { status = result.changes === 1 ? "deleted" : "not-found"; }),
+                () => status !== "deleted" ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [totalCount] = [totalCount] - 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+            ]);
+            return thenIfPromise(sequence, () => ({ status, id: status === "deleted" ? input.id : null, record: existing }));
+        },
+        bulkRevokeAccessKeysForOwner(input) {
+            let revokedCount = 0;
+            let records = [];
+            let revokedAt = input.revokedAt;
+            const sequence = chainMaybePromise([
+                () => this.prepare(sql("INSERT INTO [sporades_auth_access_key_owners] " +
+                    "([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) " +
+                    "ON CONFLICT ([ownerUserId]) DO NOTHING")).run(input.ownerUserId, 0, 0, 0),
+                () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+                },
+                () => thenIfPromise(this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+                    "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
+                    "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL ORDER BY [createdAt] DESC, [id] DESC")).all(input.ownerUserId), (rows) => { records = rows; }),
+                () => thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, " +
+                    "[revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
+                    "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL")).run(revokedAt, input.revocationCause, input.ownerUserId), (result) => {
+                    revokedCount = Number(result.changes ?? 0);
+                }),
+                () => revokedCount === 0 ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+            ]);
+            return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
         },
         ensureUserPreferencesStorage() {
             return createUserPreferencesTables(this);

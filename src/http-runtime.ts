@@ -99,10 +99,16 @@
 
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import type { HelperError } from "./runtime-errors.js";
-import { resolveAnonymousSession } from "./auth-runtime.js";
+import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
+import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
+import {
+  accessKeyAuthenticationError, emitAccessKeyAdmittedAudit,
+  recordAccessKeyUsage, resolveAccessKeyCredential,
+} from "./access-keys-runtime.js";
 import {
   checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor,
 } from "./file-storage-runtime.js";
+import { commandError } from "./runtime-errors.js";
 
 // Redeclared rather than imported, as every migrated module redeclares them: they are erased by
 // tsc, so they create no top-level binding for esbuild to rename and cannot collide with the
@@ -215,6 +221,7 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
       message: error?.message ?? String(error),
       hint: error?.hint ?? null,
       stack: error?.stack ?? null,
+      ...(context.attribution ?? (request as LooseRecord).__sporadesAccessKeyAttribution ?? {}),
     },
   });
 }
@@ -471,14 +478,68 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
   const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
-    const row = await fileRowForActor(database, session.auth, privateMatch[1]);
-    if (!row || row.version !== requestUrl.searchParams.get("v")) {
-      writeNotFound(response);
+    const sessionToken = Array.isArray(token) ? token[0] : (token ?? null);
+    const accessKeyPolicy = database.fileAccessKeyRead ?? null;
+    const hasAuthorization = request.headers.authorization !== undefined ||
+      (Array.isArray(request.rawHeaders) && request.rawHeaders.some((name, index) => index % 2 === 0 && String(name).toLowerCase() === "authorization"));
+    let admittedWithAccessKey = false;
+    try {
+      let auth;
+      let credential;
+      if (accessKeyPolicy && hasAuthorization) {
+        const admission = await resolveAccessKeyCredential(database, request, token ?? null);
+        if (!admission) throw accessKeyAuthenticationError("missing");
+        auth = admission.auth;
+        credential = admission.credential;
+        admittedWithAccessKey = true;
+        if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+          const error: any = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+          error.sporadesAuthDenialLogData = {
+            requirement: "file-access-key-scopes",
+            handler: { kind: "file", path: requestUrl.pathname },
+            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
+          };
+          error.sporadesAccessKeyFailure = "forbidden";
+          throw error;
+        }
+        emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
+        await recordAccessKeyUsage(database, admission);
+      } else {
+        if (accessKeyPolicy && sessionToken === null) throw accessKeyAuthenticationError("missing");
+        const session = await resolveAnonymousSession(database, sessionToken);
+        auth = Object.freeze({ ...session.auth });
+        credential = Object.freeze({ kind: "session" });
+      }
+      if (admittedWithAccessKey) {
+        response.setHeader("cache-control", "private, no-store");
+        response.setHeader("pragma", "no-cache");
+      }
+      const row = await fileRowForActor(database, auth, privateMatch[1], credential);
+      if (!row || row.version !== requestUrl.searchParams.get("v")) {
+        writeNotFound(response);
+        return true;
+      }
+      await sendFileHttpResponse(database, response, row, { accessKey: admittedWithAccessKey });
+      return true;
+    } catch (error: any) {
+      if (admittedWithAccessKey || error?.sporadesAccessKeyFailure) {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("pragma", "no-cache");
+      }
+      if (error?.sporadesAuthDenialLogData) {
+        emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+      } else if (error?.sporadesAccessKeyFailure) {
+        emitAuthDeniedLog(database, { data: {
+          requirement: "file-access-key",
+          reason: error.sporadesAccessKeyReason ?? error.sporadesAccessKeyFailure,
+          handler: { kind: "file", path: requestUrl.pathname },
+          actor: { userId: null, provider: null, isAuthenticated: null, isGuest: null },
+        } });
+      }
+      emitHttpFailureLog(database, request, error);
+      writeEndpointError(response, error);
       return true;
     }
-    await sendFileHttpResponse(database, response, row);
-    return true;
   }
 
   const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
@@ -557,12 +618,13 @@ function writeNotFound(response: { writeHead: (arg0: number, arg1: { "content-ty
   response.end("Not found");
 }
 
-async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord) {
+async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord, options: { accessKey?: boolean } = {}) {
   try {
     const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
-      "cache-control": "private, max-age=31536000, immutable",
+      "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
+      ...(options.accessKey ? { pragma: "no-cache" } : {}),
     });
     response.end(bytes);
   } catch {
@@ -570,7 +632,7 @@ async function sendFileHttpResponse(database: LooseRecord, response: any, row: L
   }
 }
 
-export function writeEndpointResult(response: any, result: any) {
+export function writeEndpointResult(response: any, result: any, runtimeHeaders: LooseRecord = {}) {
   if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
     const status = result.status ?? 200;
     if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -582,7 +644,7 @@ export function writeEndpointResult(response: any, result: any) {
     ) {
       throw endpointResponseError();
     }
-    const headers = { ...(result.headers ?? {}) };
+    const headers = mergeEndpointResponseHeaders(result.headers ?? {}, runtimeHeaders);
     const body = result.body ?? null;
     if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
       headers["content-type"] ??= "application/json; charset=utf-8";
@@ -602,12 +664,34 @@ export function writeEndpointResult(response: any, result: any) {
     return;
   }
 
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  response.writeHead(200, mergeEndpointResponseHeaders(
+    { "content-type": "text/plain; charset=utf-8" },
+    runtimeHeaders,
+  ));
   response.end(String(result ?? ""));
 }
 
+function mergeEndpointResponseHeaders(handlerHeaders: LooseRecord, runtimeHeaders: LooseRecord) {
+  const headers = { ...handlerHeaders };
+  const runtimeNames = new Set(Object.keys(runtimeHeaders).map((name) => name.toLowerCase()));
+  for (const name of Object.keys(headers)) {
+    if (runtimeNames.has(name.toLowerCase())) delete headers[name];
+  }
+  return { ...headers, ...runtimeHeaders };
+}
+
 export function writeEndpointError(response: any, error: any) {
-  response.writeHead(endpointErrorStatus(error), { "content-type": "application/json; charset=utf-8" });
+  const headers: LooseRecord = { "content-type": "application/json; charset=utf-8" };
+  if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
+    headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" && error?.sporadesAccessKeyReason !== "missing"
+      ? 'Bearer realm="sporades", error="invalid_token"'
+      : 'Bearer realm="sporades"';
+  }
+  if (error?.sporadesAccessKeyFailure) {
+    headers["cache-control"] = "no-store";
+    headers.pragma = "no-cache";
+  }
+  response.writeHead(endpointErrorStatus(error), headers);
   response.end(
     `${JSON.stringify({
       ok: false,
@@ -635,6 +719,8 @@ export function writeEndpointError(response: any, error: any) {
 
 function endpointErrorStatus(error: any) {
   if (error?.code === "UNAUTHENTICATED") return 401;
+  if (error?.code === "FORBIDDEN") return 403;
+  if (error?.code === "RATE_LIMITED") return 429;
   if (isPayloadTooLargeError(error)) return 413;
   if (isClientRequestError(error)) return 400;
   return 500;

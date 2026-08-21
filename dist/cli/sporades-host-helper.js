@@ -12,17 +12,33 @@ import { createLogEnvelope, createPrivilegedAuditLogInput, } from "../server-run
 import { delay, errorDetails, helperError, readStdin, writeEnvelope, } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
+import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
+// Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.
+// cloudflare-origin routes reject every other peer before trusting CF-Connecting-IP.
+const CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32",
+    "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32",
+]);
 let hostHelperConfig = defaultHostHelperConfig();
+const HOSTED_ACCESS_KEY_ACTIONS = new Set([
+    "access-keys.list", "access-keys.inspect", "access-keys.revoke", "access-keys.revoke-all", "access-keys.delete",
+]);
 main().catch((error) => {
     writeEnvelope({
         ok: false,
         data: null,
         error: {
+            ...(error.code ? { code: error.code } : {}),
             message: error.message,
             hint: error.hint ?? "Check the Host helper request and retry the command.",
             ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
@@ -94,6 +110,10 @@ async function main() {
         inspectCapsuleSchedules(request);
         return;
     }
+    if (HOSTED_ACCESS_KEY_ACTIONS.has(request.action)) {
+        runCapsuleAccessKeyAction(request);
+        return;
+    }
     if (request.action === "host.stats") {
         await statsHost(request);
         return;
@@ -123,14 +143,39 @@ function inspectCapsuleSchedules(request) {
     validateScheduleInspectionRequest(request);
     inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
         throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-    }));
+    }), [], true);
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
+function runCapsuleAccessKeyAction(request) {
+    const exactKeys = (value, keys) => Object.keys(value).length === keys.length
+        && Object.keys(value).every((key) => keys.includes(key));
+    if (!exactKeys(request, ["action", "host", "capsule", "accessKeys"])
+        || !request.host || typeof request.host !== "object" || Array.isArray(request.host)
+        || !exactKeys(request.host, ["alias", "domain", "scheme", "remoteRoot"])
+        || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule)
+        || !exactKeys(request.capsule, ["subname"])) {
+        throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
+    }
+    const accessKeys = validateAccessKeyOperatorActionInput(request.action, request.accessKeys, () => {
+        throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
+    });
+    inspectCapsuleRuntime(request, request.action, "Access-key", (envelope) => sanitizeAccessKeyOperatorEnvelope(envelope, request.action, accessKeys, () => {
+        throw Object.assign(helperError("Hosted Access-key action returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."), { code: "HOSTED_ACCESS_KEY_RESPONSE_INVALID" });
+    }), [
+        "--sporades-action-input",
+        Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url"),
+    ]);
+}
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = [], preserveBoundedDiagnostics = false) {
     const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
     if (!checkContainerRunning(containerName)) {
-        throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+        const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+        if (label === "Access-key")
+            error.code = "HOSTED_CAPSULE_NOT_RUNNING";
+        throw error;
     }
-    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action]);
+    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
+        maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : undefined,
+    });
     let envelope;
     try {
         envelope = JSON.parse(result.stdout.trim());
@@ -139,8 +184,12 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
         throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
     }
     const bounded = sanitize(envelope);
-    if (!bounded.ok)
-        throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+    if (!bounded.ok) {
+        const error = helperError(bounded.error.message, bounded.error.hint, preserveBoundedDiagnostics ? bounded.error.diagnostics : undefined);
+        if (label === "Access-key" && bounded.error.code)
+            error.code = bounded.error.code;
+        throw error;
+    }
     writeEnvelope(bounded);
 }
 function versionHost(request) {
@@ -2666,7 +2715,7 @@ function ensureHostedBaseImage(lifecycle) {
     }
 }
 function runDocker(args, options = {}) {
-    const result = spawnSync("docker", args, { encoding: "utf8" });
+    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}) });
     if (options.ignoreFailure) {
         return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
     }
@@ -2751,8 +2800,23 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
     await provisionRouteLogFile(route);
-    const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`;
-    await applyManagedRoute(lifecycle, route.routeFile, renderRoute(route, renderRunningRouteHandler(route, proxyLine)));
+    const cloudflareOrigin = route.tls?.mode === "cloudflare-origin";
+    const proxyLine = [
+        `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`} {`,
+        `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin
+            ? "{http.request.header.CF-Connecting-IP}"
+            : "{http.request.remote.host}"}`,
+        "  }",
+    ].join("\n");
+    const routeHandler = renderRunningRouteHandler(route, proxyLine);
+    const guardedHandler = cloudflareOrigin
+        ? [
+            `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,
+            "respond @sporadesUntrustedCloudflareSource 403",
+            routeHandler,
+        ].join("\n  ")
+        : routeHandler;
+    await applyManagedRoute(lifecycle, route.routeFile, renderRoute(route, guardedHandler));
 }
 function renderRunningRouteHandler(route, proxyLine) {
     const probe = route.runtimeProbe;

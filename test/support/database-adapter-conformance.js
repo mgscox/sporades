@@ -33,13 +33,13 @@ export function runDatabaseAdapterConformance({ title, appTableNames = [], prepa
   for (const engine of DATABASE_ADAPTER_ENGINES) {
     test(`${title}: ${engine.name}`, { skip: engine.skip }, async (t) => {
       await engine.withAdapter(
-        async (adapter) => {
+        async (adapter, engineContext) => {
           if (prepareStorage) {
             await prepareStorage(adapter);
           }
           for (const conformanceCase of cases) {
             await t.test(conformanceCase.name, async () => {
-              await conformanceCase.run(adapter);
+              await conformanceCase.run(adapter, engineContext);
             });
           }
         },

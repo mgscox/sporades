@@ -27,7 +27,38 @@ export declare function readEndpointSessionToken(headers: {
     [x: string]: any;
     sessionToken?: any;
 }): any;
+export declare function requireUserAuth(context: LooseRecord, options?: LooseRecord): any;
+/** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: LooseRecord, options?: LooseRecord): any;
+export declare function createAuthDenialLogData(context: LooseRecord, requirement: string): {
+    credential?: undefined;
+    requirement: string;
+    handler: {
+        kind: any;
+    };
+    actor: {
+        userId: any;
+        provider: any;
+        isAuthenticated: any;
+        isGuest: any;
+    };
+} | {
+    credential: {
+        kind: string;
+        id: any;
+        name: any;
+    };
+    requirement: string;
+    handler: {
+        kind: any;
+    };
+    actor: {
+        userId: any;
+        provider: any;
+        isAuthenticated: any;
+        isGuest: any;
+    };
+};
 export declare function emitAuthDeniedLog(database: LooseRecord, details: LooseRecord): void;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function normalizeSimulatedText(value: null | undefined): string | null;
@@ -127,6 +158,8 @@ export declare function verifyPasswordResetCode(database: LooseRecord, _session:
     error?: undefined;
 }>;
 export declare function confirmPasswordReset(database: LooseRecord, _session: LooseRecord, code: any, newPassword: string): Promise<any>;
+export declare function unlinkCurrentAuthUser(database: LooseRecord, context: LooseRecord): Promise<any>;
+export declare function deleteCurrentAuthUser(database: LooseRecord, context: LooseRecord): Promise<any>;
 export declare function passwordResetMailBody(link: string): {
     textBody: string;
     htmlBody: string;
@@ -258,6 +291,6 @@ export declare function resolvePasswordResetConfig(config: LooseRecord): {
     origin: string;
     ttlMs: number;
 };
-export declare function createAnonymousAuthTables(sqlite: LooseRecord, authConfig?: LooseRecord | null): any;
+export declare function createAnonymousAuthTables(sqlite: LooseRecord, _authConfig?: LooseRecord | null): any;
 export {};
 //# sourceMappingURL=auth-runtime.d.ts.map

@@ -161,6 +161,13 @@ const MIGRATED_RUNTIME_MODULES = [
   // entry until this ticket — so finding it here is the evidence that deleting that list did not
   // quietly narrow this census to the file's exports. The floor is 80 against 107 declarations.
   { file: "server-runtime-source.js", atLeast: 80, sentinel: "sendJsonWithCompletion" },
+  // Auth admission is carried as a complete runtime module so the public and
+  // deployed scope/guard validation paths share one matcher and one marker.
+  { file: "auth-admission.js", atLeast: 10, sentinel: "scopeGrantMatches" },
+  // User-owned Access-key storage, lifecycle, verification, and bounded
+  // admission throttles ship as one runtime domain. The private selector
+  // fingerprint is security-sensitive and must remain visible to the walker.
+  { file: "access-keys-runtime.js", atLeast: 20, sentinel: "accessKeySelectorFingerprint" },
   { file: "inspection-sql.js", atLeast: 15, sentinel: "skipSqlQuotedOrCommented" },
   { file: "log-index-guard.js", atLeast: 3, sentinel: "readSqlIdentifier" },
   // Batch 2. `mail-runtime`'s sentinel is private for the same reason the log-index guard's is: it
@@ -424,6 +431,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // The normalized public-tree contract, shared with the client build. Path normalization for
     // static assets, and nothing these guards read.
     "public-tree-contract.js",
+    // Runtime-owned validation for the five bounded operator action envelopes. It is carried by
+    // the boot program but owns no database statement, SQL walker, dialect, or normalization.
+    "cli/access-key-operator-envelope.js",
   ]);
 
   const carried = runtimeGraphModules();

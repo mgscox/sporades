@@ -89,6 +89,7 @@ import { isPromiseLike } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { deserializeRow } from "./stored-value-coding.js";
+import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 
 // The monolith's own alias, redeclared rather than imported: it is a type, so it is erased before
 // either bundle is built and there is no binding to collide with.
@@ -443,7 +444,7 @@ function privilegedAuditLevelForOutcome(outcome: string) {
 }
 
 export function safePrivilegedAuditErrorCode(value: any, outcome = "started") {
-  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  const source = value && typeof value === "object" ? ("code" in value ? value.code : null) : value;
   if (source === null || source === undefined || source === "") {
     if (outcome === "errored") {
       return "UNKNOWN_ERROR";
@@ -577,22 +578,26 @@ export function createTableAclContext(context: any, database: any) {
   };
 }
 
-export function createFileAclContext(auth: LooseRecord, database: LooseRecord) {
+export function createFileAclContext(auth: LooseRecord, database: LooseRecord, credential: LooseRecord = { kind: "session" }) {
   // A File request has no trusted Capsule handler context. Its policy gets the
   // same constrained, read-only ACL decisions as a table rule, but only the
   // authenticated actor: no db API, mutable Teams API, request, or privileged
   // capability can cross this boundary.
-  const context = { auth: Object.freeze({ ...auth }) };
+  const context = {
+    auth: Object.freeze({ ...auth }),
+    credential: Object.freeze({ ...credential }),
+  };
   return Object.freeze({
     auth: context.auth,
+    credential: context.credential,
     acl: createAclHelpers(database, context),
   });
 }
 
-export function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord) {
+export function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord, credential: LooseRecord = { kind: "session" }) {
   const rule = database.fileAcl?.resolve?.(operation);
   if (!rule) return false;
-  const context = createFileAclContext(auth, database);
+  const context = createFileAclContext(auth, database, credential);
   const input = Object.freeze({
     ctx: context,
     operation,
@@ -979,6 +984,7 @@ function emitFileAclDeniedLog(database: LooseRecord, { context, operation, row }
         isAuthenticated: context?.auth?.isAuthenticated ?? null,
         isGuest: context?.auth?.isGuest ?? null,
       },
+      ...accessKeyCredentialLogAttribution(context),
     },
   });
 }
@@ -1000,6 +1006,7 @@ function createAclDenialLogData({ context, table, operation, row = null, previou
       isAuthenticated: context?.auth?.isAuthenticated ?? null,
       isGuest: context?.auth?.isGuest ?? null,
     },
+    ...accessKeyCredentialLogAttribution(context),
     row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
   };
 }
