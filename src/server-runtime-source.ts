@@ -2044,33 +2044,47 @@ export async function runRuntimeAccessKeyOperatorAction(database: LooseRecord, a
   const boundedExecutionSource = ["operator-cli-dev", "operator-cli-container", "operator-cli-hosted"].includes(executionSource)
     ? executionSource
     : "runtime-action";
-  const context = createMutationContext(database, {
-    userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
-    isAuthenticated: false, isGuest: false, provider: "operator",
-  }, { ordinaryCredential: false });
-  Object.defineProperty(context, "__accessKeyOperatorExecutionSource", { value: boundedExecutionSource, enumerable: false });
   const metadata = {
     executionSource: boundedExecutionSource,
     ...(typeof boundedInput.userId === "string" ? { ownerUserId: boundedInput.userId } : {}),
     ...(typeof boundedInput.keyId === "string" ? { accessKeyId: boundedInput.keyId } : {}),
   };
+  let context: LooseRecord | undefined;
   try {
-    return await context.privileged.run({
-      operation: "access-keys.operator-dispatch",
-      surface: boundedExecutionSource,
-      targetResourceKind: "access-key",
-      metadata: { ...metadata, requestedAction: action },
-    }, async (privilegedContext: LooseRecord) => {
-      switch (action) {
-        case "access-keys.list": return await privilegedContext.accessKeys.list(boundedInput.userId, boundedInput.options);
-        case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(boundedInput.keyId);
-        case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(boundedInput.keyId);
-        case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(boundedInput.userId);
-        case "access-keys.delete": return await privilegedContext.accessKeys.delete(boundedInput.keyId);
-        default: throw commandError("Unsupported Access-key operator action.", "Upgrade the Sporades CLI and generated Bundle together.", "ACCESS_KEY_ACTION_UNSUPPORTED");
+    return await database.adapter.withTransaction(async (transactionAdapter: LooseRecord) => {
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      let actionFailed = false;
+      try {
+        context = createMutationContext(transactionDatabase, {
+          userId: "__operator__", displayName: "Sporades operator", email: null, picture: null,
+          isAuthenticated: false, isGuest: false, provider: "operator",
+        }, { ordinaryCredential: false });
+        Object.defineProperty(context, "__accessKeyOperatorExecutionSource", { value: boundedExecutionSource, enumerable: false });
+        return await context.privileged.run({
+          operation: "access-keys.operator-dispatch",
+          surface: boundedExecutionSource,
+          targetResourceKind: "access-key",
+          metadata: { ...metadata, requestedAction: action },
+        }, async (privilegedContext: LooseRecord) => {
+          switch (action) {
+            case "access-keys.list": return await privilegedContext.accessKeys.list(boundedInput.userId, boundedInput.options);
+            case "access-keys.inspect": return await privilegedContext.accessKeys.inspect(boundedInput.keyId);
+            case "access-keys.revoke": return await privilegedContext.accessKeys.revoke(boundedInput.keyId);
+            case "access-keys.revoke-all": return await privilegedContext.accessKeys.revokeAll(boundedInput.userId);
+            case "access-keys.delete": return await privilegedContext.accessKeys.delete(boundedInput.keyId);
+            default: throw commandError("Unsupported Access-key operator action.", "Upgrade the Sporades CLI and generated Bundle together.", "ACCESS_KEY_ACTION_UNSUPPORTED");
+          }
+        });
+      } catch (error) {
+        actionFailed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(transactionDatabase, context, actionFailed, actionFailed);
       }
     });
   } catch (error: any) {
+    database.rowCache.clear();
+    await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.code === "PRIVILEGED_RUN_FAILED" && publicAccessKeyManagementError(error.cause)) throw error.cause;
     throw error;
   }

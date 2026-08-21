@@ -135,6 +135,56 @@ test("Privileged Access-key controls expose only metadata and retirement", async
   }
 });
 
+test("operator retirement rolls back when its terminal audit cannot be emitted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-operator-audit-rollback-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "operator-audit-rollback" }, {
+    accessKeys: { scopes: ["requests:read"] },
+    mutations: {
+      issue: mutation((ctx, name) => ctx.accessKeys.issue({ name, grants: ["requests:read"] })),
+    },
+  });
+  await database.init();
+  try {
+    await database.adapter.insertAuthUser({
+      id: owner.userId, createdAt: "2026-08-20T12:00:00.000Z", displayName: owner.displayName,
+      email: owner.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: owner.provider,
+    });
+    const issued = await runMutation(database, owner, "issue", ["audit rollback"]);
+    assert.equal(issued.ok, true, JSON.stringify(issued));
+
+    const originalWithDatabase = database.log.withDatabase.bind(database.log);
+    database.log.withDatabase = (adapter) => {
+      const transactionLog = originalWithDatabase(adapter);
+      return {
+        ...transactionLog,
+        emit(input) {
+          if (input?.data?.operation === "access-keys.operator-dispatch" && input?.data?.outcome === "completed") {
+            throw new Error("simulated operator terminal audit failure");
+          }
+          return transactionLog.emit(input);
+        },
+      };
+    };
+    try {
+      await assert.rejects(runRuntimeAccessKeyOperatorAction(database, "access-keys.revoke", {
+        keyId: issued.data.accessKey.id,
+      }, "operator-cli-dev"), (error) => error.code === "PRIVILEGED_AUDIT_EMISSION_FAILED");
+    } finally {
+      database.log.withDatabase = originalWithDatabase;
+    }
+
+    const afterFailure = await database.adapter.findAccessKeyRecordById(issued.data.accessKey.id);
+    assert.equal(afterFailure.revokedAt, null, "retirement must roll back with its terminal audit");
+    const retried = await runRuntimeAccessKeyOperatorAction(database, "access-keys.revoke", {
+      keyId: issued.data.accessKey.id,
+    }, "operator-cli-dev");
+    assert.equal(retried.accessKey.status, "revoked", "the failed operator call must remain safe to retry");
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("failed runtime initialization does not publish its Access-key scope vocabulary", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-scope-publication-"));
   const databasePath = path.join(dir, "data.db");
