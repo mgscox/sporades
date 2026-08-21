@@ -2039,7 +2039,11 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
   grantPrivilegedAccessKeyAccess(privilegedContext);
-  privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
+  privilegedContext.accessKeys = createPrivilegedAccessKeysApi(
+    database,
+    () => holder.current,
+    (transactionAdapter: LooseRecord) => createTransactionDatabase(database, transactionAdapter),
+  );
   privilegedContext.mail = database.mail;
   return privilegedContext;
 }

@@ -202,6 +202,65 @@ test("operator retirement rolls back when its terminal audit cannot be emitted",
   }
 });
 
+test("lifecycle Privileged retirement rolls back when its action audit cannot be emitted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-lifecycle-audit-rollback-"));
+  const databasePath = path.join(dir, "data.db");
+  const seed = await openDevDatabase(databasePath, "", {}, { name: "lifecycle-audit-rollback" }, {
+    accessKeys: { scopes: ["requests:read"] },
+  });
+  await seed.init();
+  try {
+    await seed.adapter.insertAuthUser({
+      id: owner.userId, createdAt: "2026-08-20T12:00:00.000Z", displayName: owner.displayName,
+      email: owner.email, picture: null, isAuthenticated: 1, isGuest: 0, provider: owner.provider,
+    });
+    await seed.adapter.issueAccessKeyRecord({
+      id: "lifecycle-audit-key", ownerUserId: owner.userId, name: "lifecycle audit", reservedName: "lifecycle audit",
+      grantsJson: JSON.stringify(["requests:read"]), secretVersion: 1, selector: "lifecycle-audit-selector",
+      verifierDigest: "0".repeat(64), lifecycleRevision: 1, createdAt: "2026-08-20T12:00:00.000Z", expiresAt: null,
+    });
+  } finally {
+    await seed.close();
+  }
+
+  const lifecycle = await openDevDatabase(databasePath, "", {}, { name: "lifecycle-audit-rollback" }, {
+    accessKeys: { scopes: ["requests:read"] },
+    hooks: {
+      init: (ctx) => ctx.privileged.run({
+        operation: "access-keys.lifecycle-revoke", targetResourceKind: "access-key",
+      }, (privilegedCtx) => privilegedCtx.accessKeys.revoke("lifecycle-audit-key")),
+    },
+  });
+  const rejectCompletedActionAudit = (emit) => (input) => {
+    if (input?.data?.operation === "access-keys.revoke" && input?.data?.outcome === "completed") {
+      throw new Error("simulated lifecycle action audit failure");
+    }
+    return emit(input);
+  };
+  lifecycle.log.emit = rejectCompletedActionAudit(lifecycle.log.emit.bind(lifecycle.log));
+  const originalWithDatabase = lifecycle.log.withDatabase.bind(lifecycle.log);
+  lifecycle.log.withDatabase = (adapter) => {
+    const transactionLog = originalWithDatabase(adapter);
+    return { ...transactionLog, emit: rejectCompletedActionAudit(transactionLog.emit.bind(transactionLog)) };
+  };
+  try {
+    await assert.rejects(lifecycle.init(), (error) => error.code === "PRIVILEGED_RUN_FAILED");
+  } finally {
+    await lifecycle.close();
+  }
+
+  const inspection = await openDevDatabase(databasePath, "", {}, { name: "lifecycle-audit-rollback" }, null, {
+    runtimeActionOnly: true,
+  });
+  try {
+    const retained = await inspection.adapter.findAccessKeyRecordById("lifecycle-audit-key");
+    assert.equal(retained.revokedAt, null, "retirement must roll back with its exact action audit");
+  } finally {
+    await inspection.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("failed runtime initialization does not publish its Access-key scope vocabulary", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-access-key-scope-publication-"));
   const databasePath = path.join(dir, "data.db");
@@ -261,19 +320,26 @@ test("detached Privileged Access-key reads and mutations lose authority when the
     });
     const originalList = database.adapter.listAccessKeyRecordsForOwner.bind(database.adapter);
     const originalFind = database.adapter.findAccessKeyRecordById.bind(database.adapter);
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
     database.adapter.listAccessKeyRecordsForOwner = async (...args) => { await readGate; return originalList(...args); };
-    database.adapter.findAccessKeyRecordById = async (...args) => { await lookupGate; return originalFind(...args); };
-    await database.init();
+    database.adapter.withTransaction = (callback) => originalWithTransaction((transactionAdapter) => {
+      const transactionFind = transactionAdapter.findAccessKeyRecordById.bind(transactionAdapter);
+      transactionAdapter.findAccessKeyRecordById = async (...args) => { await lookupGate; return transactionFind(...args); };
+      return callback(transactionAdapter);
+    });
+    const initialization = database.init();
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseRead(); releaseLookup();
+    await initialization;
     retainedContext.__privilegedRunActive = true;
     const forgedRead = retainedAccessKeys.list(owner.userId);
     const forgedRevoke = retainedAccessKeys.revoke("detached-key");
-    releaseRead(); releaseLookup();
     const results = await Promise.allSettled([detachedRead, detachedRevoke, forgedRead, forgedRevoke]);
     for (const result of results) {
       assert.equal(result.status, "rejected");
       assert.equal(result.reason.code, "FORBIDDEN");
     }
-    database.adapter.findAccessKeyRecordById = originalFind;
+    database.adapter.withTransaction = originalWithTransaction;
     assert.equal((await originalFind("detached-key")).revokedAt, null, "detached destructive work must not commit");
   } finally {
     await database.close();

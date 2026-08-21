@@ -1944,7 +1944,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
     privilegedContext.teams = createPrivilegedTeamsApi(database, () => holder.current);
     grantPrivilegedAccessKeyAccess(privilegedContext);
-    privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current);
+    privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current, (transactionAdapter) => createTransactionDatabase(database, transactionAdapter));
     privilegedContext.mail = database.mail;
     return privilegedContext;
 }

@@ -203,7 +203,11 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
   };
 }
 
-export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+export function createPrivilegedAccessKeysApi(
+  database: LooseRecord,
+  contextGetter: () => LooseRecord,
+  transactionDatabaseFactory?: (adapter: LooseRecord) => LooseRecord,
+) {
   const requireContext = () => {
     const current = contextGetter();
     if (!current || !activePrivilegedAccessKeyContexts.has(current) || current.signal?.aborted) {
@@ -220,10 +224,10 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
     async list(ownerUserId: unknown, options: unknown = {}) {
       const owner = requireId(ownerUserId);
       const context = requireContext();
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.list", { ownerUserId: owner }, async () => {
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.list", { ownerUserId: owner }, async (operationDatabase) => {
         const normalized = normalizeAccessKeyListOptions(options);
-        const rows = await database.adapter.listAccessKeyRecordsForOwner(owner);
-        const page = accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
+        const rows = await operationDatabase.adapter.listAccessKeyRecordsForOwner(owner);
+        const page = accessKeyListPage(rows, operationDatabase.accessKeyScopes ?? [], operationDatabase.clock.now(), normalized);
         requireContext();
         return { ...page, accessKeys: page.accessKeys.map((item) => ({ ...item, ownerUserId: owner })) };
       });
@@ -232,47 +236,47 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
       const context = requireContext();
       requireId(id);
       const target: LooseRecord = { accessKeyId: id };
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", target, async () => {
-        const row = await database.adapter.findAccessKeyRecordById(id);
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.inspect", target, async (operationDatabase) => {
+        const row = await operationDatabase.adapter.findAccessKeyRecordById(id);
         if (row?.ownerUserId) target.ownerUserId = row.ownerUserId;
         requireContext();
         if (!row) throw accessKeyNotFoundError();
-        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], database.clock.now().toISOString()) };
+        return { accessKey: privilegedAccessKeySummary(row, operationDatabase.accessKeyScopes ?? [], operationDatabase.clock.now().toISOString()) };
       });
     },
     async revoke(id: unknown) {
       const context = requireContext();
       requireId(id);
       const target: LooseRecord = { accessKeyId: id };
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", target, async () => {
-        const existing = await database.adapter.findAccessKeyRecordById(id);
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke", target, async (operationDatabase) => {
+        const existing = await operationDatabase.adapter.findAccessKeyRecordById(id);
         if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         requireContext();
         if (!existing) throw accessKeyNotFoundError();
-        const row = await withAccessKeyTransaction(database, async (adapter) => {
+        const row = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
           requireContext();
           const result = await adapter.revokeAccessKeyRecord({
             ownerUserId: existing.ownerUserId,
             id,
-            revocationTime: () => database.clock.now().toISOString(),
+            revocationTime: () => operationDatabase.clock.now().toISOString(),
             revocationCause: "operator",
           });
           requireContext();
           return result;
         });
         if (!row) throw accessKeyNotFoundError();
-        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], row.revokedAt) };
-      });
+        return { accessKey: privilegedAccessKeySummary(row, operationDatabase.accessKeyScopes ?? [], row.revokedAt) };
+      }, { atomicWrite: true, transactionDatabaseFactory });
     },
     async revokeAll(ownerUserId: unknown) {
       const owner = requireId(ownerUserId);
       const context = requireContext();
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
-        const outcome = await withAccessKeyTransaction(database, async (adapter) => {
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async (operationDatabase) => {
+        const outcome = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
           requireContext();
           const result = await adapter.bulkRevokeAccessKeysForOwner({
             ownerUserId: owner,
-            revocationTime: () => database.clock.now().toISOString(),
+            revocationTime: () => operationDatabase.clock.now().toISOString(),
             revocationCause: "operator",
           });
           requireContext();
@@ -286,20 +290,20 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
             revokedAt: outcome.revokedAt,
             revocationCause: "operator",
             lifecycleRevision: Number(row.lifecycleRevision) + 1,
-          }, database.accessKeyScopes ?? [], outcome.revokedAt)),
+          }, operationDatabase.accessKeyScopes ?? [], outcome.revokedAt)),
         };
-      });
+      }, { atomicWrite: true, transactionDatabaseFactory });
     },
     async delete(id: unknown) {
       const context = requireContext();
       requireId(id);
       const target: LooseRecord = { accessKeyId: id };
-      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", target, async () => {
-        const existing = await database.adapter.findAccessKeyRecordById(id);
+      return runPrivilegedAccessKeyOperation(database, context, "access-keys.delete", target, async (operationDatabase) => {
+        const existing = await operationDatabase.adapter.findAccessKeyRecordById(id);
         if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         requireContext();
         if (!existing) throw accessKeyNotFoundError();
-        const outcome = await withAccessKeyTransaction(database, async (adapter) => {
+        const outcome = await withAccessKeyTransaction(operationDatabase, async (adapter) => {
           requireContext();
           const result = await adapter.deleteRevokedAccessKeyRecord({ ownerUserId: existing.ownerUserId, id });
           requireContext();
@@ -310,7 +314,7 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
           throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
         }
         return { id, ownerUserId: existing.ownerUserId, deleted: true };
-      });
+      }, { atomicWrite: true, transactionDatabaseFactory });
     },
   };
 }
@@ -328,7 +332,11 @@ async function runPrivilegedAccessKeyOperation<Result>(
   context: LooseRecord,
   operation: string,
   target: LooseRecord,
-  callback: () => Promise<Result>,
+  callback: (operationDatabase: LooseRecord) => Promise<Result>,
+  options: {
+    atomicWrite?: boolean;
+    transactionDatabaseFactory?: (adapter: LooseRecord) => LooseRecord;
+  } = {},
 ): Promise<Result> {
   const details = () => ({
     actorKind: "privileged-server-role",
@@ -339,20 +347,42 @@ async function runPrivilegedAccessKeyOperation<Result>(
     metadata: { ...target, actionOwned: true },
   });
   const outerMetadata = (database.__rootDatabase ?? database).__privilegedAuditMetadataByContext?.get(context);
-  let result: Result;
+  const execute = async (operationDatabase: LooseRecord, auditErrorsInTransaction = true) => {
+    let result: Result;
+    try {
+      result = await callback(operationDatabase);
+    } catch (error: any) {
+      if (outerMetadata) Object.assign(outerMetadata, target);
+      if (!auditErrorsInTransaction) throw error;
+      const explicitCode = privilegedAccessKeySafeErrorCode(error);
+      const event = await operationDatabase.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
+      recordPrivilegedAccessKeyAuditForRollback(operationDatabase, context, event);
+      throw error;
+    }
+    if (outerMetadata) Object.assign(outerMetadata, target);
+    const event = await operationDatabase.audit.emit({ ...details(), outcome: "completed" });
+    recordPrivilegedAccessKeyAuditForRollback(operationDatabase, context, event);
+    return result;
+  };
+  if (!options.atomicWrite || database.__transactionActive) return execute(database);
+  if (typeof options.transactionDatabaseFactory !== "function") {
+    throw new Error("Privileged Access-key writes require a runtime transaction database factory.");
+  }
   try {
-    result = await callback();
+    return await database.adapter.withTransaction((adapter: LooseRecord) =>
+      execute(options.transactionDatabaseFactory!(adapter), false));
   } catch (error: any) {
     if (outerMetadata) Object.assign(outerMetadata, target);
-    const explicitCode = typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
-    const event = await database.audit.emit({ ...details(), outcome: "errored", safeErrorCode: explicitCode });
+    const event = await database.audit.emit({
+      ...details(), outcome: "errored", safeErrorCode: privilegedAccessKeySafeErrorCode(error),
+    });
     recordPrivilegedAccessKeyAuditForRollback(database, context, event);
     throw error;
   }
-  if (outerMetadata) Object.assign(outerMetadata, target);
-  const event = await database.audit.emit({ ...details(), outcome: "completed" });
-  recordPrivilegedAccessKeyAuditForRollback(database, context, event);
-  return result;
+}
+
+function privilegedAccessKeySafeErrorCode(error: any) {
+  return typeof error?.code === "string" && /^[A-Z0-9_:-]{1,80}$/.test(error.code) ? error.code : "UNKNOWN_ERROR";
 }
 
 function recordPrivilegedAccessKeyAuditForRollback(database: LooseRecord, context: LooseRecord, event: LooseRecord) {

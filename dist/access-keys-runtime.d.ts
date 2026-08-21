@@ -83,7 +83,7 @@ export declare function createCurrentUserAccessKeysApi(database: LooseRecord, co
         deleted: boolean;
     }>;
 };
-export declare function createPrivilegedAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord): {
+export declare function createPrivilegedAccessKeysApi(database: LooseRecord, contextGetter: () => LooseRecord, transactionDatabaseFactory?: (adapter: LooseRecord) => LooseRecord): {
     list(ownerUserId: unknown, options?: unknown): Promise<{
         accessKeys: {
             ownerUserId: string;
