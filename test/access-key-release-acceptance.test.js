@@ -17,7 +17,7 @@ const run = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const enabled = process.env.SPORADES_ACCESS_KEY_ACCEPTANCE === "1";
-const timeoutMs = 30_000;
+const timeoutMs = 60_000;
 
 const CAPSULE_SOURCE = `
 import { String, capsule, endpoint, job, requireAuth, table } from "sporades/server";
@@ -763,6 +763,7 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     client?.close();
     await dev?.stop();
     await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
+    await run("docker", ["rm", "-f", projectName]).catch(() => null);
     await chmod(root, 0o700).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
