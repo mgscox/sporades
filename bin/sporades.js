@@ -28533,7 +28533,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.8.7";
+var CLI_VERSION = "0.9.0";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
