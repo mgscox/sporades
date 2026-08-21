@@ -75,8 +75,8 @@ async function upload(database, baseUrl, auth, pathName, body) {
   return pending.data.file;
 }
 
-async function manage(database, auth, type, fields) {
-  const result = await runClientAccessKeyOperation(database, auth, { type, ...fields });
+async function manage(database, auth, sessionToken, type, fields) {
+  const result = await runClientAccessKeyOperation(database, auth, { type, ...fields }, sessionToken);
   assert.equal(result.error, null, JSON.stringify(result.error));
   return result.data;
 }
@@ -104,10 +104,11 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
   const owner = linkedAuth("file-owner");
   const other = linkedAuth("file-other");
   const sessionToken = "file-owner-session";
+  const otherSessionToken = "file-other-session";
   let server;
   try {
     await seedUser(database, owner, sessionToken);
-    await seedUser(database, other);
+    await seedUser(database, other, otherSessionToken);
     server = await startFileServer(database);
     const file = await upload(database, server.baseUrl, owner, "/private/canary.txt", "private canary");
     const fileUrl = `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`;
@@ -122,7 +123,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     assert.equal(missing.headers.get("www-authenticate"), 'Bearer realm="sporades"');
     assert.equal(missing.headers.get("cache-control"), "no-store");
 
-    const allowed = await manage(database, owner, "accessKeys.issue", {
+    const allowed = await manage(database, owner, sessionToken, "accessKeys.issue", {
       input: { name: "file-reader", grants: ["files:*"] },
     });
     const bearerResponse = await fetch(fileUrl, { headers: { authorization: `Bearer ${allowed.token}` } });
@@ -131,7 +132,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     assert.equal(bearerResponse.headers.get("cache-control"), "private, no-store");
     assert.equal(bearerResponse.headers.get("pragma"), "no-cache");
 
-    const insufficient = await manage(database, owner, "accessKeys.issue", {
+    const insufficient = await manage(database, owner, sessionToken, "accessKeys.issue", {
       input: { name: "wrong-scope", grants: ["other:read"] },
     });
     const scopeDenied = await fetch(fileUrl, { headers: { authorization: `Bearer ${insufficient.token}` } });
@@ -146,7 +147,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     assert.equal(JSON.stringify(scopeDenialLog).includes(insufficient.accessKey.id), false);
     assert.equal(JSON.stringify(scopeDenialLog).includes(insufficient.accessKey.name), false);
 
-    const otherKey = await manage(database, other, "accessKeys.issue", {
+    const otherKey = await manage(database, other, otherSessionToken, "accessKeys.issue", {
       input: { name: "foreign-reader", grants: ["files:read"] },
     });
     const ownerDenied = await fetch(fileUrl, { headers: { authorization: `Bearer ${otherKey.token}` } });
@@ -165,7 +166,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
       assert.equal(denied.headers.get("cache-control"), "no-store");
     }
 
-    const rotated = await manage(database, owner, "accessKeys.rotate", {
+    const rotated = await manage(database, owner, sessionToken, "accessKeys.rotate", {
       accessKeyId: allowed.accessKey.id,
       options: { lifecycleRevision: allowed.accessKey.lifecycleRevision },
     });
@@ -183,7 +184,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     };
     const inFlightResponse = fetch(fileUrl, { headers: { authorization: `Bearer ${rotated.token}` } });
     await admittedRead;
-    await manage(database, owner, "accessKeys.revoke", { accessKeyId: allowed.accessKey.id });
+    await manage(database, owner, sessionToken, "accessKeys.revoke", { accessKeyId: allowed.accessKey.id });
     releaseRead();
     const admittedBeforeRevocation = await inFlightResponse;
     assert.equal(admittedBeforeRevocation.status, 200);
@@ -191,7 +192,7 @@ test("private File Bearer admission is explicit, scoped, provenance-aware, and l
     database.fileStorage.readFileVersion = originalReadFileVersion;
     assert.equal((await fetch(fileUrl, { headers: { authorization: `Bearer ${rotated.token}` } })).status, 401);
 
-    const expiring = await manage(database, owner, "accessKeys.issue", {
+    const expiring = await manage(database, owner, sessionToken, "accessKeys.issue", {
       input: { name: "expiring-reader", grants: ["files:read"], expiresAt: "2099-01-01T00:00:00.000Z" },
     });
     const originalNow = database.clock.now;
@@ -234,7 +235,7 @@ test("an unconfigured private File route never interprets a Bearer-looking heade
     await seedUser(database, owner, sessionToken);
     server = await startFileServer(database);
     const file = await upload(database, server.baseUrl, owner, "/private/unconfigured.txt", "session only");
-    const key = await manage(database, owner, "accessKeys.issue", { input: { name: "ignored-bearer" } });
+    const key = await manage(database, owner, sessionToken, "accessKeys.issue", { input: { name: "ignored-bearer" } });
     const fileUrl = `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`;
     const ignored = await fetch(fileUrl, { headers: { authorization: `Bearer ${key.token}` } });
     assert.equal(ignored.status, 404);
@@ -265,12 +266,13 @@ test("an unscoped File opt-in leaves authorization to ownership and File ACL pol
     files: { storagePath: path.join(dir, "files") },
   }, definition);
   const owner = linkedAuth("unscoped-owner");
+  const sessionToken = "unscoped-owner-session";
   let server;
   try {
-    await seedUser(database, owner);
+    await seedUser(database, owner, sessionToken);
     server = await startFileServer(database);
     const file = await upload(database, server.baseUrl, owner, "/private/unscoped.txt", "owner policy");
-    const key = await manage(database, owner, "accessKeys.issue", {
+    const key = await manage(database, owner, sessionToken, "accessKeys.issue", {
       input: { name: "unscoped-reader", grants: ["unrelated:work"] },
     });
     const fileUrl = `${server.baseUrl}/__sporades/files/private/${file.id}?v=${encodeURIComponent(file.version)}`;
