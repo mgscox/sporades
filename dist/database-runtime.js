@@ -702,10 +702,25 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             ]);
             return thenIfPromise(sequence, () => outcome);
         },
-        listAccessKeyRecordsForOwner(ownerUserId) {
-            return this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
-                "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
-                "WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC")).all(ownerUserId);
+        listAccessKeyRecordsForOwner(ownerUserId, options = {}) {
+            let sessionEligible = true;
+            let rows = [];
+            const sequence = chainMaybePromise([
+                () => {
+                    if (typeof options.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof options.sessionValidationTime === "function"
+                        ? options.sessionValidationTime()
+                        : options.checkedAt;
+                    return thenIfPromise(this.prepare(sql("SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?")).get(options.sessionToken, ownerUserId, checkedAt), (session) => {
+                        sessionEligible = Boolean(session);
+                    });
+                },
+                () => !sessionEligible ? undefined : thenIfPromise(this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
+                    "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
+                    "WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC")).all(ownerUserId), (result) => { rows = result; }),
+            ]);
+            return thenIfPromise(sequence, () => sessionEligible ? rows : { status: "session-ineligible" });
         },
         findAccessKeyRecordById(id) {
             return this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
@@ -726,13 +741,24 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             let existing = null;
             let revoked = false;
             let revokedAt = input.revokedAt;
+            let sessionEligible = true;
             const sequence = chainMaybePromise([
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 " +
                     "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
                 () => {
                     revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
                 },
-                () => thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
+                () => {
+                    if (typeof input.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof input.sessionValidationTime === "function"
+                        ? input.sessionValidationTime()
+                        : revokedAt;
+                    return thenIfPromise(this.prepare(sql("SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+                        sessionEligible = Boolean(session);
+                    });
+                },
+                () => !sessionEligible ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
                 () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, " +
                     "[verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, " +
                     "[lifecycleRevision] = [lifecycleRevision] + 1 " +
@@ -743,7 +769,7 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                     "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
                 () => !existing ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
             ]);
-            return thenIfPromise(sequence, () => existing);
+            return thenIfPromise(sequence, () => sessionEligible ? existing : { status: "session-ineligible" });
         },
         rotateAccessKeyRecord(input) {
             let existing = null;
@@ -794,7 +820,18 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             let status = "not-found";
             const sequence = chainMaybePromise([
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
-                () => thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => {
+                () => {
+                    if (typeof input.sessionToken !== "string")
+                        return;
+                    const checkedAt = typeof input.sessionValidationTime === "function"
+                        ? input.sessionValidationTime()
+                        : input.checkedAt;
+                    return thenIfPromise(this.prepare(sql("SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?")).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+                        if (!session)
+                            status = "session-ineligible";
+                    });
+                },
+                () => status === "session-ineligible" ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => {
                     existing = row ?? null;
                     status = !existing ? "not-found" : existing.revokedAt ? "ready" : "requires-revoked";
                 }),

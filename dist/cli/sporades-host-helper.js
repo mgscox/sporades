@@ -19,6 +19,16 @@ import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-con
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
+// Published by Cloudflare at https://www.cloudflare.com/ips/ and checked on 2026-08-21.
+// cloudflare-origin routes reject every other peer before trusting CF-Connecting-IP.
+const CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32",
+    "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32",
+]);
 let hostHelperConfig = defaultHostHelperConfig();
 const HOSTED_ACCESS_KEY_ACTIONS = new Set([
     "access-keys.list", "access-keys.inspect", "access-keys.revoke", "access-keys.revoke-all", "access-keys.delete",
@@ -2790,12 +2800,23 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
     await provisionRouteLogFile(route);
+    const cloudflareOrigin = route.tls?.mode === "cloudflare-origin";
     const proxyLine = [
         `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`} {`,
-        `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} {http.request.remote.host}`,
+        `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin
+            ? "{http.request.header.CF-Connecting-IP}"
+            : "{http.request.remote.host}"}`,
         "  }",
     ].join("\n");
-    await applyManagedRoute(lifecycle, route.routeFile, renderRoute(route, renderRunningRouteHandler(route, proxyLine)));
+    const routeHandler = renderRunningRouteHandler(route, proxyLine);
+    const guardedHandler = cloudflareOrigin
+        ? [
+            `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,
+            "respond @sporadesUntrustedCloudflareSource 403",
+            routeHandler,
+        ].join("\n  ")
+        : routeHandler;
+    await applyManagedRoute(lifecycle, route.routeFile, renderRoute(route, guardedHandler));
 }
 function renderRunningRouteHandler(route, proxyLine) {
     const probe = route.runtimeProbe;

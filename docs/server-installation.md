@@ -79,6 +79,9 @@ must be reachable for ACME HTTP/TLS challenges.
 >   through the proxied domain.
 > - Use `--tls cloudflare-origin` and install a Cloudflare origin certificate and
 >   key on the Host server before running `sporades host bootstrap`.
+>   Generated routes in this mode accept only Cloudflare's published origin
+>   networks and forward Cloudflare's single-value `CF-Connecting-IP` as the
+>   runtime's trusted client address. Direct requests to the origin are denied.
 >
 > Ensure your client certificate policy is configured in the Cloudflare dashboard to
 > reflect the certificate provision method you are using to avoid connection errors.

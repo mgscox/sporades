@@ -5317,6 +5317,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
     assert.match(routeContents, /header_up x-sporades-client-address \{http\.request\.remote\.host\}/);
+    assert.doesNotMatch(routeContents, /CF-Connecting-IP|sporadesUntrustedCloudflareSource/);
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
     assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
@@ -6900,10 +6901,16 @@ test("sporades host helper writes explicit Cloudflare origin TLS routes when req
       { cwd: dir, env },
     );
     assert.equal(start.code, 0, start.stderr);
+    const routeContents = await readFile(routeFile, "utf8");
     assert.match(
-      await readFile(routeFile, "utf8"),
+      routeContents,
       /tls .*hosts\/capsules\.example\.dev\/tls\/origin\.crt .*hosts\/capsules\.example\.dev\/tls\/origin\.key/,
     );
+    assert.match(routeContents, /@sporadesUntrustedCloudflareSource not remote_ip .*173\.245\.48\.0\/20/);
+    assert.match(routeContents, /2400:cb00::\/32/);
+    assert.match(routeContents, /respond @sporadesUntrustedCloudflareSource 403/);
+    assert.match(routeContents, /header_up x-sporades-client-address \{http\.request\.header\.CF-Connecting-IP\}/i);
+    assert.doesNotMatch(routeContents, /header_up x-sporades-client-address \{http\.request\.remote\.host\}/);
   });
 });
 

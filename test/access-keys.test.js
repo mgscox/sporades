@@ -190,6 +190,8 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       rotateKeyFromQuery: query((ctx, input) => ctx.accessKeys.rotate(input.id, {
         lifecycleRevision: input.lifecycleRevision,
       })),
+      revokeKeyFromQuery: query((ctx, id) => ctx.accessKeys.revoke(id)),
+      deleteKeyFromQuery: query((ctx, id) => ctx.accessKeys.delete(id)),
     },
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
@@ -378,10 +380,14 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
 
     const rotationCandidate = await runMutation(database, auth, "issueKey", [{ name: "stale-session-rotation" }]);
     assert.equal(rotationCandidate.error, null, JSON.stringify(rotationCandidate.error));
+    const revocationCandidate = await runMutation(database, auth, "issueKey", [{ name: "stale-session-revocation" }]);
+    assert.equal(revocationCandidate.error, null, JSON.stringify(revocationCandidate.error));
     assert.equal(typeof rotationCandidate.data.accessKey.id, "string");
     assert.equal(typeof rotationCandidate.data.accessKey.lifecycleRevision, "number");
     const beforeStaleRotation = await database.adapter.findAccessKeyRecordById(rotationCandidate.data.accessKey.id);
     await database.adapter.deleteAuthSession(sessionTokenFor(auth));
+    const staleList = await runQuery(database, auth, "listKeys");
+    assert.equal(staleList.error.code, "UNAUTHENTICATED", JSON.stringify(staleList));
     const staleRotation = await runQuery(database, auth, "rotateKeyFromQuery", [{
       id: String(rotationCandidate.data.accessKey.id),
       lifecycleRevision: Number(rotationCandidate.data.accessKey.lifecycleRevision),
@@ -392,6 +398,12 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     assert.equal(afterStaleRotation.selector, beforeStaleRotation.selector);
     assert.equal(afterStaleRotation.lifecycleRevision, beforeStaleRotation.lifecycleRevision);
     assert.equal(afterStaleRotation.rotatedAt, null);
+    const staleRevocation = await runQuery(database, auth, "revokeKeyFromQuery", [revocationCandidate.data.accessKey.id]);
+    assert.equal(staleRevocation.error.code, "UNAUTHENTICATED", JSON.stringify(staleRevocation));
+    assert.equal((await database.adapter.findAccessKeyRecordById(revocationCandidate.data.accessKey.id)).revokedAt, null);
+    const staleDeletion = await runQuery(database, auth, "deleteKeyFromQuery", [issued.data.accessKey.id]);
+    assert.equal(staleDeletion.error.code, "UNAUTHENTICATED", JSON.stringify(staleDeletion));
+    assert.ok(await database.adapter.findAccessKeyRecordById(issued.data.accessKey.id));
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

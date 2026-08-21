@@ -142,7 +142,14 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
     async list(options: unknown = {}) {
       const context = requireOwnerSessionContext(contextGetter());
       const normalized = normalizeAccessKeyListOptions(options);
-      const rows = await database.adapter.listAccessKeyRecordsForOwner(context.auth.userId);
+      const rows = await withAccessKeyTransaction(database, (adapter) => adapter.listAccessKeyRecordsForOwner(
+        context.auth.userId,
+        {
+          sessionToken: accessKeyOwnerSessionTokens.get(context),
+          sessionValidationTime: () => database.clock.now().toISOString(),
+        },
+      ));
+      if (!Array.isArray(rows) && rows?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("listing");
       return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
     },
     async revoke(id: unknown) {
@@ -154,7 +161,10 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
           id,
           revocationTime: () => database.clock.now().toISOString(),
           revocationCause: "owner",
+          sessionToken: accessKeyOwnerSessionTokens.get(context),
+          sessionValidationTime: () => database.clock.now().toISOString(),
         }));
+      if (outcome?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("revoking");
       if (!outcome) throw accessKeyNotFoundError();
       const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt);
       await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
@@ -184,13 +194,7 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
             : {}),
         }));
         if (outcome.status === "selector-conflict") continue;
-        if (outcome.status === "session-ineligible") {
-          throw commandError(
-            "Access-key owner Session is no longer active.",
-            "Sign in again before rotating an Access key.",
-            "UNAUTHENTICATED",
-          );
-        }
+        if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("rotating");
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
@@ -204,8 +208,13 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
     async delete(id: unknown) {
       const context = requireOwnerSessionContext(contextGetter());
       if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const outcome = await withAccessKeyTransaction(database, (adapter) =>
-        adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+        ownerUserId: context.auth.userId,
+        id,
+        sessionToken: accessKeyOwnerSessionTokens.get(context),
+        sessionValidationTime: () => database.clock.now().toISOString(),
+      }));
+      if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("deleting");
       if (outcome.status === "not-found") throw accessKeyNotFoundError();
       if (outcome.status === "requires-revoked") {
         throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
@@ -886,6 +895,14 @@ function throwAccessKeyIssueError(status: string): never {
     throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
   }
   throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+}
+
+function throwAccessKeyOwnerSessionInactive(action: string): never {
+  throw commandError(
+    "Access-key owner Session is no longer active.",
+    `Sign in again before ${action} Access keys.`,
+    "UNAUTHENTICATED",
+  );
 }
 
 function accessKeyNotFoundError() {

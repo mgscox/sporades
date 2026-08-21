@@ -1751,6 +1751,82 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key owner reads and destructive operations revalidate their bound Session",
+    async run(adapter) {
+      const sessionToken = "session-stale-access-key-owner-operations";
+      const active = {
+        id: "access-key-stale-session-active",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "stale-session-active",
+        reservedName: "stale-session-active",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "staleowneractive00000",
+        verifierDigest: "f6".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      const history = {
+        ...active,
+        id: "access-key-stale-session-history",
+        name: "stale-session-history",
+        reservedName: "stale-session-history",
+        selector: "staleownerhistory0000",
+        verifierDigest: "f7".repeat(32),
+      };
+      await adapter.insertAuthSession({
+        token: sessionToken,
+        userId: active.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(active)), { status: "issued" });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(history)), { status: "issued" });
+      const historicalRevocation = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+      }));
+      assert.equal(historicalRevocation.id, history.id);
+
+      let releaseSessionRetirement;
+      let sessionRetirementLocked;
+      const sessionRetirementHasLock = new Promise((resolve) => { sessionRetirementLocked = resolve; });
+      const sessionRetirementRelease = new Promise((resolve) => { releaseSessionRetirement = resolve; });
+      const sessionRetirement = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSession(sessionToken);
+        sessionRetirementLocked();
+        await sessionRetirementRelease;
+      });
+      await sessionRetirementHasLock;
+      const sessionOptions = { sessionToken, sessionValidationTime: () => LATER };
+      const listing = adapter.withTransaction((tx) => tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
+      const revocation = adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+        ...sessionOptions,
+      }));
+      const deletion = adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        ...sessionOptions,
+      }));
+      releaseSessionRetirement();
+      const [, listed, revoked, deleted] = await Promise.all([sessionRetirement, listing, revocation, deletion]);
+      assert.equal(listed.status, "session-ineligible");
+      assert.equal(revoked.status, "session-ineligible");
+      assert.equal(deleted.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(active.selector)).id, active.id);
+      assert.equal((await adapter.findAccessKeyRecordById(active.id)).revokedAt, null);
+      assert.equal((await adapter.findAccessKeyRecordById(history.id)).revocationCause, "owner");
+    },
+  },
+  {
     name: "rotated Access-key credentials remain singular for restart proof",
     async run(adapter) {
       const record = {

@@ -6363,7 +6363,14 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
     async list(options = {}) {
       const context = requireOwnerSessionContext(contextGetter());
       const normalized = normalizeAccessKeyListOptions(options);
-      const rows = await database.adapter.listAccessKeyRecordsForOwner(context.auth.userId);
+      const rows = await withAccessKeyTransaction(database, (adapter) => adapter.listAccessKeyRecordsForOwner(
+        context.auth.userId,
+        {
+          sessionToken: accessKeyOwnerSessionTokens.get(context),
+          sessionValidationTime: () => database.clock.now().toISOString()
+        }
+      ));
+      if (!Array.isArray(rows) && rows?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("listing");
       return accessKeyListPage(rows, database.accessKeyScopes ?? [], database.clock.now(), normalized);
     },
     async revoke(id) {
@@ -6373,8 +6380,11 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
         ownerUserId: context.auth.userId,
         id,
         revocationTime: () => database.clock.now().toISOString(),
-        revocationCause: "owner"
+        revocationCause: "owner",
+        sessionToken: accessKeyOwnerSessionTokens.get(context),
+        sessionValidationTime: () => database.clock.now().toISOString()
       }));
+      if (outcome?.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("revoking");
       if (!outcome) throw accessKeyNotFoundError();
       const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt);
       await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
@@ -6402,13 +6412,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
           } : {}
         }));
         if (outcome.status === "selector-conflict") continue;
-        if (outcome.status === "session-ineligible") {
-          throw commandError(
-            "Access-key owner Session is no longer active.",
-            "Sign in again before rotating an Access key.",
-            "UNAUTHENTICATED"
-          );
-        }
+        if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("rotating");
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
@@ -6422,7 +6426,13 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
     async delete(id) {
       const context = requireOwnerSessionContext(contextGetter());
       if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({ ownerUserId: context.auth.userId, id }));
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.deleteRevokedAccessKeyRecord({
+        ownerUserId: context.auth.userId,
+        id,
+        sessionToken: accessKeyOwnerSessionTokens.get(context),
+        sessionValidationTime: () => database.clock.now().toISOString()
+      }));
+      if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("deleting");
       if (outcome.status === "not-found") throw accessKeyNotFoundError();
       if (outcome.status === "requires-revoked") {
         throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
@@ -6999,6 +7009,13 @@ function throwAccessKeyIssueError(status) {
     throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
   }
   throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+}
+function throwAccessKeyOwnerSessionInactive(action) {
+  throw commandError(
+    "Access-key owner Session is no longer active.",
+    `Sign in again before ${action} Access keys.`,
+    "UNAUTHENTICATED"
+  );
 }
 function accessKeyNotFoundError() {
   return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
@@ -15303,12 +15320,28 @@ function createSharedDatabaseAdapterMethods(dialect) {
       ]);
       return thenIfPromise(sequence, () => outcome);
     },
-    listAccessKeyRecordsForOwner(ownerUserId) {
-      return this.prepare(
-        sql(
-          "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC"
-        )
-      ).all(ownerUserId);
+    listAccessKeyRecordsForOwner(ownerUserId, options = {}) {
+      let sessionEligible = true;
+      let rows = [];
+      const sequence = chainMaybePromise([
+        () => {
+          if (typeof options.sessionToken !== "string") return;
+          const checkedAt = typeof options.sessionValidationTime === "function" ? options.sessionValidationTime() : options.checkedAt;
+          return thenIfPromise(this.prepare(sql(
+            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
+          )).get(options.sessionToken, ownerUserId, checkedAt), (session) => {
+            sessionEligible = Boolean(session);
+          });
+        },
+        () => !sessionEligible ? void 0 : thenIfPromise(this.prepare(
+          sql(
+            "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? ORDER BY [createdAt] DESC, [id] DESC"
+          )
+        ).all(ownerUserId), (result) => {
+          rows = result;
+        })
+      ]);
+      return thenIfPromise(sequence, () => sessionEligible ? rows : { status: "session-ineligible" });
     },
     findAccessKeyRecordById(id) {
       return this.prepare(
@@ -15335,6 +15368,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       let existing = null;
       let revoked = false;
       let revokedAt = input.revokedAt;
+      let sessionEligible = true;
       const sequence = chainMaybePromise([
         () => this.prepare(
           sql(
@@ -15344,7 +15378,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
         },
-        () => thenIfPromise(this.prepare(
+        () => {
+          if (typeof input.sessionToken !== "string") return;
+          const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : revokedAt;
+          return thenIfPromise(this.prepare(sql(
+            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
+          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+            sessionEligible = Boolean(session);
+          });
+        },
+        () => !sessionEligible ? void 0 : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
@@ -15367,7 +15410,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           existing = row ?? null;
         })
       ]);
-      return thenIfPromise(sequence, () => existing);
+      return thenIfPromise(sequence, () => sessionEligible ? existing : { status: "session-ineligible" });
     },
     rotateAccessKeyRecord(input) {
       let existing = null;
@@ -15436,7 +15479,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
-        () => thenIfPromise(this.prepare(
+        () => {
+          if (typeof input.sessionToken !== "string") return;
+          const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : input.checkedAt;
+          return thenIfPromise(this.prepare(sql(
+            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
+          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+            if (!session) status = "session-ineligible";
+          });
+        },
+        () => status === "session-ineligible" ? void 0 : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;

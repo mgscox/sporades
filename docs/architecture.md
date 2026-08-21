@@ -288,7 +288,9 @@ Caddy also owns TLS at the Host-server edge:
 
 - `automatic` is the default mode. Caddy obtains and renews public certificates.
 - `cloudflare-origin` uses preinstalled Cloudflare origin certificate files when
-  the Hosted domain is intended to sit behind Cloudflare Edge TLS.
+  the Hosted domain is intended to sit behind Cloudflare Edge TLS. These routes
+  admit only Cloudflare's published origin networks and pass the edge-provided
+  visitor address to the runtime; direct-origin requests are denied.
 
 HTTP and WebSocket traffic both flow through the same generated route. Caddy
 forwards browser requests to the Capsule container; the Capsule runtime decides
