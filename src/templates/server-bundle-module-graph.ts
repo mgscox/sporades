@@ -119,6 +119,17 @@ export async function createServerBundleModuleSource(options: ServerBundleModule
             }));
           },
         },
+        {
+          name: "sporades-node-builtin-prefix",
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /.*/ }, (args) => {
+              if (!args.path.startsWith("node:") && isBuiltin(args.path)) {
+                return { path: `node:${args.path}`, external: true };
+              }
+              return undefined;
+            });
+          },
+        },
       ],
     });
   } catch (error: any) {
@@ -135,10 +146,10 @@ export async function createServerBundleModuleSource(options: ServerBundleModule
   // image that carries no `node_modules`, so the bundle can import nothing but Node's own builtins.
   // Asked of esbuild's metafile rather than of the output text: this is the constraint the
   // `toString()` mechanism satisfied by construction, and it has to keep holding by construction
-  // here too rather than by anyone remembering it. `isBuiltin` rather than a `node:` prefix test,
-  // because an unprefixed `fs` resolves in the container exactly as well as `node:fs` does; `data:`
-  // alongside it because a data URL carries its own bytes and reaches no filesystem, which is how
-  // the Capsule module itself travels.
+  // here too rather than by anyone remembering it. The resolver above canonicalizes dependency
+  // imports such as Stripe's bare `crypto` to `node:crypto`, so the artifact has one explicit
+  // builtin spelling. `data:` is admitted alongside it because a data URL carries its own bytes
+  // and reaches no filesystem, which is how the Capsule module itself travels.
   const unresolved = Object.values(result.metafile.outputs)
     .flatMap((entry) => entry.imports)
     .filter((entry) => entry.external && !isBuiltin(entry.path) && !entry.path.startsWith("data:"))

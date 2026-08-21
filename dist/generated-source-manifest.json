@@ -60,6 +60,10 @@
       "src/server-runtime-source.ts",
       "src/server.ts",
       "src/stored-value-coding.ts",
+      "src/stripe-events-runtime.ts",
+      "src/stripe-payment-config.ts",
+      "src/stripe-payment-integration.ts",
+      "src/stripe-webhook-runtime.ts",
       "src/teams-runtime.ts",
       "src/templates/client-runtime-template.ts",
       "src/templates/scaffold-template.ts",
@@ -68,11 +72,12 @@
       "src/templates/server-bundle-module-graph.ts",
       "src/types/client.d.ts",
       "src/types/server.d.ts",
+      "src/types/stripe.d.ts",
       "src/user-preferences-runtime.ts",
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "df66f07d124ff840abba1528b89df54258ad1a529cc7a55504186426a00ec329"
+    "digest": "63b43c54f3b9b1d9eda3190c15e3fa0edcd35dd7035bffc7f47e78633f792e1e"
   },
   "outputs": {
     "files": [
@@ -286,6 +291,22 @@
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
       "dist/stored-value-coding.js.map",
+      "dist/stripe-events-runtime.d.ts",
+      "dist/stripe-events-runtime.d.ts.map",
+      "dist/stripe-events-runtime.js",
+      "dist/stripe-events-runtime.js.map",
+      "dist/stripe-payment-config.d.ts",
+      "dist/stripe-payment-config.d.ts.map",
+      "dist/stripe-payment-config.js",
+      "dist/stripe-payment-config.js.map",
+      "dist/stripe-payment-integration.d.ts",
+      "dist/stripe-payment-integration.d.ts.map",
+      "dist/stripe-payment-integration.js",
+      "dist/stripe-payment-integration.js.map",
+      "dist/stripe-webhook-runtime.d.ts",
+      "dist/stripe-webhook-runtime.d.ts.map",
+      "dist/stripe-webhook-runtime.js",
+      "dist/stripe-webhook-runtime.js.map",
       "dist/teams-runtime.d.ts",
       "dist/teams-runtime.d.ts.map",
       "dist/teams-runtime.js",
@@ -311,6 +332,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "42870a20f46fd52fb8f457fb3e46b4594efd807e17ce2f405b98f49d2557f9da"
+    "digest": "aec3e572ab40b4624a0c031c6b8df764631b8ee50af74c9a4f45864bcb71721c"
   }
 }

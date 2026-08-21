@@ -26,6 +26,24 @@ test("delayed Jobs wake automatically and retry exhaustion retains one Job histo
  } finally {db.close();await rm(dir,{recursive:true,force:true});}
 });
 
+test("explicit permanent Job failures bypass otherwise configured retries", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-permanent-")); let attempts=0;
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{reject:job(()=>{attempts++;const error=new Error("provider detail must not escape");error.code="STRIPE_CHECKOUT_REJECTED";error.retryable=false;throw error;})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("reject",{},{retry:{maxAttempts:3,delayMs:1}})),get:mutation((ctx,id)=>ctx.jobs.get(id))}});
+ try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]); await new Promise(r=>setTimeout(r,25)); const state=(await runMutation(db,auth,"get",[queued.data.id])).data;
+  assert.equal(state.status,"failed"); assert.equal(state.attempts,1); assert.equal(attempts,1); assert.equal(state.failure.code,"STRIPE_CHECKOUT_REJECTED"); assert.equal(JSON.stringify(state).includes("provider detail"),false);
+ } finally {db.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test("permanent Customer Portal failures are bounded, redacted, and not retried", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-portal-permanent-")); let attempts=0;
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{reject:job(()=>{attempts++;const error=new Error("cus_secret provider detail must not escape");error.code="STRIPE_PORTAL_REJECTED";error.retryable=false;throw error;})},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("reject",{},{retry:{maxAttempts:3,delayMs:1}})),get:mutation((ctx,id)=>ctx.jobs.get(id))}});
+ try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");
+  const queued=await runMutation(db,auth,"enqueue",[]); await new Promise(r=>setTimeout(r,25)); const state=(await runMutation(db,auth,"get",[queued.data.id])).data;
+  assert.equal(state.status,"failed"); assert.equal(state.attempts,1); assert.equal(attempts,1); assert.equal(state.failure.code,"STRIPE_PORTAL_REJECTED"); assert.equal(state.failure.message,"Stripe rejected the Customer Portal request."); assert.equal(JSON.stringify(state).includes("cus_secret"),false);
+ } finally {db.close();await rm(dir,{recursive:true,force:true});}
+});
+
 test("running cancellation preserves success, cancels AbortError, and retries ordinary failure", async () => {
  const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-running-")); let started; let release; let mode="success";
  const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{gate:job(async(ctx)=>{started?.(); await new Promise(r=>release=r); if(mode==="abort"){const e=new Error("aborted");e.name="AbortError";throw e;} if(mode==="fail") throw new Error("ordinary"); return {ok:true};})},mutations:{enqueue:mutation((ctx,o)=>ctx.jobs.enqueue("gate",{},o)),get:mutation((ctx,id)=>ctx.jobs.get(id)),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id))}});

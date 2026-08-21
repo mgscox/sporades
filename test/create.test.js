@@ -111,6 +111,14 @@ test("sporades command --help prints command-specific help", async () => {
   });
 });
 
+test("sporades create help identifies the blank payment foundation as dormant and credential-free", async () => {
+  const result = await runCli(["create", "--help"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /blank template[\s\S]{0,120}dormant/i);
+  assert.match(result.stdout, /credential-free Stripe payment foundation/i);
+  assert.match(result.stdout, /activation[\s\S]{0,100}explicit/i);
+});
+
 test("sporades create writes a runnable React blank scaffold by default", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {
@@ -149,12 +157,14 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(config.client.framework, "react");
     assert.equal(config.client.toolchain, "esbuild");
     assert.equal(config.auth.mode, "anonymous");
+    assert.deepEqual(config.payments, { stripe: { enabled: false } });
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /capsule\(/);
-    assert.match(serverEntry, /schema: \{\}/);
-    assert.match(serverEntry, /queries: \{\}/);
-    assert.match(serverEntry, /mutations: \{\}/);
+    assert.match(serverEntry, /schema: paymentSchema/);
+    assert.match(serverEntry, /queries: paymentQueries/);
+    assert.match(serverEntry, /mutations: paymentMutations/);
+    assert.match(serverEntry, /jobs: paymentJobs/);
     assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
 
     const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
@@ -178,6 +188,126 @@ test("sporades create writes a runnable React blank scaffold by default", async 
       esbuild: true,
       fsevents: true,
     });
+  });
+});
+
+test("sporades create writes the dormant built-in Stripe foundation into every blank Capsule", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "payments-island", "--template", "blank", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+
+    const projectDir = path.join(dir, "payments-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.deepEqual(config.payments, { stripe: { enabled: false } });
+
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    const payments = await readFile(path.join(projectDir, "server", "payments.ts"), "utf8");
+    const paymentClient = await readFile(path.join(projectDir, "client", "payments.ts"), "utf8");
+    const shared = await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8");
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+
+    assert.match(serverEntry, /jobs:\s*paymentJobs/);
+    assert.match(serverEntry, /queries:\s*paymentQueries/);
+    assert.match(serverEntry, /stripeEvents:\s*paymentStripeEvents/);
+    assert.match(payments, /stripeEvent/);
+    assert.match(payments, /paymentStripeEvents\s*=\s*stripeEvent/);
+    assert.match(payments, /switch\s*\(event\.type\)/);
+    assert.match(payments, /default:[\s\S]{0,120}return/);
+    assert.match(payments, /from "sporades\/server\/stripe"/);
+    assert.match(payments, /createStripePaymentIntegration\(\{ enabled: false \}\)/);
+    assert.match(payments, /stripePrices[^=]*=\s*Object\.freeze\(\{\}\)/);
+    assert.match(payments, /type CheckoutMode = "payment" \| "subscription"/);
+    assert.match(payments, /mode: product\.mode/);
+    assert.match(payments, /mode: Text\(\)/);
+    assert.match(payments, /stripeCheckout/);
+    assert.match(payments, /stripeCustomerPortal/);
+    assert.match(payments, /startStripeCheckout/);
+    assert.match(payments, /startStripeCustomerPortal/);
+    assert.match(payments, /requireAuth\(ctx, \{ linked: true \}\)/);
+    assert.match(payments, /authorizeStripeCheckout/);
+    assert.match(payments, /authorizeStripeCustomerPortal/);
+    assert.match(payments, /resolveStripeCustomerForPortal/);
+    const portalMutation = payments.slice(payments.indexOf("startStripeCustomerPortal"), payments.indexOf("function validateCheckoutInput"));
+    assert(portalMutation.indexOf("authorizeStripeCustomerPortal(ctx, input)") < portalMutation.indexOf("!ctx.payments?.stripe.enabled"));
+    assert.match(payments, /return false/);
+    assert.match(payments, /\.acl\(/);
+    assert.match(payments, /row\?\.ownerId === ctx\.auth\.userId/);
+    assert.match(payments, /insertOrIgnore/);
+    assert.match(payments, /ctx\.jobs\.enqueue\("stripeCheckout"/);
+    assert.match(payments, /ctx\.jobs\.enqueue\("stripeCustomerPortal"/);
+    assert.match(payments, /stripeCustomerPortal:[\s\S]+requireAuth\(ctx, \{ linked: true \}\)[\s\S]+authorizeStripeCustomerPortal\(ctx, policyInput\)[\s\S]+resolveStripeCustomerForPortal\(ctx, policyInput\)[\s\S]+createCustomerPortalSession/);
+    assert.doesNotMatch(payments, /portalIntents: table\([^)]*status:/);
+    const portalEnqueue = payments.match(/ctx\.jobs\.enqueue\("stripeCustomerPortal", \{[\s\S]*?\}, \{ idempotencyKey/)?.[0] ?? "";
+    assert.doesNotMatch(portalEnqueue, /customerId/);
+    assert.match(payments, /returnPath: "\/account\/billing"/);
+    assert.match(payments, /sporades:[^:]+:stripe:portal:/);
+    assert.match(payments, /idempotencyKey/);
+    assert.match(payments, /ctx\.jobs\.get\(jobId\)/);
+    assert.match(shared, /export type PaymentJobState/);
+    assert.match(paymentClient, /status: "pending"/);
+    assert.match(paymentClient, /status: "succeeded"/);
+    assert.match(paymentClient, /status: "failed"/);
+    assert.match(paymentClient, /startStripeCustomerPortal/);
+    assert.match(paymentClient, /billing\.stripe\.com/);
+    assert.equal(paymentClient.includes("\\/p\\/session\\/"), true);
+    assert.match(paymentClient, /CheckoutInput = Readonly<\{ intentId: string; productKey: string; quantity: number \}>/);
+    assert.doesNotMatch(paymentClient, /CheckoutInput[^;]+(?:priceId|customerId|mode|metadata|idempotencyKey|successPath|cancelPath)/);
+    assert.doesNotMatch(paymentClient, /PortalInput[^;]+(?:customerId|returnPath|idempotencyKey)/);
+    assert.match(paymentClient, /checkout\.stripe\.com/);
+    assert.match(paymentClient, /\/c\/pay\//);
+    assert.match(paymentClient, /\/pay\//);
+    assert.match(paymentClient, /window\.location\.assign/);
+    assert.match(readme, /payments\.stripe\.enabled/);
+    assert.match(readme, /Sealed Server env/);
+    assert.match(readme, /Anonymous Checkout requires an explicit Capsule opt-in/);
+    assert.match(readme, /client\/payments\.ts/);
+    assert.match(readme, /one-time[\s\S]{0,100}subscription/i);
+    assert.match(readme, /verified events[\s\S]{0,100}Capsule policy/i);
+    assert.match(readme, /exact signed bytes[\s\S]{0,160}idempotent Privileged Job/i);
+    assert.match(readme, /admission performs no Capsule billing consequence/i);
+    assert.match(readme, /Stripe event policy[\s\S]{0,80}server\/payments\.ts/i);
+    assert.match(readme, /idempotent[\s\S]{0,120}order-independent/i);
+    assert.match(readme, /raw provider value[\s\S]{0,160}(?:log|persist)/i);
+    assert.match(readme, /Customer Portal is the preferred surface/i);
+    assert.match(readme, /Unknown, deleted, and unauthorized holders/);
+    assert.match(agents, /Sporades owns Stripe transport/i);
+    assert.match(agents, /Checkout begins provider billing[\s\S]{0,120}local[\s\S]{0,80}access/i);
+    assert.match(agents, /enabled callback path is runtime-owned/i);
+    assert.match(agents, /verified provider values as sensitive/i);
+    assert.match(agents, /Never enqueue `_sporades\.stripe-event`/i);
+    assert.match(agents, /paymentStripeEvents/);
+    assert.match(agents, /later-arriving older event/i);
+    assert.match(agents, /unknown event types/i);
+    assert.match(agents, /authorizeStripeCustomerPortal/);
+    assert.match(agents, /Capsule owns.*Prices.*Customers.*Teams.*billing authority.*entitlements.*retention.*export.*erasure/is);
+    assert.equal(packageJson.dependencies.stripe, undefined);
+    assert.doesNotMatch(payments, /subscriptions:\s*table|entitlements:\s*table|invoices:\s*table|seats:\s*table|orders:\s*table/);
+
+    const generated = [serverEntry, payments, paymentClient, shared, readme, agents, await readFile(path.join(projectDir, ".env.sporades.server"), "utf8")].join("\n");
+    assert.doesNotMatch(generated, /sk_(?:live|test)_|whsec_|price_[A-Za-z0-9]|cus_[A-Za-z0-9]|https:\/\/checkout\.stripe\.com/i);
+  });
+});
+
+test("every supported blank framework receives the same dormant payment foundation", async () => {
+  await withTempDir(async (dir) => {
+    for (const framework of ["vanilla", "react", "preact", "inferno", "lit", "solid", "vue", "svelte"]) {
+      const name = `payments-${framework}`;
+      const result = await runCli(["create", name, "--template", "blank", "--framework", framework, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, `${framework}: ${result.stderr}`);
+      const projectDir = path.join(dir, name);
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      assert.deepEqual(config.payments, { stripe: { enabled: false } }, framework);
+      assert.match(await readFile(path.join(projectDir, "server", "payments.ts"), "utf8"), /createStripePaymentIntegration/, framework);
+      assert.match(await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8"), /PaymentJobState/, framework);
+      assert.match(await readFile(path.join(projectDir, "client", "payments.ts"), "utf8"), /startStripeCheckout/, framework);
+      assert.match(await readFile(path.join(projectDir, "client", "payments.ts"), "utf8"), /startStripeCustomerPortal/, framework);
+      const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+      assert.match(serverEntry, /paymentJobs/, framework);
+      assert.match(serverEntry, /import\s*\{[^}]*paymentStripeEvents[^}]*\}\s*from\s*"\.\/payments\.js"/, framework);
+      assert.match(serverEntry, /stripeEvents:\s*paymentStripeEvents/, framework);
+    }
   });
 });
 
@@ -230,10 +360,12 @@ test("sporades create writes a runnable React todo scaffold when requested", asy
 
     const projectDir = path.join(dir, "todo-island");
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.payments, undefined);
     assert.equal(config.name, "todo-island");
     assert.equal(config.template, "todo");
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    await assert.rejects(readFile(path.join(projectDir, "server", "payments.ts"), "utf8"), { code: "ENOENT" });
     assert.match(serverEntry, /todos: table\(/);
     assert.match(serverEntry, /String\(\)/);
     assert.match(serverEntry, /Boolean\(\)\.default\(false\)/);
@@ -549,7 +681,8 @@ test("sporades create --template blank writes the blank scaffold", async () => {
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
 
     assert.equal(config.template, "blank");
-    assert.match(serverEntry, /schema: \{\}/);
+    assert.match(serverEntry, /schema: paymentSchema/);
+    assert.match(serverEntry, /mutations: paymentMutations/);
     assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
     assert.match(clientEntry, /Blank Sporades Capsule/);
     assert.doesNotMatch(clientEntry, /useQuery|useMutation|useAuth|files|messages|todo/i);

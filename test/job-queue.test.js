@@ -19,6 +19,42 @@ async function openDevDatabase(...args) {
   return database;
 }
 
+test("a malformed retained Job payload fails its claim without blocking later Jobs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-malformed-payload-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const seen = [];
+  const database = await openStoppedDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-malformed-payload" }, {
+    jobs: { record: job((_ctx, payload) => { seen.push(payload); }) },
+  }, { clock });
+  try {
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("payload-user", clock.now().toISOString(), "Payload User", null, null, 0, 1, "anonymous");
+    const insert = database.adapter.prepare(
+      "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory) VALUES (?, 'record', 'payload-user', 'payload-user', ?, 'queued', ?, 0, ?, ?, '[]')",
+    );
+    const retry = JSON.stringify({ maxAttempts: 1, delayMs: 0 });
+    insert.run("a-malformed", "{", clock.now().toISOString(), clock.now().toISOString(), retry);
+    insert.run("b-valid", JSON.stringify({ safe: true }), clock.now().toISOString(), clock.now().toISOString(), retry);
+
+    await database.init();
+    await clock.runDueTimers();
+
+    const malformed = database.adapter.prepare("SELECT status, attempts, failure, leaseExpiresAt, claimToken FROM sporades_jobs WHERE id = ?").get("a-malformed");
+    const valid = database.adapter.prepare("SELECT status, attempts FROM sporades_jobs WHERE id = ?").get("b-valid");
+    assert.equal(malformed.status, "failed");
+    assert.equal(malformed.attempts, 1);
+    assert.equal(JSON.parse(malformed.failure).code, "JOB_FAILED");
+    assert.equal(malformed.leaseExpiresAt, null);
+    assert.equal(malformed.claimToken, null);
+    assert.equal(valid.status, "succeeded");
+    assert.equal(valid.attempts, 1);
+    assert.deepEqual(seen, [{ safe: true }]);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent Postgres mutations converge one idempotent Job inside their handler transactions", {
   skip: POSTGRES_SKIP_REASON,
 }, async () => {

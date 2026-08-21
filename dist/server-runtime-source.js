@@ -5,6 +5,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { validateMailConfig } from "./mail-config.js";
+import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
@@ -41,10 +42,12 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 // here, so importing them would declare a name nothing in this file reads.
 import { applyReadAcl, assertActivePrivilegedJobAccess, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, } from "./acl-runtime.js";
 import { createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, deletePrivateFile, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
-import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
+import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, STRIPE_EVENT_JOB, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
+import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
+const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
 // and hands the engine `sqlWithoutTrailingTerminator(sql)`, and the Postgres `columns()` primitive
@@ -479,6 +482,7 @@ function emitRuntimeReplacementWarning(database, event, message, error, fallback
     catch { }
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+    const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
         throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
     }
@@ -501,17 +505,27 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
         : extractEndpoints(serverSource);
     const emailEventEndpoints = createEmailEventEndpoints(mailConfig, serverEnv, capsuleDefinition?.emailEvents);
-    for (const [providerIndex, providerEndpoint] of emailEventEndpoints.entries()) {
+    const stripeCallbackEndpoint = paymentsConfig?.stripe.enabled
+        ? options?.createStripeCallbackEndpoint?.(paymentsConfig, serverEnv, options?.stripeCallbackAdmissionFault)
+        : null;
+    if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
+        throw commandError("Stripe callback integration is unavailable.", "Build and run this Capsule with matching Sporades generated runtime artifacts.", "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE");
+    }
+    const providerEndpoints = [...emailEventEndpoints, ...(stripeCallbackEndpoint ? [stripeCallbackEndpoint] : [])];
+    for (const [providerIndex, providerEndpoint] of providerEndpoints.entries()) {
         const conflictsWithCapsule = capsuleEndpoints.some((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path);
-        const conflictsWithProvider = emailEventEndpoints.slice(0, providerIndex).some((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path);
+        const conflictsWithProvider = providerEndpoints.slice(0, providerIndex).find((endpoint) => endpoint.method === providerEndpoint.method && endpoint.path === providerEndpoint.path);
         if (conflictsWithCapsule || conflictsWithProvider) {
-            const error = new Error("Capsule endpoint conflicts with an email-provider webhook route.");
-            error.code = "EMAIL_EVENT_ROUTE_CONFLICT";
-            error.hint = "Assign every Capsule endpoint and enabled email provider a different path in sporades.json.";
+            const stripeConflict = providerEndpoint.runtimeOwnedStripeCallback || conflictsWithProvider?.runtimeOwnedStripeCallback;
+            const error = new Error(stripeConflict
+                ? "Stripe callback route conflicts with another Capsule or provider route."
+                : "Capsule endpoint conflicts with an email-provider webhook route.");
+            error.code = stripeConflict ? "STRIPE_CALLBACK_ROUTE_CONFLICT" : "EMAIL_EVENT_ROUTE_CONFLICT";
+            error.hint = "Assign every Capsule endpoint and enabled provider a different path in sporades.json.";
             throw error;
         }
     }
-    const endpoints = [...capsuleEndpoints, ...emailEventEndpoints];
+    const endpoints = [...capsuleEndpoints, ...providerEndpoints];
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
@@ -534,6 +548,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     let database;
     const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
             prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+            dispatchStripeEvent: (context, event) => dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -581,6 +596,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __handlerContextMappingCount: 0,
         rowCache,
         serverEnv,
+        paymentsConfig,
         mail,
         authConfig: authStatus(config, serverEnv),
         passwordResetConfig: resolvePasswordResetConfig(config),
@@ -2578,11 +2594,12 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
     const handler = typeof endpoint.handler === "function"
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
-    const endpointRequest = await readEndpointRequest(database, requestUrl, request);
-    const session = endpoint.runtimeOwnedEmailEvent
+    const endpointRequest = await readEndpointRequest(database, requestUrl, request, !endpoint.runtimeOwnedStripeCallback);
+    const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
+    const session = runtimeOwnedProviderCallback
         ? { auth: {
                 userId: privilegedAuthUserId(),
-                displayName: "Email provider callback",
+                displayName: endpoint.runtimeOwnedStripeCallback ? "Stripe provider callback" : "Email provider callback",
                 email: null,
                 picture: null,
                 isAuthenticated: false,
@@ -2597,7 +2614,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request) {
             let handlerFailed = false;
             try {
                 context = createEndpointContext(transactionDatabase, endpointRequest, session);
-                if (!endpoint.runtimeOwnedEmailEvent) {
+                if (endpoint.runtimeOwnedStripeCallback) {
+                    Object.defineProperty(context, runtimeOwnedJobEnqueueHandler, { value: STRIPE_EVENT_JOB });
+                }
+                if (!runtimeOwnedProviderCallback) {
                     context = await applyContextMiddleware(transactionDatabase, context, "endpoint");
                 }
                 return await handler(context);
@@ -2675,18 +2695,19 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     });
     return transactionDatabase;
 }
-async function readEndpointRequest(database, requestUrl, request) {
+async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
     const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
     ]));
     const query = endpointQueryFromUrl(requestUrl);
+    const payload = await readEndpointPayload(request, headers, database, parseJsonBody);
     return {
         method: request.method,
         path: requestUrl.pathname,
         headers,
         query,
-        body: await readEndpointBody(request, headers, database),
+        ...payload,
     };
 }
 function createEndpointContext(database, endpointRequest, session) {
@@ -2694,6 +2715,7 @@ function createEndpointContext(database, endpointRequest, session) {
     const context = {
         auth,
         env: database.serverEnv,
+        payments: database.paymentsConfig,
         log: createEndpointLogger(database, {
             request: {
                 method: endpointRequest.method,
@@ -2706,6 +2728,7 @@ function createEndpointContext(database, endpointRequest, session) {
             headers: endpointRequest.headers,
             query: endpointRequest.query,
             body: endpointRequest.body,
+            bodyBytes: endpointRequest.bodyBytes,
         },
     };
     const holder = createContextHolder(context);
@@ -3126,20 +3149,38 @@ function referenceExists(database, field, value) {
 // batch 9 moved them to `stored-value-coding.ts`, beside the reading half they mirror.
 // `invalidReferenceError` stood above `referenceExists` and is in `runtime-errors.js` now. The
 // first two are imported back at the top of this file; the other three have no consumer here.
-async function readEndpointBody(request, headers, limitSource = null) {
-    const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
-    if (!raw) {
-        return null;
-    }
+async function readEndpointPayload(request, headers, limitSource = null, parseJsonBody = true) {
+    const raw = await readLimitedRequestBody(request, limitSource);
+    const bodyBytes = immutableEndpointBodyBytes(raw);
+    if (raw.byteLength === 0)
+        return { body: null, bodyBytes };
+    if (!parseJsonBody)
+        return { body: null, bodyBytes };
+    const text = raw.toString("utf8");
     if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
         try {
-            return JSON.parse(raw);
+            return { body: JSON.parse(text), bodyBytes };
         }
         catch {
             throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
         }
     }
-    return raw;
+    return { body: text, bodyBytes };
+}
+function immutableEndpointBodyBytes(bytes) {
+    return Object.freeze({
+        byteLength: bytes.byteLength,
+        length: bytes.byteLength,
+        at(index) {
+            return bytes.at(index);
+        },
+        toUint8Array() {
+            return Uint8Array.from(bytes);
+        },
+        [Symbol.iterator]() {
+            return bytes.values();
+        },
+    });
 }
 function createEndpointLogger(database, context = {}) {
     return createRuntimeLogger(database, {
@@ -3735,6 +3776,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
             client.subscriptions.set(message.id, subscription);
+            database.__notifyJobStateQueries = refreshQueries;
             void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
             return;
         }
@@ -4077,13 +4119,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
             sendJson(client, formatMutationResult(message, mutationName, result));
             if (result.ok && mutationResultsWithWrites.has(result)) {
-                setTimeout(() => {
-                    for (const subscribedClient of clients) {
-                        for (const subscription of subscribedClient.subscriptions.values()) {
-                            void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
-                        }
-                    }
-                }, 0);
+                setTimeout(refreshQueries, 0);
             }
             return;
         }
@@ -4186,6 +4222,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
                 onError(error);
             }
             catch { /* A closed transport already owns cleanup. */ }
+        }
+    }
+    function refreshQueries() {
+        for (const subscribedClient of clients) {
+            for (const subscription of subscribedClient.subscriptions.values()) {
+                void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
+            }
         }
     }
     async function sendAuthResult(client, id) {
@@ -4760,6 +4803,7 @@ function createMutationContext(database, auth) {
     const context = {
         auth,
         env: database.serverEnv,
+        payments: database.paymentsConfig,
         log: createEndpointLogger(database),
         __pendingAclWrites: [],
     };
@@ -4832,6 +4876,11 @@ function createCurrentUserJobApi(database, contextGetter) {
             const queueDatabase = database.__rootDatabase ?? database;
             const jobAdapter = database.adapter;
             const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
+            if (typeof handlerName === "string"
+                && handlerName.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX)
+                && Reflect.get(context, runtimeOwnedJobEnqueueHandler) !== handlerName) {
+                throw jobError("RESERVED_JOB_NAME", "Runtime-owned Job handlers cannot be enqueued by Capsule code.", "Use a Capsule-declared Job handler name.");
+            }
             const handler = database.jobs?.find((candidate) => candidate.name === handlerName);
             if (!handler) {
                 throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -5169,6 +5218,7 @@ export async function runCurrentUserJobWorker(database) {
             database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
             let handlerStarted = false;
             try {
+                const jobPayload = JSON.parse(row.payload);
                 // Cancellation may commit after the durable claim but before its
                 // in-memory controller is registered. Reconcile the exact owned claim
                 // before crossing the handler boundary so that window cannot lose the
@@ -5187,11 +5237,11 @@ export async function runCurrentUserJobWorker(database) {
                 let result;
                 if (row.actorUserId === privilegedAuthUserId()) {
                     const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
+                    result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}), ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, async (privilegedCtx) => {
                         handlerStarted = true;
                         database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
                         try {
-                            return await handler.handler(privilegedCtx, JSON.parse(row.payload));
+                            return await handler.handler(privilegedCtx, jobPayload);
                         }
                         finally {
                             database.__runtimeJobAttempts.delete(privilegedCtx);
@@ -5221,7 +5271,7 @@ export async function runCurrentUserJobWorker(database) {
                     handlerStarted = true;
                     database.__runtimeJobAttempts.set(context, Number(row.attempts) + 1);
                     try {
-                        result = await handler.handler(context, JSON.parse(row.payload));
+                        result = await handler.handler(context, jobPayload);
                     }
                     finally {
                         database.__runtimeJobAttempts.delete(context);
@@ -5240,6 +5290,7 @@ export async function runCurrentUserJobWorker(database) {
                     return;
                 }
                 const handlerFailure = safeJobFailure(error);
+                const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
                 const failedAt = database.clock.now().toISOString();
                 const history = JSON.parse(row.attemptHistory || "[]");
                 const retry = parsePersistedJobRetry(row.retryJson);
@@ -5249,7 +5300,7 @@ export async function runCurrentUserJobWorker(database) {
                     ? await database.adapter.prepare(sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(row.id, claimToken)
                     : null;
                 const cancelled = Boolean(cancellation?.cancelRequestedAt);
-                const retryEligible = !cancelled && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
+                const retryEligible = !cancelled && !permanentFailure && handlerFailure.code !== "JOB_ACTOR_UNAVAILABLE"
                     && retry !== null && Number(row.attempts) + 1 < retry.maxAttempts;
                 const retryAvailableAtCandidate = retryEligible ? jobTimestampAfter(database.clock.now(), retry.delayMs) : null;
                 const remainingAttempts = retry === null ? 0 : retry.maxAttempts - (Number(row.attempts) + 1);
@@ -5282,6 +5333,7 @@ export async function runCurrentUserJobWorker(database) {
                 const activeClaim = database.__jobAbortControllers?.get(row.id);
                 if (activeClaim?.claimToken === claimToken)
                     database.__jobAbortControllers.delete(row.id);
+                database.__notifyJobStateQueries?.();
             }
         }
     }

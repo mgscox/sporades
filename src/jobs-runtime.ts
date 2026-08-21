@@ -98,6 +98,7 @@ type RuntimeConfig = LooseRecord;
 // `server-runtime-source.js` — so making it private would not fail that probe, it would silently
 // stop comparing this value between the two bundles.
 export const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 
 export function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
   const schedules: any[] = [];
@@ -538,8 +539,15 @@ export function createControllableRuntimeClock(initialInstant: string | number |
 
 // Jobs the runtime enqueues for itself. They live in the reserved `_sporades`
 // namespace, which Capsule definitions cannot claim.
-export function runtimeOwnedJobHandlers(runtime: { prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null> }) {
+export function runtimeOwnedJobHandlers(runtime: {
+  prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+  dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) => Promise<LooseRecord>;
+}) {
   return [
+    {
+      name: STRIPE_EVENT_JOB,
+      handler: runtime.dispatchStripeEvent,
+    },
     {
       name: PASSWORD_RESET_MAIL_JOB,
       handler: async (ctx: LooseRecord, payload: LooseRecord) => {
@@ -903,13 +911,23 @@ export function decodeJobCursor(value: any) {
 }
 
 export function safeJobFailure(error: any) {
-  const knownCodes = new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const knownCodes = new Set([
+    "JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD",
+    "STRIPE_CHECKOUT_REJECTED", "STRIPE_CHECKOUT_RESPONSE_INVALID",
+    "STRIPE_PORTAL_REJECTED", "STRIPE_PORTAL_RESPONSE_INVALID",
+    "PAYMENT_PORTAL_UNAVAILABLE",
+  ]);
   const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
   const messages: LooseRecord = {
     JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
     UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
     JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
     INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
+    STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
+    STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
+    STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
+    PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
     JOB_FAILED: "Job handler failed.",
   };
   return { code, message: messages[code] };

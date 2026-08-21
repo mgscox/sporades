@@ -38,6 +38,10 @@ export function endpoint(options, handler) {
 export function emailEvent(handler) {
     return { kind: "emailEvent", handler };
 }
+/** Declare the single verified Stripe-event subscription for a Capsule. */
+export function stripeEvent(handler) {
+    return { kind: "stripeEvent", handler };
+}
 export function query(handler) {
     return {
         kind: "query",
@@ -171,6 +175,13 @@ export function endpoint(options, handler) {
 export function emailEvent(handler) {
   return {
     kind: "emailEvent",
+    handler,
+  };
+}
+
+export function stripeEvent(handler) {
+  return {
+    kind: "stripeEvent",
     handler,
   };
 }

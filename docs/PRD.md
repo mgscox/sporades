@@ -35,6 +35,38 @@ The repository currently includes:
   with native class-component lifecycle and no React compatibility dependency,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
+- A built-in, credential-free Stripe payment foundation in every new blank
+  Capsule: disabled `payments.stripe` configuration, server-owned payment
+  wiring and empty Price catalogue, named payment Jobs, bounded known-Job
+  state, shared types, and activation guidance. Stripe mechanics remain behind
+  the narrow server-only `sporades/server/stripe` export. Complete activation
+  validates named Sealed Server credentials and trusted return authority before
+  publication. A linked actor can then pass a Capsule product key through an
+  explicit deny-by-default policy seam to atomically persist an intent and
+  enqueue an idempotent durable Job. The same Job performs Stripe Checkout in
+  the explicit server-owned one-time or recurring subscription mode after
+  commit, exposes bounded actor-scoped progress, retries transient failure,
+  redacts permanent failure, and returns only a validated Stripe-hosted redirect.
+  An independently authorized linked actor can also select an opaque Capsule
+  billing holder that Capsule policy resolves to an existing Stripe Customer;
+  a durable Customer Portal Job then returns only a validated short-lived
+  Stripe-hosted redirect. Unknown, deleted, unauthorized, and anonymous holders
+  receive no Portal authority.
+  Checkout starts provider billing; verified events and Capsule policy determine
+  local subscription, entitlement, and access consequences. Complete activation
+  registers one collision-checked Stripe callback route. It verifies the exact
+  bounded bytes before parsing and atomically admits each provider Event identity
+  into one idempotent Privileged Job before acknowledging. Provider retries
+  converge on that Job within the retained Capsule database even if the configured
+  Capsule name changes; admission grants no user or Team authority and performs
+  no Capsule billing consequence. That durable Job invokes the Capsule's single
+  `stripeEvents: stripeEvent(...)` policy seam with the Verified Stripe event.
+  Every attempt uses the existing Privileged `started`, then `completed` or
+  `errored`, then `finished` audit lifecycle; ordinary Job retry, cancellation,
+  and revocation semantics remain in force. Capsule policy must make consequences
+  idempotent and order-independent, may ignore unknown types, and alone owns any
+  Team, billing-holder, subscription, entitlement, notification, retention,
+  export, or erasure state. Existing and non-blank Capsules remain unchanged.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database
@@ -285,7 +317,7 @@ Every handler receives a runtime-owned context:
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
 | `ctx.mail` | Server-only provider-independent SMTP delivery. |
-| `ctx.request` | Custom endpoint request details, only for endpoint handlers. |
+| `ctx.request` | Custom endpoint request details, including parsed `body` and immutable exact `bodyBytes`, only for endpoint handlers. |
 
 Query, mutation, Custom endpoint, App message, context middleware, and mutation
 hook handlers may be synchronous or asynchronous. The runtime awaits async
@@ -295,6 +327,14 @@ mutation transactions, or refreshing query subscriptions.
 Custom endpoints are HTTP escape hatches for integrations such as webhooks.
 They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
+
+`ctx.request.body` and `ctx.request.bodyBytes` come from the same bounded
+request-body read. `body` retains the existing parsed JSON or text behavior;
+`bodyBytes` is an immutable iterable view of the exact received bytes for
+signature verification and other byte-sensitive integrations. Calling
+`bodyBytes.toUint8Array()` returns a mutable copy rather than runtime-owned
+storage. Exact bytes remain server-only and are never automatically logged or
+included in HTTP errors, CLI output, or client transport results.
 
 ## Client API
 

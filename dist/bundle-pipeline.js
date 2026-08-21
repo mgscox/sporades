@@ -6,6 +6,8 @@ import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
+import { resolveSporadesPackageRoot } from "./package-root.js";
+import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
@@ -32,11 +34,13 @@ export async function createBundle(projectDir, config, options = {}) {
     }
     const sealedPaths = sealedServerEnvPaths(projectDir);
     const sealedEnvelope = await readSealedServerEnv(sealedPaths);
+    validateStripePaymentsSealedServerEnv(config.payments, sealedEnvelope !== null);
     const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
     const serverEnv = sealedEnvelope
         ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)
         : parseServerEnv(serverEnvFile);
     validateAuthConfig(config, serverEnv);
+    validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     const [serverSource, clientSource] = await Promise.all([
         readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")
             .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); }),
@@ -624,6 +628,9 @@ function sporadesServerPlugin() {
             build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
                 loader: "js",
                 contents: serverRuntimeModuleSource(),
+            }));
+            build.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
+                path: path.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js"),
             }));
         },
     };

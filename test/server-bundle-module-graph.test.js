@@ -101,6 +101,15 @@ export default capsule({
     tally: schedule({ expression: "*/5 * * * *", job: "tally", missedRun: "skip" }),
   },
 
+  middleware: [
+    (ctx) => {
+      if (ctx.kind !== "endpoint") return ctx;
+      const copy = ctx.request.bodyBytes.toUint8Array();
+      if (copy.byteLength > 0) copy[0] = 0;
+      return { ...ctx, middlewareBodyBytes: Array.from(ctx.request.bodyBytes) };
+    },
+  ],
+
   endpoints: {
     status: endpoint({ method: "GET", path: "/probe/status" }, (ctx) => ({
       status: 202,
@@ -118,13 +127,19 @@ export default capsule({
       },
     })),
 
-    echo: endpoint({ method: "POST", path: "/probe/echo" }, (ctx) => ({
-      status: 200,
-      body: {
-        body: ctx.request.body,
-        contentType: ctx.request.headers["content-type"] ?? null,
-      },
-    })),
+    echo: endpoint({ method: "POST", path: "/probe/echo" }, (ctx) => {
+      const firstRead = ctx.request.bodyBytes;
+      if (firstRead.byteLength > 0) Reflect.set(firstRead, 0, 0);
+      return {
+        status: 200,
+        body: {
+          body: ctx.request.body,
+          bodyBytes: Array.from(ctx.request.bodyBytes),
+          middlewareBodyBytes: ctx.middlewareBodyBytes,
+          contentType: ctx.request.headers["content-type"] ?? null,
+        },
+      };
+    }),
 
     listNotes: endpoint({ method: "GET", path: "/probe/notes" }, async (ctx) => ({
       status: 200,
@@ -402,6 +417,11 @@ const HTTP_SCRIPT = [
   { name: "endpoint status cross-origin", path: "/probe/status", headers: { origin: "https://evil.example.com" } },
   { name: "endpoint preflight", method: "OPTIONS", path: "/probe/status", headers: { origin: "https://capsule.example.com", "access-control-request-method": "GET" } },
   { name: "endpoint echo", method: "POST", path: "/probe/echo", json: { hello: "world", nested: { list: [1, 2, 3], flag: true } } },
+  { name: "endpoint echo compact json", method: "POST", path: "/probe/echo", body: '{"a":1,"b":2}', headers: { "content-type": "application/json" } },
+  { name: "endpoint echo reordered json", method: "POST", path: "/probe/echo", body: '{ "b": 2, "a": 1 }', headers: { "content-type": "application/json" } },
+  { name: "endpoint echo text", method: "POST", path: "/probe/echo", body: "café", headers: { "content-type": "text/plain; charset=utf-8" } },
+  { name: "endpoint echo form", method: "POST", path: "/probe/echo", body: "second=two&first=one", headers: { "content-type": "application/x-www-form-urlencoded" } },
+  { name: "endpoint echo empty", method: "POST", path: "/probe/echo", body: "", headers: { "content-type": "application/octet-stream" } },
   { name: "endpoint echo bad json", method: "POST", path: "/probe/echo", body: "{not json", headers: { "content-type": "application/json" } },
   { name: "endpoint notes empty", path: "/probe/notes" },
   { name: "endpoint add note", method: "POST", path: "/probe/notes", json: { text: "first", rank: 2 } },
@@ -837,6 +857,26 @@ test("a Capsule built from a module graph answers the HTTP and WebSocket surface
     const status = run.http.find((entry) => entry.name === "endpoint status");
     assert.equal(status.status, 202);
     assert.equal(status.body.plainValue, "plain-env-value");
+    const exactBodies = new Map([
+      ["endpoint echo", JSON.stringify({ hello: "world", nested: { list: [1, 2, 3], flag: true } })],
+      ["endpoint echo compact json", '{"a":1,"b":2}'],
+      ["endpoint echo reordered json", '{ "b": 2, "a": 1 }'],
+      ["endpoint echo text", "café"],
+      ["endpoint echo form", "second=two&first=one"],
+      ["endpoint echo empty", ""],
+    ]);
+    for (const [name, body] of exactBodies) {
+      const echo = run.http.find((entry) => entry.name === name);
+      assert.deepEqual(echo.body.bodyBytes, [...Buffer.from(body)], name);
+      assert.deepEqual(echo.body.middlewareBodyBytes, echo.body.bodyBytes, `${name} middleware bytes`);
+    }
+    const compactJson = run.http.find((entry) => entry.name === "endpoint echo compact json").body;
+    const reorderedJson = run.http.find((entry) => entry.name === "endpoint echo reordered json").body;
+    assert.deepEqual(compactJson.body, reorderedJson.body);
+    assert.notDeepEqual(compactJson.bodyBytes, reorderedJson.bodyBytes);
+    assert.equal(run.http.find((entry) => entry.name === "endpoint echo text").body.body, "café");
+    assert.equal(run.http.find((entry) => entry.name === "endpoint echo form").body.body, "second=two&first=one");
+    assert.equal(run.http.find((entry) => entry.name === "endpoint echo empty").body.body, null);
     const badJson = run.http.find((entry) => entry.name === "endpoint echo bad json");
     assert.equal(badJson.status, 400);
     assert.equal(badJson.body.error.code, "INVALID_JSON_REQUEST");
@@ -1400,6 +1440,7 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "MIN_JOB_TIMESTAMP_MS",
   "MAX_JOB_TIMESTAMP_MS",
   "RESERVED_JOB_NAME_PREFIX",
+  "STRIPE_EVENT_JOB",
   "PASSWORD_RESET_MAIL_JOB",
   "PASSWORD_RESET_REQUEST_JOB",
   "PRIVILEGED_AUDIT_SCHEMA",
@@ -1496,6 +1537,7 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
     assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
+    assert.equal(bundled.STRIPE_EVENT_JOB.type, "string");
     assert.equal(bundled.PRIVILEGED_AUDIT_ACTOR_KINDS.type, "Set");
     assert.equal(bundled.SIDE_EFFECT_SQL_KEYWORDS.type, "Set");
     assert.ok(bundled.SIDE_EFFECT_SQL_KEYWORDS.values.length > 5);

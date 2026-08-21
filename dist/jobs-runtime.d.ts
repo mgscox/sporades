@@ -1,6 +1,7 @@
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 export declare const RESERVED_JOB_NAME_PREFIX = "_sporades";
+export declare const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 export declare function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]): any[];
 export declare function resolveSchedulePayloadFactoryTimeoutMs(config?: RuntimeConfig): number;
 export declare function parseScheduleExpression(value: any): any;
@@ -53,6 +54,7 @@ export declare function createControllableRuntimeClock(initialInstant: string | 
 };
 export declare function runtimeOwnedJobHandlers(runtime: {
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+    dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) => Promise<LooseRecord>;
 }): {
     name: string;
     handler: (ctx: LooseRecord, payload: LooseRecord) => Promise<any>;

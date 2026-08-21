@@ -1,5 +1,6 @@
 import { type LooseRecord } from "./cli-support.js";
 export { validateMailConfig } from "../mail-config.js";
+export { validatePaymentsConfig } from "../stripe-payment-config.js";
 export declare const SECURITY_SESSIONS: Set<string>;
 export declare function readProjectConfig(projectDir: string): Promise<any>;
 export declare function validatePasswordResetConfig(auth: LooseRecord): void;
