@@ -320,6 +320,9 @@ reports `INVALID_COMPLETED_AT`; once storage recovery restores a canonical
 completion timestamp, inspection reports `CANONICAL_REPAIR_PENDING` until
 cleanup automatically derives and applies the 30-day clock, without exposing a
 general Job mutation surface.
+Repair discovery is bounded and starvation-safe: a durable runtime-only opaque
+cursor pages across classified rows, survives restart and overlapping cleanup,
+and contains no Stripe identity or payload value.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

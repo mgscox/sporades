@@ -244,6 +244,62 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
     });
   });
 
+  test(`${engine.name}: durable sentinel scanning cannot starve a canonical repair`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (initialAdapter, controls) => {
+      let adapter = initialAdapter;
+      await ensureJobStorage(adapter);
+      for (let index = 0; index < 225; index += 1) {
+        await insertReservedJob(adapter, {
+          id: `starve-invalid-${String(index).padStart(3, "0")}`,
+          status: "succeeded",
+          completedAt: "2029-02-31T00:00:00.000Z",
+          payloadRetentionUntil: "",
+        });
+      }
+      await insertReservedJob(adapter, {
+        id: "starve-repaired-z",
+        status: "succeeded",
+        completedAt: "2029-12-01T00:00:00.000Z",
+        payloadRetentionUntil: "",
+      });
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+
+      const first = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(first.assignedCount + first.classifiedCount + first.redactedCount, 0);
+      assert.equal(first.nextCleanupAt, "2030-01-01T00:00:00.000Z", "a bounded next page re-arms immediately");
+      const cursor = await adapter.prepare(adapter.dialect.sql(
+        "SELECT [value] FROM [sporades] WHERE [key]='stripe-event-payload-retention-sentinel-cursor-v1'",
+      )).get();
+      assert.match(cursor.value, /^starve-invalid-/);
+      assert.doesNotMatch(cursor.value, /evt_|raw_private|providerEventId/);
+
+      adapter = await controls.restart();
+      const overlappingScans = await Promise.all([
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+      ]);
+      assert.ok(overlappingScans.some((result) => result.nextCleanupAt !== null));
+      if ((await readStoredJob(adapter, "starve-repaired-z")).payloadRetentionUntil === "") {
+        await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      }
+      assert.equal((await readStoredJob(adapter, "starve-repaired-z")).payloadRetentionUntil, "2029-12-31T00:00:00.000Z");
+      assert.deepEqual((await inspectRuntimeJobs(adapter)).find((job) => job.id === "starve-repaired-z").payloadRetention, {
+        state: "retained",
+        deadline: "2029-12-31T00:00:00.000Z",
+      });
+
+      const concurrent = await Promise.all([
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+      ]);
+      assert.equal(concurrent.reduce((count, result) => count + result.redactedCount, 0), 1);
+      assert.deepEqual(JSON.parse((await readStoredJob(adapter, "starve-repaired-z")).payload), {
+        kind: "stripe-event",
+        retained: false,
+      });
+    });
+  });
+
   test(`${engine.name}: one cleanup invocation shares its 100-row mutation budget`, { skip: engine.skip }, async () => {
     await engine.withAdapter(async (initialAdapter, controls) => {
       let adapter = initialAdapter;

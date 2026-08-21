@@ -93,6 +93,7 @@ export const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 export const STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
 const REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+const STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
 const STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1_000;
 const STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2_147_483_647;
 export function stripeEventPayloadRetentionDeadline(settledAt) {
@@ -114,6 +115,7 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
     let classifiedCount = 0;
     let redactedCount = 0;
     let remaining = batchSize;
+    let sentinelScanPending = false;
     // Expired deadlines have privacy priority over legacy classification. Every successful CAS,
     // regardless of mutation kind, consumes this invocation's one shared budget.
     const due = await adapter.prepare(sql("SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? " +
@@ -130,22 +132,21 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
         redactedCount += mutations;
         remaining -= mutations;
     }
-    // A previously classified malformed settlement may have been repaired by storage recovery.
-    // Select only timestamp-shaped sentinel rows so still-malformed rows neither consume the
-    // mutation budget nor cause a cleanup hot-loop. Canonical validation remains in JavaScript.
-    const repairedSentinels = remaining === 0 ? [] : await adapter.prepare(sql("SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
-        "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND LENGTH([completedAt])=24 " +
-        "AND SUBSTR([completedAt],5,1)='-' AND SUBSTR([completedAt],8,1)='-' " +
-        "AND SUBSTR([completedAt],11,1)='T' AND SUBSTR([completedAt],14,1)=':' " +
-        "AND SUBSTR([completedAt],17,1)=':' AND SUBSTR([completedAt],20,1)='.' " +
-        "AND SUBSTR([completedAt],24,1)='Z' AND SUBSTR([completedAt],1,4) BETWEEN '0000' AND '9999' " +
-        "AND SUBSTR([completedAt],6,2) BETWEEN '01' AND '12' AND SUBSTR([completedAt],9,2) BETWEEN '01' AND '31' " +
-        "AND SUBSTR([completedAt],12,2) BETWEEN '00' AND '23' AND SUBSTR([completedAt],15,2) BETWEEN '00' AND '59' " +
-        "AND SUBSTR([completedAt],18,2) BETWEEN '00' AND '59' AND SUBSTR([completedAt],21,3) BETWEEN '000' AND '999' " +
-        "ORDER BY [completedAt] ASC, [id] ASC LIMIT ?")).all(STRIPE_EVENT_JOB, remaining);
-    for (const observed of repairedSentinels) {
+    // A durable opaque Job-row cursor makes the bounded sentinel scan fair without relying on
+    // dialect-specific date parsing. Invalid candidates advance the cursor but consume no Job
+    // mutation budget; JavaScript remains the canonical timestamp authority.
+    const cursorRow = await adapter.prepare(sql("SELECT [value] FROM [sporades] WHERE [key]=?")).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
+    const observedCursor = typeof cursorRow?.value === "string" ? cursorRow.value : "";
+    const sentinelCandidates = remaining === 0 ? [] : await adapter.prepare(sql("SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+        "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? " +
+        "ORDER BY [id] ASC LIMIT ?")).all(STRIPE_EVENT_JOB, observedCursor, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
+    let processedSentinelCount = 0;
+    let processedSentinelCursor = observedCursor;
+    for (const observed of sentinelCandidates.slice(0, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE)) {
         if (remaining === 0)
             break;
+        processedSentinelCount += 1;
+        processedSentinelCursor = String(observed.id);
         let row = observed;
         let retried = false;
         while (row && remaining > 0) {
@@ -168,6 +169,22 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
                 "AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL")).get(observed.id, STRIPE_EVENT_JOB);
             retried = true;
         }
+    }
+    if (remaining === 0 && processedSentinelCount === 0) {
+        sentinelScanPending = Boolean(await adapter.prepare(sql("SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+            "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1")).get(STRIPE_EVENT_JOB));
+    }
+    else if (processedSentinelCount > 0) {
+        const pageHasMore = sentinelCandidates.length > processedSentinelCount;
+        const nextCursor = pageHasMore ? processedSentinelCursor : "";
+        const advanced = await adapter.prepare(sql("UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?")).run(nextCursor, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedCursor);
+        sentinelScanPending = pageHasMore || Number(advanced?.changes ?? 0) === 0;
+    }
+    else if (observedCursor !== "") {
+        // Completing a page at the end of the keyspace wraps durably, but does not hot-loop a fully
+        // malformed population. A later activation or other cleanup trigger begins the next cycle.
+        const wrapped = await adapter.prepare(sql("UPDATE [sporades] SET [value]='' WHERE [key]=? AND [value]=?")).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedCursor);
+        sentinelScanPending = Number(wrapped?.changes ?? 0) === 0;
     }
     // Older successful reserved Jobs predate the deadline column. Assign their deadline from the
     // durable settlement time only after due redaction, using whatever shared budget remains.
@@ -216,7 +233,8 @@ export async function cleanupExpiredStripeEventPayloads(database, options = {}) 
         "ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1")).get(STRIPE_EVENT_JOB);
     const nextCleanupAt = moreUnassigned
         ? nowIso
-        : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+        : sentinelScanPending ? nowIso
+            : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
     return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
 }
 export function scheduleStripeEventPayloadCleanup(database, dueAt) {
@@ -794,6 +812,8 @@ export function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
 }
 export async function ensureJobStorage(sqlite) {
     const sql = sqlite.dialect.sql;
+    await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+    await sqlite.prepare(sql("INSERT INTO [sporades] ([key], [value]) VALUES (?, '') ON CONFLICT ([key]) DO NOTHING")).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
     await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_jobs] (" +
         "[id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, " +
         "[actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, " +

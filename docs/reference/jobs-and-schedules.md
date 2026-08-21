@@ -150,6 +150,14 @@ bounded runtime error code—never a Job ID, provider Event ID, object ID,
 idempotency key, or payload value. Routine Job and Schedule inspection continues
 to omit payloads and idempotency-key values.
 
+Repair discovery reads at most 101 sentinel rows per page. A durable opaque
+Job-row keyset cursor advances across rejected impossible dates without using
+dialect-specific date parsing; cursor writes do not consume the 100-Job-mutation
+budget. Non-final pages re-arm immediately, the cursor survives restart, and
+compare-and-set advancement lets concurrent cleaners converge. Completing a
+fully malformed cycle wraps and stops rather than hot-looping. The cursor stores
+no provider identity, idempotency value, or payload data.
+
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
 clears immediate, delayed, and retry worker timers plus the retained-lease
 recovery wake, aborts active Job handlers, and awaits scheduled worker
