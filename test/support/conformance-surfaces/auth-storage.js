@@ -1403,6 +1403,53 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key revocation timestamps after acquiring its owner serialization lock",
+    async run(adapter) {
+      const record = {
+        id: "access-key-revocation-time-race",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "revocation-time-race",
+        reservedName: "revocation-time-race",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "revocationtimerace0000",
+        verifierDigest: "d9".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      let releaseLock;
+      let lockAcquired;
+      const acquired = new Promise((resolve) => { lockAcquired = resolve; });
+      const release = new Promise((resolve) => { releaseLock = resolve; });
+      const blocker = adapter.withTransaction(async (tx) => {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_auth_access_key_owners] " +
+          "SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
+        )).run(record.ownerUserId);
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+      let checkedAt = NOW;
+      const revocation = adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        revokedAt: NOW,
+        revocationTime: () => checkedAt,
+        revocationCause: "owner",
+      }));
+      checkedAt = LATER;
+      releaseLock();
+      const [, revoked] = await Promise.all([blocker, revocation]);
+      assert.equal(revoked.revokedAt, LATER);
+      assert.equal(revoked.rotatedAt, null);
+      assert.equal(Number(revoked.lifecycleRevision), 2);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+    },
+  },
+  {
     name: "Access-key rotation normalizes a cross-owner selector race",
     async run(adapter) {
       const left = {

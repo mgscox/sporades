@@ -6369,10 +6369,14 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
     async revoke(id) {
       const context = requireOwnerSessionContext(contextGetter());
       if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const now = database.clock.now().toISOString();
-      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
+      const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.revokeAccessKeyRecord({
+        ownerUserId: context.auth.userId,
+        id,
+        revocationTime: () => database.clock.now().toISOString(),
+        revocationCause: "owner"
+      }));
       if (!outcome) throw accessKeyNotFoundError();
-      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
+      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt);
       await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
       return { accessKey };
     },
@@ -6463,30 +6467,32 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
         if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         requireContext();
         if (!existing) throw accessKeyNotFoundError();
-        const revokedAt = database.clock.now().toISOString();
         const row = await withAccessKeyTransaction(database, async (adapter) => {
           requireContext();
           const result = await adapter.revokeAccessKeyRecord({
             ownerUserId: existing.ownerUserId,
             id,
-            revokedAt,
+            revocationTime: () => database.clock.now().toISOString(),
             revocationCause: "operator"
           });
           requireContext();
           return result;
         });
         if (!row) throw accessKeyNotFoundError();
-        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], row.revokedAt) };
       });
     },
     async revokeAll(ownerUserId) {
       const owner = requireId(ownerUserId);
       const context = requireContext();
       return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
-        const revokedAt = database.clock.now().toISOString();
         const outcome = await withAccessKeyTransaction(database, async (adapter) => {
           requireContext();
-          const result = await adapter.bulkRevokeAccessKeysForOwner({ ownerUserId: owner, revokedAt, revocationCause: "operator" });
+          const result = await adapter.bulkRevokeAccessKeysForOwner({
+            ownerUserId: owner,
+            revocationTime: () => database.clock.now().toISOString(),
+            revocationCause: "operator"
+          });
           requireContext();
           return result;
         });
@@ -6495,10 +6501,10 @@ function createPrivilegedAccessKeysApi(database, contextGetter) {
           revokedCount: outcome.revokedCount,
           accessKeys: outcome.records.map((row) => privilegedAccessKeySummary({
             ...row,
-            revokedAt,
+            revokedAt: outcome.revokedAt,
             revocationCause: "operator",
             lifecycleRevision: Number(row.lifecycleRevision) + 1
-          }, database.accessKeyScopes ?? [], revokedAt))
+          }, database.accessKeyScopes ?? [], outcome.revokedAt))
         };
       });
     },
@@ -13005,7 +13011,7 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
     await tx.deleteAuthSessionsForUser(row.userId);
     const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
       ownerUserId: row.userId,
-      revokedAt: database.clock.now().toISOString(),
+      revocationTime: () => database.clock.now().toISOString(),
       revocationCause: "password-reset"
     });
     return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
@@ -15295,12 +15301,16 @@ function createSharedDatabaseAdapterMethods(dialect) {
     revokeAccessKeyRecord(input) {
       let existing = null;
       let revoked = false;
+      let revokedAt = input.revokedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(
           sql(
             "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
           )
         ).run(input.ownerUserId),
+        () => {
+          revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+        },
         () => thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
@@ -15310,7 +15320,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           sql(
             "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL"
           )
-        ).run(input.revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
+        ).run(revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
           revoked = result.changes !== 0;
         }),
         () => !revoked ? void 0 : this.prepare(
@@ -15402,6 +15412,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     bulkRevokeAccessKeysForOwner(input) {
       let revokedCount = 0;
       let records = [];
+      let revokedAt = input.revokedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(sql(
           "INSERT INTO [sporades_auth_access_key_owners] ([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) ON CONFLICT ([ownerUserId]) DO NOTHING"
@@ -15409,6 +15420,9 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
+        () => {
+          revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+        },
         () => thenIfPromise(this.prepare(sql(
           "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [revokedAt] IS NULL ORDER BY [createdAt] DESC, [id] DESC"
         )).all(input.ownerUserId), (rows) => {
@@ -15416,14 +15430,14 @@ function createSharedDatabaseAdapterMethods(dialect) {
         }),
         () => thenIfPromise(this.prepare(sql(
           "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 WHERE [ownerUserId] = ? AND [revokedAt] IS NULL"
-        )).run(input.revokedAt, input.revocationCause, input.ownerUserId), (result) => {
+        )).run(revokedAt, input.revocationCause, input.ownerUserId), (result) => {
           revokedCount = Number(result.changes ?? 0);
         }),
         () => revokedCount === 0 ? void 0 : this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId)
       ]);
-      return thenIfPromise(sequence, () => ({ revokedCount, records }));
+      return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
     },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);

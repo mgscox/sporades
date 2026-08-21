@@ -148,11 +148,15 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
     async revoke(id: unknown) {
       const context = requireOwnerSessionContext(contextGetter());
       if (typeof id !== "string" || !id) throw accessKeyNotFoundError();
-      const now = database.clock.now().toISOString();
       const outcome = await withAccessKeyTransaction(database, (adapter) =>
-        adapter.revokeAccessKeyRecord({ ownerUserId: context.auth.userId, id, revokedAt: now, revocationCause: "owner" }));
+        adapter.revokeAccessKeyRecord({
+          ownerUserId: context.auth.userId,
+          id,
+          revocationTime: () => database.clock.now().toISOString(),
+          revocationCause: "owner",
+        }));
       if (!outcome) throw accessKeyNotFoundError();
-      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], now);
+      const accessKey = accessKeySummary(outcome, database.accessKeyScopes ?? [], outcome.revokedAt);
       await emitOwnerAccessKeyAudit(database, "access-key.revoked", context, accessKey);
       return { accessKey };
     },
@@ -245,27 +249,32 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
         if (existing?.ownerUserId) target.ownerUserId = existing.ownerUserId;
         requireContext();
         if (!existing) throw accessKeyNotFoundError();
-        const revokedAt = database.clock.now().toISOString();
         const row = await withAccessKeyTransaction(database, async (adapter) => {
           requireContext();
           const result = await adapter.revokeAccessKeyRecord({
-            ownerUserId: existing.ownerUserId, id, revokedAt, revocationCause: "operator",
+            ownerUserId: existing.ownerUserId,
+            id,
+            revocationTime: () => database.clock.now().toISOString(),
+            revocationCause: "operator",
           });
           requireContext();
           return result;
         });
         if (!row) throw accessKeyNotFoundError();
-        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], revokedAt) };
+        return { accessKey: privilegedAccessKeySummary(row, database.accessKeyScopes ?? [], row.revokedAt) };
       });
     },
     async revokeAll(ownerUserId: unknown) {
       const owner = requireId(ownerUserId);
       const context = requireContext();
       return runPrivilegedAccessKeyOperation(database, context, "access-keys.revoke-all", { ownerUserId: owner }, async () => {
-        const revokedAt = database.clock.now().toISOString();
         const outcome = await withAccessKeyTransaction(database, async (adapter) => {
           requireContext();
-          const result = await adapter.bulkRevokeAccessKeysForOwner({ ownerUserId: owner, revokedAt, revocationCause: "operator" });
+          const result = await adapter.bulkRevokeAccessKeysForOwner({
+            ownerUserId: owner,
+            revocationTime: () => database.clock.now().toISOString(),
+            revocationCause: "operator",
+          });
           requireContext();
           return result;
         });
@@ -274,10 +283,10 @@ export function createPrivilegedAccessKeysApi(database: LooseRecord, contextGett
           revokedCount: outcome.revokedCount,
           accessKeys: outcome.records.map((row: LooseRecord) => privilegedAccessKeySummary({
             ...row,
-            revokedAt,
+            revokedAt: outcome.revokedAt,
             revocationCause: "operator",
             lifecycleRevision: Number(row.lifecycleRevision) + 1,
-          }, database.accessKeyScopes ?? [], revokedAt)),
+          }, database.accessKeyScopes ?? [], outcome.revokedAt)),
         };
       });
     },
@@ -742,7 +751,7 @@ export async function runAccessKeyOwnerSecurityTransition(
   const outcome = await database.adapter.withTransaction(async (adapter: LooseRecord) => {
     const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
       ownerUserId: input.ownerUserId,
-      revokedAt: database.clock.now().toISOString(),
+      revocationTime: () => database.clock.now().toISOString(),
       revocationCause: input.revocationCause,
     });
     const result = await transition(adapter);

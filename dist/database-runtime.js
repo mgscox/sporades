@@ -725,14 +725,18 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         revokeAccessKeyRecord(input) {
             let existing = null;
             let revoked = false;
+            let revokedAt = input.revokedAt;
             const sequence = chainMaybePromise([
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 " +
                     "WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+                },
                 () => thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
                 () => !existing || existing.revokedAt ? existing : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, " +
                     "[verifierDigest] = NULL, [revokedAt] = ?, [revocationCause] = ?, " +
                     "[lifecycleRevision] = [lifecycleRevision] + 1 " +
-                    "WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL")).run(input.revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
+                    "WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL")).run(revokedAt, input.revocationCause, input.ownerUserId, input.id), (result) => {
                     revoked = result.changes !== 0;
                 }),
                 () => !revoked ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = [currentCount] - 1 " +
@@ -790,22 +794,26 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         bulkRevokeAccessKeysForOwner(input) {
             let revokedCount = 0;
             let records = [];
+            let revokedAt = input.revokedAt;
             const sequence = chainMaybePromise([
                 () => this.prepare(sql("INSERT INTO [sporades_auth_access_key_owners] " +
                     "([ownerUserId], [currentCount], [totalCount], [operationRevision]) VALUES (?, ?, ?, ?) " +
                     "ON CONFLICT ([ownerUserId]) DO NOTHING")).run(input.ownerUserId, 0, 0, 0),
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+                },
                 () => thenIfPromise(this.prepare(sql("SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
                     "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
                     "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL ORDER BY [createdAt] DESC, [id] DESC")).all(input.ownerUserId), (rows) => { records = rows; }),
                 () => thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, " +
                     "[revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
-                    "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL")).run(input.revokedAt, input.revocationCause, input.ownerUserId), (result) => {
+                    "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL")).run(revokedAt, input.revocationCause, input.ownerUserId), (result) => {
                     revokedCount = Number(result.changes ?? 0);
                 }),
                 () => revokedCount === 0 ? undefined : this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
             ]);
-            return thenIfPromise(sequence, () => ({ revokedCount, records }));
+            return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
         },
         ensureUserPreferencesStorage() {
             return createUserPreferencesTables(this);

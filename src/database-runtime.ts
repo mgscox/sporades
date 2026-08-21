@@ -940,6 +940,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     revokeAccessKeyRecord(input: LooseRecord) {
       let existing: LooseRecord | null = null;
       let revoked = false;
+      let revokedAt = input.revokedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(
           sql(
@@ -947,6 +948,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
             "WHERE [ownerUserId] = ?",
           ),
         ).run(input.ownerUserId),
+        () => {
+          revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+        },
         () => thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => { existing = row ?? null; }),
@@ -957,7 +961,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
             "[lifecycleRevision] = [lifecycleRevision] + 1 " +
             "WHERE [ownerUserId] = ? AND [id] = ? AND [revokedAt] IS NULL",
           ),
-        ).run(input.revokedAt, input.revocationCause, input.ownerUserId, input.id), (result: LooseRecord) => {
+        ).run(revokedAt, input.revocationCause, input.ownerUserId, input.id), (result: LooseRecord) => {
           revoked = result.changes !== 0;
         }),
         () => !revoked ? undefined : this.prepare(
@@ -1039,6 +1043,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     bulkRevokeAccessKeysForOwner(input: LooseRecord) {
       let revokedCount = 0;
       let records: LooseRecord[] = [];
+      let revokedAt = input.revokedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(sql(
           "INSERT INTO [sporades_auth_access_key_owners] " +
@@ -1048,6 +1053,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
         )).run(input.ownerUserId),
+        () => {
+          revokedAt = typeof input.revocationTime === "function" ? input.revocationTime() : input.revokedAt;
+        },
         () => thenIfPromise(this.prepare(sql(
           "SELECT [id], [ownerUserId], [name], [grantsJson], [lifecycleRevision], [createdAt], [expiresAt], " +
           "[rotatedAt], [revokedAt], [revocationCause], [lastUsedAt] FROM [sporades_auth_access_keys] " +
@@ -1057,14 +1065,14 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           "UPDATE [sporades_auth_access_keys] SET [reservedName] = NULL, [selector] = NULL, [verifierDigest] = NULL, " +
           "[revokedAt] = ?, [revocationCause] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
           "WHERE [ownerUserId] = ? AND [revokedAt] IS NULL",
-        )).run(input.revokedAt, input.revocationCause, input.ownerUserId), (result: LooseRecord) => {
+        )).run(revokedAt, input.revocationCause, input.ownerUserId), (result: LooseRecord) => {
           revokedCount = Number(result.changes ?? 0);
         }),
         () => revokedCount === 0 ? undefined : this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [currentCount] = 0 WHERE [ownerUserId] = ?",
         )).run(input.ownerUserId),
       ]);
-      return thenIfPromise(sequence, () => ({ revokedCount, records }));
+      return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
     },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);

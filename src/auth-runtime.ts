@@ -2230,7 +2230,7 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
     await tx.deleteAuthSessionsForUser(row.userId);
     const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
       ownerUserId: row.userId,
-      revokedAt: database.clock.now().toISOString(),
+      revocationTime: () => database.clock.now().toISOString(),
       revocationCause: "password-reset",
     });
     return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
