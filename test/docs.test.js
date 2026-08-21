@@ -1182,11 +1182,16 @@ test("Host deploy smoke docs import legacy Server env before pushing", async () 
 });
 
 test("canonical docs publish the bounded Access-key operator surface", async () => {
-  const [context, prd, serverReference, api] = await Promise.all([
+  const [context, prd, serverReference, api, guide, architecture, navigation, userGuide, roadmap] = await Promise.all([
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/reference/server-runtime.md"),
     readProjectFile("docs/api/types/server.PrivilegedAccessKeysApi.html"),
+    readProjectFile("docs/guide/auth.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/.vitepress/config.mts"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/ROADMAP.md"),
   ]);
   for (const contents of [context, prd, serverReference]) {
     assert.match(contents, /running (?:Dev, Container, or Hosted )?Capsule/i);
@@ -1199,4 +1204,12 @@ test("canonical docs publish the bounded Access-key operator surface", async () 
   assert.match(api, /revokeAll/);
   assert.doesNotMatch(api, />issue</);
   assert.doesNotMatch(api, />rotate</);
+  assert.match(navigation, /Access keys[\s\S]*\/guide\/auth#access-keys-for-named-api-access/);
+  assert.match(userGuide, /Give automation scoped Access keys/);
+  assert.match(roadmap, /User-owned scoped Access keys \| implemented/);
+  for (const contents of [guide, architecture]) {
+    assert.match(contents, /do(?:es)? not create|without creating/i);
+    assert.match(contents, /ctx\.credential/);
+    assert.match(contents, /never|not recoverable/i);
+  }
 });

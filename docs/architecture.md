@@ -80,6 +80,30 @@ Conceptually, each runtime contains:
   client Bundle and exposed through `ctx.env`.
 - persistent data: SQLite database plus file bytes.
 
+### Authentication and named API access
+
+Sporades keeps user authority separate from credential provenance. A Session
+and a named Access key may authenticate the same linked user, so ordinary
+Capsule work continues to authorize `ctx.auth` while `ctx.credential` records
+whether the request came from an interactive Session or one exact Access key.
+Access keys do not create Bot users, Team members, roles, or independent record
+owners.
+
+Bearer admission is additive and explicit. Only a declarative `requireAuth(...)`
+guard on a Custom endpoint, or the separate private-File policy, interprets an
+Access key. Existing Session transports and unwrapped endpoints retain their
+previous behavior. The Capsule declares one concrete scope vocabulary; key
+grants only narrow explicitly guarded work and never replace Table, Team, File,
+or ownership checks.
+
+The runtime owns issuance, hashed verification, expiry, atomic rotation,
+irreversible revocation, password-reset retirement, and bounded audit
+attribution. Plaintext is disclosed once to the owning linked Session and is
+not recoverable. Current-user Jobs persist the admitted user and safe Credential
+provenance, never the bearer or its grants, while evaluating current resource
+authority when they execute. See [ADR 0044](./adr/0044-access-keys-are-user-owned-credential-provenance.md)
+and the [Auth guide](./guide/auth.md#access-keys-for-named-api-access).
+
 ### Outbound SMTP mail
 
 Outbound mail is a runtime-owned server capability. Capsule code calls the

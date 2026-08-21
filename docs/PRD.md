@@ -114,6 +114,11 @@ The repository currently includes:
   OAuth provider linking, local identity simulation helpers, connected-client
   auth targeting, and provider configuration through `sporades.json` plus
   Server env.
+- User-owned named Access keys for scoped programmatic access, with explicit
+  Custom-endpoint and private-File Bearer admission, Session-only owner
+  management, immutable grants, one-time secret disclosure, atomic rotation and
+  retirement, Credential provenance through durable Jobs, and metadata-only
+  Privileged/operator inspection and revocation through a running Capsule.
 - Server-only SMTP mail through `ctx.mail.send(...)`, with one portable
   `sporades.json` contract for Dev sessions, local Container sessions, and
   Hosted Capsules; validated Postmark, Mailgun, Mailjet, SMTP2GO, and generic SMTP

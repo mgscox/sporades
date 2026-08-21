@@ -34,7 +34,7 @@ export default defineConfig({
           { text: "Server", link: "/guide/server" },
           { text: "Client", link: "/guide/client" },
           { text: "Authentication", link: "/guide/auth" },
-          { text: "Access keys", link: "/reference/server-runtime#manage-access-keys" },
+          { text: "Access keys", link: "/guide/auth#access-keys-for-named-api-access" },
           { text: "Files", link: "/guide/files" },
           { text: "Realtime features", link: "/guide/realtime" },
           { text: "Jobs and schedules", link: "/guide/background-work" },
