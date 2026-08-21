@@ -62,6 +62,9 @@ export default capsule({
     session: endpoint({ method: "GET", path: "/acceptance/session" }, requireAuth({ credentials: ["session"] }, (ctx) => ({
       body: { userId: ctx.auth.userId, credential: ctx.credential },
     }))),
+    jobEvidence: endpoint({ method: "GET", path: "/acceptance/job-evidence" }, requireAuth({ credentials: ["session"] }, async (ctx) => ({
+      body: { jobRuns: await ctx.db.jobRuns.all() },
+    }))),
     mixed: endpoint({ method: "GET", path: "/acceptance/mixed" }, requireAuth((ctx) => ({
       body: { userId: ctx.auth.userId, credential: ctx.credential },
     }))),
@@ -540,13 +543,6 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     const devOutput = dev.output();
     dev = null;
 
-    updateSqlite(
-      path.join(projectDir, ".sporades", "data.db"),
-      "UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?",
-      "2000-01-01T00:00:00.000Z",
-      enqueued.body.id,
-    );
-
     const containerData = path.join(projectDir, ".sporades", "data");
     await mkdir(containerData, { recursive: true });
     await cp(path.join(projectDir, ".sporades", "data.db"), path.join(containerData, "data.db"));
@@ -563,24 +559,12 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     assert.equal(containerSession.response.status, 200);
     assert.deepEqual(containerSession.body.credential, { kind: "session" });
 
-    const completedJob = await waitForContainerJob(projectDir, enqueued.body.id);
-    cliCapture.push(completedJob.command);
-    assert.deepEqual(completedJob.job.enqueuedBy, enqueued.body.enqueuedBy);
-    const jobEvidence = await fetchAcceptance(containerUrl, "/acceptance/read", { headers: bearer });
-    assert.equal(jobEvidence.response.status, 200, JSON.stringify(jobEvidence.body));
-    assert.deepEqual(jobEvidence.body.jobRuns.map(({ ownerId, credentialKind, credentialId, credentialName, records }) => ({ ownerId, credentialKind, credentialId, credentialName, records })), [{
-      ownerId: signup.data.auth.userId,
-      credentialKind: "access-key",
-      credentialId: issued.data.accessKey.id,
-      credentialName: "release canary",
-      records: "authority-evaluated",
-    }]);
-
     const hostedContract = await proveHostedActionContract(projectDir, signup.data.auth.userId, issued.data.accessKey.id);
     cliCapture.push(hostedContract);
     const listed = await client.accessKeys.list();
     assert.equal(listed.error, null, JSON.stringify(listed.error));
     assert.equal(listed.data.accessKeys.some((key) => key.id === issued.data.accessKey.id), true);
+    captured.push({ listed });
     const rotated = await client.accessKeys.rotate(issued.data.accessKey.id, { lifecycleRevision: issued.data.accessKey.lifecycleRevision });
     assert.equal(rotated.error, null, JSON.stringify(rotated.error));
     disclosedSecrets.push(rotated.data.token);
@@ -591,6 +575,42 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     assert.equal((await fetchAcceptance(containerUrl, "/acceptance/read", { headers: rotatedBearer })).response.status, 200);
     assert.equal((await fetch(new URL(fileUrl, containerUrl), { headers: rotatedBearer })).status, 200);
 
+    const revoked = await client.accessKeys.revoke(issued.data.accessKey.id);
+    assert.equal(revoked.error, null, JSON.stringify(revoked.error));
+    captured.push({ revoked });
+    const deniedRevoked = await fetchAcceptance(containerUrl, "/acceptance/read", { headers: rotatedBearer });
+    assertOpaqueDenied(deniedRevoked, 401, "UNAUTHENTICATED", 'Bearer realm="sporades", error="invalid_token"');
+    client.close();
+    client = null;
+
+    const stoppedForJob = await runCli(["deploy", "stop", "--json"], projectDir);
+    assert.equal(stoppedForJob.code, 0, stoppedForJob.stderr || stoppedForJob.stdout);
+    cliCapture.push(stoppedForJob);
+    const containerDatabasePath = path.join(projectDir, ".sporades", "data", "data.db");
+    updateSqlite(
+      containerDatabasePath,
+      "UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?",
+      "2000-01-01T00:00:00.000Z",
+      enqueued.body.id,
+    );
+    const restartedForJob = await runCli(["deploy", "restart", "--json"], projectDir, { timeout: 120_000 });
+    assert.equal(restartedForJob.code, 0, restartedForJob.stderr || restartedForJob.stdout);
+    cliCapture.push(restartedForJob);
+    await readConnectionToken(containerUrl);
+
+    const completedJob = await waitForContainerJob(projectDir, enqueued.body.id);
+    cliCapture.push(completedJob.command);
+    assert.deepEqual(completedJob.job.enqueuedBy, enqueued.body.enqueuedBy);
+    const jobEvidence = await fetchAcceptance(containerUrl, "/acceptance/job-evidence", { headers: sessionHeaders });
+    assert.equal(jobEvidence.response.status, 200, JSON.stringify(jobEvidence.body));
+    assert.deepEqual(jobEvidence.body.jobRuns.map(({ ownerId, credentialKind, credentialId, credentialName, records }) => ({ ownerId, credentialKind, credentialId, credentialName, records })), [{
+      ownerId: signup.data.auth.userId,
+      credentialKind: "access-key",
+      credentialId: issued.data.accessKey.id,
+      credentialName: "release canary",
+      records: "authority-evaluated",
+    }]);
+
     const jobs = await runCli(["deploy", "jobs"], projectDir);
     assert.equal(jobs.code, 0, jobs.stderr || jobs.stdout);
     cliCapture.push(jobs);
@@ -599,6 +619,8 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     assert.equal(inspected.status, "succeeded");
     assert.deepEqual(inspected.enqueuedBy, enqueued.body.enqueuedBy);
     assert.equal(JSON.stringify(inspected).includes(canary), false);
+
+    client = await installPublicClient(containerUrl, sessionToken);
 
     const expiring = await client.accessKeys.issue({
       name: "expiring acceptance",
@@ -622,11 +644,6 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     }
     assertOpaqueDenied(unknown, 429, "RATE_LIMITED");
 
-    const revoked = await client.accessKeys.revoke(issued.data.accessKey.id);
-    assert.equal(revoked.error, null, JSON.stringify(revoked.error));
-    const deniedRevoked = await fetchAcceptance(containerUrl, "/acceptance/read", { headers: rotatedBearer });
-    assertOpaqueDenied(deniedRevoked, 401, "UNAUTHENTICATED", 'Bearer realm="sporades", error="invalid_token"');
-
     const ownerIneligible = await client.accessKeys.issue({ name: "owner eligibility acceptance", grants: ["requests:read"] });
     assert.equal(ownerIneligible.error, null, JSON.stringify(ownerIneligible.error));
     disclosedSecrets.push(ownerIneligible.data.token);
@@ -637,7 +654,6 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     const stoppedForOwner = await runCli(["deploy", "stop", "--json"], projectDir);
     assert.equal(stoppedForOwner.code, 0, stoppedForOwner.stderr || stoppedForOwner.stdout);
     cliCapture.push(stoppedForOwner);
-    const containerDatabasePath = path.join(projectDir, ".sporades", "data", "data.db");
     updateSqlite(containerDatabasePath, "UPDATE sporades_auth_users SET isAuthenticated = 0 WHERE id = ?", signup.data.auth.userId);
     const restartedIneligible = await runCli(["deploy", "restart", "--json"], projectDir, { timeout: 120_000 });
     assert.equal(restartedIneligible.code, 0, restartedIneligible.stderr || restartedIneligible.stdout);
@@ -694,7 +710,13 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
     client = await installPublicClient(containerUrl, signedInAgain.data.sessionToken);
     const recovered = await client.accessKeys.list();
     assert.equal(recovered.error, null, JSON.stringify(recovered.error));
-    assert.equal(recovered.data.accessKeys.find((key) => key.id === resetTarget.data.accessKey.id).revocationCause, "password-reset");
+    captured.push({ recovered });
+    const recoveredById = new Map(recovered.data.accessKeys.map((key) => [key.id, key]));
+    for (const key of [expiring, ownerIneligible, resetTarget]) {
+      assert.equal(recoveredById.get(key.data.accessKey.id).status, "revoked");
+      assert.equal(recoveredById.get(key.data.accessKey.id).revocationCause, "password-reset");
+    }
+    assert.equal(recoveredById.get(issued.data.accessKey.id).revocationCause, "owner", "password reset must not rewrite historical retirement causes");
     client.close();
     client = null;
 
