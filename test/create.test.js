@@ -303,7 +303,10 @@ test("every supported blank framework receives the same dormant payment foundati
       assert.match(await readFile(path.join(projectDir, "shared", "payments.ts"), "utf8"), /PaymentJobState/, framework);
       assert.match(await readFile(path.join(projectDir, "client", "payments.ts"), "utf8"), /startStripeCheckout/, framework);
       assert.match(await readFile(path.join(projectDir, "client", "payments.ts"), "utf8"), /startStripeCustomerPortal/, framework);
-      assert.match(await readFile(path.join(projectDir, "server", "index.ts"), "utf8"), /paymentJobs/, framework);
+      const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+      assert.match(serverEntry, /paymentJobs/, framework);
+      assert.match(serverEntry, /import\s*\{[^}]*paymentStripeEvents[^}]*\}\s*from\s*"\.\/payments\.js"/, framework);
+      assert.match(serverEntry, /stripeEvents:\s*paymentStripeEvents/, framework);
     }
   });
 });

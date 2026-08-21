@@ -1184,7 +1184,7 @@ function vanillaTemplateFiles(options: { name: any; framework: any; template?: a
       ? blankPaymentReadme(options.name, "A framework-neutral Vanilla TypeScript Sporades capsule.")
       : `# ${options.name}\n\nA framework-neutral Vanilla TypeScript Sporades capsule.\n`,
     "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
-import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";` : ""}
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -1195,7 +1195,7 @@ export default capsule({
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
-  }) },${payments ? "\n  jobs: paymentJobs," : ""}
+  }) },${payments ? "\n  jobs: paymentJobs,\n  stripeEvents: paymentStripeEvents," : ""}
 });
 `,
     "client/index.ts": vanillaClientTemplate(),

@@ -65,7 +65,8 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
     fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
   validatePublicOrigin(stripe.publicOrigin);
-  if (!isSameOriginAbsolutePath(stripe.callbackPath) || stripe.callbackPath === "/__sporades" || stripe.callbackPath.startsWith("/__sporades/")) {
+  const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
+  if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
     fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
   }
   if (stripe.apiVersion !== STRIPE_API_VERSION) {
@@ -83,7 +84,7 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
       secretKeyEnv: stripe.secretKeyEnv,
       webhookSecretEnv: stripe.webhookSecretEnv,
       publicOrigin: stripe.publicOrigin,
-      callbackPath: stripe.callbackPath,
+      callbackPath,
       apiVersion: STRIPE_API_VERSION,
       livemode: stripe.livemode,
       requestTimeoutMs: stripe.requestTimeoutMs,
@@ -142,8 +143,15 @@ function validatePublicOrigin(value: unknown) {
   }
 }
 
-function isSameOriginAbsolutePath(value: unknown): value is string {
-  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+function canonicalSameOriginAbsolutePath(value: unknown): string | null {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
+    return null;
+  }
+  try {
+    return new URL(value, "https://sporades.invalid").pathname;
+  } catch {
+    return null;
+  }
 }
 
 function fail(message: string, hint: string): never {

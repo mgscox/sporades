@@ -112,6 +112,21 @@ test("Stripe callback paths cannot occupy runtime-owned HTTP namespaces", () => 
   }
 });
 
+test("Stripe callback paths must survive URL parsing unchanged", () => {
+  for (const callbackPath of [
+    "/a/../stripe",
+    "/a/./stripe",
+    "/a/%2e%2e/stripe",
+    "/a/%2E/stripe",
+  ]) {
+    assert.throws(
+      () => validatePaymentsConfig({ stripe: { ...enabledStripeConfig, callbackPath } }),
+      (error) => error.code === "INVALID_STRIPE_PAYMENTS_CONFIG",
+      callbackPath,
+    );
+  }
+});
+
 test("runtime publication fails closed before opening an incompletely activated Capsule", async () => {
   await assert.rejects(
     openDevDatabase("unused.db", "", {}, { name: "payments", payments: { stripe: enabledStripeConfig } }, { schema: {} }),

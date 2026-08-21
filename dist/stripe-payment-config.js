@@ -48,7 +48,8 @@ export function validatePaymentsConfig(payments) {
         fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
     }
     validatePublicOrigin(stripe.publicOrigin);
-    if (!isSameOriginAbsolutePath(stripe.callbackPath) || stripe.callbackPath === "/__sporades" || stripe.callbackPath.startsWith("/__sporades/")) {
+    const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
+    if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
         fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
     }
     if (stripe.apiVersion !== STRIPE_API_VERSION) {
@@ -66,7 +67,7 @@ export function validatePaymentsConfig(payments) {
             secretKeyEnv: stripe.secretKeyEnv,
             webhookSecretEnv: stripe.webhookSecretEnv,
             publicOrigin: stripe.publicOrigin,
-            callbackPath: stripe.callbackPath,
+            callbackPath,
             apiVersion: STRIPE_API_VERSION,
             livemode: stripe.livemode,
             requestTimeoutMs: stripe.requestTimeoutMs,
@@ -122,8 +123,16 @@ function validatePublicOrigin(value) {
         fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
     }
 }
-function isSameOriginAbsolutePath(value) {
-    return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+function canonicalSameOriginAbsolutePath(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
+        return null;
+    }
+    try {
+        return new URL(value, "https://sporades.invalid").pathname;
+    }
+    catch {
+        return null;
+    }
 }
 function fail(message, hint) {
     const error = new Error(message);

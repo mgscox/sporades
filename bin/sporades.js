@@ -3243,7 +3243,8 @@ function validatePaymentsConfig(payments) {
     fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
   validatePublicOrigin(stripe.publicOrigin);
-  if (!isSameOriginAbsolutePath(stripe.callbackPath) || stripe.callbackPath === "/__sporades" || stripe.callbackPath.startsWith("/__sporades/")) {
+  const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
+  if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
     fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
   }
   if (stripe.apiVersion !== STRIPE_API_VERSION) {
@@ -3261,7 +3262,7 @@ function validatePaymentsConfig(payments) {
       secretKeyEnv: stripe.secretKeyEnv,
       webhookSecretEnv: stripe.webhookSecretEnv,
       publicOrigin: stripe.publicOrigin,
-      callbackPath: stripe.callbackPath,
+      callbackPath,
       apiVersion: STRIPE_API_VERSION,
       livemode: stripe.livemode,
       requestTimeoutMs: stripe.requestTimeoutMs
@@ -3314,8 +3315,15 @@ function validatePublicOrigin(value) {
     fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
   }
 }
-function isSameOriginAbsolutePath(value) {
-  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
+function canonicalSameOriginAbsolutePath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
+    return null;
+  }
+  try {
+    return new URL(value, "https://sporades.invalid").pathname;
+  } catch {
+    return null;
+  }
 }
 function fail(message, hint) {
   const error = new Error(message);
@@ -21629,7 +21637,7 @@ function vanillaTemplateFiles(options) {
 A framework-neutral Vanilla TypeScript Sporades capsule.
 `,
     "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";${payments ? `
-import { paymentJobs, paymentMutations, paymentQueries, paymentSchema } from "./payments.js";` : ""}
+import { paymentJobs, paymentMutations, paymentQueries, paymentSchema, paymentStripeEvents } from "./payments.js";` : ""}
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -21640,7 +21648,7 @@ export default capsule({
   messages: { ping: message((ctx, data) => {
     const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
     return { pong: data ?? null, sentToClients };
-  }) },${payments ? "\n  jobs: paymentJobs," : ""}
+  }) },${payments ? "\n  jobs: paymentJobs,\n  stripeEvents: paymentStripeEvents," : ""}
 });
 `,
     "client/index.ts": vanillaClientTemplate(),

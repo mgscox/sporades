@@ -230,9 +230,11 @@ credentials, malformed origins, and unsupported compatibility versions fail as
 `INVALID_STRIPE_PAYMENTS_CONFIG`.
 
 `callbackPath` is an exact same-origin absolute path outside the reserved
-`/__sporades` runtime namespace. When Stripe is enabled, startup claims that
-path for one runtime-owned POST callback after rejecting method-and-path
-collisions with Capsule Custom endpoints and other enabled provider routes.
+`/__sporades` runtime namespace. URL parsing must preserve the path exactly;
+dot-segment forms, including percent-encoded forms, are rejected. When Stripe
+is enabled, startup claims that path for one runtime-owned POST callback after
+rejecting method-and-path collisions with Capsule Custom endpoints and other
+enabled provider routes.
 Disabled or absent Stripe configuration registers no callback route.
 Sporades does not create or reconcile a Stripe webhook endpoint. The operator
 registers the exact `publicOrigin + callbackPath` URL in Stripe after the
