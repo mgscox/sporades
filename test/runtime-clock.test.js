@@ -30,6 +30,7 @@ test("the full runtime can advance delayed Job timers without sleeping or replac
       get: mutation((ctx, id) => ctx.jobs.get(id)),
     },
   }, { clock });
+  await database.init();
 
   try {
     database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")

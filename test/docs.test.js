@@ -1241,6 +1241,9 @@ test("public docs agree on narrow Checkout, Customer Portal, callback admission,
   assert.match(projects, /later-arriving older event/i);
   assert.match(projects, /unknown event types[\s\S]{0,120}ignore/i);
   assert.match(projects, /raw provider value[\s\S]{0,160}(?:log|persist)/i);
+  assert.match(projects, /npm pack --json[\s\S]{0,200}(?:integrity|shasum)/i);
+  assert.match(projects, /packed candidate[\s\S]{0,200}consumer artifact/i);
+  assert.match(projects, /does not[\s\S]{0,80}(?:publish|activate)/i);
   assert.match(server, /Stripe event handler[\s\S]{0,160}Privileged server role/i);
   assert.match(server, /no[\s\S]{0,100}(?:subscription|entitlement)[\s\S]{0,100}automatically/i);
   assert.match(server, /operator Job[\s\S]{0,30}inspection[\s\S]{0,120}(?:omits|does not expose)[\s\S]{0,80}payload/i);

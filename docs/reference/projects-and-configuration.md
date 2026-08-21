@@ -317,6 +317,24 @@ Prices, Customers, Teams, billing authority, subscriptions, entitlements,
 notifications, retention, export, and erasure. Do not place secrets or provider
 identities in `sporades.json`, shared code, or browser code.
 
+#### Inspect a payment-bearing release candidate
+
+Build and test the exact checkout first, then create an immutable local candidate
+with `npm pack --json --ignore-scripts`. Record the reported `integrity`, `shasum`,
+filename, and file list. Inspect that list for the Stripe integration runtime,
+event dispatcher, declarations, generated manifest, scaffold generator, CLI, package
+metadata, and consumer README before treating repository behavior as shipped proof.
+
+Install the packed candidate into a fresh generated blank Capsule and run its
+strict typecheck and real Dev Bundle as a consumer artifact. Prove the dormant
+route remains absent, then exercise activated Checkout, Customer Portal, and
+verified event delivery through that installed package. Scan the packed files,
+generated source, Bundle, CLI output, Job state, and runtime logs for the exact
+fixture secrets, signatures, raw-provider markers, authorization values, and
+short-lived URLs used by acceptance. `npm pack` only creates a local candidate;
+it does not publish, upgrade another Capsule, call Stripe, mutate a provider
+account, or activate production.
+
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.
 

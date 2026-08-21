@@ -7,6 +7,9 @@ const HELP_TEXT = {
 
 Scaffold a new Capsule.
 
+The blank template includes a dormant, credential-free Stripe payment foundation;
+activation remains explicit and server-only.
+
 Options:
   --framework <name>  Client framework: ${frameworkHelp}
   --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)

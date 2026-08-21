@@ -111,6 +111,14 @@ test("sporades command --help prints command-specific help", async () => {
   });
 });
 
+test("sporades create help identifies the blank payment foundation as dormant and credential-free", async () => {
+  const result = await runCli(["create", "--help"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /blank template[\s\S]{0,120}dormant/i);
+  assert.match(result.stdout, /credential-free Stripe payment foundation/i);
+  assert.match(result.stdout, /activation[\s\S]{0,100}explicit/i);
+});
+
 test("sporades create writes a runnable React blank scaffold by default", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {
