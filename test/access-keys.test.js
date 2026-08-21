@@ -207,7 +207,10 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     endpoints: {
       middlewareIssue: endpoint(
         { method: "GET", path: "/middleware-issue" },
-        requireAuth({ credentials: ["session"] }, (ctx) => ({ body: { token: ctx.issuedToken } })),
+        requireAuth({ credentials: ["session"] }, (ctx) => ({
+          headers: { "Cache-Control": "public, max-age=3600", Pragma: "handler-cache" },
+          body: { token: ctx.issuedToken },
+        })),
       ),
     },
   });
@@ -347,6 +350,7 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     database.contextMiddleware = [];
     assert.equal(middlewareIssued.status, 200);
     assert.equal(middlewareIssued.headers.get("cache-control"), "private, no-store");
+    assert.equal(middlewareIssued.headers.get("pragma"), "no-cache");
     assert.match((await middlewareIssued.json()).token, /^spk_1_/);
     assert.equal(
       (await database.log.tail(50)).some((event) => event.event === "access-key.issued" && event.data?.accessKey?.name === "middleware-issued-key"),
@@ -390,6 +394,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
       read: endpoint(
         { method: "GET", path: "/requests" },
         requireAuth({ credentials: ["access-key"], scopes: ["requests:read"] }, (ctx) => ({
+          headers: { "Cache-Control": "public, max-age=3600", Pragma: "handler-cache" },
           body: {
             auth: ctx.auth,
             credential: ctx.credential,
@@ -460,6 +465,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     });
     assert.equal(admitted.status, 200);
     assert.equal(admitted.headers.get("cache-control"), "private, no-store");
+    assert.equal(admitted.headers.get("pragma"), "no-cache");
     const admittedBody = await admitted.json();
     assert.deepEqual(admittedBody.auth, {
       userId: auth.userId,

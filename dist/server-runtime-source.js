@@ -2702,11 +2702,11 @@ export async function routeEndpoint(database, request, response) {
     }
     try {
         const result = await runEndpoint(database, endpoint, requestUrl, request);
-        if (request.__sporadesAccessKeyAdmitted || request.__sporadesSecretDisclosed) {
-            response.setHeader("cache-control", "private, no-store");
-            response.setHeader("pragma", "no-cache");
-        }
-        writeEndpointResult(response, result);
+        const sensitiveResponseHeaders = request.__sporadesAccessKeyAdmitted
+            || request.__sporadesSecretDisclosed
+            ? { "cache-control": "private, no-store", pragma: "no-cache" }
+            : undefined;
+        writeEndpointResult(response, result, sensitiveResponseHeaders);
     }
     catch (error) {
         if (error?.sporadesAuthDenialLogData) {

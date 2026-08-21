@@ -632,7 +632,7 @@ async function sendFileHttpResponse(database: LooseRecord, response: any, row: L
   }
 }
 
-export function writeEndpointResult(response: any, result: any) {
+export function writeEndpointResult(response: any, result: any, runtimeHeaders: LooseRecord = {}) {
   if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
     const status = result.status ?? 200;
     if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -644,7 +644,7 @@ export function writeEndpointResult(response: any, result: any) {
     ) {
       throw endpointResponseError();
     }
-    const headers = { ...(result.headers ?? {}) };
+    const headers = mergeEndpointResponseHeaders(result.headers ?? {}, runtimeHeaders);
     const body = result.body ?? null;
     if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
       headers["content-type"] ??= "application/json; charset=utf-8";
@@ -664,8 +664,20 @@ export function writeEndpointResult(response: any, result: any) {
     return;
   }
 
-  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  response.writeHead(200, mergeEndpointResponseHeaders(
+    { "content-type": "text/plain; charset=utf-8" },
+    runtimeHeaders,
+  ));
   response.end(String(result ?? ""));
+}
+
+function mergeEndpointResponseHeaders(handlerHeaders: LooseRecord, runtimeHeaders: LooseRecord) {
+  const headers = { ...handlerHeaders };
+  const runtimeNames = new Set(Object.keys(runtimeHeaders).map((name) => name.toLowerCase()));
+  for (const name of Object.keys(headers)) {
+    if (runtimeNames.has(name.toLowerCase())) delete headers[name];
+  }
+  return { ...headers, ...runtimeHeaders };
 }
 
 export function writeEndpointError(response: any, error: any) {

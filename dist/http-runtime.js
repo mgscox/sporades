@@ -563,7 +563,7 @@ async function sendFileHttpResponse(database, response, row, options = {}) {
         writeNotFound(response);
     }
 }
-export function writeEndpointResult(response, result) {
+export function writeEndpointResult(response, result, runtimeHeaders = {}) {
     if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
         const status = result.status ?? 200;
         if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -573,7 +573,7 @@ export function writeEndpointResult(response, result) {
             (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))) {
             throw endpointResponseError();
         }
-        const headers = { ...(result.headers ?? {}) };
+        const headers = mergeEndpointResponseHeaders(result.headers ?? {}, runtimeHeaders);
         const body = result.body ?? null;
         if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
             headers["content-type"] ??= "application/json; charset=utf-8";
@@ -593,8 +593,17 @@ export function writeEndpointResult(response, result) {
         response.end(String(body ?? ""));
         return;
     }
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.writeHead(200, mergeEndpointResponseHeaders({ "content-type": "text/plain; charset=utf-8" }, runtimeHeaders));
     response.end(String(result ?? ""));
+}
+function mergeEndpointResponseHeaders(handlerHeaders, runtimeHeaders) {
+    const headers = { ...handlerHeaders };
+    const runtimeNames = new Set(Object.keys(runtimeHeaders).map((name) => name.toLowerCase()));
+    for (const name of Object.keys(headers)) {
+        if (runtimeNames.has(name.toLowerCase()))
+            delete headers[name];
+    }
+    return { ...headers, ...runtimeHeaders };
 }
 export function writeEndpointError(response, error) {
     const headers = { "content-type": "application/json; charset=utf-8" };

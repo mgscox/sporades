@@ -47,7 +47,7 @@ export declare function routeRuntimeHealth(database: any, request: {
     };
 }, response: any): Promise<boolean>;
 export declare function checkRuntimeSqlite(database: LooseRecord): Promise<any>;
-export declare function writeEndpointResult(response: any, result: any): void;
+export declare function writeEndpointResult(response: any, result: any, runtimeHeaders?: LooseRecord): void;
 export declare function writeEndpointError(response: any, error: any): void;
 export {};
 //# sourceMappingURL=http-runtime.d.ts.map

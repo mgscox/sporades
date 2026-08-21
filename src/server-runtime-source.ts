@@ -2912,11 +2912,11 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
   try {
     const result = await runEndpoint(database, endpoint, requestUrl, request);
-    if ((request as LooseRecord).__sporadesAccessKeyAdmitted || (request as LooseRecord).__sporadesSecretDisclosed) {
-      response.setHeader("cache-control", "private, no-store");
-      response.setHeader("pragma", "no-cache");
-    }
-    writeEndpointResult(response, result);
+    const sensitiveResponseHeaders = (request as LooseRecord).__sporadesAccessKeyAdmitted
+      || (request as LooseRecord).__sporadesSecretDisclosed
+      ? { "cache-control": "private, no-store", pragma: "no-cache" }
+      : undefined;
+    writeEndpointResult(response, result, sensitiveResponseHeaders);
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
