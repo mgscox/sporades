@@ -730,6 +730,7 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
 
     const removed = await runCli(["deploy", "remove", "--json"], projectDir);
     assert.equal(removed.code, 0, removed.stderr || removed.stdout);
+    deployedContainerId = null;
     cliCapture.push(removed);
 
     const redactedDisclosureCapture = JSON.stringify(captured.map((entry) => ({
@@ -766,7 +767,8 @@ test("a linked Session carries one scoped canary through real Dev and fresh Cont
   } finally {
     client?.close();
     await dev?.stop();
-    await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
+    const cleanup = await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
+    if (cleanup?.code === 0) deployedContainerId = null;
     if (deployedContainerId) await run("docker", ["rm", "-f", deployedContainerId]).catch(() => null);
     await chmod(root, 0o700).catch(() => {});
     await rm(root, { recursive: true, force: true });
