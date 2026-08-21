@@ -92,6 +92,20 @@ export declare function canonicalJobAuthSnapshot(auth: LooseRecord): {
     isGuest: any;
     provider: string | null;
 };
+/**
+ * Bounds profile metadata at the enqueue/migration boundary without rejecting Auth profiles that
+ * were valid before durable Job provenance introduced narrower storage limits. Authority-bearing
+ * identity fields remain strict; only display metadata is shortened or omitted.
+ */
+export declare function captureJobAuthSnapshot(auth: LooseRecord): {
+    userId: string | null;
+    displayName: string | null;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: any;
+    isGuest: any;
+    provider: string | null;
+};
 /** Canonical Credential provenance; secret material and granted scopes have no accepted field. */
 export declare function canonicalJobCredentialProvenance(credential: LooseRecord): {
     kind: string;

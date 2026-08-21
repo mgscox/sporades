@@ -410,8 +410,10 @@ for (const engine of ENGINES) {
       });
 
       await t.test("legacy Job provenance migrates and enqueue provenance rolls back atomically", async () => {
+        const legacyDisplayName = "L".repeat(513);
+        const legacyEmail = `${"e".repeat(320)}@example.com`;
         await adapter.insertAuthUser({
-          id: "legacy-job-user", createdAt: NOW, displayName: "Legacy Actor", email: "legacy@example.com",
+          id: "legacy-job-user", createdAt: NOW, displayName: legacyDisplayName, email: legacyEmail,
           picture: null, isAuthenticated: 1, isGuest: 0, provider: "email",
         });
         await adapter.prepare(sql(
@@ -423,7 +425,7 @@ for (const engine of ENGINES) {
           "SELECT [authSnapshotJson], [credentialJson] FROM [sporades_jobs] WHERE [id] = ?",
         )).get("legacy-provenance");
         assert.deepEqual(JSON.parse(migrated.authSnapshotJson), {
-          userId: "legacy-job-user", displayName: "Legacy Actor", email: "legacy@example.com", picture: null,
+          userId: "legacy-job-user", displayName: "L".repeat(512), email: null, picture: null,
           isAuthenticated: true, isGuest: false, provider: "google",
         });
         assert.deepEqual(JSON.parse(migrated.credentialJson), { kind: "session" });

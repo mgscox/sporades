@@ -7494,7 +7494,7 @@ async function ensureJobStorage(sqlite) {
       if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
     }
     const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
-    const authSnapshot = canonicalJobAuthSnapshot(user ? {
+    const authSnapshot = captureJobAuthSnapshot(user ? {
       userId: user.id,
       displayName: user.displayName,
       email: user.email,
@@ -7603,6 +7603,32 @@ function canonicalJobAuthSnapshot(auth) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
   }
   return snapshot;
+}
+function truncateJobDisplayName(value) {
+  let truncated = value.slice(0, 512);
+  const finalCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  if (finalCodeUnit >= 55296 && finalCodeUnit <= 56319) truncated = truncated.slice(0, -1);
+  return truncated || "Job enqueuer";
+}
+function captureJobAuthSnapshot(auth) {
+  if (typeof auth?.displayName !== "string" || !(auth?.email === null || typeof auth?.email === "string") || !(auth?.picture === null || typeof auth?.picture === "string")) return canonicalJobAuthSnapshot(auth);
+  boundedJobIdentityString(auth?.userId, "userId", 256);
+  boundedJobIdentityString(auth?.provider, "provider", 64);
+  if (typeof auth?.isAuthenticated !== "boolean" || typeof auth?.isGuest !== "boolean") {
+    return canonicalJobAuthSnapshot(auth);
+  }
+  const bounded = {
+    ...auth,
+    displayName: auth.displayName.length > 512 ? truncateJobDisplayName(auth.displayName) : auth.displayName,
+    email: auth.email !== null && auth.email.length > 320 ? null : auth.email,
+    picture: auth.picture !== null && auth.picture.length > 4096 ? null : auth.picture
+  };
+  try {
+    return canonicalJobAuthSnapshot(bounded);
+  } catch (error) {
+    if (error?.code !== "INVALID_JOB_IDENTITY") throw error;
+    return canonicalJobAuthSnapshot({ ...bounded, displayName: "Job enqueuer", email: null, picture: null });
+  }
 }
 function canonicalJobCredentialProvenance(credential) {
   if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind")) return { kind: "session" };
@@ -21637,7 +21663,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.delayMs with room for every configured attempt and its canonical runtime claim lease.");
       }
       const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
-      const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobAuthSnapshot(provenanceContext.auth));
+      const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
       const credentialJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {

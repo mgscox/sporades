@@ -41,20 +41,22 @@ runtime restart. Supply an idempotency key when callers can retry a workflow;
 repeating the same key for the same handler and captured user returns the
 retained Job.
 
-Retries, restart recovery, and child Jobs rehydrate the exact committed Auth
-and Credential snapshot. Later profile edits, Access-key rotation, revocation
-or deletion, unlinking, owner deletion, and reuse of the same key name do not
-rewrite or cancel already-admitted work. This historical identity is
-attribution, not restored authority: Table and File ACLs and Team operations
-still evaluate current rows, resources, membership, and roles when the Job
-runs.
+Retries, restart recovery, and child Jobs rehydrate the exact committed,
+bounded Auth and Credential snapshot. At capture, profile display metadata
+that predates the Job storage bounds is deterministically shortened or omitted;
+authority-bearing user and provider identity remains exact. Later profile
+edits, Access-key rotation, revocation or deletion, unlinking, owner deletion,
+and reuse of the same key name do not rewrite or cancel already-admitted work.
+This historical identity is attribution, not restored authority: Table and
+File ACLs and Team operations still evaluate current rows, resources,
+membership, and roles when the Job runs.
 
 Databases created before Credential provenance receive a deterministic Session
-snapshot at startup. Migration uses the retained actor provider and the current
-user profile when one exists; an absent legacy profile falls back to the
-bounded `Job enqueuer` display name, null email and picture, and guest/auth
-flags derived from the retained provider. The fallback does not invent an
-Access key.
+snapshot at startup. Migration uses the retained actor provider and a bounded
+capture of the current user profile when one exists; an absent legacy profile
+falls back to the bounded `Job enqueuer` display name, null email and picture,
+and guest/auth flags derived from the retained provider. The fallback does not
+invent an Access key.
 
 Jobs may use a one-time future `availableAt` and become `delayed` until then;
 this is not recurring scheduling. A bounded `retry` policy records attempts and

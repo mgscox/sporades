@@ -633,7 +633,7 @@ export async function ensureJobStorage(sqlite: LooseRecord) {
       if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
     }
     const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
-    const authSnapshot = canonicalJobAuthSnapshot(user ? {
+    const authSnapshot = captureJobAuthSnapshot(user ? {
       userId: user.id,
       displayName: user.displayName,
       email: user.email,
@@ -738,6 +738,45 @@ export function canonicalJobAuthSnapshot(auth: LooseRecord) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
   }
   return snapshot;
+}
+
+function truncateJobDisplayName(value: string) {
+  let truncated = value.slice(0, 512);
+  const finalCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) truncated = truncated.slice(0, -1);
+  return truncated || "Job enqueuer";
+}
+
+/**
+ * Bounds profile metadata at the enqueue/migration boundary without rejecting Auth profiles that
+ * were valid before durable Job provenance introduced narrower storage limits. Authority-bearing
+ * identity fields remain strict; only display metadata is shortened or omitted.
+ */
+export function captureJobAuthSnapshot(auth: LooseRecord) {
+  if (
+    typeof auth?.displayName !== "string" ||
+    !(auth?.email === null || typeof auth?.email === "string") ||
+    !(auth?.picture === null || typeof auth?.picture === "string")
+  ) return canonicalJobAuthSnapshot(auth);
+  // Validate exact authority/provenance fields before applying any compatibility fallback.
+  boundedJobIdentityString(auth?.userId, "userId", 256);
+  boundedJobIdentityString(auth?.provider, "provider", 64);
+  if (typeof auth?.isAuthenticated !== "boolean" || typeof auth?.isGuest !== "boolean") {
+    return canonicalJobAuthSnapshot(auth);
+  }
+  const bounded = {
+    ...auth,
+    displayName: auth.displayName.length > 512 ? truncateJobDisplayName(auth.displayName) : auth.displayName,
+    email: auth.email !== null && auth.email.length > 320 ? null : auth.email,
+    picture: auth.picture !== null && auth.picture.length > 4096 ? null : auth.picture,
+  };
+  try {
+    return canonicalJobAuthSnapshot(bounded);
+  } catch (error: any) {
+    if (error?.code !== "INVALID_JOB_IDENTITY") throw error;
+    // Escaped JSON can exceed the aggregate byte budget while every field is individually bounded.
+    return canonicalJobAuthSnapshot({ ...bounded, displayName: "Job enqueuer", email: null, picture: null });
+  }
 }
 
 /** Canonical Credential provenance; secret material and granted scopes have no accepted field. */

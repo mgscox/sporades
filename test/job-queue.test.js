@@ -196,6 +196,45 @@ test("a post-commit dispatch failure does not misreport committed handler work a
   }
 });
 
+test("Job enqueue bounds profile metadata already accepted by Auth", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-profile-compatibility-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-profile-compatibility" }, {
+    jobs: { record: job((_ctx, payload) => payload) },
+    mutations: {
+      enqueue: mutation((ctx) => ctx.jobs.enqueue("record", null, { availableAt: "2999-01-01T00:00:00.000Z" })),
+    },
+  });
+  try {
+    const longDisplayName = "L".repeat(513);
+    const longEmail = `${"e".repeat(320)}@example.com`;
+    const enqueued = await runMutation(database, {
+      userId: "profile-compatibility-user",
+      displayName: longDisplayName,
+      email: longEmail,
+      picture: null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "email",
+    }, "enqueue", []);
+    assert.equal(enqueued.ok, true);
+    const stored = database.adapter.prepare(
+      "SELECT authSnapshotJson FROM sporades_jobs WHERE id = ?",
+    ).get(enqueued.data.id);
+    assert.deepEqual(JSON.parse(stored.authSnapshotJson), {
+      userId: "profile-compatibility-user",
+      displayName: "L".repeat(512),
+      email: null,
+      picture: null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "email",
+    });
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failed message drops deferred Job enqueues with its rolled-back data", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-message-rollback-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-message-rollback" }, {

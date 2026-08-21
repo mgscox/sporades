@@ -109,7 +109,7 @@ import {
 } from "./file-storage-runtime.js";
 import {
   abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob,
-  canonicalJobAuthSnapshot, canonicalJobCredentialProvenance,
+  canonicalJobAuthSnapshot, canonicalJobCredentialProvenance, captureJobAuthSnapshot,
   commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor,
   dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage,
   finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError,
@@ -5597,7 +5597,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
       const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential
         ? null
-        : JSON.stringify(canonicalJobAuthSnapshot(provenanceContext.auth));
+        : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
       const credentialJson = scheduleProvenance || !provenanceContext?.credential
         ? null
         : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
