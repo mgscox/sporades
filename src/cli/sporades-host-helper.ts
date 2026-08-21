@@ -246,7 +246,7 @@ function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label
   catch { throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
   const bounded = sanitize(envelope);
   if (!bounded.ok) {
-    const error = helperError(bounded.error.message, bounded.error.hint);
+    const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
     if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
     throw error;
   }

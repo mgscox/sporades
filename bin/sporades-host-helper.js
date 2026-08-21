@@ -592,7 +592,8 @@ var CLI_VERSION = "0.8.7";
 function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
   if (envelope?.ok === false) {
     const source = envelope.error;
-    const diagnostics = source?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof source.scheduleName === "string" && typeof source.field === "string" ? { code: source.code, scheduleName: source.scheduleName, field: source.field } : void 0;
+    const candidate = source?.diagnostics ?? source;
+    const diagnostics = candidate?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof candidate.scheduleName === "string" && typeof candidate.field === "string" ? { code: candidate.code, scheduleName: candidate.scheduleName, field: candidate.field } : void 0;
     return { ok: false, data: null, error: {
       message: diagnostics ? "Persisted Schedule state is malformed." : "Schedule inspection failed.",
       hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Capsule and retry the command.",
@@ -1361,7 +1362,7 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
   }
   const bounded = sanitize(envelope);
   if (!bounded.ok) {
-    const error = helperError(bounded.error.message, bounded.error.hint);
+    const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
     if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
     throw error;
   }

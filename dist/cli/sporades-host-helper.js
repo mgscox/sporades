@@ -172,7 +172,7 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     }
     const bounded = sanitize(envelope);
     if (!bounded.ok) {
-        const error = helperError(bounded.error.message, bounded.error.hint);
+        const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
         if (label === "Access-key" && bounded.error.code)
             error.code = bounded.error.code;
         throw error;
