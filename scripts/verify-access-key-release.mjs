@@ -70,18 +70,12 @@ try {
   const testcase = (attributes, body = "") => {
     const name = decodeXml(/\bname="([^"]*)"/.exec(attributes)?.[1] ?? "");
     const skipped = /<skipped\b([^>]*)\/?>(?:<\/skipped>)?/.exec(body);
-    const failure = /<(?:failure|error)\b([^>]*)>/.exec(body);
-    const failureMessage = failure
-      ? decodeXml(/\bmessage="([^"]*)"/.exec(failure[1])?.[1] ?? "")
-        .replace(/spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/gi, "[REDACTED]").slice(0, 500)
-      : null;
     return {
       name,
       skipped: Boolean(skipped),
       skipType: skipped ? decodeXml(/\btype="([^"]*)"/.exec(skipped[1])?.[1] ?? "skipped") : null,
       reason: skipped ? decodeXml(/\bmessage="([^"]*)"/.exec(skipped[1])?.[1] ?? "") : null,
       failed: /<failure\b/.test(body) || /<error\b/.test(body),
-      failureMessage,
     };
   };
   const testcases = [...junit.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -135,7 +129,7 @@ try {
   const accountedTests = totals.pass + totals.fail + totals.cancelled + totals.skipped + totals.todo;
   if (!metricsAreValid || totals.tests !== accountedTests || totals.tests !== testcases.length + suites.length ||
     totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
-    throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify({ suiteExitCode: suite.status, totals, failedCases: failedCases.map(({ name, failureMessage }) => ({ name, failureMessage })) })}`);
+    throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify({ suiteExitCode: suite.status, totals, failedCases: failedCases.map(({ name }) => name) })}`);
   }
   if (suite.status !== 0) throw new Error(`Complete test suite exited ${suite.status} despite a passing JUnit summary.`);
   if (missingRequiredCases.length) {
