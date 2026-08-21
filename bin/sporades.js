@@ -6375,7 +6375,6 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       if (!isPlainObject2(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
         throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
       }
-      const rotatedAt = database.clock.now().toISOString();
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const secret = createAccessKeySecret();
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
@@ -6385,13 +6384,13 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
           secretVersion: 1,
           selector: secret.selector,
           verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
-          rotatedAt
+          rotationTime: () => database.clock.now().toISOString()
         }));
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
-        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
+        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt);
         accessKeySecretDisclosedContexts.add(context);
         await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
         return { accessKey, token: secret.token };
@@ -15307,6 +15306,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     rotateAccessKeyRecord(input) {
       let existing = null;
       let status = "not-found";
+      let rotatedAt = input.rotatedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?"
@@ -15314,12 +15314,15 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?"
         )).run(input.ownerUserId),
+        () => {
+          rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
+        },
         () => thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;
           if (!existing) status = "not-found";
-          else if (existing.revokedAt || existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(input.rotatedAt)) status = "not-active";
+          else if (existing.revokedAt || existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(rotatedAt)) status = "not-active";
           else if (Number(existing.lifecycleRevision) !== Number(input.lifecycleRevision)) status = "revision-conflict";
           else status = "ready";
         }),
@@ -15334,7 +15337,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           input.secretVersion,
           input.selector,
           input.verifierDigest,
-          input.rotatedAt,
+          rotatedAt,
           input.ownerUserId,
           input.id,
           input.lifecycleRevision
@@ -15347,7 +15350,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           existing = row ?? null;
         })
       ]);
-      return thenIfPromise(sequence, () => ({ status, record: existing }));
+      return thenIfPromise(sequence, () => ({ status, record: existing, rotatedAt }));
     },
     deleteRevokedAccessKeyRecord(input) {
       let existing = null;

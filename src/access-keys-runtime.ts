@@ -155,7 +155,6 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
       if (!isPlainObject(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
         throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
       }
-      const rotatedAt = database.clock.now().toISOString();
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const secret = createAccessKeySecret();
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.rotateAccessKeyRecord({
@@ -165,13 +164,13 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
           secretVersion: 1,
           selector: secret.selector,
           verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
-          rotatedAt,
+          rotationTime: () => database.clock.now().toISOString(),
         }));
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
-        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], rotatedAt);
+        const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt);
         accessKeySecretDisclosedContexts.add(context);
         await emitOwnerAccessKeyAudit(database, "access-key.rotated", context, accessKey);
         return { accessKey, token: secret.token };

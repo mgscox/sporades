@@ -968,6 +968,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     rotateAccessKeyRecord(input: LooseRecord) {
       let existing: LooseRecord | null = null;
       let status = "not-found";
+      let rotatedAt = input.rotatedAt;
       const sequence = chainMaybePromise([
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?",
@@ -975,12 +976,15 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => this.prepare(sql(
           "UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?",
         )).run(input.ownerUserId),
+        () => {
+          rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
+        },
         () => thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => {
           existing = row ?? null;
           if (!existing) status = "not-found";
-          else if (existing.revokedAt || (existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(input.rotatedAt))) status = "not-active";
+          else if (existing.revokedAt || (existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(rotatedAt))) status = "not-active";
           else if (Number(existing.lifecycleRevision) !== Number(input.lifecycleRevision)) status = "revision-conflict";
           else status = "ready";
         }),
@@ -994,14 +998,14 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           "[rotatedAt] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
           "WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL",
         )).run(
-          input.secretVersion, input.selector, input.verifierDigest, input.rotatedAt,
+          input.secretVersion, input.selector, input.verifierDigest, rotatedAt,
           input.ownerUserId, input.id, input.lifecycleRevision,
         ), (result: LooseRecord) => { status = result.changes === 1 ? "rotated" : "revision-conflict"; }),
         () => status !== "rotated" ? undefined : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => { existing = row ?? null; }),
       ]);
-      return thenIfPromise(sequence, () => ({ status, record: existing }));
+      return thenIfPromise(sequence, () => ({ status, record: existing, rotatedAt }));
     },
     deleteRevokedAccessKeyRecord(input: LooseRecord) {
       let existing: LooseRecord | null = null;

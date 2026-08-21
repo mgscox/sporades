@@ -737,14 +737,18 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         rotateAccessKeyRecord(input) {
             let existing = null;
             let status = "not-found";
+            let rotatedAt = input.rotatedAt;
             const sequence = chainMaybePromise([
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_locks] SET [operationRevision] = [operationRevision] + 1 WHERE [name] = ?")).run("selector"),
                 () => this.prepare(sql("UPDATE [sporades_auth_access_key_owners] SET [operationRevision] = [operationRevision] + 1 WHERE [ownerUserId] = ?")).run(input.ownerUserId),
+                () => {
+                    rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
+                },
                 () => thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => {
                     existing = row ?? null;
                     if (!existing)
                         status = "not-found";
-                    else if (existing.revokedAt || (existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(input.rotatedAt)))
+                    else if (existing.revokedAt || (existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(rotatedAt)))
                         status = "not-active";
                     else if (Number(existing.lifecycleRevision) !== Number(input.lifecycleRevision))
                         status = "revision-conflict";
@@ -757,10 +761,10 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 }),
                 () => status !== "ready" ? undefined : thenIfPromise(this.prepare(sql("UPDATE [sporades_auth_access_keys] SET [secretVersion] = ?, [selector] = ?, [verifierDigest] = ?, " +
                     "[rotatedAt] = ?, [lifecycleRevision] = [lifecycleRevision] + 1 " +
-                    "WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL")).run(input.secretVersion, input.selector, input.verifierDigest, input.rotatedAt, input.ownerUserId, input.id, input.lifecycleRevision), (result) => { status = result.changes === 1 ? "rotated" : "revision-conflict"; }),
+                    "WHERE [ownerUserId] = ? AND [id] = ? AND [lifecycleRevision] = ? AND [revokedAt] IS NULL")).run(input.secretVersion, input.selector, input.verifierDigest, rotatedAt, input.ownerUserId, input.id, input.lifecycleRevision), (result) => { status = result.changes === 1 ? "rotated" : "revision-conflict"; }),
                 () => status !== "rotated" ? undefined : thenIfPromise(this.prepare(sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")).get(input.ownerUserId, input.id), (row) => { existing = row ?? null; }),
             ]);
-            return thenIfPromise(sequence, () => ({ status, record: existing }));
+            return thenIfPromise(sequence, () => ({ status, record: existing, rotatedAt }));
         },
         deleteRevokedAccessKeyRecord(input) {
             let existing = null;
