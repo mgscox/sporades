@@ -13958,7 +13958,6 @@ var SAFE_ERRORS = {
   HOSTED_CAPSULE_NOT_RUNNING: { message: "The Hosted Capsule is not running.", hint: "Start the Hosted Capsule, then retry the operation." },
   HOSTED_ACCESS_KEY_RESPONSE_INVALID: { message: "Hosted Access-key action returned an invalid response.", hint: "Upgrade the Host helper, redeploy the Capsule, and retry." }
 };
-var BEARER_VALUE_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
 async function confirmAccessKeyOperatorAction(options, io = { input: process.stdin, output: process.stdout }) {
   if (options.yes || ["list", "inspect"].includes(options.subcommand)) return;
   if (!io.input?.isTTY || !io.output?.isTTY) {
@@ -14080,22 +14079,15 @@ function canonicalError(value, invalid) {
   if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid();
   return { code: value.code, ...SAFE_ERRORS[value.code] };
 }
-function containsBearerValue(value) {
-  if (typeof value === "string") return BEARER_VALUE_PATTERN.test(value);
-  if (Array.isArray(value)) return value.some(containsBearerValue);
-  return plain(value) && Object.values(value).some(containsBearerValue);
-}
 function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || containsBearerValue(value) || typeof value.ok !== "boolean") return invalid();
+  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
   const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
   if (value.ok) {
     if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
-    const bounded2 = { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
-    return containsBearerValue(bounded2) ? invalid() : bounded2;
+    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid), error: null };
   }
   if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid();
-  const bounded = { ok: false, data: null, error: canonicalError(value.error, invalid) };
-  return containsBearerValue(bounded) ? invalid() : bounded;
+  return { ok: false, data: null, error: canonicalError(value.error, invalid) };
 }
 
 // src/database-runtime.ts

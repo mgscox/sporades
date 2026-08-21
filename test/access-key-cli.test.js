@@ -98,12 +98,17 @@ test("Access-key operator schemas reject aliases, nesting, error extras, and mis
     { ok: false, data: { retained: true }, error: { message: "failed", hint: "retry" } },
     { ok: false, data: null, error: { message: "failed", hint: "retry", detail: "adapter secret" } },
     { ...envelope, data: { ...envelope.data, accessKeys: [{ ...envelope.data.accessKeys[0], ownerUserId: "other-user" }] } },
-    { ...envelope, data: { ...envelope.data, accessKeys: [{ ...envelope.data.accessKeys[0], name: bearer }] } },
-    { ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: `failed ${bearer}`, hint: "retry" } },
   ]) assert.throws(() => sanitizeAccessKeyOperatorEnvelope(hostile, "access-keys.list", input, invalid), /invalid envelope/);
   assert.throws(() => validateAccessKeyOperatorActionInput("access-keys.list", { ...input, authorization: "Bearer secret" }, invalid), /invalid envelope/);
+  const bearerNamedRevocation = {
+    ...revokedEnvelope,
+    data: { ...revokedEnvelope.data, accessKey: { ...revokedEnvelope.data.accessKey, name: bearer } },
+  };
+  assert.deepEqual(sanitizeAccessKeyOperatorEnvelope(
+    bearerNamedRevocation, "access-keys.revoke", { keyId: "key-1" }, invalid,
+  ), bearerNamedRevocation, "valid metadata must not be confused with a disclosed credential");
   assert.deepEqual(sanitizeAccessKeyOperatorEnvelope({
-    ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: "remote adapter detail", hint: "private@example.com" },
+    ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: `remote adapter detail ${bearer}`, hint: "private@example.com" },
   }, "access-keys.list", input, invalid).error, {
     code: "ACCESS_KEY_ACTION_FAILED",
     message: "Access-key operator action failed.",
