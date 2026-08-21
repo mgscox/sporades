@@ -7,7 +7,13 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "../dist/cli/access-key-operator-envelope.js";
+import {
+  ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT,
+  ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
+  confirmAccessKeyOperatorAction,
+  sanitizeAccessKeyOperatorEnvelope,
+  validateAccessKeyOperatorActionInput,
+} from "../dist/cli/access-key-operator-envelope.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "sporades.js");
@@ -143,6 +149,37 @@ test("Access-key operator schemas reject aliases, nesting, error extras, and mis
     ...revokedEnvelope,
     data: { ...revokedEnvelope.data, accessKey: { ...revokedEnvelope.data.accessKey, revocationCause: "invented" } },
   }, "access-keys.revoke", { keyId: "key-1" }, invalid), /invalid envelope/);
+});
+
+test("Access-key operator bounds include worst-case JSON escaping for legal scope metadata", () => {
+  const invalid = () => { throw new Error("invalid envelope"); };
+  const escapedScopes = Array.from({ length: 1024 }, (_, index) => {
+    const suffix = String(index).padStart(4, "0");
+    return `${"\0".repeat(256 - suffix.length)}${suffix}`;
+  });
+  const escapedEnvelope = {
+    ...envelope,
+    data: {
+      ...envelope.data,
+      accessKeys: Array.from({ length: 50 }, (_, index) => ({
+        ...envelope.data.accessKeys[0],
+        id: `key-${index}`,
+        name: `automation-${index}`,
+        effectiveScopes: escapedScopes,
+      })),
+      declaredScopes: escapedScopes,
+      totalCount: 50,
+    },
+  };
+  const encodedBytes = Buffer.byteLength(JSON.stringify(escapedEnvelope), "utf8");
+  assert.ok(encodedBytes > 32 * 1024 * 1024, "fixture must exceed the old unescaped transport bound");
+  assert.ok(encodedBytes <= ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT);
+  assert.ok(ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER > ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT);
+  const sanitized = sanitizeAccessKeyOperatorEnvelope(
+    escapedEnvelope, "access-keys.list", { userId: "user-1", options: {} }, invalid,
+  );
+  assert.equal(sanitized.data.accessKeys.length, 50);
+  assert.equal(sanitized.data.accessKeys[49].effectiveScopes.length, 1024);
 });
 
 test("Access-key CLI routes Container and Hosted actions through existing runtime seams", async () => {

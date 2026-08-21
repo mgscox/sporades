@@ -7,7 +7,15 @@ export const ACCESS_KEY_OPERATOR_ACTIONS = [
 const ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 const STATUSES = new Set(["active", "expired", "revoked"]);
 const REVOCATION_CAUSES = new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
-export const ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = 32 * 1024 * 1024;
+const ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;
+const JSON_STRING_MAX_BYTE_EXPANSION = 6;
+const ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM = 8 * 1024 * 1024;
+// JSON escapes a one-byte control character as six ASCII bytes (for example NUL as \u0000).
+// Bound the maximum list page using the public scope/grant cardinalities and byte limits: every
+// key can repeat the full effective-scope vocabulary and grants, and declaredScopes repeats the
+// vocabulary once more. The fixed headroom covers every other bounded field and JSON structure.
+export const ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = JSON_STRING_MAX_BYTE_EXPANSION * (((ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT + 1) * ACCESS_KEY_SCOPE_LIMIT * ACCESS_KEY_SCOPE_BYTE_LIMIT)
+    + (ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT * ACCESS_KEY_GRANT_LIMIT * ACCESS_KEY_GRANT_BYTE_LIMIT)) + ACCESS_KEY_OPERATOR_ENVELOPE_STRUCTURAL_HEADROOM;
 export const ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER = ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT + 1024 * 1024;
 const SAFE_ERRORS = {
     UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
