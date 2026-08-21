@@ -123,9 +123,6 @@ try {
   ];
   const missingRequiredCases = requiredCases.filter((name) =>
     !successfulSuites.includes(name) && !testcases.some((entry) => entry.name === name && !entry.skipped && !entry.failed));
-  if (missingRequiredCases.length) {
-    throw new Error(`Release verification did not execute required cases: ${JSON.stringify(missingRequiredCases)}`);
-  }
   const metric = (name) => Number(new RegExp(`<!-- ${name} (\\d+) -->`).exec(junit)?.[1] ?? NaN);
   const totals = Object.fromEntries(["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"].map((name) => [name, metric(name)]));
   const metricsAreValid = Object.values(totals).every((value) => Number.isInteger(value) && value >= 0);
@@ -135,6 +132,9 @@ try {
     throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify({ suiteExitCode: suite.status, totals, failedCases: failedCases.map(({ name }) => name) })}`);
   }
   if (suite.status !== 0) throw new Error(`Complete test suite exited ${suite.status} despite a passing JUnit summary.`);
+  if (missingRequiredCases.length) {
+    throw new Error(`Release verification did not execute required cases: ${JSON.stringify(missingRequiredCases)}`);
+  }
   const decodedJunit = decodeXml(junit.replaceAll("<![CDATA[", "").replaceAll("]]>", ""));
   const acceptanceDiagnosticText = /\{"devPort":\d+,"containerPort":\d+,"userId":"[^"]+","keyId":"[^"]+","jobId":"[^"]+","hostedActionContract":"cli-to-host-helper-to-container-exec-to-generated-bundle","scannedBearerCount":\d+,"retainedBearerFiles":\d+\}/.exec(decodedJunit)?.[0];
   if (!acceptanceDiagnosticText) throw new Error("Release acceptance did not emit its safe diagnostic evidence.");
