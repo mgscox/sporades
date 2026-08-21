@@ -1207,6 +1207,8 @@ test("canonical docs publish the bounded Access-key operator surface", async () 
   assert.match(navigation, /Access keys[\s\S]*\/guide\/auth#access-keys-for-named-api-access/);
   assert.match(userGuide, /Give automation scoped Access keys/);
   assert.match(roadmap, /User-owned scoped Access keys \| implemented/);
+  assert.match(guide, /account:[\s\S]*body: \{ userId: ctx\.auth\.userId \}/);
+  assert.match(guide, /importedRows:[\s\S]*body: \{ userId: ctx\.auth\.userId, access: ctx\.credential\.name \}/);
   for (const contents of [guide, architecture]) {
     assert.match(contents, /do(?:es)? not create|without creating/i);
     assert.match(contents, /ctx\.credential/);

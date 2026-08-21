@@ -28,10 +28,14 @@ export default capsule({
   accessKeys: { scopes: ["imports:read"] },
   endpoints: {
     account: endpoint({ method: "GET", path: "/account" },
-      requireAuth({ credentials: ["session"] }, (ctx) => ({ userId: ctx.auth.userId }))),
+      requireAuth({ credentials: ["session"] }, (ctx) => ({
+        body: { userId: ctx.auth.userId },
+      }))),
     importedRows: endpoint({ method: "GET", path: "/imports" },
       requireAuth({ credentials: ["access-key"], scopes: ["imports:read"] },
-        (ctx) => ({ userId: ctx.auth.userId, access: ctx.credential.name }))),
+        (ctx) => ({
+          body: { userId: ctx.auth.userId, access: ctx.credential.name },
+        }))),
   },
 });
 ```
