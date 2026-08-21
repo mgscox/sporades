@@ -16,7 +16,9 @@ Result: passed.
 
 - Node: `v22.23.2`
 - Docker server: `29.7.2`
-- PostgreSQL: `127.0.0.1:55432/sporades_w17`
+- SQLite adapter: per-test temporary file-backed database
+- libSQL adapter: per-test service-backed loopback HTTP endpoint on an ephemeral port, backed by a temporary SQLite database
+- PostgreSQL adapter: `127.0.0.1:55432/sporades_w17`
 - Tests: 1,895 total; 1,858 passed; 0 failed; 0 cancelled; 37 reviewed optional live-smoke skips; 0 todo
 - Generated-source manifest: passed
 - Documentation build: passed
