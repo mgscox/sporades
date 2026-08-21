@@ -40,7 +40,7 @@ function run(command, args, label, options = {}) {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${label} failed with exit code ${result.status}.`);
+  if (result.status !== 0 && !options.allowFailure) throw new Error(`${label} failed with exit code ${result.status}.`);
   return result;
 }
 
@@ -56,12 +56,12 @@ try {
   run("npm", ["run", "build"], "generated build");
   run(process.execPath, ["scripts/check-generated-bin.mjs"], "generated Bundle freshness");
   run("npm", ["run", "docs:build"], "documentation build");
-  run(process.execPath, [
+  const suite = run(process.execPath, [
     "--test",
     "--test-concurrency=1",
     "--test-reporter=junit",
     `--test-reporter-destination=${junitPath}`,
-  ], "complete test suite");
+  ], "complete test suite", { allowFailure: true });
 
   const junit = readFileSync(junitPath, "utf8");
   const decodeXml = (value) => value
@@ -75,6 +75,7 @@ try {
       skipped: Boolean(skipped),
       skipType: skipped ? decodeXml(/\btype="([^"]*)"/.exec(skipped[1])?.[1] ?? "skipped") : null,
       reason: skipped ? decodeXml(/\bmessage="([^"]*)"/.exec(skipped[1])?.[1] ?? "") : null,
+      failed: /<failure\b/.test(body) || /<error\b/.test(body),
     };
   };
   const testcases = [...junit.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -92,6 +93,7 @@ try {
     name === "sporades host helper reports remediation when data ownership cannot be prepared" ||
     name === "Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is available";
   const skippedCases = testcases.filter((entry) => entry.skipped);
+  const failedCases = testcases.filter((entry) => entry.failed);
   const todoCases = skippedCases.filter((entry) => entry.skipType === "todo");
   const unexplainedSkips = skippedCases.filter((entry) => entry.skipType === "todo" || !allowedOptionalSmoke(entry.name));
   if (todoCases.length || unexplainedSkips.length) {
@@ -118,8 +120,9 @@ try {
   const accountedTests = totals.pass + totals.fail + totals.cancelled + totals.skipped + totals.todo;
   if (!metricsAreValid || totals.tests !== accountedTests || totals.tests !== testcases.length ||
     totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
-    throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify(totals)}`);
+    throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify({ suiteExitCode: suite.status, totals, failedCases: failedCases.map(({ name }) => name) })}`);
   }
+  if (suite.status !== 0) throw new Error(`Complete test suite exited ${suite.status} despite a passing JUnit summary.`);
   const decodedJunit = decodeXml(junit.replaceAll("<![CDATA[", "").replaceAll("]]>", ""));
   const acceptanceDiagnosticText = /\{"devPort":\d+,"containerPort":\d+,"userId":"[^"]+","keyId":"[^"]+","jobId":"[^"]+","hostedActionContract":"cli-to-host-helper-to-container-exec-to-generated-bundle","scannedBearerCount":\d+,"retainedBearerFiles":\d+\}/.exec(decodedJunit)?.[0];
   if (!acceptanceDiagnosticText) throw new Error("Release acceptance did not emit its safe diagnostic evidence.");
