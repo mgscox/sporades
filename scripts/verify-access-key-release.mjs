@@ -67,16 +67,20 @@ try {
   const decodeXml = (value) => value
     .replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">").replaceAll("&amp;", "&");
-  const testcases = [...junit.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].map((match) => {
-    const name = decodeXml(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? "");
-    const skipped = /<skipped\b([^>]*)\/?>(?:<\/skipped>)?/.exec(match[2]);
+  const testcase = (attributes, body = "") => {
+    const name = decodeXml(/\bname="([^"]*)"/.exec(attributes)?.[1] ?? "");
+    const skipped = /<skipped\b([^>]*)\/?>(?:<\/skipped>)?/.exec(body);
     return {
       name,
       skipped: Boolean(skipped),
       skipType: skipped ? decodeXml(/\btype="([^"]*)"/.exec(skipped[1])?.[1] ?? "skipped") : null,
       reason: skipped ? decodeXml(/\bmessage="([^"]*)"/.exec(skipped[1])?.[1] ?? "") : null,
     };
-  });
+  };
+  const testcases = [
+    ...[...junit.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].map((match) => testcase(match[1], match[2])),
+    ...[...junit.matchAll(/<testcase\b([^>]*)\/>/g)].map((match) => testcase(match[1])),
+  ];
   const allowedOptionalSmoke = (name) =>
     name === "ctx.mail sends through Mailjet's generic authenticated STARTTLS endpoint" ||
     name.startsWith("real Container serves a complete ") ||
@@ -112,7 +116,10 @@ try {
   }
   const metric = (name) => Number(new RegExp(`<!-- ${name} (\\d+) -->`).exec(junit)?.[1] ?? NaN);
   const totals = Object.fromEntries(["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"].map((name) => [name, metric(name)]));
-  if (!Number.isInteger(totals.tests) || totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
+  const metricsAreValid = Object.values(totals).every((value) => Number.isInteger(value) && value >= 0);
+  const accountedTests = totals.pass + totals.fail + totals.cancelled + totals.skipped + totals.todo;
+  if (!metricsAreValid || totals.tests !== accountedTests || totals.tests !== testcases.length ||
+    totals.fail !== 0 || totals.cancelled !== 0 || totals.todo !== 0 || totals.skipped !== skippedCases.length) {
     throw new Error(`Invalid or failing JUnit summary: ${JSON.stringify(totals)}`);
   }
   const decodedJunit = decodeXml(junit.replaceAll("<![CDATA[", "").replaceAll("]]>", ""));
