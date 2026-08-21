@@ -56,6 +56,21 @@ function extractShellBlockAfter(markdown, heading) {
   return scriptBlock[1];
 }
 
+test("documentation validation stays separate from the full regression suite", async () => {
+  const [packageJson, workflow] = await Promise.all([
+    readProjectFile("package.json").then(JSON.parse),
+    readProjectFile(".github/workflows/deploy-docs.yml"),
+  ]);
+
+  assert.equal(
+    packageJson.scripts["test:docs"],
+    "node --test --test-concurrency=1 test/docs.test.js test/docs-llms.test.js",
+  );
+  assert.equal(packageJson.scripts["docs:check"], "npm run test:docs && npm run docs:build");
+  assert.match(workflow, /- run: npm run docs:check/);
+  assert.doesNotMatch(workflow, /- run: npm test(?:\s|$)/);
+});
+
 async function runShell(scriptPath, options) {
   return new Promise((resolve) => {
     const child = spawn("bash", [scriptPath], {
