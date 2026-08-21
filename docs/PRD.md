@@ -61,6 +61,9 @@ The repository currently includes:
   Capsule name changes; admission grants no user or Team authority and performs
   no Capsule billing consequence. That durable Job invokes the Capsule's single
   `stripeEvents: stripeEvent(...)` policy seam with the Verified Stripe event.
+  A Capsule may opt into `stripeEvent({ consequence: "atomic" }, handler)` for
+  one runtime-serialized transaction that commits or rolls back its app writes
+  and Job enqueues together while preserving the legacy callback unchanged.
   Every attempt uses the existing Privileged `started`, then `completed` or
   `errored`, then `finished` audit lifecycle; ordinary Job retry, cancellation,
   and revocation semantics remain in force. Capsule policy must make consequences

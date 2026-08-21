@@ -767,6 +767,21 @@ export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinitio
   event: VerifiedStripeEvent,
 ) => MaybePromise<void>;
 
+/** Narrow transaction-owned context for one atomic Stripe consequence. */
+export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<
+  PrivilegedContext<Schema>,
+  "auth" | "signal" | "db" | "env" | "log"
+> & {
+  /** Jobs persist with the consequence and are dispatched only after commit. */
+  jobs: Pick<JobApi, "enqueue">;
+};
+
+/** Handler for one runtime-serialized, transaction-owned Stripe consequence. */
+export type AtomicStripeEventHandler<Schema extends SchemaDefinition = SchemaDefinition> = (
+  ctx: AtomicStripeConsequenceContext<Schema>,
+  event: VerifiedStripeEvent,
+) => MaybePromise<void>;
+
 /** Handler for a named query exposed over the Sporades client transport. */
 export type QueryHandler<
   Schema extends SchemaDefinition = SchemaDefinition,
@@ -871,6 +886,13 @@ export type EmailEventDefinition<Handler = EmailEventHandler> = {
 
 export type StripeEventDefinition<Handler = StripeEventHandler> = {
   kind: "stripeEvent";
+  options?: undefined;
+  handler: Handler;
+};
+
+export type AtomicStripeEventDefinition<Handler = AtomicStripeEventHandler> = {
+  kind: "stripeEvent";
+  options: Readonly<{ consequence: "atomic" }>;
   handler: Handler;
 };
 
@@ -968,7 +990,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   mutations?: Record<string, MutationDefinition<MutationHandler | AuthGuardedHandler<(...args: any[]) => any>>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
-  stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>>;
+  stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
   jobs?: Record<string, JobDefinition<any>>;
   schedules?: Record<string, ScheduleDefinition>;
@@ -1049,6 +1071,8 @@ export function endpoint<Handler extends (...args: any[]) => any>(options: Endpo
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
 /** Declare the single verified Stripe-event subscription for a Capsule. */
 export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
+/** Opt into one runtime-serialized, transaction-owned Stripe consequence per Job attempt. */
+export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: { consequence: "atomic" }, handler: Handler): AtomicStripeEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,

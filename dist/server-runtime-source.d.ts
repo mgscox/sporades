@@ -87,6 +87,7 @@ export declare function runEndpoint(database: any, endpoint: {
     handler?: Function;
     handlerSource?: string;
 }, requestUrl: URL, request: any): Promise<any>;
+export declare function runAtomicStripeConsequence(database: LooseRecord, parentContext: LooseRecord, event: LooseRecord, subscription: LooseRecord): Promise<any>;
 export declare function createEndpointDatabaseApi(database: LooseRecord, contextGetter?: any): {
     [k: string]: any;
 };

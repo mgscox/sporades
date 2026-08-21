@@ -33,6 +33,14 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
 };
 export type StripeEventDefinition<HandlerType extends Handler = Handler> = {
     kind: "stripeEvent";
+    options?: undefined;
+    handler: HandlerType;
+};
+export type AtomicStripeEventDefinition<HandlerType extends Handler = Handler> = {
+    kind: "stripeEvent";
+    options: Readonly<{
+        consequence: "atomic";
+    }>;
     handler: HandlerType;
 };
 /**
@@ -144,6 +152,9 @@ export declare function endpoint<const HandlerType extends Handler>(options: End
 export declare function emailEvent<const HandlerType extends Handler>(handler: HandlerType): EmailEventDefinition<HandlerType>;
 /** Declare the single verified Stripe-event subscription for a Capsule. */
 export declare function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType>;
+export declare function stripeEvent<const HandlerType extends Handler>(options: {
+    consequence: "atomic";
+}, handler: HandlerType): AtomicStripeEventDefinition<HandlerType>;
 export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;
 export declare function mutation<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"mutation", HandlerType>;
 export declare function message<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"message", HandlerType>;

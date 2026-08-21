@@ -39,6 +39,13 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
 
 export type StripeEventDefinition<HandlerType extends Handler = Handler> = {
   kind: "stripeEvent";
+  options?: undefined;
+  handler: HandlerType;
+};
+
+export type AtomicStripeEventDefinition<HandlerType extends Handler = Handler> = {
+  kind: "stripeEvent";
+  options: Readonly<{ consequence: "atomic" }>;
   handler: HandlerType;
 };
 
@@ -201,8 +208,16 @@ export function emailEvent<const HandlerType extends Handler>(handler: HandlerTy
 }
 
 /** Declare the single verified Stripe-event subscription for a Capsule. */
-export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType> {
-  return { kind: "stripeEvent", handler };
+export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType>;
+export function stripeEvent<const HandlerType extends Handler>(options: { consequence: "atomic" }, handler: HandlerType): AtomicStripeEventDefinition<HandlerType>;
+export function stripeEvent<const HandlerType extends Handler>(first: HandlerType | { consequence: "atomic" }, second?: HandlerType): StripeEventDefinition<HandlerType> | AtomicStripeEventDefinition<HandlerType> {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (first !== null && typeof first === "object" && !Array.isArray(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    return Object.freeze({ kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" as const }), handler: second });
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  Object.assign(error, { code: "INVALID_STRIPE_EVENT_DECLARATION" });
+  throw error;
 }
 
 export function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType> {
@@ -471,11 +486,14 @@ export function emailEvent(handler) {
   };
 }
 
-export function stripeEvent(handler) {
-  return {
-    kind: "stripeEvent",
-    handler,
-  };
+export function stripeEvent(first, second) {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (plainObject(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    return Object.freeze({ kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second });
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  error.code = "INVALID_STRIPE_EVENT_DECLARATION";
+  throw error;
 }
 
 export function query(handler) {

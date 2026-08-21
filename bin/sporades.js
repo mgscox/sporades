@@ -2581,11 +2581,14 @@ export function emailEvent(handler) {
   };
 }
 
-export function stripeEvent(handler) {
-  return {
-    kind: "stripeEvent",
-    handler,
-  };
+export function stripeEvent(first, second) {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (plainObject(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    return Object.freeze({ kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second });
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  error.code = "INVALID_STRIPE_EVENT_DECLARATION";
+  throw error;
 }
 
 export function query(handler) {
@@ -17458,6 +17461,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
+    validateStripeEventSubscription(capsuleDefinition.stripeEvents);
   }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -17526,7 +17530,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   let database;
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
-    dispatchStripeEvent: (context, event) => dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents)
+    dispatchStripeEvent: (context, event) => capsuleDefinition?.stripeEvents?.options?.consequence === "atomic" ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents) : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents)
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -17802,6 +17806,24 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     await sqlite.migrateAppSchema(schema);
   }
   return database;
+}
+function validateStripeEventSubscription(subscription) {
+  if (subscription === void 0) return;
+  const invalid = () => commandError(
+    "Invalid Stripe-event declaration.",
+    'Use stripeEvent(handler) or stripeEvent({ consequence: "atomic" }, handler).',
+    "INVALID_STRIPE_EVENT_DECLARATION"
+  );
+  if (!subscription || typeof subscription !== "object" || Array.isArray(subscription) || subscription.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
+    throw invalid();
+  }
+  const keys = Object.keys(subscription).sort();
+  if (subscription.options === void 0) {
+    if (keys.length !== 2 || keys[0] !== "handler" || keys[1] !== "kind") throw invalid();
+    return;
+  }
+  const options = subscription.options;
+  if (keys.length !== 3 || keys[0] !== "handler" || keys[1] !== "kind" || keys[2] !== "options" || !options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).length !== 1 || options.consequence !== "atomic") throw invalid();
 }
 function resolveJourneySessionInactivityMinutes(config = {}) {
   const value = config.journey?.sessionInactivityMinutes;
@@ -19631,6 +19653,106 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     }
   });
   return transactionDatabase;
+}
+function atomicStripeAbortError() {
+  const error = new Error("Atomic Stripe consequence aborted.");
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+async function acquireAtomicStripeConsequenceFence(adapter) {
+  const sql = adapter.dialect.sql;
+  let acquired;
+  try {
+    await adapter.prepare(sql(
+      "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
+    )).run("stripe-consequence-fence", "0");
+    acquired = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value] = CAST([value] AS INTEGER) + 1 WHERE [key] = ?"
+    )).run("stripe-consequence-fence");
+  } catch (cause) {
+    const contention = cause?.errcode === 5 || cause?.code === "SQLITE_BUSY" || cause?.code === "ERR_SQLITE_ERROR" && /\b(?:busy|locked)\b/i.test(String(cause?.message ?? "")) || ["40001", "40P01", "55P03"].includes(cause?.code);
+    if (!contention) throw cause;
+    const error = new Error("Atomic Stripe consequence serialization is busy.");
+    error.code = "STRIPE_CONSEQUENCE_FENCE_BUSY";
+    error.retryable = true;
+    error.cause = cause;
+    throw error;
+  }
+  if (Number(acquired?.changes ?? 0) !== 1) {
+    const error = new Error("Atomic Stripe consequence serialization is unavailable.");
+    error.code = "STRIPE_CONSEQUENCE_FENCE_UNAVAILABLE";
+    throw error;
+  }
+}
+function createAtomicStripeConsequenceContext(database, parent) {
+  const context = {
+    auth: parent.auth,
+    env: database.serverEnv,
+    signal: parent.signal,
+    log: createEndpointLogger(database),
+    __privilegedRunActive: true,
+    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
+    __pendingAclWrites: []
+  };
+  grantPrivilegedDbAccess(context);
+  const holder = createContextHolder(context);
+  registerHandlerContextMapping(database, holder);
+  context.db = createEndpointDatabaseApi(database, () => holder.current);
+  const privilegedJobs = createPrivilegedJobApi(database, () => holder.current);
+  context.jobs = Object.freeze({
+    enqueue: privilegedJobs.enqueue.bind(privilegedJobs)
+  });
+  return context;
+}
+async function runAtomicStripeConsequence(database, parentContext, event, subscription) {
+  if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+  for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
+    let context;
+    try {
+      const result = await database.adapter.withTransaction(async (transactionAdapter) => {
+        await acquireAtomicStripeConsequenceFence(transactionAdapter);
+        if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+        const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+        let cleanupComplete = false;
+        let handlerFailed = false;
+        try {
+          context = createAtomicStripeConsequenceContext(transactionDatabase, parentContext);
+          const delivered = await dispatchVerifiedStripeEvent(context, event, subscription);
+          await cleanupTransactionHandler(transactionDatabase, context, false, false);
+          cleanupComplete = true;
+          if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+          return delivered;
+        } catch (error) {
+          handlerFailed = true;
+          throw error;
+        } finally {
+          try {
+            if (!cleanupComplete) {
+              await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+            }
+          } finally {
+            if (context) {
+              context.__privilegedRunActive = false;
+              revokePrivilegedDbAccess(context);
+            }
+          }
+        }
+      });
+      commitPendingJobCancellationAborts(context);
+      await dispatchPendingJobs(context);
+      database.rowCache.clear();
+      return result;
+    } catch (error) {
+      dropPendingJobCancellationAborts(context);
+      dropPendingJobDispatch(context);
+      database.rowCache.clear();
+      await reindexPrivilegedAuditEventsAfterRollback(database, context);
+      if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, fenceAttempt)));
+    }
+  }
+  throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true) {
   const headers = Object.fromEntries(

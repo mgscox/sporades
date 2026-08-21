@@ -141,6 +141,12 @@ typedUsers.insertOrIgnore({ email: "person@example.test" }, "createdAt");
 // @ts-expect-error Managed update timestamps are not insert conflict fields.
 typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
+const legacyStripeSubscription = stripeEvent(async (ctx, event) => {
+  ctx.log.info("legacy Stripe event", event.providerEventId);
+  await ctx.db.todos.all();
+});
+void legacyStripeSubscription;
+
 const app = capsule({
   name: "typed island",
   accessKeys: { scopes: ["todos:read", "todos:write"] },
@@ -182,7 +188,7 @@ const app = capsule({
     // @ts-expect-error Provider-specific payload fields stay under raw.
     event.Message_GUID;
   }),
-  stripeEvents: stripeEvent(async (ctx, event) => {
+  stripeEvents: stripeEvent({ consequence: "atomic" }, async (ctx, event) => {
     const verified: VerifiedStripeEvent = event;
     verified.provider satisfies "stripe";
     verified.providerEventId.toUpperCase();
@@ -193,10 +199,20 @@ const app = capsule({
     JSON.stringify(verified.raw);
     ctx.auth.userId satisfies "__privileged__";
     ctx.signal.throwIfAborted();
-    // @ts-expect-error Verified Stripe event handlers receive no HTTP request.
+    await ctx.db.todos.insert({ title: "atomic observation", ownerId: "system" });
+    await ctx.jobs.enqueue("summarise", { text: verified.providerEventId });
+    // @ts-expect-error Atomic Stripe event handlers receive no HTTP request.
     ctx.request.body;
-    // @ts-expect-error Privileged Stripe event work cannot infer a current user's Team list.
+    // @ts-expect-error Atomic Stripe consequences exclude Team authority.
     ctx.teams.list();
+    // @ts-expect-error Provider payment operations cannot run inside the app transaction.
+    ctx.payments.stripe.enabled;
+    // @ts-expect-error SMTP delivery cannot run inside the app transaction.
+    ctx.mail.send({ to: "recipient@example.com", subject: "denied", textBody: "denied" });
+    // @ts-expect-error Atomic callbacks cannot nest Privileged runs.
+    ctx.privileged.run({}, () => undefined);
+    // @ts-expect-error Atomic callbacks may enqueue but cannot inspect the queue.
+    ctx.jobs.list();
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {

@@ -6,10 +6,11 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 
 import Stripe from "stripe";
-import { createControllableRuntimeClock, inspectRuntimeJobs, listDatabaseTables, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
-import { endpoint, mutation, query, String as Text, stripeEvent as declareStripeEvent, table } from "../dist/server.js";
+import { createControllableRuntimeClock, inspectRuntimeJobs, listDatabaseTables, openDevDatabase, routeEndpoint, runAtomicStripeConsequence, runMutation, runQuery } from "../dist/server-runtime-source.js";
+import { endpoint, job, mutation, query, String as Text, stripeEvent as declareStripeEvent, table } from "../dist/server.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { POSTGRES_SKIP_REASON, withPostgresAdapter } from "./support/database-adapter-engines.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const webhookSecret = "whsec_runtime_fixture";
 const serverEnv = {
@@ -604,4 +605,225 @@ test("Stripe event policy writes through the ordinary Capsule Database adapter",
       occurredAt: expectedOccurredAt,
     }]);
   });
+});
+
+test("an opt-in atomic Stripe consequence commits or rolls back all app writes", async () => {
+  assert.throws(
+    () => declareStripeEvent({ consequence: "atomic", extra: true }, () => {}),
+    (error) => error.code === "INVALID_STRIPE_EVENT_DECLARATION",
+  );
+  assert.throws(
+    () => declareStripeEvent({ consequence: "atomic" }),
+    (error) => error.code === "INVALID_STRIPE_EVENT_DECLARATION",
+  );
+  let shouldFail = true;
+  const leakedDatabases = [];
+  const leakedJobs = [];
+  const definition = declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
+    assert.equal(ctx.auth.userId, "__privileged__");
+    assert.equal(typeof ctx.payments, "undefined");
+    assert.equal(typeof ctx.mail, "undefined");
+    assert.equal(typeof ctx.files, "undefined");
+    assert.equal(typeof ctx.messages, "undefined");
+    assert.equal(typeof ctx.serverAuth, "undefined");
+    assert.equal(typeof ctx.schedules, "undefined");
+    assert.equal(typeof ctx.accessKeys, "undefined");
+    assert.equal(typeof ctx.privileged, "undefined");
+    leakedDatabases.push(ctx.db);
+    leakedJobs.push(ctx.jobs);
+    await ctx.db.stripeObservations.insert({
+      providerEventId: event.providerEventId,
+      occurredAt: event.occurredAt,
+    });
+    await ctx.db.stripeConsequences.insert({ providerEventId: event.providerEventId });
+    await ctx.jobs.enqueue("recordConsequence", { providerEventId: event.providerEventId }, {
+      idempotencyKey: event.providerEventId,
+    });
+    if (shouldFail) throw new Error("injected atomic consequence failure");
+  });
+  assert.deepEqual(definition.options, { consequence: "atomic" });
+  assert.equal(Object.isFrozen(definition), true);
+  assert.equal(Object.isFrozen(definition.options), true);
+
+  const capsule = {
+    schema: {
+      stripeObservations: table({ providerEventId: Text(), occurredAt: Text() }),
+      stripeConsequences: table({ providerEventId: Text() }),
+    },
+    stripeEvents: definition,
+    jobs: {
+      recordConsequence: job(() => ({ recorded: true })),
+    },
+    queries: {
+      observations: query((ctx) => ctx.db.stripeObservations.all()),
+      consequences: query((ctx) => ctx.db.stripeConsequences.all()),
+    },
+  };
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withDatabase({ name: "stripe-atomic-consequence", payments: { stripe } }, capsule, async (database) => {
+    await database.init();
+    const body = stripeEvent("evt_runtime_atomic_1");
+    const admission = await postStripe(database, body);
+    const jobId = JSON.parse(admission.response.body).jobId;
+    await clock.runDueTimers();
+    assert.equal((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId)?.status, "delayed");
+    assert.deepEqual((await runQuery(database, anonymousAuth, "observations")).data, []);
+    assert.deepEqual((await runQuery(database, anonymousAuth, "consequences")).data, []);
+    assert.equal((await inspectRuntimeJobs(database.adapter)).filter((jobState) => jobState.handler === "recordConsequence").length, 0);
+    assert.throws(() => leakedDatabases[0].stripeObservations.all(), /no longer active/);
+    await assert.rejects(() => leakedJobs[0].enqueue("recordConsequence", {}));
+
+    shouldFail = false;
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+    assert.equal((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId)?.status, "succeeded");
+    assert.equal((await runQuery(database, anonymousAuth, "observations")).data.length, 1);
+    assert.equal((await runQuery(database, anonymousAuth, "consequences")).data.length, 1);
+    assert.equal((await inspectRuntimeJobs(database.adapter)).filter((jobState) => jobState.handler === "recordConsequence").length, 1);
+    assert.throws(() => leakedDatabases[1].stripeObservations.all(), /no longer active/);
+    await assert.rejects(() => leakedJobs[1].enqueue("recordConsequence", {}));
+    const auditEvents = await stripeJobAuditEvents(database, jobId);
+    assert.deepEqual(auditEvents.map((event) => event.data.outcome), [
+      "started", "errored", "finished",
+      "started", "completed", "finished",
+    ]);
+  }, { clock });
+});
+
+test("the runtime rejects forged atomic Stripe-event definitions", async () => {
+  for (const stripeEvents of [
+    { kind: "stripeEvent", options: { consequence: "atomic", extra: true }, handler() {} },
+    { kind: "stripeEvent", options: { consequence: "eventual" }, handler() {} },
+    { kind: "stripeEvent", options: { consequence: "atomic" }, handler: null },
+  ]) {
+    await assert.rejects(
+      withDatabase({ name: "stripe-forged-atomic", payments: { stripe } }, { stripeEvents }, async () => {}),
+      (error) => error.code === "INVALID_STRIPE_EVENT_DECLARATION",
+    );
+  }
+});
+
+async function proveAtomicStripeConsequenceSerialization(openRuntimes) {
+  const firstClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const secondClock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let firstEntered;
+  let releaseFirst;
+  let secondEntered;
+  const firstBegan = new Promise((resolve) => { firstEntered = resolve; });
+  const firstRelease = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondBegan = new Promise((resolve) => { secondEntered = resolve; });
+  let active = 0;
+  let maximumActive = 0;
+  const observedPredecessors = [];
+  const capsule = {
+    schema: {
+      stripeSequence: table({ providerEventId: Text(), predecessorCount: Text() }),
+    },
+    stripeEvents: declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      try {
+        const prior = await ctx.db.stripeSequence.all();
+        observedPredecessors.push({ providerEventId: event.providerEventId, count: prior.length });
+        if (event.providerEventId === "evt_runtime_atomic_serial_first") {
+          firstEntered();
+          await firstRelease;
+        } else {
+          secondEntered();
+        }
+        await ctx.db.stripeSequence.insert({
+          providerEventId: event.providerEventId,
+          predecessorCount: String(prior.length),
+        });
+      } finally {
+        active -= 1;
+      }
+    }),
+  };
+  let runtimes;
+  try {
+    runtimes = await openRuntimes(capsule, firstClock, secondClock);
+    const { firstDatabase, secondDatabase } = runtimes;
+    await firstDatabase.init();
+    await secondDatabase.init();
+    const parentContext = () => ({
+      auth: Object.freeze({ userId: "__privileged__", displayName: "Privileged server role", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "privileged-server-role" }),
+      signal: new AbortController().signal,
+      __jobEnqueuedBy: "__privileged__",
+    });
+    const event = (providerEventId) => ({
+      provider: "stripe",
+      providerEventId,
+      type: "customer.subscription.updated",
+      occurredAt: "2030-01-01T00:00:00.000Z",
+      livemode: false,
+      objectId: "sub_atomic_serialization",
+      raw: { id: providerEventId, type: "customer.subscription.updated", data: { object: { id: "sub_atomic_serialization" } } },
+    });
+
+    const firstRun = runAtomicStripeConsequence(firstDatabase, parentContext(), event("evt_runtime_atomic_serial_first"), capsule.stripeEvents);
+    await withTimeout(firstBegan, "first atomic consequence did not enter");
+    const secondRun = runAtomicStripeConsequence(secondDatabase, parentContext(), event("evt_runtime_atomic_serial_second"), capsule.stripeEvents);
+    await assert.rejects(withTimeout(secondBegan, "second atomic consequence remained fenced", 50), /remained fenced/);
+    releaseFirst();
+    await Promise.all([firstRun, secondRun]);
+    assert.equal(maximumActive, 1);
+    assert.deepEqual(observedPredecessors, [
+      { providerEventId: "evt_runtime_atomic_serial_first", count: 0 },
+      { providerEventId: "evt_runtime_atomic_serial_second", count: 1 },
+    ]);
+  } finally {
+    releaseFirst?.();
+    await Promise.all([runtimes?.firstDatabase?.close(), runtimes?.secondDatabase?.close()]);
+  }
+}
+
+test("atomic Stripe consequences serialize across independent SQLite runtimes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-serialization-"));
+  const databasePath = path.join(dir, "shared.db");
+  try {
+    await proveAtomicStripeConsequenceSerialization(async (capsule, firstClock, secondClock) => ({
+      firstDatabase: await openDevDatabase(databasePath, "", serverEnv, { name: "stripe-atomic-serialization", payments: { stripe } }, capsule, { createStripeCallbackEndpoint, clock: firstClock }),
+      secondDatabase: await openDevDatabase(databasePath, "", serverEnv, { name: "stripe-atomic-serialization", payments: { stripe } }, capsule, { createStripeCallbackEndpoint, clock: secondClock }),
+    }));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomic Stripe consequences serialize across independent libSQL runtimes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "shared.db"), { isolateProcess: true }, async ({ url }) => {
+      const config = { name: "stripe-atomic-libsql", payments: { stripe }, services: { database: { engine: "libsql" } } };
+      const serviceEnv = { ...serverEnv, SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await proveAtomicStripeConsequenceSerialization(async (capsule, firstClock, secondClock) => ({
+        firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
+        secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
+      }));
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomic Stripe consequences serialize across two independent Postgres runtimes", {
+  skip: POSTGRES_SKIP_REASON,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-atomic-postgres-"));
+  const serviceEnv = {
+    ...serverEnv,
+    SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+    SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+  };
+  const config = { name: "stripe-atomic-postgres", payments: { stripe }, services: { database: { engine: "postgres" } } };
+  try {
+    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeSequence"] });
+    await proveAtomicStripeConsequenceSerialization(async (capsule, firstClock, secondClock) => ({
+      firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
+      secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
+    }));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
