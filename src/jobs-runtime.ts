@@ -104,8 +104,29 @@ export const STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
 
 const REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 const STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
+const STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1_000;
 const STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1_000;
 const STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2_147_483_647;
+
+function parseStripeEventPayloadSentinelMaintenance(value: unknown) {
+  if (typeof value !== "string") return { afterId: "", recheckAt: null };
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && typeof parsed.afterId === "string") {
+      return {
+        afterId: parsed.afterId,
+        recheckAt: isCanonicalJobTimestamp(parsed.recheckAt) ? parsed.recheckAt : null,
+      };
+    }
+  } catch {
+    // The first cursor release stored the opaque key directly. Read it as an additive migration.
+  }
+  return { afterId: value, recheckAt: null };
+}
+
+function serializeStripeEventPayloadSentinelMaintenance(afterId: string, recheckAt: string | null) {
+  return JSON.stringify({ afterId, recheckAt });
+}
 
 export function stripeEventPayloadRetentionDeadline(settledAt: string) {
   if (!isCanonicalJobTimestamp(settledAt)) return null;
@@ -127,6 +148,7 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
   let redactedCount = 0;
   let remaining = batchSize;
   let sentinelScanPending = false;
+  let sentinelRecheckAt: string | null = null;
 
   // Expired deadlines have privacy priority over legacy classification. Every successful CAS,
   // regardless of mutation kind, consumes this invocation's one shared budget.
@@ -155,14 +177,21 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
   const cursorRow = await adapter.prepare(sql(
     "SELECT [value] FROM [sporades] WHERE [key]=?",
   )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
-  const observedCursor = typeof cursorRow?.value === "string" ? cursorRow.value : "";
-  const sentinelCandidates = remaining === 0 ? [] : await adapter.prepare(sql(
+  let observedMaintenanceValue = typeof cursorRow?.value === "string"
+    ? cursorRow.value
+    : serializeStripeEventPayloadSentinelMaintenance("", null);
+  let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
+  const recheckIsWaiting = sentinelMaintenance.afterId === ""
+    && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt)
+    && String(sentinelMaintenance.recheckAt) > nowIso;
+  if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
+  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql(
     "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
     "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? " +
     "ORDER BY [id] ASC LIMIT ?",
-  )).all(STRIPE_EVENT_JOB, observedCursor, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
+  )).all(STRIPE_EVENT_JOB, sentinelMaintenance.afterId, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
   let processedSentinelCount = 0;
-  let processedSentinelCursor = observedCursor;
+  let processedSentinelCursor = sentinelMaintenance.afterId;
   for (const observed of sentinelCandidates.slice(0, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE)) {
     if (remaining === 0) break;
     processedSentinelCount += 1;
@@ -193,24 +222,54 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
     }
   }
   if (remaining === 0 && processedSentinelCount === 0) {
-    sentinelScanPending = Boolean(await adapter.prepare(sql(
+    // Spending the Job budget elsewhere must not defeat an already-durable future safety
+    // deadline. An unfinished cursor (or a cycle with no deadline yet) still re-arms immediately.
+    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql(
       "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
       "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1",
     )).get(STRIPE_EVENT_JOB));
   } else if (processedSentinelCount > 0) {
     const pageHasMore = sentinelCandidates.length > processedSentinelCount;
+    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+      "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1",
+    )).get(STRIPE_EVENT_JOB));
     const nextCursor = pageHasMore ? processedSentinelCursor : "";
+    const nextRecheckAt = !pageHasMore && unresolvedSentinel
+      ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS)
+      : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance(nextCursor, nextRecheckAt);
     const advanced = await adapter.prepare(sql(
       "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?",
-    )).run(nextCursor, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedCursor);
-    sentinelScanPending = pageHasMore || Number(advanced?.changes ?? 0) === 0;
-  } else if (observedCursor !== "") {
-    // Completing a page at the end of the keyspace wraps durably, but does not hot-loop a fully
-    // malformed population. A later activation or other cleanup trigger begins the next cycle.
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(advanced?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: nextCursor, recheckAt: nextRecheckAt };
+      sentinelScanPending = pageHasMore;
+      sentinelRecheckAt = nextRecheckAt;
+    }
+  } else if (!recheckIsWaiting && (sentinelMaintenance.afterId !== "" || sentinelMaintenance.recheckAt !== null)) {
+    // Completing a keyspace cycle schedules a bounded safety scan instead of hot-looping. The
+    // periodic deadline is durable, so storage repair behind the cursor remains discoverable after
+    // restart even though that narrow repair emits no runtime signal.
+    const unresolvedSentinel = Boolean(await adapter.prepare(sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
+      "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1",
+    )).get(STRIPE_EVENT_JOB));
+    const nextRecheckAt = unresolvedSentinel
+      ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS)
+      : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
     const wrapped = await adapter.prepare(sql(
-      "UPDATE [sporades] SET [value]='' WHERE [key]=? AND [value]=?",
-    )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedCursor);
-    sentinelScanPending = Number(wrapped?.changes ?? 0) === 0;
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?",
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(wrapped?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: "", recheckAt: nextRecheckAt };
+      sentinelRecheckAt = nextRecheckAt;
+    }
   }
 
   // Older successful reserved Jobs predate the deadline column. Assign their deadline from the
@@ -262,15 +321,25 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
     "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
     "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1",
   )).get(STRIPE_EVENT_JOB);
+  if (!sentinelScanPending && sentinelMaintenance.afterId === "" && sentinelRecheckAt === null && classifiedCount > 0) {
+    const nextRecheckAt = jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS);
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
+    const scheduled = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?",
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(scheduled?.changes ?? 0) === 0) sentinelScanPending = true;
+    else sentinelRecheckAt = nextRecheckAt;
+  }
   const next = await adapter.prepare(sql(
     "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' " +
     "AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' " +
     "ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1",
   )).get(STRIPE_EVENT_JOB);
-  const nextCleanupAt = moreUnassigned
-    ? nowIso
-    : sentinelScanPending ? nowIso
-    : isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+  const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+  const scheduledCleanupAt = sentinelRecheckAt !== null && nextDeadline !== null
+    ? (sentinelRecheckAt < nextDeadline ? sentinelRecheckAt : nextDeadline)
+    : sentinelRecheckAt ?? nextDeadline;
+  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso : scheduledCleanupAt;
   return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
 }
 
@@ -857,8 +926,8 @@ export async function ensureJobStorage(sqlite: LooseRecord) {
   const sql = sqlite.dialect.sql;
   await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
   await sqlite.prepare(sql(
-    "INSERT INTO [sporades] ([key], [value]) VALUES (?, '') ON CONFLICT ([key]) DO NOTHING",
-  )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
+    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING",
+  )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, serializeStripeEventPayloadSentinelMaintenance("", null));
   await sqlite.exec(
     sql(
       "CREATE TABLE IF NOT EXISTS [sporades_jobs] (" +

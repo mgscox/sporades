@@ -137,7 +137,8 @@ editor. If a supported storage recovery or migration restores a canonical
 30-day deadline. Exact compare-and-set classification cannot overwrite a
 concurrent repair. Between the canonical repair and that cleanup pass, safe
 inspection reports `CANONICAL_REPAIR_PENDING`; still-malformed sentinel rows
-remain `INVALID_COMPLETED_AT` and do not repeatedly re-arm cleanup.
+remain `INVALID_COMPLETED_AT` and receive one bounded periodic safety scan every
+24 hours rather than repeatedly re-arming cleanup.
 
 Cleanup runs at runtime activation, after restart, and at the next deadline. It
 performs at most 100 successful row mutations in total per invocation. It
@@ -155,8 +156,12 @@ Job-row keyset cursor advances across rejected impossible dates without using
 dialect-specific date parsing; cursor writes do not consume the 100-Job-mutation
 budget. Non-final pages re-arm immediately, the cursor survives restart, and
 compare-and-set advancement lets concurrent cleaners converge. Completing a
-fully malformed cycle wraps and stops rather than hot-looping. The cursor stores
-no provider identity, idempotency value, or payload data.
+fully malformed cycle resets the cursor and stores a durable 24-hour safety
+deadline rather than hot-looping. A canonical repair made behind the cursor or
+after wrap is therefore detected within 24 hours plus the time needed to drain
+bounded 100-row pages ahead of it. Restart before that deadline does not scan
+early. The maintenance state stores only the opaque cursor and safety deadline,
+never provider identity, idempotency value, or payload data.
 
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
 clears immediate, delayed, and retry worker timers plus the retained-lease

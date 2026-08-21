@@ -100,6 +100,13 @@ async function readStoredJob(adapter, id) {
   return await adapter.prepare(adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [id]=?")).get(id);
 }
 
+async function readSentinelMaintenance(adapter) {
+  const row = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [value] FROM [sporades] WHERE [key]='stripe-event-payload-retention-sentinel-cursor-v1'",
+  )).get();
+  return JSON.parse(row.value);
+}
+
 test("reserved Stripe Event payload retention is a fixed finite runtime contract", () => {
   assert.equal(STRIPE_EVENT_PAYLOAD_RETENTION_MS, 30 * 24 * 60 * 60 * 1_000);
   assert.equal(typeof cleanupExpiredStripeEventPayloads, "function");
@@ -203,7 +210,7 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
 
       const classified = await cleanupExpiredStripeEventPayloads({ adapter, clock });
       assert.equal(classified.classifiedCount, 1);
-      assert.equal(classified.nextCleanupAt, null, "still-malformed sentinels do not hot-loop cleanup");
+      assert.equal(classified.nextCleanupAt, "2030-01-02T00:00:00.000Z", "still-malformed sentinels get one bounded daily safety scan");
       assert.equal((await readStoredJob(adapter, "classified-then-repaired")).payloadRetentionUntil, "");
 
       adapter = await controls.restart();
@@ -217,6 +224,7 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
         deadline: null,
       });
 
+      clock.advanceBy(24 * 60 * 60 * 1_000);
       const repaired = await cleanupExpiredStripeEventPayloads({ adapter, clock });
       assert.equal(repaired.assignedCount, 1);
       assert.equal(repaired.redactedCount, 0);
@@ -239,7 +247,7 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
       assert.deepEqual((await inspectRuntimeJobs(adapter)).find((job) => job.id === "classified-then-repaired").payloadRetention, {
         state: "redacted",
         deadline: "2029-12-31T00:00:00.000Z",
-        redactedAt: "2030-01-01T00:00:00.000Z",
+        redactedAt: "2030-01-02T00:00:00.000Z",
       });
     });
   });
@@ -270,7 +278,7 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
       const cursor = await adapter.prepare(adapter.dialect.sql(
         "SELECT [value] FROM [sporades] WHERE [key]='stripe-event-payload-retention-sentinel-cursor-v1'",
       )).get();
-      assert.match(cursor.value, /^starve-invalid-/);
+      assert.match(JSON.parse(cursor.value).afterId, /^starve-invalid-/);
       assert.doesNotMatch(cursor.value, /evt_|raw_private|providerEventId/);
 
       adapter = await controls.restart();
@@ -297,6 +305,66 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
         kind: "stripe-event",
         retained: false,
       });
+    });
+  });
+
+  test(`${engine.name}: periodic sentinel safety scans detect repairs behind and after cursor wrap`, { skip: engine.skip }, async () => {
+    await engine.withAdapter(async (initialAdapter, controls) => {
+      let adapter = initialAdapter;
+      await ensureJobStorage(adapter);
+      for (let index = 0; index < 225; index += 1) {
+        await insertReservedJob(adapter, {
+          id: `periodic-invalid-${String(index).padStart(3, "0")}`,
+          status: "succeeded",
+          completedAt: "2029-02-31T00:00:00.000Z",
+          payloadRetentionUntil: "",
+        });
+      }
+      await adapter.prepare(adapter.dialect.sql(
+        "UPDATE [sporades] SET [value]=? WHERE [key]='stripe-event-payload-retention-sentinel-cursor-v1'",
+      )).run("periodic-invalid-099");
+      const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+      assert.equal((await cleanupExpiredStripeEventPayloads({ adapter, clock })).nextCleanupAt, "2030-01-01T00:00:00.000Z");
+      await adapter.prepare(adapter.dialect.sql(
+        "UPDATE [sporades_jobs] SET [completedAt]=? WHERE [id]=? AND [payloadRetentionUntil]=''",
+      )).run("2029-12-01T00:00:00.000Z", "periodic-invalid-050");
+
+      adapter = await controls.restart();
+      await Promise.all([
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+      ]);
+      let maintenance = await readSentinelMaintenance(adapter);
+      for (let pass = 0; maintenance.recheckAt === null && pass < 4; pass += 1) {
+        await cleanupExpiredStripeEventPayloads({ adapter, clock });
+        maintenance = await readSentinelMaintenance(adapter);
+      }
+      assert.deepEqual(maintenance, { afterId: "", recheckAt: "2030-01-02T00:00:00.000Z" });
+      assert.equal((await readStoredJob(adapter, "periodic-invalid-050")).payloadRetentionUntil, "");
+
+      await adapter.prepare(adapter.dialect.sql(
+        "UPDATE [sporades_jobs] SET [completedAt]=? WHERE [id]=? AND [payloadRetentionUntil]=''",
+      )).run("2029-12-01T00:00:00.000Z", "periodic-invalid-060");
+      adapter = await controls.restart();
+      clock.advanceBy(24 * 60 * 60 * 1_000 - 1);
+      const early = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(early.nextCleanupAt, "2030-01-02T00:00:00.000Z");
+      assert.equal(early.assignedCount, 0, "restart before the safety deadline does not scan early");
+      clock.advanceBy(1);
+      const periodic = await cleanupExpiredStripeEventPayloads({ adapter, clock });
+      assert.equal(periodic.assignedCount, 2);
+      for (const id of ["periodic-invalid-050", "periodic-invalid-060"]) {
+        assert.equal((await readStoredJob(adapter, id)).payloadRetentionUntil, "2029-12-31T00:00:00.000Z");
+      }
+
+      const concurrent = await Promise.all([
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+        cleanupExpiredStripeEventPayloads({ adapter, clock }),
+      ]);
+      assert.equal(concurrent.reduce((count, result) => count + result.redactedCount, 0), 2);
+      for (const id of ["periodic-invalid-050", "periodic-invalid-060"]) {
+        assert.deepEqual(JSON.parse((await readStoredJob(adapter, id)).payload), { kind: "stripe-event", retained: false });
+      }
     });
   });
 

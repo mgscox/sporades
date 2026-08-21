@@ -322,7 +322,11 @@ cleanup automatically derives and applies the 30-day clock, without exposing a
 general Job mutation surface.
 Repair discovery is bounded and starvation-safe: a durable runtime-only opaque
 cursor pages across classified rows, survives restart and overlapping cleanup,
-and contains no Stripe identity or payload value.
+and contains no Stripe identity or payload value. Incomplete pages re-arm
+immediately. Once a full cycle still contains malformed rows, the runtime stores
+a 24-hour safety deadline and resets the cursor; this bounds idle scanning while
+guaranteeing that a direct canonical storage repair is detected within 24 hours
+plus the time needed to drain any bounded 100-row pages ahead of it.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,
