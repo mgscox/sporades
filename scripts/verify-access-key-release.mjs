@@ -77,10 +77,8 @@ try {
       reason: skipped ? decodeXml(/\bmessage="([^"]*)"/.exec(skipped[1])?.[1] ?? "") : null,
     };
   };
-  const testcases = [
-    ...[...junit.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)].map((match) => testcase(match[1], match[2])),
-    ...[...junit.matchAll(/<testcase\b([^>]*)\/>/g)].map((match) => testcase(match[1])),
-  ];
+  const testcases = [...junit.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+    .map((match) => testcase(match[1], match[2] ?? ""));
   const allowedOptionalSmoke = (name) =>
     name === "ctx.mail sends through Mailjet's generic authenticated STARTTLS endpoint" ||
     name.startsWith("real Container serves a complete ") ||
