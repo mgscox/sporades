@@ -64,7 +64,7 @@ import {
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
 import {
-  accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
+  accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
   accessKeySecretWasDisclosed,
   dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
   publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
@@ -3153,6 +3153,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       body: endpointRequest.body,
     },
   };
+  if (credential?.kind === "session" && typeof session.token === "string") {
+    bindAccessKeyOwnerSession(context, session.token);
+  }
   if (options.accessKeyGrants) {
     Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
   }
@@ -3838,8 +3841,9 @@ type TrustedRefreshTransport = {
   disconnected(connectionId: string): void;
 };
 
-export async function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
+export async function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord, sessionToken?: string | null) {
   const context = { kind: "message", auth, credential: { kind: "session" } };
+  bindAccessKeyOwnerSession(context, sessionToken);
   const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
   const operation = message.type.slice("accessKeys.".length);
   try {
@@ -4184,7 +4188,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-      const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+      const result = await runClientAccessKeyOperation(database, client.session.auth, message, client.session.token);
       sendJson(client, {
         id: message.id ?? null,
         type: result.error ? "error" : `${message.type}.result`,
@@ -4702,7 +4706,9 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
+      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+        sessionToken: client.session.token,
+      });
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
         setTimeout(() => {
@@ -4724,6 +4730,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       const messageName = message.message ?? message.name;
       const result = await runAppMessage(database, client.session.auth, messageName, message.data, {
         sendAppMessage,
+        sessionToken: client.session.token,
       });
       sendJson(client, {
         id: message.id ?? null,
@@ -4805,7 +4812,9 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result: any = await runQuery(database, client.session.auth, subscription.name, subscription.args);
+      const result: any = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+        sessionToken: client.session.token,
+      });
       const data =
         subscription.style === "direct"
           ? (result.data ?? result.rows)
@@ -5075,7 +5084,7 @@ function sendJsonWithCompletion(client: LooseRecord, message: LooseRecord, timeo
   });
 }
 
-export async function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs: unknown = []): Promise<any> {
+export async function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs: unknown = [], options: LooseRecord = {}): Promise<any> {
   let args;
   try {
     args = normalizeQueryArguments(rawArgs);
@@ -5086,7 +5095,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
   try {
-    context = createMutationContext(database, auth);
+    context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
@@ -5230,7 +5239,7 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
   }
 }
 
-export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any) {
+export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
   const writeState = { didWrite: false };
@@ -5239,7 +5248,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
       try {
-        context = createMutationContext(transactionDatabase, auth);
+        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
         const customHandler = transactionDatabase.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
@@ -5362,7 +5371,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage, options.sessionToken);
         context = await applyContextMiddleware(transactionDatabase, context, "message");
         const result = await messageHandler(context, data);
         if (result !== undefined) {
@@ -5422,8 +5431,8 @@ function isAllAppMessageScope(scope: any) {
   return scope === "all" || scope?.scope === "all";
 }
 
-function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any) {
-  const context = createMutationContext(database, auth);
+function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any, sessionToken?: string | null) {
+  const context = createMutationContext(database, auth, { sessionToken });
   context.messages = {
     send(appMessage: { type: any; scope: any; data: undefined; }) {
       validateAppMessageType(appMessage?.type);
@@ -5475,6 +5484,9 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     } : {}),
     __pendingAclWrites: [],
   };
+  if (typeof options.sessionToken === "string") {
+    bindAccessKeyOwnerSession(context, options.sessionToken);
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);

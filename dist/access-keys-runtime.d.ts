@@ -186,6 +186,7 @@ export declare function accessKeyVerifierDigest(selector: string, verifier: stri
 export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined): Promise<void>;
 export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined): void;
 export declare function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord): void;
+export declare function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
 export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
 export declare function runAccessKeyOwnerSecurityTransition(database: LooseRecord, input: LooseRecord, transition: (adapter: LooseRecord) => any): Promise<any>;

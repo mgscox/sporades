@@ -28,7 +28,7 @@ import { emitHttpFailureLog, readLimitedRequestBody, resolveHttpMaxBodyBytes, re
 import { isPromiseLike, thenIfPromise } from "./maybe-promise.js";
 import { isSensitiveLogKey, logIndexLimit } from "./runtime-log-policy.js";
 import { accessKeyGrantsSatisfyScopes, normalizeCapsuleAuthDefinition, readAuthRequirements, validateCapsuleAuthRequirements, } from "./auth-admission.js";
-import { accessKeyCredentialLogAttribution, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
+import { accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit, accessKeySecretWasDisclosed, dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState, } from "./access-keys-runtime.js";
 import { validateAccessKeyOperatorActionInput } from "./cli/access-key-operator-envelope.js";
 // Batch 9 left one engine-construction name here: `openDevDatabase` builds the Capsule's adapter
 // with it. Trusted policy reads now also ask that module whether the supplied adapter is an active
@@ -2910,6 +2910,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             body: endpointRequest.body,
         },
     };
+    if (credential?.kind === "session" && typeof session.token === "string") {
+        bindAccessKeyOwnerSession(context, session.token);
+    }
     if (options.accessKeyGrants) {
         Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
     }
@@ -3529,8 +3532,9 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
     return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
-export async function runClientAccessKeyOperation(database, auth, message) {
+export async function runClientAccessKeyOperation(database, auth, message, sessionToken) {
     const context = { kind: "message", auth, credential: { kind: "session" } };
+    bindAccessKeyOwnerSession(context, sessionToken);
     const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
     const operation = message.type.slice("accessKeys.".length);
     try {
@@ -3866,7 +3870,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             return;
         }
         if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-            const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+            const result = await runClientAccessKeyOperation(database, client.session.auth, message, client.session.token);
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.error ? "error" : `${message.type}.result`,
@@ -4393,7 +4397,9 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         }
         if (message.type === "mutation.run") {
             const mutationName = message.mutation ?? message.name;
-            const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
+            const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+                sessionToken: client.session.token,
+            });
             sendJson(client, formatMutationResult(message, mutationName, result));
             if (result.ok && mutationResultsWithWrites.has(result)) {
                 setTimeout(() => {
@@ -4410,6 +4416,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             const messageName = message.message ?? message.name;
             const result = await runAppMessage(database, client.session.auth, messageName, message.data, {
                 sendAppMessage,
+                sessionToken: client.session.token,
             });
             sendJson(client, {
                 id: message.id ?? null,
@@ -4484,7 +4491,9 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         subscription.generation = generation;
         try {
             const database = getDatabase();
-            const result = await runQuery(database, client.session.auth, subscription.name, subscription.args);
+            const result = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+                sessionToken: client.session.token,
+            });
             const data = subscription.style === "direct"
                 ? (result.data ?? result.rows)
                 : { rows: result.data ?? result.rows };
@@ -4721,7 +4730,7 @@ function sendJsonWithCompletion(client, message, timeoutMs = 250) {
         }
     });
 }
-export async function runQuery(database, auth, queryName, rawArgs = []) {
+export async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
     let args;
     try {
         args = normalizeQueryArguments(rawArgs);
@@ -4733,7 +4742,7 @@ export async function runQuery(database, auth, queryName, rawArgs = []) {
     const queryHandler = customHandler ? materializeHandler(customHandler) : null;
     let context;
     try {
-        context = createMutationContext(database, auth);
+        context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
         if (queryHandler)
             admitCredentialHandler(queryHandler, context, "query");
         context = await applyContextMiddleware(database, context, "query");
@@ -4878,7 +4887,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
         ancestors.delete(value);
     }
 }
-export async function runMutation(database, auth, mutationName, args) {
+export async function runMutation(database, auth, mutationName, args, options = {}) {
     let context;
     let result;
     const writeState = { didWrite: false };
@@ -4887,7 +4896,7 @@ export async function runMutation(database, auth, mutationName, args) {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             let handlerFailed = false;
             try {
-                context = createMutationContext(transactionDatabase, auth);
+                context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
                 const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
                 const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
                 if (mutationHandler)
@@ -5006,7 +5015,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
             let handlerFailed = false;
             try {
-                context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+                context = createMessageContext(transactionDatabase, auth, options.sendAppMessage, options.sessionToken);
                 context = await applyContextMiddleware(transactionDatabase, context, "message");
                 const result = await messageHandler(context, data);
                 if (result !== undefined) {
@@ -5060,8 +5069,8 @@ function validateAppMessageType(type) {
 function isAllAppMessageScope(scope) {
     return scope === "all" || scope?.scope === "all";
 }
-function createMessageContext(database, auth, sendAppMessage) {
-    const context = createMutationContext(database, auth);
+function createMessageContext(database, auth, sendAppMessage, sessionToken) {
+    const context = createMutationContext(database, auth, { sessionToken });
     context.messages = {
         send(appMessage) {
             validateAppMessageType(appMessage?.type);
@@ -5108,6 +5117,9 @@ function createMutationContext(database, auth, options = {}) {
         } : {}),
         __pendingAclWrites: [],
     };
+    if (typeof options.sessionToken === "string") {
+        bindAccessKeyOwnerSession(context, options.sessionToken);
+    }
     const holder = createContextHolder(context);
     registerHandlerContextMapping(database, holder);
     context.db = createEndpointDatabaseApi(database, () => holder.current);

@@ -1498,6 +1498,46 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       const retired = (await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))[0];
       assert.equal(retired.revocationCause, "password-reset");
       assert.equal(await adapter.findAccessKeyAuthenticationRecord(record.selector), null);
+
+      const staleSessionToken = "session-reset-issuance-race";
+      await adapter.insertAuthSession({
+        token: staleSessionToken,
+        userId: record.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      const contender = {
+        ...record,
+        id: "access-key-reset-issuance-contender",
+        name: "reset-issuance-contender",
+        reservedName: "reset-issuance-contender",
+        selector: "resetissuancecontend00",
+        verifierDigest: "e3".repeat(32),
+        sessionToken: staleSessionToken,
+      };
+      let releaseReset;
+      let resetLocked;
+      const resetHasLock = new Promise((resolve) => { resetLocked = resolve; });
+      const resetRelease = new Promise((resolve) => { releaseReset = resolve; });
+      const reset = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSessionsForUser(record.ownerUserId);
+        await tx.bulkRevokeAccessKeysForOwner({
+          ownerUserId: record.ownerUserId,
+          revokedAt: NEXT_MONTH,
+          revocationCause: "password-reset",
+        });
+        resetLocked();
+        await resetRelease;
+      });
+      await resetHasLock;
+      const issuance = adapter.withTransaction((tx) => tx.issueAccessKeyRecord(contender));
+      releaseReset();
+      const [, issuanceOutcome] = await Promise.all([reset, issuance]);
+      assert.equal(issuanceOutcome.status, "session-ineligible");
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord(contender.selector), null);
+      assert.equal((await adapter.listAccessKeyRecordsForOwner(record.ownerUserId))
+        .some((candidate) => candidate.id === contender.id), false);
     },
   },
   {

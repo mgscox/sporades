@@ -13,6 +13,7 @@ type LooseRecord = Record<string, any>;
 const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 const accessKeyLifecycleAuditEventsByContext = new WeakMap<object, LooseRecord[]>();
 const accessKeySecretDisclosedContexts = new WeakSet<object>();
+const accessKeyOwnerSessionTokens = new WeakMap<object, string>();
 
 function accessKeyCrypto() {
   return process.getBuiltinModule("node:crypto");
@@ -110,6 +111,12 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
           lifecycleRevision: 1,
           createdAt: normalized.createdAt,
           expiresAt: normalized.expiresAt,
+          ...(accessKeyOwnerSessionTokens.has(context)
+            ? {
+              sessionToken: accessKeyOwnerSessionTokens.get(context),
+              sessionValidationTime: () => database.clock.now().toISOString(),
+            }
+            : {}),
         };
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
         if (outcome.status === "selector-conflict") continue;
@@ -669,6 +676,17 @@ export function transferAccessKeyRuntimeState(previousContext: LooseRecord, next
     accessKeySecretDisclosedContexts.delete(previousContext);
     accessKeySecretDisclosedContexts.add(nextContext);
   }
+  const sessionToken = accessKeyOwnerSessionTokens.get(previousContext);
+  if (sessionToken) {
+    accessKeyOwnerSessionTokens.delete(previousContext);
+    accessKeyOwnerSessionTokens.set(nextContext, sessionToken);
+  }
+}
+
+export function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown) {
+  if (context && typeof context === "object" && typeof sessionToken === "string") {
+    accessKeyOwnerSessionTokens.set(context, sessionToken);
+  }
 }
 
 export function accessKeySecretWasDisclosed(context: LooseRecord | undefined) {
@@ -784,6 +802,13 @@ function clearAccessKeyFailure(database: LooseRecord, kind: string, key: string)
 }
 
 function throwAccessKeyIssueError(status: string): never {
+  if (status === "session-ineligible") {
+    throw commandError(
+      "Access-key owner Session is no longer active.",
+      "Sign in again before issuing an Access key.",
+      "UNAUTHENTICATED",
+    );
+  }
   if (status === "owner-ineligible") {
     throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
   }

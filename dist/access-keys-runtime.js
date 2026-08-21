@@ -5,6 +5,7 @@ import { commandError } from "./runtime-errors.js";
 const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 const accessKeyLifecycleAuditEventsByContext = new WeakMap();
 const accessKeySecretDisclosedContexts = new WeakSet();
+const accessKeyOwnerSessionTokens = new WeakMap();
 function accessKeyCrypto() {
     return process.getBuiltinModule("node:crypto");
 }
@@ -84,6 +85,12 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                     lifecycleRevision: 1,
                     createdAt: normalized.createdAt,
                     expiresAt: normalized.expiresAt,
+                    ...(accessKeyOwnerSessionTokens.has(context)
+                        ? {
+                            sessionToken: accessKeyOwnerSessionTokens.get(context),
+                            sessionValidationTime: () => database.clock.now().toISOString(),
+                        }
+                        : {}),
                 };
                 const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
                 if (outcome.status === "selector-conflict")
@@ -646,6 +653,16 @@ export function transferAccessKeyRuntimeState(previousContext, nextContext) {
         accessKeySecretDisclosedContexts.delete(previousContext);
         accessKeySecretDisclosedContexts.add(nextContext);
     }
+    const sessionToken = accessKeyOwnerSessionTokens.get(previousContext);
+    if (sessionToken) {
+        accessKeyOwnerSessionTokens.delete(previousContext);
+        accessKeyOwnerSessionTokens.set(nextContext, sessionToken);
+    }
+}
+export function bindAccessKeyOwnerSession(context, sessionToken) {
+    if (context && typeof context === "object" && typeof sessionToken === "string") {
+        accessKeyOwnerSessionTokens.set(context, sessionToken);
+    }
 }
 export function accessKeySecretWasDisclosed(context) {
     return Boolean(context && accessKeySecretDisclosedContexts.has(context));
@@ -750,6 +767,9 @@ function clearAccessKeyFailure(database, kind, key) {
     accessKeyLimiter(database, kind).delete(key);
 }
 function throwAccessKeyIssueError(status) {
+    if (status === "session-ineligible") {
+        throw commandError("Access-key owner Session is no longer active.", "Sign in again before issuing an Access key.", "UNAUTHENTICATED");
+    }
     if (status === "owner-ineligible") {
         throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
     }

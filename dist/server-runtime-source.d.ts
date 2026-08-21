@@ -107,7 +107,7 @@ type TrustedRefreshTransport = {
     received(connectionId: string, sequence: number): void;
     disconnected(connectionId: string): void;
 };
-export declare function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord): Promise<{
+export declare function runClientAccessKeyOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord, sessionToken?: string | null): Promise<{
     data: {
         accessKeys: {
             id: any;
@@ -204,8 +204,8 @@ export declare function sendEmailPasswordResetLink(database: LooseRecord, sessio
     ok: boolean;
     error?: undefined;
 }>;
-export declare function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs?: unknown): Promise<any>;
-export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
+export declare function runQuery(database: LooseRecord, auth: any, queryName: string, rawArgs?: unknown, options?: LooseRecord): Promise<any>;
+export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options?: LooseRecord): Promise<any>;
 export declare function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options?: LooseRecord): Promise<any>;
 export declare function runCurrentUserJobWorker(database: LooseRecord): Promise<void>;
 //# sourceMappingURL=server-runtime-source.d.ts.map

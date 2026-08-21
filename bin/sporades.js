@@ -6260,6 +6260,7 @@ var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
 var accessKeySecretDisclosedContexts = /* @__PURE__ */ new WeakSet();
+var accessKeyOwnerSessionTokens = /* @__PURE__ */ new WeakMap();
 function accessKeyCrypto() {
   return process.getBuiltinModule("node:crypto");
 }
@@ -6332,7 +6333,11 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
           verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
           lifecycleRevision: 1,
           createdAt: normalized.createdAt,
-          expiresAt: normalized.expiresAt
+          expiresAt: normalized.expiresAt,
+          ...accessKeyOwnerSessionTokens.has(context) ? {
+            sessionToken: accessKeyOwnerSessionTokens.get(context),
+            sessionValidationTime: () => database.clock.now().toISOString()
+          } : {}
         };
         const outcome = await withAccessKeyTransaction(database, (adapter) => adapter.issueAccessKeyRecord(record));
         if (outcome.status === "selector-conflict") continue;
@@ -6848,6 +6853,16 @@ function transferAccessKeyRuntimeState(previousContext, nextContext) {
     accessKeySecretDisclosedContexts.delete(previousContext);
     accessKeySecretDisclosedContexts.add(nextContext);
   }
+  const sessionToken = accessKeyOwnerSessionTokens.get(previousContext);
+  if (sessionToken) {
+    accessKeyOwnerSessionTokens.delete(previousContext);
+    accessKeyOwnerSessionTokens.set(nextContext, sessionToken);
+  }
+}
+function bindAccessKeyOwnerSession(context, sessionToken) {
+  if (context && typeof context === "object" && typeof sessionToken === "string") {
+    accessKeyOwnerSessionTokens.set(context, sessionToken);
+  }
 }
 function accessKeySecretWasDisclosed(context) {
   return Boolean(context && accessKeySecretDisclosedContexts.has(context));
@@ -6916,6 +6931,13 @@ function clearAccessKeyFailure(database, kind, key) {
   accessKeyLimiter(database, kind).delete(key);
 }
 function throwAccessKeyIssueError(status) {
+  if (status === "session-ineligible") {
+    throw commandError(
+      "Access-key owner Session is no longer active.",
+      "Sign in again before issuing an Access key.",
+      "UNAUTHENTICATED"
+    );
+  }
   if (status === "owner-ineligible") {
     throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
   }
@@ -15166,6 +15188,17 @@ function createSharedDatabaseAdapterMethods(dialect) {
         ).get(row.ownerUserId, 1, 0), (owner) => {
           if (!owner) outcome = { status: "owner-ineligible" };
         }),
+        () => {
+          if (outcome || typeof row.sessionToken !== "string") return outcome;
+          const checkedAt = typeof row.sessionValidationTime === "function" ? row.sessionValidationTime() : row.createdAt;
+          return thenIfPromise(this.prepare(
+            sql(
+              "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
+            )
+          ).get(row.sessionToken, row.ownerUserId, checkedAt), (session) => {
+            if (!session) outcome = { status: "session-ineligible" };
+          });
+        },
         () => outcome ?? thenIfPromise(this.prepare(
           sql(
             "INSERT INTO [sporades_auth_access_keys] ([id], [ownerUserId], [name], [reservedName], [grantsJson], [secretVersion], [selector], [verifierDigest], [lifecycleRevision], [createdAt], [expiresAt], [rotatedAt], [revokedAt], [revocationCause], [lastUsedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING"
@@ -19234,6 +19267,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       body: endpointRequest.body
     }
   };
+  if (credential?.kind === "session" && typeof session.token === "string") {
+    bindAccessKeyOwnerSession(context, session.token);
+  }
   if (options.accessKeyGrants) {
     Object.defineProperty(context, "__sporadesAccessKeyGrants", { value: Object.freeze([...options.accessKeyGrants]) });
   }
@@ -19863,8 +19899,9 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
-async function runClientAccessKeyOperation(database, auth, message) {
+async function runClientAccessKeyOperation(database, auth, message, sessionToken) {
   const context = { kind: "message", auth, credential: { kind: "session" } };
+  bindAccessKeyOwnerSession(context, sessionToken);
   const accessKeys = createCurrentUserAccessKeysApi(database, () => context);
   const operation = message.type.slice("accessKeys.".length);
   try {
@@ -20175,7 +20212,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (["accessKeys.list", "accessKeys.issue", "accessKeys.rotate", "accessKeys.revoke", "accessKeys.delete"].includes(message.type)) {
-      const result = await runClientAccessKeyOperation(database, client.session.auth, message);
+      const result = await runClientAccessKeyOperation(database, client.session.auth, message, client.session.token);
       sendJson(client, {
         id: message.id ?? null,
         type: result.error ? "error" : `${message.type}.result`,
@@ -20667,7 +20704,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
+      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+        sessionToken: client.session.token
+      });
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok && mutationResultsWithWrites.has(result)) {
         setTimeout(() => {
@@ -20687,7 +20726,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     if (message.type === "app.send") {
       const messageName = message.message ?? message.name;
       const result = await runAppMessage(database, client.session.auth, messageName, message.data, {
-        sendAppMessage
+        sendAppMessage,
+        sessionToken: client.session.token
       });
       sendJson(client, {
         id: message.id ?? null,
@@ -20762,7 +20802,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result = await runQuery(database, client.session.auth, subscription.name, subscription.args);
+      const result = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+        sessionToken: client.session.token
+      });
       const data = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       sendJson(client, {
@@ -20985,7 +21027,7 @@ function sendJsonWithCompletion(client, message, timeoutMs = 250) {
     }
   });
 }
-async function runQuery(database, auth, queryName, rawArgs = []) {
+async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
   let args;
   try {
     args = normalizeQueryArguments(rawArgs);
@@ -20996,7 +21038,7 @@ async function runQuery(database, auth, queryName, rawArgs = []) {
   const queryHandler = customHandler ? materializeHandler(customHandler) : null;
   let context;
   try {
-    context = createMutationContext(database, auth);
+    context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error) {
@@ -21127,7 +21169,7 @@ function normalizeQueryArgumentValue(value, ancestors) {
     ancestors.delete(value);
   }
 }
-async function runMutation(database, auth, mutationName, args) {
+async function runMutation(database, auth, mutationName, args, options = {}) {
   let context;
   let result;
   const writeState = { didWrite: false };
@@ -21136,7 +21178,7 @@ async function runMutation(database, auth, mutationName, args) {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       let handlerFailed = false;
       try {
-        context = createMutationContext(transactionDatabase, auth);
+        context = createMutationContext(transactionDatabase, auth, { sessionToken: options.sessionToken });
         const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
         const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
@@ -21247,7 +21289,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       let handlerFailed = false;
       try {
-        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage);
+        context = createMessageContext(transactionDatabase, auth, options.sendAppMessage, options.sessionToken);
         context = await applyContextMiddleware(transactionDatabase, context, "message");
         const result = await messageHandler(context, data);
         if (result !== void 0) {
@@ -21304,8 +21346,8 @@ function validateAppMessageType(type) {
 function isAllAppMessageScope(scope) {
   return scope === "all" || scope?.scope === "all";
 }
-function createMessageContext(database, auth, sendAppMessage) {
-  const context = createMutationContext(database, auth);
+function createMessageContext(database, auth, sendAppMessage, sessionToken) {
+  const context = createMutationContext(database, auth, { sessionToken });
   context.messages = {
     send(appMessage) {
       validateAppMessageType(appMessage?.type);
@@ -21350,6 +21392,9 @@ function createMutationContext(database, auth, options = {}) {
     } : {}),
     __pendingAclWrites: []
   };
+  if (typeof options.sessionToken === "string") {
+    bindAccessKeyOwnerSession(context, options.sessionToken);
+  }
   const holder = createContextHolder(context);
   registerHandlerContextMapping(database, holder);
   context.db = createEndpointDatabaseApi(database, () => holder.current);

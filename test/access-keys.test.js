@@ -309,6 +309,7 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
     database.contextMiddleware = [`async (ctx) => {
+      if ("__sporadesSessionToken" in ctx) throw new Error("Session token leaked into Capsule context.");
       const issued = await ctx.accessKeys.issue({ name: "middleware-issued-key" });
       return {
         auth: ctx.auth,
@@ -329,6 +330,22 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
       (await database.log.tail(50)).some((event) => event.event === "access-key.issued" && event.data?.accessKey?.name === "middleware-issued-key"),
       true,
     );
+
+    await database.adapter.insertAuthSession({
+      token: "stale-client-session",
+      userId: auth.userId,
+      provider: "email",
+      createdAt: "2026-08-20T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    await database.adapter.deleteAuthSession("stale-client-session");
+    const staleClientIssue = await runClientAccessKeyOperation(database, auth, {
+      type: "accessKeys.issue",
+      input: { name: "stale-session-key" },
+    }, "stale-client-session");
+    assert.equal(staleClientIssue.error.code, "UNAUTHENTICATED");
+    assert.equal((await runQuery(database, auth, "listKeys")).data.accessKeys
+      .some((key) => key.name === "stale-session-key"), false);
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

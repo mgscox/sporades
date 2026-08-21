@@ -851,6 +851,20 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         ).get(row.ownerUserId, 1, 0), (owner: LooseRecord | null) => {
           if (!owner) outcome = { status: "owner-ineligible" };
         }),
+        () => {
+          if (outcome || typeof row.sessionToken !== "string") return outcome;
+          const checkedAt = typeof row.sessionValidationTime === "function"
+            ? row.sessionValidationTime()
+            : row.createdAt;
+          return thenIfPromise(this.prepare(
+            sql(
+              "SELECT [token] FROM [sporades_auth_sessions] " +
+              "WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
+            ),
+          ).get(row.sessionToken, row.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+            if (!session) outcome = { status: "session-ineligible" };
+          });
+        },
         () => outcome ?? thenIfPromise(this.prepare(
           sql(
             "INSERT INTO [sporades_auth_access_keys] " +
