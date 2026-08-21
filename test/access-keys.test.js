@@ -187,6 +187,9 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     queries: {
       listKeys: query((ctx) => ctx.accessKeys.list()),
       issueKeyFromQuery: query((ctx) => ctx.accessKeys.issue({ name: "query-audit-failure-key" })),
+      rotateKeyFromQuery: query((ctx, input) => ctx.accessKeys.rotate(input.id, {
+        lifecycleRevision: input.lifecycleRevision,
+      })),
     },
     mutations: {
       issueKey: mutation((ctx, input) => ctx.accessKeys.issue(input)),
@@ -372,6 +375,23 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     assert.equal(staleClientIssue.error.code, "UNAUTHENTICATED");
     assert.equal((await runQuery(database, auth, "listKeys")).data.accessKeys
       .some((key) => key.name === "stale-session-key"), false);
+
+    const rotationCandidate = await runMutation(database, auth, "issueKey", [{ name: "stale-session-rotation" }]);
+    assert.equal(rotationCandidate.error, null, JSON.stringify(rotationCandidate.error));
+    assert.equal(typeof rotationCandidate.data.accessKey.id, "string");
+    assert.equal(typeof rotationCandidate.data.accessKey.lifecycleRevision, "number");
+    const beforeStaleRotation = await database.adapter.findAccessKeyRecordById(rotationCandidate.data.accessKey.id);
+    await database.adapter.deleteAuthSession(sessionTokenFor(auth));
+    const staleRotation = await runQuery(database, auth, "rotateKeyFromQuery", [{
+      id: String(rotationCandidate.data.accessKey.id),
+      lifecycleRevision: Number(rotationCandidate.data.accessKey.lifecycleRevision),
+    }]);
+    assert.equal(staleRotation.error.code, "UNAUTHENTICATED", JSON.stringify(staleRotation));
+    assert.equal(staleRotation.data, null);
+    const afterStaleRotation = await database.adapter.findAccessKeyRecordById(rotationCandidate.data.accessKey.id);
+    assert.equal(afterStaleRotation.selector, beforeStaleRotation.selector);
+    assert.equal(afterStaleRotation.lifecycleRevision, beforeStaleRotation.lifecycleRevision);
+    assert.equal(afterStaleRotation.rotatedAt, null);
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });

@@ -990,7 +990,21 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         () => {
           rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
         },
-        () => thenIfPromise(this.prepare(
+        () => {
+          if (typeof input.sessionToken !== "string") return;
+          const checkedAt = typeof input.sessionValidationTime === "function"
+            ? input.sessionValidationTime()
+            : rotatedAt;
+          return thenIfPromise(this.prepare(
+            sql(
+              "SELECT [token] FROM [sporades_auth_sessions] " +
+              "WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
+            ),
+          ).get(input.sessionToken, input.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+            if (!session) status = "session-ineligible";
+          });
+        },
+        () => status === "session-ineligible" ? undefined : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?"),
         ).get(input.ownerUserId, input.id), (row: LooseRecord | null | undefined) => {
           existing = row ?? null;

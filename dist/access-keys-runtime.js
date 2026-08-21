@@ -150,9 +150,18 @@ export function createCurrentUserAccessKeysApi(database, contextGetter) {
                     selector: secret.selector,
                     verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
                     rotationTime: () => database.clock.now().toISOString(),
+                    ...(accessKeyOwnerSessionTokens.has(context)
+                        ? {
+                            sessionToken: accessKeyOwnerSessionTokens.get(context),
+                            sessionValidationTime: () => database.clock.now().toISOString(),
+                        }
+                        : {}),
                 }));
                 if (outcome.status === "selector-conflict")
                     continue;
+                if (outcome.status === "session-ineligible") {
+                    throw commandError("Access-key owner Session is no longer active.", "Sign in again before rotating an Access key.", "UNAUTHENTICATED");
+                }
                 if (outcome.status === "not-found")
                     throw accessKeyNotFoundError();
                 if (outcome.status === "not-active")

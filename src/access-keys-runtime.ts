@@ -176,8 +176,21 @@ export function createCurrentUserAccessKeysApi(database: LooseRecord, contextGet
           selector: secret.selector,
           verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
           rotationTime: () => database.clock.now().toISOString(),
+          ...(accessKeyOwnerSessionTokens.has(context)
+            ? {
+              sessionToken: accessKeyOwnerSessionTokens.get(context),
+              sessionValidationTime: () => database.clock.now().toISOString(),
+            }
+            : {}),
         }));
         if (outcome.status === "selector-conflict") continue;
+        if (outcome.status === "session-ineligible") {
+          throw commandError(
+            "Access-key owner Session is no longer active.",
+            "Sign in again before rotating an Access key.",
+            "UNAUTHENTICATED",
+          );
+        }
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");

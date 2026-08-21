@@ -6395,9 +6395,20 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
           secretVersion: 1,
           selector: secret.selector,
           verifierDigest: accessKeyVerifierDigest(secret.selector, secret.verifier),
-          rotationTime: () => database.clock.now().toISOString()
+          rotationTime: () => database.clock.now().toISOString(),
+          ...accessKeyOwnerSessionTokens.has(context) ? {
+            sessionToken: accessKeyOwnerSessionTokens.get(context),
+            sessionValidationTime: () => database.clock.now().toISOString()
+          } : {}
         }));
         if (outcome.status === "selector-conflict") continue;
+        if (outcome.status === "session-ineligible") {
+          throw commandError(
+            "Access-key owner Session is no longer active.",
+            "Sign in again before rotating an Access key.",
+            "UNAUTHENTICATED"
+          );
+        }
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
         if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
@@ -15372,7 +15383,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           rotatedAt = typeof input.rotationTime === "function" ? input.rotationTime() : input.rotatedAt;
         },
-        () => thenIfPromise(this.prepare(
+        () => {
+          if (typeof input.sessionToken !== "string") return;
+          const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : rotatedAt;
+          return thenIfPromise(this.prepare(
+            sql(
+              "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
+            )
+          ).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+            if (!session) status = "session-ineligible";
+          });
+        },
+        () => status === "session-ineligible" ? void 0 : thenIfPromise(this.prepare(
           sql("SELECT * FROM [sporades_auth_access_keys] WHERE [ownerUserId] = ? AND [id] = ?")
         ).get(input.ownerUserId, input.id), (row) => {
           existing = row ?? null;

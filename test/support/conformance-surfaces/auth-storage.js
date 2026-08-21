@@ -1695,6 +1695,62 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
+    name: "Access-key rotation validates its bound Session inside the lifecycle transaction",
+    async run(adapter) {
+      const sessionToken = "session-stale-access-key-rotation";
+      const record = {
+        id: "access-key-stale-session-rotation",
+        ownerUserId: SIGNED_IN_USER.id,
+        name: "stale-session-rotation",
+        reservedName: "stale-session-rotation",
+        grantsJson: JSON.stringify(["requests:read"]),
+        secretVersion: 1,
+        selector: "stalerotationold00000",
+        verifierDigest: "f4".repeat(32),
+        lifecycleRevision: 1,
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      };
+      await adapter.insertAuthSession({
+        token: sessionToken,
+        userId: record.ownerUserId,
+        provider: "email",
+        createdAt: NOW,
+        expiresAt: NEXT_MONTH,
+      });
+      assert.deepEqual(await adapter.withTransaction((tx) => tx.issueAccessKeyRecord(record)), { status: "issued" });
+      let releaseSessionRetirement;
+      let sessionRetirementLocked;
+      const sessionRetirementHasLock = new Promise((resolve) => { sessionRetirementLocked = resolve; });
+      const sessionRetirementRelease = new Promise((resolve) => { releaseSessionRetirement = resolve; });
+      const sessionRetirement = adapter.withTransaction(async (tx) => {
+        await tx.deleteAuthSession(sessionToken);
+        sessionRetirementLocked();
+        await sessionRetirementRelease;
+      });
+      await sessionRetirementHasLock;
+      const rotation = adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: record.ownerUserId,
+        id: record.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "stalerotationnew00000",
+        verifierDigest: "f5".repeat(32),
+        rotatedAt: LATER,
+        sessionToken,
+        sessionValidationTime: () => LATER,
+      }));
+      releaseSessionRetirement();
+      const [, outcome] = await Promise.all([sessionRetirement, rotation]);
+      assert.equal(outcome.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(record.selector)).id, record.id);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("stalerotationnew00000"), null);
+      const retained = await adapter.findAccessKeyRecordById(record.id);
+      assert.equal(Number(retained.lifecycleRevision), 1);
+      assert.equal(retained.rotatedAt, null);
+    },
+  },
+  {
     name: "rotated Access-key credentials remain singular for restart proof",
     async run(adapter) {
       const record = {
