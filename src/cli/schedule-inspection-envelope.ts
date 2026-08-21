@@ -1,12 +1,25 @@
 type LooseRecord = Record<string, any>;
+const SCHEDULE_DIAGNOSTIC_FIELDS = new Set([
+  "name", "expression", "timezone", "missedRun", "enabled", "exhausted", "nextOccurrence",
+  "latestOccurrence", "latestOccurrence.scheduledFor", "latestOccurrence.jobId",
+  "latestOccurrence.errorCode", "latestOccurrence.outcome",
+]);
+const ACCESS_KEY_BEARER_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
+
+function boundedScheduleDiagnostic(candidate: LooseRecord) {
+  const scheduleName = candidate?.scheduleName;
+  const field = candidate?.field;
+  if (candidate?.code !== "SCHEDULE_INSPECTION_INVALID_STATE" || typeof scheduleName !== "string" ||
+    !/^[A-Za-z][A-Za-z0-9_-]*$/.test(scheduleName) || Buffer.byteLength(scheduleName, "utf8") > 128 ||
+    ACCESS_KEY_BEARER_PATTERN.test(scheduleName) || typeof field !== "string" || !SCHEDULE_DIAGNOSTIC_FIELDS.has(field)) return undefined;
+  return { code: candidate.code, scheduleName, field };
+}
 
 export function sanitizeScheduleInspectionEnvelope(envelope: LooseRecord, invalid: () => never): LooseRecord {
   if (envelope?.ok === false) {
     const source = envelope.error;
     const candidate = source?.diagnostics ?? source;
-    const diagnostics = candidate?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof candidate.scheduleName === "string" && typeof candidate.field === "string"
-      ? { code: candidate.code, scheduleName: candidate.scheduleName, field: candidate.field }
-      : undefined;
+    const diagnostics = boundedScheduleDiagnostic(candidate);
     return { ok: false, data: null, error: {
       message: diagnostics ? "Persisted Schedule state is malformed." : "Schedule inspection failed.",
       hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Capsule and retry the command.",

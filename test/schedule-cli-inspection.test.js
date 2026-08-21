@@ -8,12 +8,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { sanitizeScheduleInspectionEnvelope } from "../dist/cli/schedule-inspection-envelope.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "sporades.js");
 const run = (cwd) => spawnSync(process.execPath, [cli, "schedules"], { cwd, encoding: "utf8" });
 const runCommand = (args, cwd, env = {}) => spawnSync(process.execPath, [cli, ...args], { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
 const remoteEnvelope = { ok: true, data: { capsule: { name: "scheduled" }, schedules: [{ name: "daily", expression: "0 9 * * *", timezone: "UTC", missedRun: "skip", enabled: true, nextOccurrence: "2030-01-02T09:00:00.000Z", latestOccurrence: null }] }, error: null };
+
+test("Schedule inspection diagnostics remain bounded and idempotent", () => {
+  const sanitize = (error) => sanitizeScheduleInspectionEnvelope({ ok: false, data: null, error }, () => { throw new Error("invalid"); });
+  const canonical = sanitize({ code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "daily", field: "nextOccurrence" });
+  assert.deepEqual(sanitize(canonical.error), canonical);
+  for (const hostile of [
+    { code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "x".repeat(129), field: "nextOccurrence" },
+    { code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: `spk_1_${"a".repeat(22)}_${"b".repeat(43)}`, field: "nextOccurrence" },
+    { code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "daily", field: "secretField" },
+  ]) {
+    const bounded = sanitize(hostile);
+    assert.equal(bounded.error.diagnostics, undefined);
+    assert.ok(JSON.stringify(bounded).length < 256);
+  }
+});
 
 async function project(name = "scheduled") {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedules-cli-"));

@@ -132,7 +132,7 @@ function inspectCapsuleSchedules(request) {
     validateScheduleInspectionRequest(request);
     inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
         throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-    }));
+    }), [], true);
 }
 function runCapsuleAccessKeyAction(request) {
     const exactKeys = (value, keys) => Object.keys(value).length === keys.length
@@ -154,7 +154,7 @@ function runCapsuleAccessKeyAction(request) {
         Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url"),
     ]);
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = []) {
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = [], preserveBoundedDiagnostics = false) {
     const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
     if (!checkContainerRunning(containerName)) {
         const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
@@ -172,7 +172,7 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     }
     const bounded = sanitize(envelope);
     if (!bounded.ok) {
-        const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+        const error = helperError(bounded.error.message, bounded.error.hint, preserveBoundedDiagnostics ? bounded.error.diagnostics : undefined);
         if (label === "Access-key" && bounded.error.code)
             error.code = bounded.error.code;
         throw error;

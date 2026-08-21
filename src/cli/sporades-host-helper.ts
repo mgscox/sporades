@@ -209,7 +209,7 @@ function inspectCapsuleSchedules(request: HostHelperRequest) {
   validateScheduleInspectionRequest(request);
   inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
     throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-  }));
+  }), [], true);
 }
 
 function runCapsuleAccessKeyAction(request: HostHelperRequest) {
@@ -233,7 +233,7 @@ function runCapsuleAccessKeyAction(request: HostHelperRequest) {
   ]);
 }
 
-function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label: string, sanitize: (envelope: LooseRecord) => LooseRecord = (envelope) => envelope, extraArgs: string[] = []) {
+function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label: string, sanitize: (envelope: LooseRecord) => LooseRecord = (envelope) => envelope, extraArgs: string[] = [], preserveBoundedDiagnostics = false) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
     const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
@@ -246,7 +246,7 @@ function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label
   catch { throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
   const bounded = sanitize(envelope);
   if (!bounded.ok) {
-    const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+    const error = helperError(bounded.error.message, bounded.error.hint, preserveBoundedDiagnostics ? bounded.error.diagnostics : undefined);
     if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
     throw error;
   }

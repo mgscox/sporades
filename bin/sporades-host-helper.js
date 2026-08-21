@@ -589,11 +589,32 @@ function writeEnvelope(result, failed = false) {
 var CLI_VERSION = "0.8.7";
 
 // src/cli/schedule-inspection-envelope.ts
+var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
+  "name",
+  "expression",
+  "timezone",
+  "missedRun",
+  "enabled",
+  "exhausted",
+  "nextOccurrence",
+  "latestOccurrence",
+  "latestOccurrence.scheduledFor",
+  "latestOccurrence.jobId",
+  "latestOccurrence.errorCode",
+  "latestOccurrence.outcome"
+]);
+var ACCESS_KEY_BEARER_PATTERN = /spk_1_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{43}/i;
+function boundedScheduleDiagnostic(candidate) {
+  const scheduleName = candidate?.scheduleName;
+  const field = candidate?.field;
+  if (candidate?.code !== "SCHEDULE_INSPECTION_INVALID_STATE" || typeof scheduleName !== "string" || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(scheduleName) || Buffer.byteLength(scheduleName, "utf8") > 128 || ACCESS_KEY_BEARER_PATTERN.test(scheduleName) || typeof field !== "string" || !SCHEDULE_DIAGNOSTIC_FIELDS.has(field)) return void 0;
+  return { code: candidate.code, scheduleName, field };
+}
 function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
   if (envelope?.ok === false) {
     const source = envelope.error;
     const candidate = source?.diagnostics ?? source;
-    const diagnostics = candidate?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof candidate.scheduleName === "string" && typeof candidate.field === "string" ? { code: candidate.code, scheduleName: candidate.scheduleName, field: candidate.field } : void 0;
+    const diagnostics = boundedScheduleDiagnostic(candidate);
     return { ok: false, data: null, error: {
       message: diagnostics ? "Persisted Schedule state is malformed." : "Schedule inspection failed.",
       hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Capsule and retry the command.",
@@ -1329,7 +1350,7 @@ function inspectCapsuleSchedules(request) {
   validateScheduleInspectionRequest(request);
   inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
     throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-  }));
+  }), [], true);
 }
 function runCapsuleAccessKeyAction(request) {
   const exactKeys2 = (value, keys) => Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
@@ -1346,7 +1367,7 @@ function runCapsuleAccessKeyAction(request) {
     Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url")
   ]);
 }
-function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = []) {
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope, extraArgs = [], preserveBoundedDiagnostics = false) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
     const error = helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
@@ -1362,7 +1383,7 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
   }
   const bounded = sanitize(envelope);
   if (!bounded.ok) {
-    const error = helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+    const error = helperError(bounded.error.message, bounded.error.hint, preserveBoundedDiagnostics ? bounded.error.diagnostics : void 0);
     if (label === "Access-key" && bounded.error.code) error.code = bounded.error.code;
     throw error;
   }

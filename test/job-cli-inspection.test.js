@@ -76,6 +76,9 @@ test("sporades host jobs sends the action and propagates Host-helper docker exec
     assert.equal(result.status, 0, result.stderr || result.stdout); assert.deepEqual(JSON.parse(result.stdout), envelope);
     const request = JSON.parse(await (await import("node:fs/promises")).readFile(requestLog, "utf8")); assert.equal(request.action, "jobs.inspect"); assert.deepEqual(request.capsule, { subname: "team-notes" });
     const dockerCall = await (await import("node:fs/promises")).readFile(dockerLog, "utf8"); assert.match(dockerCall, /exec sporades-example-test-team-notes node \/app\/server\.mjs --sporades-action jobs\.inspect/);
+    await writeFile(docker, `#!/bin/sh\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ]; then echo '${JSON.stringify({ ok: false, data: null, error: { message: "Job inspection failed.", hint: "Retry.", diagnostics: { token: "raw-secret" } } })}'; exit 0; fi\nexit 9\n`); await chmod(docker, 0o755);
+    const hostile = run(["host", "jobs", "--host", "live", "--subname", "team-notes"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config });
+    assert.equal(hostile.status, 1); assert.doesNotMatch(hostile.stdout, /diagnostics|raw-secret/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
