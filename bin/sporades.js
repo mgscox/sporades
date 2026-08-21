@@ -6250,6 +6250,12 @@ function chainMaybePromise(steps) {
   return pending ?? void 0;
 }
 
+// src/access-key-contract.ts
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
+
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
@@ -6259,9 +6265,6 @@ function accessKeyCrypto() {
 }
 var ACCESS_KEY_CURRENT_LIMIT = 100;
 var ACCESS_KEY_RETAINED_LIMIT = 1e3;
-var ACCESS_KEY_GRANT_LIMIT = 128;
-var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
 var PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = /* @__PURE__ */ new Set([
   "UNAUTHENTICATED",
   "FORBIDDEN",
@@ -6567,7 +6570,7 @@ function readAccessKeyAuthorization(request) {
   return { token: matched[1], selector: matched[2], verifier: matched[3] };
 }
 async function resolveAccessKeyCredential(database, request, sessionToken) {
-  const source = accessKeySourceBucket(request);
+  const source = accessKeySourceBucket(database, request);
   assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
   let parsed;
   try {
@@ -6882,8 +6885,10 @@ function protectAccessKeyValue(value) {
 function accessKeySelectorFingerprint(selector) {
   return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
 }
-function accessKeySourceBucket(request) {
-  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
+function accessKeySourceBucket(database, request) {
+  const forwarded = database.securitySession === "hosted" ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER] : null;
+  const trustedClientAddress = typeof forwarded === "string" && forwarded.length > 0 && Buffer.byteLength(forwarded, "utf8") <= 128 && !/[,\s\u0000-\u001f\u007f]/.test(forwarded) ? forwarded : null;
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
 }
 function accessKeyLimiter(database, kind) {
   const root = database.__rootDatabase ?? database;
@@ -13937,6 +13942,9 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = 32 * 1024 * 1024;
+var ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER = ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT + 1024 * 1024;
 var SAFE_ERRORS = {
   UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
   FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
@@ -13992,8 +14000,11 @@ function boundedString(value, maximum = 256) {
 function optionalString(value, maximum = 512) {
   return value === null || boundedString(value, maximum);
 }
-function stringList(value) {
-  return Array.isArray(value) && value.length <= 100 && value.every((item) => boundedString(item, 256));
+function stringList(value, maximumItems, maximumItemBytes) {
+  return Array.isArray(value) && value.length <= maximumItems && value.every((item) => boundedString(item, maximumItemBytes));
+}
+function optionalRevocationCause(value) {
+  return value === null || typeof value === "string" && REVOCATION_CAUSES.has(value);
 }
 function encodedWithinLimit(value, maximum) {
   try {
@@ -14048,14 +14059,14 @@ function canonicalSummary(value, invalid) {
     "lastUsedAt",
     "lifecycleRevision"
   ];
-  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants) || !stringList(value.effectiveScopes) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalString(value.revocationCause, 80) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
+  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT) || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
   return Object.fromEntries(fields.map((field) => [field, value[field]]));
 }
 function canonicalSuccessData(action, value, input, invalid) {
   if (!plain(value)) return invalid();
   const capsule = canonicalCapsule(value.capsule, invalid);
   if (action === "access-keys.list") {
-    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
+    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
     const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
     if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid();
     return { capsule, accessKeys, declaredScopes: [...value.declaredScopes], nextCursor: value.nextCursor, totalCount: value.totalCount };
@@ -14063,7 +14074,7 @@ function canonicalSuccessData(action, value, input, invalid) {
   if (["access-keys.inspect", "access-keys.revoke"].includes(action)) {
     if (!exactKeys(value, ["capsule", "accessKey"])) return invalid();
     const accessKey = canonicalSummary(value.accessKey, invalid);
-    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && (accessKey.status !== "revoked" || accessKey.revocationCause !== "operator")) return invalid();
+    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && accessKey.status !== "revoked") return invalid();
     return { capsule, accessKey };
   }
   if (action === "access-keys.revoke-all") {
@@ -14080,7 +14091,7 @@ function canonicalError(value, invalid) {
   return { code: value.code, ...SAFE_ERRORS[value.code] };
 }
 function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
+  if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean") return invalid();
   const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
   if (value.ok) {
     if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
@@ -17107,6 +17118,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     jobs,
     schedules,
     accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
+    securitySession: config.__sporadesSession ?? "container",
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
@@ -28206,6 +28218,7 @@ async function manageOperatorAccessKeys(options) {
     const result = spawnSync2(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
       cwd: options.projectDir,
       encoding: "utf8",
+      maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
       env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path11.join(options.projectDir, ".sporades", "data.db") }
     });
     envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
@@ -28218,7 +28231,11 @@ async function manageOperatorAccessKeys(options) {
       "Check Docker and retry the Access-key operation."
     );
     if (running !== "true") throw commandError4("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
-    const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], { cwd: options.projectDir, encoding: "utf8" });
+    const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], {
+      cwd: options.projectDir,
+      encoding: "utf8",
+      maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER
+    });
     envelope = parseAccessKeyOperatorProcess(result, options, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
   } else {
     const config = await readHostConfig();
@@ -32216,6 +32233,7 @@ function invokeRemoteHostHelper(options) {
   const result = spawnSync2("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
+    ...String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {},
     input: `${JSON.stringify(request)}
 `
   });

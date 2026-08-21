@@ -5316,6 +5316,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.match(routeContents, /header x-sporades-host-probe [a-f0-9]{64}/);
     assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
+    assert.match(routeContents, /header_up x-sporades-client-address \{http\.request\.remote\.host\}/);
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
     assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);

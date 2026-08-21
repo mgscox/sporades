@@ -9,6 +9,7 @@
       "scripts/generated-source-manifest.mjs",
       "scripts/write-cli-version.mjs",
       "scripts/write-generated-source-manifest.mjs",
+      "src/access-key-contract.ts",
       "src/access-keys-runtime.ts",
       "src/acl-runtime.ts",
       "src/auth-admission.ts",
@@ -75,12 +76,16 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "674ed91bb01ff484103320bc116baa642f57d921d9bb56070b5b6766c99bbe82"
+    "digest": "ad068db498b6b48edae3a1da0544de7fdd791126cea237fb5e959f9bdd96a961"
   },
   "outputs": {
     "files": [
       "bin/sporades-host-helper.js",
       "bin/sporades.js",
+      "dist/access-key-contract.d.ts",
+      "dist/access-key-contract.d.ts.map",
+      "dist/access-key-contract.js",
+      "dist/access-key-contract.js.map",
       "dist/access-keys-runtime.d.ts",
       "dist/access-keys-runtime.d.ts.map",
       "dist/access-keys-runtime.js",
@@ -326,6 +331,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "2e035ded4d9309cfa35cacc5be998f26cc856d7eb277e001dc17b2a22d1c8600"
+    "digest": "a49168b8e19511606d7f42a5516449c04b24e9754304b2d329b78c2c95350fef"
   }
 }

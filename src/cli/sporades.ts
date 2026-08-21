@@ -90,7 +90,7 @@ import {
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import {
   DOCTOR_SESSIONS,
   createDoctorEnvelope,
@@ -683,6 +683,7 @@ async function manageOperatorAccessKeys(options: LooseRecord) {
     const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
     const result = spawnSync(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
       cwd: options.projectDir, encoding: "utf8",
+      maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
       env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
     });
     envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
@@ -691,7 +692,9 @@ async function manageOperatorAccessKeys(options: LooseRecord) {
     const running = runDocker(["inspect", "--format", "{{.State.Running}}", binding.containerId], options.projectDir,
       "Unable to inspect the local Container session.", "Check Docker and retry the Access-key operation.");
     if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
-    const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], { cwd: options.projectDir, encoding: "utf8" });
+    const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], {
+      cwd: options.projectDir, encoding: "utf8", maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
+    });
     envelope = parseAccessKeyOperatorProcess(result, options, "Redeploy the Capsule with the current Sporades CLI, then retry the Access-key operation.");
   } else {
     const config = await readHostConfig();
@@ -5061,6 +5064,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
+    ...(String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {}),
     input: `${JSON.stringify(request)}\n`,
   });
 

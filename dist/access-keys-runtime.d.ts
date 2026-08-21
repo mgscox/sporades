@@ -1,9 +1,7 @@
 type LooseRecord = Record<string, any>;
 export declare const ACCESS_KEY_CURRENT_LIMIT = 100;
 export declare const ACCESS_KEY_RETAINED_LIMIT = 1000;
-export declare const ACCESS_KEY_GRANT_LIMIT = 128;
-export declare const ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-export declare const ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT: number;
+export { ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT } from "./access-key-contract.js";
 export declare function publicAccessKeyManagementError(error: LooseRecord): {
     hint?: any;
     code: any;
@@ -191,5 +189,4 @@ export declare function transferAccessKeyRuntimeState(previousContext: LooseReco
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
 export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
 export declare function runAccessKeyOwnerSecurityTransition(database: LooseRecord, input: LooseRecord, transition: (adapter: LooseRecord) => any): Promise<any>;
-export {};
 //# sourceMappingURL=access-keys-runtime.d.ts.map

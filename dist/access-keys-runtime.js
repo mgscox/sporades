@@ -1,4 +1,5 @@
 import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
+import { ACCESS_KEY_CLIENT_ADDRESS_HEADER, ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT, } from "./access-key-contract.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 const UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
@@ -9,9 +10,7 @@ function accessKeyCrypto() {
 }
 export const ACCESS_KEY_CURRENT_LIMIT = 100;
 export const ACCESS_KEY_RETAINED_LIMIT = 1000;
-export const ACCESS_KEY_GRANT_LIMIT = 128;
-export const ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-export const ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+export { ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT } from "./access-key-contract.js";
 const PUBLIC_ACCESS_KEY_MANAGEMENT_ERROR_CODES = new Set([
     "UNAUTHENTICATED", "FORBIDDEN", "ACCESS_KEY_DELETE_REQUIRES_REVOKED", "ACCESS_KEY_LIMIT_REACHED",
     "ACCESS_KEY_NAME_CONFLICT", "ACCESS_KEY_NOT_ACTIVE", "ACCESS_KEY_NOT_FOUND", "ACCESS_KEY_REVISION_CONFLICT",
@@ -346,7 +345,7 @@ export function readAccessKeyAuthorization(request) {
     return { token: matched[1], selector: matched[2], verifier: matched[3] };
 }
 export async function resolveAccessKeyCredential(database, request, sessionToken) {
-    const source = accessKeySourceBucket(request);
+    const source = accessKeySourceBucket(database, request);
     assertAccessKeyFailureLimit(database, "source", source, 30, 60_000);
     let parsed;
     try {
@@ -705,10 +704,19 @@ function protectAccessKeyValue(value) {
 function accessKeySelectorFingerprint(selector) {
     return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
 }
-function accessKeySourceBucket(request) {
+function accessKeySourceBucket(database, request) {
+    const forwarded = database.securitySession === "hosted"
+        ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER]
+        : null;
+    const trustedClientAddress = typeof forwarded === "string"
+        && forwarded.length > 0
+        && Buffer.byteLength(forwarded, "utf8") <= 128
+        && !/[,\s\u0000-\u001f\u007f]/.test(forwarded)
+        ? forwarded
+        : null;
     return accessKeyCrypto().createHash("sha256")
         .update("sporades-access-key-source-limit\0")
-        .update(String(request?.socket?.remoteAddress ?? "unknown"))
+        .update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown"))
         .digest("hex");
 }
 function accessKeyLimiter(database, kind) {

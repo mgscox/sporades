@@ -12,7 +12,8 @@ import { createLogEnvelope, createPrivilegedAuditLogInput, } from "../server-run
 import { delay, errorDetails, helperError, readStdin, writeEnvelope, } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
@@ -162,7 +163,9 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
             error.code = "HOSTED_CAPSULE_NOT_RUNNING";
         throw error;
     }
-    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
+    const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
+        maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : undefined,
+    });
     let envelope;
     try {
         envelope = JSON.parse(result.stdout.trim());
@@ -2702,7 +2705,7 @@ function ensureHostedBaseImage(lifecycle) {
     }
 }
 function runDocker(args, options = {}) {
-    const result = spawnSync("docker", args, { encoding: "utf8" });
+    const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}) });
     if (options.ignoreFailure) {
         return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
     }
@@ -2787,7 +2790,11 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
     await provisionRouteLogFile(route);
-    const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`;
+    const proxyLine = [
+        `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`} {`,
+        `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} {http.request.remote.host}`,
+        "  }",
+    ].join("\n");
     await applyManagedRoute(lifecycle, route.routeFile, renderRoute(route, renderRunningRouteHandler(route, proxyLine)));
 }
 function renderRunningRouteHandler(route, proxyLine) {

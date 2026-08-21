@@ -1,9 +1,14 @@
 import { createInterface } from "node:readline/promises";
+import { ACCESS_KEY_SCOPE_BYTE_LIMIT, ACCESS_KEY_SCOPE_LIMIT } from "../auth-admission.js";
+import { ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT } from "../access-key-contract.js";
 export const ACCESS_KEY_OPERATOR_ACTIONS = [
     "access-keys.list", "access-keys.inspect", "access-keys.revoke", "access-keys.revoke-all", "access-keys.delete",
 ];
 const ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 const STATUSES = new Set(["active", "expired", "revoked"]);
+const REVOCATION_CAUSES = new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+export const ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = 32 * 1024 * 1024;
+export const ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER = ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT + 1024 * 1024;
 const SAFE_ERRORS = {
     UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
     FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
@@ -65,8 +70,12 @@ function boundedString(value, maximum = 256) {
 function optionalString(value, maximum = 512) {
     return value === null || boundedString(value, maximum);
 }
-function stringList(value) {
-    return Array.isArray(value) && value.length <= 100 && value.every((item) => boundedString(item, 256));
+function stringList(value, maximumItems, maximumItemBytes) {
+    return Array.isArray(value) && value.length <= maximumItems
+        && value.every((item) => boundedString(item, maximumItemBytes));
+}
+function optionalRevocationCause(value) {
+    return value === null || (typeof value === "string" && REVOCATION_CAUSES.has(value));
 }
 function encodedWithinLimit(value, maximum) {
     try {
@@ -119,10 +128,12 @@ function canonicalSummary(value, invalid) {
     const fields = ["id", "ownerUserId", "name", "grants", "effectiveScopes", "status", "createdAt", "expiresAt",
         "rotatedAt", "revokedAt", "revocationCause", "lastUsedAt", "lifecycleRevision"];
     if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId)
-        || !boundedString(value.name, 512) || !stringList(value.grants) || !stringList(value.effectiveScopes)
+        || !boundedString(value.name, 512)
+        || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT)
+        || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT)
         || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64)
         || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64)
-        || !optionalString(value.revocationCause, 80) || !optionalString(value.lastUsedAt, 64)
+        || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64)
         || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1)
         return invalid();
     return Object.fromEntries(fields.map((field) => [field, value[field]]));
@@ -133,7 +144,8 @@ function canonicalSuccessData(action, value, input, invalid) {
     const capsule = canonicalCapsule(value.capsule, invalid);
     if (action === "access-keys.list") {
         if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"])
-            || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes)
+            || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100
+            || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT)
             || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0)
             return invalid();
         const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
@@ -145,8 +157,7 @@ function canonicalSuccessData(action, value, input, invalid) {
         if (!exactKeys(value, ["capsule", "accessKey"]))
             return invalid();
         const accessKey = canonicalSummary(value.accessKey, invalid);
-        if (accessKey.id !== input.keyId || (action === "access-keys.revoke"
-            && (accessKey.status !== "revoked" || accessKey.revocationCause !== "operator")))
+        if (accessKey.id !== input.keyId || (action === "access-keys.revoke" && accessKey.status !== "revoked"))
             return invalid();
         return { capsule, accessKey };
     }
@@ -175,7 +186,7 @@ function canonicalError(value, invalid) {
 export function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
     // Names, IDs, and declared scopes are metadata vocabularies and may legitimately resemble a token.
     // Rebuild the envelope from action-specific allowlists instead of guessing provenance from string shape.
-    if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean")
+    if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean")
         return invalid();
     const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
     if (value.ok) {

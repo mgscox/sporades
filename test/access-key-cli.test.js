@@ -107,6 +107,31 @@ test("Access-key operator schemas reject aliases, nesting, error extras, and mis
   assert.deepEqual(sanitizeAccessKeyOperatorEnvelope(
     bearerNamedRevocation, "access-keys.revoke", { keyId: "key-1" }, invalid,
   ), bearerNamedRevocation, "valid metadata must not be confused with a disclosed credential");
+  const maximumGrants = Array.from({ length: 128 }, (_, index) => `grant:${index}`);
+  const maximumScopes = Array.from({ length: 1024 }, (_, index) => `scope:${index}`);
+  const maximumCardinalityEnvelope = {
+    ...envelope,
+    data: {
+      ...envelope.data,
+      accessKeys: [{ ...envelope.data.accessKeys[0], grants: maximumGrants, effectiveScopes: maximumScopes }],
+      declaredScopes: maximumScopes,
+    },
+  };
+  const maximumCardinality = sanitizeAccessKeyOperatorEnvelope(
+    maximumCardinalityEnvelope, "access-keys.list", input, invalid,
+  );
+  assert.equal(maximumCardinality.data.accessKeys[0].grants.length, 128);
+  assert.equal(maximumCardinality.data.accessKeys[0].effectiveScopes.length, 1024);
+  assert.equal(maximumCardinality.data.declaredScopes.length, 1024);
+  for (const revocationCause of ["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]) {
+    const idempotent = {
+      ...revokedEnvelope,
+      data: { ...revokedEnvelope.data, accessKey: { ...revokedEnvelope.data.accessKey, revocationCause } },
+    };
+    assert.deepEqual(sanitizeAccessKeyOperatorEnvelope(
+      idempotent, "access-keys.revoke", { keyId: "key-1" }, invalid,
+    ), idempotent, `idempotent operator revocation must preserve ${revocationCause}`);
+  }
   assert.deepEqual(sanitizeAccessKeyOperatorEnvelope({
     ok: false, data: null, error: { code: "ACCESS_KEY_ACTION_FAILED", message: `remote adapter detail ${bearer}`, hint: "private@example.com" },
   }, "access-keys.list", input, invalid).error, {
@@ -114,6 +139,10 @@ test("Access-key operator schemas reject aliases, nesting, error extras, and mis
     message: "Access-key operator action failed.",
     hint: "Check the Privileged audit events and retry the operation.",
   });
+  assert.throws(() => sanitizeAccessKeyOperatorEnvelope({
+    ...revokedEnvelope,
+    data: { ...revokedEnvelope.data, accessKey: { ...revokedEnvelope.data.accessKey, revocationCause: "invented" } },
+  }, "access-keys.revoke", { keyId: "key-1" }, invalid), /invalid envelope/);
 });
 
 test("Access-key CLI routes Container and Hosted actions through existing runtime seams", async () => {

@@ -562,6 +562,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         jobs,
         schedules,
         accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
+        securitySession: config.__sporadesSession ?? "container",
         clock,
         capsuleIdentity: String(config.name ?? "capsule"),
         scheduleOccurrenceFault: options?.scheduleOccurrenceFault,

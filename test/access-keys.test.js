@@ -29,7 +29,7 @@ async function requestEndpoint(database, pathName, options = {}) {
     method: options.method ?? "GET",
     headers,
     rawHeaders,
-    socket: { remoteAddress: "127.0.0.1" },
+    socket: { remoteAddress: options.remoteAddress ?? "127.0.0.1" },
     async *[Symbol.asyncIterator]() {},
   };
   const responseHeaders = {};
@@ -497,6 +497,48 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
     const unrelatedSessionDenial = await requestEndpoint(database, "/session-only-inline");
     assert.equal(unrelatedSessionDenial.status, 401);
     assert.equal(unrelatedSessionDenial.headers.get("www-authenticate"), null);
+
+    const previousSecuritySession = database.securitySession;
+    database.securitySession = "hosted";
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const hostileClient = await requestEndpoint(database, "/requests", {
+        remoteAddress: "127.0.0.1",
+        headers: {
+          authorization: `Bearer malformed-${attempt}`,
+          "x-sporades-client-address": "198.51.100.10",
+        },
+      });
+      assert.equal(hostileClient.status, 401);
+    }
+    const independentHostedClient = await requestEndpoint(database, "/requests", {
+      remoteAddress: "127.0.0.1",
+      headers: {
+        authorization: `Bearer ${issued.data.token}`,
+        "x-sporades-client-address": "198.51.100.11",
+      },
+    });
+    assert.equal(independentHostedClient.status, 200,
+      "one Hosted client must not exhaust the shared reverse-proxy source bucket");
+    database.securitySession = previousSecuritySession;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const directClient = await requestEndpoint(database, "/requests", {
+        remoteAddress: "192.0.2.20",
+        headers: {
+          authorization: `Bearer malformed-direct-${attempt}`,
+          "x-sporades-client-address": `198.51.100.${attempt + 20}`,
+        },
+      });
+      assert.equal(directClient.status, 401);
+    }
+    const spoofedDirectClient = await requestEndpoint(database, "/requests", {
+      remoteAddress: "192.0.2.20",
+      headers: {
+        authorization: `Bearer ${issued.data.token}`,
+        "x-sporades-client-address": "203.0.113.200",
+      },
+    });
+    assert.equal(spoofedDirectClient.status, 429,
+      "non-Hosted clients must not evade throttling with the private proxy header");
 
     const malformed = await requestEndpoint(database, "/requests", {
       headers: { authorization: "Bearer definitely-not-a-sporades-key" },

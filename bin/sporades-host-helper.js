@@ -165,10 +165,17 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+var ACCESS_KEY_SCOPE_LIMIT = 1024;
+var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
+
+// src/access-key-contract.ts
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
 
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
@@ -281,6 +288,9 @@ var ACCESS_KEY_OPERATOR_ACTIONS = [
 ];
 var ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 var STATUSES = /* @__PURE__ */ new Set(["active", "expired", "revoked"]);
+var REVOCATION_CAUSES = /* @__PURE__ */ new Set(["owner", "operator", "password-reset", "owner-unlinked", "owner-deleted"]);
+var ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT = 32 * 1024 * 1024;
+var ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER = ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT + 1024 * 1024;
 var SAFE_ERRORS = {
   UNAUTHENTICATED: { message: "Authentication is required.", hint: "Use an authorized Session and retry the operation." },
   FORBIDDEN: { message: "Access-key operation is forbidden.", hint: "Use an authorized operator context." },
@@ -317,8 +327,11 @@ function boundedString(value, maximum = 256) {
 function optionalString(value, maximum = 512) {
   return value === null || boundedString(value, maximum);
 }
-function stringList(value) {
-  return Array.isArray(value) && value.length <= 100 && value.every((item) => boundedString(item, 256));
+function stringList(value, maximumItems, maximumItemBytes) {
+  return Array.isArray(value) && value.length <= maximumItems && value.every((item) => boundedString(item, maximumItemBytes));
+}
+function optionalRevocationCause(value) {
+  return value === null || typeof value === "string" && REVOCATION_CAUSES.has(value);
 }
 function encodedWithinLimit(value, maximum) {
   try {
@@ -373,14 +386,14 @@ function canonicalSummary(value, invalid) {
     "lastUsedAt",
     "lifecycleRevision"
   ];
-  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants) || !stringList(value.effectiveScopes) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalString(value.revocationCause, 80) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
+  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT) || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid();
   return Object.fromEntries(fields.map((field) => [field, value[field]]));
 }
 function canonicalSuccessData(action, value, input, invalid) {
   if (!plain(value)) return invalid();
   const capsule = canonicalCapsule(value.capsule, invalid);
   if (action === "access-keys.list") {
-    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
+    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid();
     const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid));
     if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid();
     return { capsule, accessKeys, declaredScopes: [...value.declaredScopes], nextCursor: value.nextCursor, totalCount: value.totalCount };
@@ -388,7 +401,7 @@ function canonicalSuccessData(action, value, input, invalid) {
   if (["access-keys.inspect", "access-keys.revoke"].includes(action)) {
     if (!exactKeys(value, ["capsule", "accessKey"])) return invalid();
     const accessKey = canonicalSummary(value.accessKey, invalid);
-    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && (accessKey.status !== "revoked" || accessKey.revocationCause !== "operator")) return invalid();
+    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && accessKey.status !== "revoked") return invalid();
     return { capsule, accessKey };
   }
   if (action === "access-keys.revoke-all") {
@@ -405,7 +418,7 @@ function canonicalError(value, invalid) {
   return { code: value.code, ...SAFE_ERRORS[value.code] };
 }
 function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
-  if (!plain(value) || !encodedWithinLimit(value, 256 * 1024) || typeof value.ok !== "boolean") return invalid();
+  if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean") return invalid();
   const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid);
   if (value.ok) {
     if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid();
@@ -1366,7 +1379,9 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     if (label === "Access-key") error.code = "HOSTED_CAPSULE_NOT_RUNNING";
     throw error;
   }
-  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
+    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : void 0
+  });
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());
@@ -4073,7 +4088,7 @@ function ensureHostedBaseImage(lifecycle) {
   }
 }
 function runDocker(args, options = {}) {
-  const result = spawnSync2("docker", args, { encoding: "utf8" });
+  const result = spawnSync2("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {} });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -4159,7 +4174,11 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
   await provisionRouteLogFile(route);
-  const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4e3}`}`;
+  const proxyLine = [
+    `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4e3}`} {`,
+    `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} {http.request.remote.host}`,
+    "  }"
+  ].join("\n");
   await applyManagedRoute(
     lifecycle,
     route.routeFile,

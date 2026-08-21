@@ -49,7 +49,8 @@ import {
 } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import {
@@ -240,7 +241,9 @@ function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label
     if (label === "Access-key") error.code = "HOSTED_CAPSULE_NOT_RUNNING";
     throw error;
   }
-  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs]);
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
+    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : undefined,
+  });
   let envelope: LooseRecord;
   try { envelope = JSON.parse(result.stdout.trim()); }
   catch { throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
@@ -3184,7 +3187,7 @@ function ensureHostedBaseImage(lifecycle: HostedCapsuleLifecycle) {
 }
 
 function runDocker(args: any, options: LooseRecord = {}) {
-  const result = spawnSync("docker", args, { encoding: "utf8" });
+  const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}) });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -3278,7 +3281,11 @@ function loopbackRunningRoute(route: HostedCapsuleRoute, publishedPort: any) {
 
 async function writeRunningRoute(lifecycle: HostedCapsuleLifecycle, route: HostedCapsuleRoute = lifecycle.routes.running) {
   await provisionRouteLogFile(route);
-  const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`;
+  const proxyLine = [
+    `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`} {`,
+    `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} {http.request.remote.host}`,
+    "  }",
+  ].join("\n");
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
