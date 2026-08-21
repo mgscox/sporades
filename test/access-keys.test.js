@@ -378,6 +378,28 @@ test("a linked Session issues, lists, and revokes its own scoped Access key", as
     assert.equal((await runQuery(database, auth, "listKeys")).data.accessKeys
       .some((key) => key.name === "stale-session-key"), false);
 
+    const unlinkedRotationCandidate = await runMutation(database, auth, "issueKey", [{ name: "unlinked-owner-rotation" }]);
+    assert.equal(unlinkedRotationCandidate.error, null, JSON.stringify(unlinkedRotationCandidate.error));
+    const unlinkedRevocationCandidate = await runMutation(database, auth, "issueKey", [{ name: "unlinked-owner-revocation" }]);
+    assert.equal(unlinkedRevocationCandidate.error, null, JSON.stringify(unlinkedRevocationCandidate.error));
+    await unlinkCurrentAuthUser(database, { kind: "mutation", auth, credential: { kind: "session" } });
+    assert.ok(await database.adapter.readAuthSessionWithUser(sessionTokenFor(auth)), "unlink intentionally retains the Session row");
+    const unlinkedList = await runQuery(database, auth, "listKeys");
+    assert.equal(unlinkedList.error.code, "UNAUTHENTICATED", JSON.stringify(unlinkedList));
+    const unlinkedRotation = await runQuery(database, auth, "rotateKeyFromQuery", [{
+      id: unlinkedRotationCandidate.data.accessKey.id,
+      lifecycleRevision: unlinkedRotationCandidate.data.accessKey.lifecycleRevision,
+    }]);
+    assert.equal(unlinkedRotation.error.code, "UNAUTHENTICATED", JSON.stringify(unlinkedRotation));
+    const unlinkedRevocation = await runQuery(database, auth, "revokeKeyFromQuery", [unlinkedRevocationCandidate.data.accessKey.id]);
+    assert.equal(unlinkedRevocation.error.code, "UNAUTHENTICATED", JSON.stringify(unlinkedRevocation));
+    const unlinkedDeletion = await runQuery(database, auth, "deleteKeyFromQuery", [issued.data.accessKey.id]);
+    assert.equal(unlinkedDeletion.error.code, "UNAUTHENTICATED", JSON.stringify(unlinkedDeletion));
+    assert.equal((await database.adapter.findAccessKeyRecordById(unlinkedRotationCandidate.data.accessKey.id)).revocationCause, "owner-unlinked");
+    assert.equal((await database.adapter.findAccessKeyRecordById(unlinkedRevocationCandidate.data.accessKey.id)).revocationCause, "owner-unlinked");
+    assert.ok(await database.adapter.findAccessKeyRecordById(issued.data.accessKey.id));
+    await database.adapter.linkAuthUser({ ...auth, id: auth.userId, isAuthenticated: 1, isGuest: 0 });
+
     const rotationCandidate = await runMutation(database, auth, "issueKey", [{ name: "stale-session-rotation" }]);
     assert.equal(rotationCandidate.error, null, JSON.stringify(rotationCandidate.error));
     const revocationCandidate = await runMutation(database, auth, "issueKey", [{ name: "stale-session-revocation" }]);

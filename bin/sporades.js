@@ -15019,6 +15019,9 @@ function postgresDatabaseDialect() {
 }
 function createSharedDatabaseAdapterMethods(dialect) {
   const sql = dialect.sql;
+  const eligibleAccessKeyOwnerSessionSql = sql(
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?"
+  );
   return {
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -15283,11 +15286,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           if (outcome || typeof row.sessionToken !== "string") return outcome;
           const checkedAt = typeof row.sessionValidationTime === "function" ? row.sessionValidationTime() : row.createdAt;
-          return thenIfPromise(this.prepare(
-            sql(
-              "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
-            )
-          ).get(row.sessionToken, row.ownerUserId, checkedAt), (session) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql).get(row.sessionToken, row.ownerUserId, checkedAt, 1, 0), (session) => {
             if (!session) outcome = { status: "session-ineligible" };
           });
         },
@@ -15330,9 +15329,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           if (typeof options.sessionToken !== "string") return;
           const checkedAt = typeof options.sessionValidationTime === "function" ? options.sessionValidationTime() : options.checkedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
-          )).get(options.sessionToken, ownerUserId, checkedAt), (session) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql).get(options.sessionToken, ownerUserId, checkedAt, 1, 0), (session) => {
             sessionEligible = Boolean(session);
           });
         },
@@ -15384,9 +15381,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           if (typeof input.sessionToken !== "string") return;
           const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : revokedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
-          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql).get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
             sessionEligible = Boolean(session);
           });
         },
@@ -15432,11 +15427,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           if (typeof input.sessionToken !== "string") return;
           const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : rotatedAt;
-          return thenIfPromise(this.prepare(
-            sql(
-              "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
-            )
-          ).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql).get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
             if (!session) status = "session-ineligible";
           });
         },
@@ -15485,9 +15476,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => {
           if (typeof input.sessionToken !== "string") return;
           const checkedAt = typeof input.sessionValidationTime === "function" ? input.sessionValidationTime() : input.checkedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?"
-          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql).get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session) => {
             if (!session) status = "session-ineligible";
           });
         },

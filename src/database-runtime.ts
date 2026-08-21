@@ -569,6 +569,12 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
   // records why: a statement that names a column in a style its table was not created with errors
   // outright on Postgres, and the runtime's own DDL goes through the same call so nothing folds.
   const sql = dialect.sql;
+  const eligibleAccessKeyOwnerSessionSql = sql(
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] " +
+    "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
+    "WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? " +
+    "AND [u].[isAuthenticated] = ? AND [u].[isGuest] = ?",
+  );
   return {
     ensureSystemTable() {
       return this.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
@@ -863,12 +869,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           const checkedAt = typeof row.sessionValidationTime === "function"
             ? row.sessionValidationTime()
             : row.createdAt;
-          return thenIfPromise(this.prepare(
-            sql(
-              "SELECT [token] FROM [sporades_auth_sessions] " +
-              "WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
-            ),
-          ).get(row.sessionToken, row.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+            .get(row.sessionToken, row.ownerUserId, checkedAt, 1, 0), (session: LooseRecord | null) => {
             if (!session) outcome = { status: "session-ineligible" };
           });
         },
@@ -910,9 +912,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           const checkedAt = typeof options.sessionValidationTime === "function"
             ? options.sessionValidationTime()
             : options.checkedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
-          )).get(options.sessionToken, ownerUserId, checkedAt), (session: LooseRecord | null) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+            .get(options.sessionToken, ownerUserId, checkedAt, 1, 0), (session: LooseRecord | null) => {
             sessionEligible = Boolean(session);
           });
         },
@@ -973,9 +974,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           const checkedAt = typeof input.sessionValidationTime === "function"
             ? input.sessionValidationTime()
             : revokedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
-          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+            .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session: LooseRecord | null) => {
             sessionEligible = Boolean(session);
           });
         },
@@ -1023,12 +1023,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           const checkedAt = typeof input.sessionValidationTime === "function"
             ? input.sessionValidationTime()
             : rotatedAt;
-          return thenIfPromise(this.prepare(
-            sql(
-              "SELECT [token] FROM [sporades_auth_sessions] " +
-              "WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
-            ),
-          ).get(input.sessionToken, input.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+            .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session: LooseRecord | null) => {
             if (!session) status = "session-ineligible";
           });
         },
@@ -1072,9 +1068,8 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
           const checkedAt = typeof input.sessionValidationTime === "function"
             ? input.sessionValidationTime()
             : input.checkedAt;
-          return thenIfPromise(this.prepare(sql(
-            "SELECT [token] FROM [sporades_auth_sessions] WHERE [token] = ? AND [userId] = ? AND [expiresAt] > ?",
-          )).get(input.sessionToken, input.ownerUserId, checkedAt), (session: LooseRecord | null) => {
+          return thenIfPromise(this.prepare(eligibleAccessKeyOwnerSessionSql)
+            .get(input.sessionToken, input.ownerUserId, checkedAt, 1, 0), (session: LooseRecord | null) => {
             if (!session) status = "session-ineligible";
           });
         },

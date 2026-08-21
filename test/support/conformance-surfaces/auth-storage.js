@@ -1751,7 +1751,7 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     },
   },
   {
-    name: "Access-key owner reads and destructive operations revalidate their bound Session",
+    name: "Access-key owner operations revalidate their bound Session and current linked owner",
     async run(adapter) {
       const sessionToken = "session-stale-access-key-owner-operations";
       const active = {
@@ -1792,6 +1792,48 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
       }));
       assert.equal(historicalRevocation.id, history.id);
 
+      const sessionOptions = { sessionToken, sessionValidationTime: () => LATER };
+      await adapter.updateAuthUserProfile({
+        id: active.ownerUserId,
+        displayName: SIGNED_IN_USER.displayName,
+        picture: SIGNED_IN_USER.picture,
+        isAuthenticated: 0,
+        isGuest: 1,
+      });
+      const unlinkedListing = await adapter.withTransaction((tx) =>
+        tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
+      const unlinkedRotation = await adapter.withTransaction((tx) => tx.rotateAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        lifecycleRevision: 1,
+        secretVersion: 1,
+        selector: "unlinkedownerrotate000",
+        verifierDigest: "f8".repeat(32),
+        rotatedAt: LATER,
+        ...sessionOptions,
+      }));
+      const unlinkedRevocation = await adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
+        ownerUserId: active.ownerUserId,
+        id: active.id,
+        revokedAt: LATER,
+        revocationCause: "owner",
+        ...sessionOptions,
+      }));
+      const unlinkedDeletion = await adapter.withTransaction((tx) => tx.deleteRevokedAccessKeyRecord({
+        ownerUserId: history.ownerUserId,
+        id: history.id,
+        ...sessionOptions,
+      }));
+      assert.equal(unlinkedListing.status, "session-ineligible");
+      assert.equal(unlinkedRotation.status, "session-ineligible");
+      assert.equal(unlinkedRevocation.status, "session-ineligible");
+      assert.equal(unlinkedDeletion.status, "session-ineligible");
+      assert.equal((await adapter.findAccessKeyAuthenticationRecord(active.selector)).id, active.id);
+      assert.equal(await adapter.findAccessKeyAuthenticationRecord("unlinkedownerrotate000"), null);
+      assert.equal((await adapter.findAccessKeyRecordById(active.id)).revokedAt, null);
+      assert.equal((await adapter.findAccessKeyRecordById(history.id)).revocationCause, "owner");
+      await adapter.linkAuthUser({ ...SIGNED_IN_USER, isAuthenticated: 1, isGuest: 0 });
+
       let releaseSessionRetirement;
       let sessionRetirementLocked;
       const sessionRetirementHasLock = new Promise((resolve) => { sessionRetirementLocked = resolve; });
@@ -1802,7 +1844,6 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
         await sessionRetirementRelease;
       });
       await sessionRetirementHasLock;
-      const sessionOptions = { sessionToken, sessionValidationTime: () => LATER };
       const listing = adapter.withTransaction((tx) => tx.listAccessKeyRecordsForOwner(active.ownerUserId, sessionOptions));
       const revocation = adapter.withTransaction((tx) => tx.revokeAccessKeyRecord({
         ownerUserId: active.ownerUserId,
