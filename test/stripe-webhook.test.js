@@ -723,6 +723,70 @@ test("a rejected transaction-bound log write rolls back an atomic Stripe consequ
   }, { clock });
 });
 
+test("atomic fence contention defers durably without spending a Stripe delivery attempt", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const capsule = {
+    schema: { stripeConsequences: table({ providerEventId: Text() }) },
+    stripeEvents: declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
+      await ctx.db.stripeConsequences.insert({ providerEventId: event.providerEventId });
+    }),
+    queries: { consequences: query((ctx) => ctx.db.stripeConsequences.all()) },
+  };
+  await withDatabase({ name: "stripe-atomic-fence-defer", payments: { stripe } }, capsule, async (database) => {
+    await database.init();
+    const admission = await postStripe(database, stripeEvent("evt_runtime_atomic_fence_defer_1"));
+    const jobId = JSON.parse(admission.response.body).jobId;
+    const originalWithTransaction = database.adapter.withTransaction.bind(database.adapter);
+    let remainingContentions = 200;
+    database.adapter.withTransaction = (callback) => originalWithTransaction(async (transactionAdapter) => {
+      const originalPrepare = transactionAdapter.prepare.bind(transactionAdapter);
+      transactionAdapter.prepare = (sql) => {
+        const statement = originalPrepare(sql);
+        if (/UPDATE\s+.*sporades.*SET\s+.*value/i.test(String(sql))) {
+          return { ...statement, run(...args) {
+            if (remainingContentions > 0) {
+              remainingContentions -= 1;
+              const error = new Error("injected atomic fence contention");
+              error.code = "SQLITE_BUSY";
+              throw error;
+            }
+            return statement.run(...args);
+          } };
+        }
+        return statement;
+      };
+      try {
+        return await callback(transactionAdapter);
+      } finally {
+        transactionAdapter.prepare = originalPrepare;
+      }
+    });
+    try {
+      await clock.runDueTimers();
+    } finally {
+      database.adapter.withTransaction = originalWithTransaction;
+    }
+
+    assert.equal(remainingContentions, 0, "the runtime reached its durable contention boundary");
+    const deferred = await database.adapter.prepare(database.adapter.dialect.sql(
+      "SELECT [status], [attempts], [attemptHistory] FROM [sporades_jobs] WHERE [id]=?",
+    )).get(jobId);
+    assert.equal(deferred.status, "delayed");
+    assert.equal(Number(deferred.attempts), 0, "serialization waiting is not a delivery attempt");
+    assert.deepEqual(JSON.parse(deferred.attemptHistory), []);
+    assert.deepEqual((await runQuery(database, anonymousAuth, "consequences")).data, []);
+
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+    const completed = (await inspectRuntimeJobs(database.adapter)).find((jobState) => jobState.id === jobId);
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.attempts, 1);
+    assert.deepEqual((await runQuery(database, anonymousAuth, "consequences")).data.map((row) => row.providerEventId), [
+      "evt_runtime_atomic_fence_defer_1",
+    ]);
+  }, { clock });
+});
+
 test("an atomic Stripe consequence can count one exact Team without gaining broader Team authority", async () => {
   const teamId = "123e4567-e89b-42d3-a456-426614174001";
   let shouldFail = true;
@@ -974,12 +1038,14 @@ async function proveAtomicStripeConsequenceSerialization(openRuntimes, leadingRu
   const capsule = {
     schema: {
       stripeSequence: table({ providerEventId: Text(), predecessorCount: Text() }),
+      stripeEqualTimePolicy: table({ occurredAt: Text(), providerEventId: Text() }),
     },
     stripeEvents: declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
       active += 1;
       maximumActive = Math.max(maximumActive, active);
       try {
         const prior = await ctx.db.stripeSequence.all();
+        const [currentWinner] = await ctx.db.stripeEqualTimePolicy.all();
         observedPredecessors.push({ providerEventId: event.providerEventId, count: prior.length });
         if (event.providerEventId.endsWith("_leader")) {
           firstEntered();
@@ -991,10 +1057,25 @@ async function proveAtomicStripeConsequenceSerialization(openRuntimes, leadingRu
           providerEventId: event.providerEventId,
           predecessorCount: String(prior.length),
         });
+        const eventWins = !currentWinner
+          || event.occurredAt > currentWinner.occurredAt
+          || event.occurredAt === currentWinner.occurredAt && event.providerEventId > currentWinner.providerEventId;
+        if (eventWins && currentWinner) {
+          await ctx.db.stripeEqualTimePolicy.update(currentWinner.id, {
+            occurredAt: event.occurredAt,
+            providerEventId: event.providerEventId,
+          });
+        } else if (eventWins) {
+          await ctx.db.stripeEqualTimePolicy.insert({
+            occurredAt: event.occurredAt,
+            providerEventId: event.providerEventId,
+          });
+        }
       } finally {
         active -= 1;
       }
     }),
+    queries: { equalTimeWinner: query((ctx) => ctx.db.stripeEqualTimePolicy.all()) },
   };
   let runtimes;
   try {
@@ -1033,6 +1114,11 @@ async function proveAtomicStripeConsequenceSerialization(openRuntimes, leadingRu
       { providerEventId: leaderId, count: 0 },
       { providerEventId: followerId, count: 1 },
     ]);
+    const winner = (await runQuery(followingDatabase, anonymousAuth, "equalTimeWinner")).data;
+    assert.deepEqual(winner.map(({ occurredAt, providerEventId }) => ({ occurredAt, providerEventId })), [{
+      occurredAt: "2030-01-01T00:00:00.000Z",
+      providerEventId: [leaderId, followerId].sort().at(-1),
+    }], "equal-time app policy converges independently of fence acquisition order");
   } finally {
     releaseFirst?.();
     await Promise.all([runtimes?.firstDatabase?.close(), runtimes?.secondDatabase?.close()]);
@@ -1276,7 +1362,7 @@ test("atomic Stripe consequences serialize across two independent Postgres runti
   };
   const config = { name: "stripe-atomic-postgres", payments: { stripe }, services: { database: { engine: "postgres" } } };
   try {
-    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeSequence"] });
+    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeSequence", "stripeEqualTimePolicy"] });
     await proveAtomicStripeConsequenceSerialization(async (capsule, firstClock, secondClock) => ({
       firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
       secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),
@@ -1297,7 +1383,7 @@ test("atomic Stripe consequences preserve predecessor visibility when the second
   };
   const config = { name: "stripe-atomic-postgres-reverse", payments: { stripe }, services: { database: { engine: "postgres" } } };
   try {
-    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeSequence"] });
+    await withPostgresAdapter(async () => {}, { appTableNames: ["stripeSequence", "stripeEqualTimePolicy"] });
     await proveAtomicStripeConsequenceSerialization(async (capsule, firstClock, secondClock) => ({
       firstDatabase: await openDevDatabase(path.join(dir, "unused-first.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: firstClock, serviceEnv }),
       secondDatabase: await openDevDatabase(path.join(dir, "unused-second.db"), "", serviceEnv, config, capsule, { createStripeCallbackEndpoint, clock: secondClock, serviceEnv }),

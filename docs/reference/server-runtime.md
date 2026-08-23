@@ -691,6 +691,10 @@ consequences. A 30-second runtime watchdog revokes database and Job authority,
 rolls back the attempt, and releases the per-Capsule fence if handler code does
 not settle cooperatively; late handler work cannot commit. Keep long-lived
 cooperative handlers on the legacy declaration.
+Adapter-level fence contention is durably delayed without spending one of the
+reserved Stripe Job's delivery attempts, so a valid predecessor cannot exhaust
+a following Event merely by holding the serialization lane. Cancellation and
+claim ownership still win before the delayed claim is returned.
 Delivery remains at least once, so app policy still owns Event idempotency and
 equal-time or stale-event decisions.
 

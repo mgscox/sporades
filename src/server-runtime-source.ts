@@ -128,6 +128,7 @@ const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
+const atomicStripeFenceContention = Symbol("sporades.atomicStripeFenceContention");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -3213,6 +3214,7 @@ async function acquireAtomicStripeConsequenceFence(adapter: LooseRecord) {
     error.code = "STRIPE_CONSEQUENCE_FENCE_BUSY";
     error.retryable = true;
     error.cause = cause;
+    error[atomicStripeFenceContention] = true;
     throw error;
   }
   if (Number(acquired?.changes ?? 0) !== 1) {
@@ -6014,6 +6016,26 @@ async function relinquishUnstartedJobClaim(database: LooseRecord, jobId: string,
   )).run(jobId, claimToken);
 }
 
+async function deferAtomicStripeFenceContention(database: LooseRecord, jobId: string, claimToken: string) {
+  const sql = database.adapter.dialect.sql;
+  const claimed = await database.adapter.prepare(sql(
+    "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+  )).get(jobId, claimToken);
+  if (!claimed) return "lost";
+  if (claimed.cancelRequestedAt) return "cancelled";
+  const availableAt = jobTimestampAfter(database.clock.now(), 25);
+  if (availableAt === null) return "lost";
+  const changed = await database.adapter.prepare(sql(
+    "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, " +
+    "[attempts]=CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, " +
+    "[startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+    "WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NULL",
+  )).run(availableAt, jobId, claimToken);
+  if (Number(changed?.changes ?? 0) !== 1) return "lost";
+  scheduleJobWorkerWake(database, 26);
+  return "deferred";
+}
+
 async function scheduleNextDelayedJob(database: LooseRecord) {
   while (true) {
     const row = await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [status]='delayed' ORDER BY [availableAt] ASC, [id] ASC LIMIT 1")).get();
@@ -6139,6 +6161,15 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         if (database.__jobStopped && !handlerStarted) {
           await relinquishUnstartedJobClaim(database, row.id, claimToken);
           return;
+        }
+        const runtimeError = error?.cause ?? error;
+        if (row.handler === STRIPE_EVENT_JOB && runtimeError?.[atomicStripeFenceContention] === true) {
+          const contention = await deferAtomicStripeFenceContention(database, row.id, claimToken);
+          if (contention === "deferred") continue;
+          if (contention === "cancelled") {
+            abortController.abort();
+            error = atomicStripeAbortError();
+          }
         }
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";

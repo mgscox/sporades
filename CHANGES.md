@@ -6,6 +6,8 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Add opt-in transaction-owned, cross-runtime-serialized atomic Stripe
+  consequences with exact read-only `teams.countMembers(teamId)` policy access.
 - Bound successful reserved Stripe Event Job payloads to 30 days with
   restart-safe, adapter-portable cleanup, safe unresolved-retention inspection,
   one shared bounded mutation budget, and digest-backed replay tombstones.
@@ -25,6 +27,8 @@ Changes since v0.8.7.
 
 ### 🐛 Bug Fixes
 
+- Defer atomic Stripe fence contention durably without exhausting provider
+  delivery attempts while a valid predecessor consequence still owns the fence.
 - Fix Stripe callback and Vanilla policy gaps (6b5792f).
 - Bound hosted inspection diagnostics (84977d0).
 - Preserve bounded host inspection failures (5ff9e59).
