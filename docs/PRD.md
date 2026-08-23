@@ -83,7 +83,9 @@ The repository currently includes:
   unresolved exceptions. A legacy successful row with an absent or noncanonical
   completion time is also unresolved, retains its raw payload without a deadline,
   and exposes only a safe operator reason code until storage repair restores a
-  canonical time. Cleanup is restart-safe across Database adapters, shares one
+  canonical time. A canonical near-ceiling settlement whose exact 30-day
+  deadline is outside the timestamp range is separately unresolved as
+  `RETENTION_DEADLINE_UNREPRESENTABLE` rather than expiring early. Cleanup is restart-safe across Database adapters, shares one
   100-mutation budget between due redaction and legacy classification, and
   exposes neither a generic payload API nor provider identifiers in its logs.
 - `sporades dev` for local Node execution with bundling, file watching,
