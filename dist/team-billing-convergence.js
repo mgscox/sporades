@@ -16,6 +16,8 @@ const CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
 const CUSTOMER_ID = /^cus_[A-Za-z0-9_]{1,120}$/;
 const SUBSCRIPTION_ID = /^sub_[A-Za-z0-9_]{1,240}$/;
 const ITEM_ID = /^si_[A-Za-z0-9_]{1,240}$/;
+const INVOICE_ID = /^in_[A-Za-z0-9_]{1,240}$/;
+const INVOICE_LINE_ID = /^il_[A-Za-z0-9_]{1,240}$/;
 const PRICE_ID = /^price_[A-Za-z0-9_]{1,249}$/;
 const PRODUCT_ID = /^prod_[A-Za-z0-9_]{1,240}$/;
 const CANONICAL_TIME = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
@@ -176,7 +178,8 @@ async function applySubscription(database, event, mode) {
 }
 function normalizeSubscription(definition, object, operation, mode, deleted, teamId, desiredTeamQuantity) {
     const items = object.items?.data;
-    if (!Array.isArray(items) || items.length !== 1 || !isRecord(items[0]))
+    if (!isRecord(object.items) || object.items.object !== "list" || object.items.has_more !== false
+        || !Array.isArray(items) || items.length !== 1 || !isRecord(items[0]))
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     const item = items[0];
     const priceId = item.price?.id;
@@ -231,13 +234,15 @@ function normalizeSubscription(definition, object, operation, mode, deleted, tea
 async function applyInvoiceFailure(database, event, mode) {
     const tx = database.adapter;
     const object = event.raw.data.object;
-    const subscriptionId = typeof object.subscription === "string" ? object.subscription : object.parent?.subscription_details?.subscription;
+    const subscriptionId = object.parent?.subscription_details?.subscription;
     const customerId = object.customer;
-    if (object.object !== "invoice" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? ""))
+    if (object.object !== "invoice" || !INVOICE_ID.test(String(object.id ?? ""))
+        || object.parent?.type !== "subscription_details" || !isRecord(object.parent?.subscription_details)
+        || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? ""))
         || object.livemode !== event.livemode || object.status !== "open" || object.paid !== false
         || !Number.isInteger(object.attempt_count) || object.attempt_count < 1)
         throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object.id));
-    const subscription = await tx.prepare(tx.dialect.sql("SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] " +
+    const subscription = await tx.prepare(tx.dialect.sql("SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
     if (!subscription || subscription.mode !== mode)
         throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object.id));
@@ -245,15 +250,20 @@ async function applyInvoiceFailure(database, event, mode) {
         return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
     await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
     const lines = object.lines?.data;
-    if (!Array.isArray(lines) || lines.length !== 1)
+    if (!isRecord(object.lines) || object.lines.object !== "list" || object.lines.has_more !== false
+        || !Array.isArray(lines) || lines.length !== 1)
         throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
     const line = lines[0];
     const details = line?.parent?.subscription_item_details;
     const pricing = line?.pricing?.price_details;
-    if (!isRecord(line) || line.object !== "line_item" || line.parent?.type !== "subscription_item_details"
+    const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
+    const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
+    if (!isRecord(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? ""))
+        || line.invoice !== object.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details"
         || details?.proration !== false || details?.subscription !== subscriptionId
         || details?.subscription_item !== subscription.providerSubscriptionItemId
         || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId
+        || !PRODUCT_ID.test(String(pricingProductId ?? "")) || (binding?.productId && pricingProductId !== binding.productId)
         || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart
         || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd)
         throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
@@ -272,7 +282,7 @@ async function inferTeamId(tx, event) {
         if (row?.teamId)
             return row.teamId;
     }
-    const subscriptionId = object?.object === "subscription" ? object.id : object?.subscription ?? object?.parent?.subscription_details?.subscription;
+    const subscriptionId = object?.object === "subscription" ? object.id : object?.parent?.subscription_details?.subscription;
     if (SUBSCRIPTION_ID.test(String(subscriptionId ?? ""))) {
         const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
         if (row?.teamId)

@@ -274,7 +274,8 @@ conflicting associations, and multiple current Subscriptions are retained only
 as bounded digest and private correlation with a safe reason. Raw Stripe JSON
 and errors never enter Team Billing tables or the client projection. Team-linked
 ambiguity produces provider-free `attention-required` state; evidence that
-cannot be associated safely remains operator-only. An app's opt-in atomic
+cannot be associated safely remains private retained state reserved for a
+later bounded operator-inspection surface. An app's opt-in atomic
 Stripe consequence shares the same transaction. A legacy `stripeEvent(handler)`
 runs after the platform commit and keeps its existing independent retry model.
 

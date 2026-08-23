@@ -61,6 +61,13 @@ test("verified Team Billing observations converge with semantic ratchets and saf
     legacyInvoice.raw.data.object.lines.data[0] = { type: "subscription", proration: false, subscription: "sub_converge",
       subscription_item: "si_converge", quantity: 2, price: { id: "price_converge" }, period: { start: periodStart, end: periodEnd } };
     assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, legacyInvoice), { applied: false, quarantined: true }, "legacy invoice-line layouts are not mistaken for Dahlia evidence");
+    const partialInvoice = invoiceEvent("evt_converge_partial_invoice", periodStart + 26);
+    partialInvoice.raw.data.object.lines.has_more = true;
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, partialInvoice), { applied: false, quarantined: true }, "a first page never proves the complete Invoice line set");
+    const legacyInvoiceParent = invoiceEvent("evt_converge_legacy_parent", periodStart + 27);
+    legacyInvoiceParent.raw.data.object.subscription = "sub_converge";
+    delete legacyInvoiceParent.raw.data.object.parent;
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, legacyInvoiceParent), { applied: false, quarantined: true }, "legacy top-level Subscription correlation cannot replace the Dahlia Invoice parent");
     const invoiceFailure = invoiceEvent("evt_converge_invoice_failed", periodStart + 30);
     await applyVerifiedTeamBillingObservation(fixture.database, invoiceFailure);
     assert.equal(fixture.getSubscription().state, "past-due");
@@ -99,6 +106,7 @@ test("malformed, catalogue-conflicting, multi-item, and association-conflicting 
     for (const event of [
       subscriptionEvent("evt_converge_unknown_price", "customer.subscription.created", { operationId, priceId: "price_unknown", productId: "prod_unknown" }),
       subscriptionEvent("evt_converge_multi_item", "customer.subscription.created", { operationId, multiItem: true }),
+      subscriptionEvent("evt_converge_partial_items", "customer.subscription.created", { operationId, hasMore: true }),
       subscriptionEvent("evt_converge_metered", "customer.subscription.created", { operationId, usageType: "metered" }),
       subscriptionEvent("evt_converge_trial", "customer.subscription.created", { operationId, status: "trialing" }),
     ]) {
@@ -110,7 +118,7 @@ test("malformed, catalogue-conflicting, multi-item, and association-conflicting 
     assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, conflict), { applied: false, quarantined: true });
     assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, conflict), { applied: false, duplicate: true });
     const rows = fixture.adapter.prepare("SELECT [providerEventId], [teamId], [outcome], [safeReason] FROM [sporades_team_billing_observations] ORDER BY [providerEventId]").all();
-    assert.equal(rows.length, 5);
+    assert.equal(rows.length, 6);
     assert.ok(rows.every((row) => row.teamId === teamId && row.outcome === "quarantined"));
     assert.equal(rows.find((row) => row.providerEventId === "evt_converge_unknown_price").safeReason, "catalogue-mismatch");
   } finally {
@@ -297,7 +305,7 @@ function subscriptionEvent(providerEventId, type, options = {}) {
     id: options.subscriptionId ?? "sub_converge", object: "subscription", customer: "cus_converge", livemode: false,
     status: options.status ?? "active", cancel_at_period_end: options.cancelAtPeriodEnd ?? false,
     metadata: options.operationId ? { sporades_team_billing_operation: options.operationId } : {},
-    items: { data: [{ id: options.itemId ?? "si_converge", object: "subscription_item",
+    items: { object: "list", has_more: options.hasMore ?? false, data: [{ id: options.itemId ?? "si_converge", object: "subscription_item",
       subscription: options.subscriptionId ?? "sub_converge", quantity: options.quantity ?? 2,
       current_period_start: options.periodStart ?? periodStart, current_period_end: options.periodEnd ?? periodEnd,
       price: { id: options.priceId ?? "price_converge", product: options.productId ?? "prod_converge", recurring: { usage_type: options.usageType ?? "licensed" },
@@ -318,10 +326,12 @@ function checkoutEvent(providerEventId, type, occurred) {
 
 function invoiceEvent(providerEventId, occurred) {
   return verifiedEvent(providerEventId, "invoice.payment_failed", occurred, {
-    id: "in_converge", object: "invoice", customer: "cus_converge", subscription: "sub_converge", livemode: false,
-    status: "open", paid: false, attempt_count: 1, lines: { data: [{ object: "line_item", quantity: 2,
+    id: "in_converge", object: "invoice", customer: "cus_converge", livemode: false,
+    parent: { type: "subscription_details", subscription_details: { subscription: "sub_converge" } },
+    status: "open", paid: false, attempt_count: 1, lines: { object: "list", has_more: false, data: [{
+      id: "il_converge", object: "line_item", invoice: "in_converge", livemode: false, quantity: 2,
       parent: { type: "subscription_item_details", subscription_item_details: { proration: false, subscription: "sub_converge", subscription_item: "si_converge" } },
-      pricing: { type: "price_details", price_details: { price: "price_converge" } },
+      pricing: { type: "price_details", price_details: { price: "price_converge", product: "prod_converge" } },
       period: { start: periodStart, end: periodEnd },
     }] },
   });
