@@ -666,7 +666,7 @@ async function countTeamAdmins(tx: LooseRecord, teamId: string) {
   return Number(row?.count ?? 0);
 }
 
-async function lockTeamLifecycle(tx: LooseRecord, teamId: string, missingTeamError: () => Error = teamDenied) {
+export async function lockTeamLifecycle(tx: LooseRecord, teamId: string, missingTeamError: () => Error = teamDenied) {
   // A no-op row update is a portable per-Team write lock: under Postgres the
   // next lifecycle transaction waits and then observes the prior commit;
   // SQLite/libSQL retain their adapter transaction serialization. This keeps

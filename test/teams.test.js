@@ -1893,14 +1893,14 @@ test("Postgres Team Billing authority and projection use the same transaction-ow
     services: { database: { engine: "postgres" } },
   }, billingCapsule, { serviceEnv: serverEnv });
   try {
-    await proveTeamBillingAuthorityOnAdapter(database, "44444444-4444-4444-8444-444444444444", "postgres-billing-admin");
+    await proveTeamBillingAuthorityOnAdapter(database, "44444444-4444-4444-8444-444444444444", "postgres-billing-admin", { proveConcurrentDemotion: true });
   } finally {
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-async function proveTeamBillingAuthorityOnAdapter(database, teamId, userId) {
+async function proveTeamBillingAuthorityOnAdapter(database, teamId, userId, options = {}) {
   const sql = database.adapter.dialect.sql;
   const now = new Date().toISOString();
   const auth = {
@@ -1917,6 +1917,34 @@ async function proveTeamBillingAuthorityOnAdapter(database, teamId, userId) {
   await database.adapter.prepare(sql("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES (?, ?, ?, ?, ?)")).run(`${userId}-holder`, now, now, teamId, userId);
   assert.deepEqual(await readCurrentUserTeamBilling(database, auth, teamId), { state: "inactive", teamId });
   assert.throws(() => capturedBillingPolicyTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+  if (options.proveConcurrentDemotion) {
+    let releaseDemotion;
+    let markDemotionReady;
+    const demotionReady = new Promise((resolve) => { markDemotionReady = resolve; });
+    const holdDemotion = new Promise((resolve) => { releaseDemotion = resolve; });
+    const demotion = database.adapter.withTransaction(async (transaction) => {
+      await transaction.prepare(sql("UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?")).run(teamId);
+      await transaction.prepare(sql("UPDATE [sporades_team_memberships] SET [role] = 'member' WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      markDemotionReady();
+      await holdDemotion;
+    });
+    await demotionReady;
+    let billingReadSettled = false;
+    const billingRead = readCurrentUserTeamBilling(database, auth, teamId).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    ).finally(() => { billingReadSettled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(billingReadSettled, false, "billing admission waits behind the Team lifecycle mutation");
+    } finally {
+      releaseDemotion();
+    }
+    await demotion;
+    const outcome = await billingRead;
+    assert.equal(outcome.error?.code, "TEAM_BILLING_DENIED", "billing admission rechecks authority after the demotion commits");
+    return;
+  }
   await database.adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
   await assert.rejects(() => readCurrentUserTeamBilling(database, auth, teamId), (error) => error?.code === "TEAM_BILLING_DENIED");
 }

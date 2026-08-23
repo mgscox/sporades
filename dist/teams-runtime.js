@@ -582,7 +582,7 @@ async function countTeamAdmins(tx, teamId) {
     const row = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'")).get(teamId);
     return Number(row?.count ?? 0);
 }
-async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
+export async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
     // A no-op row update is a portable per-Team write lock: under Postgres the
     // next lifecycle transaction waits and then observes the prior commit;
     // SQLite/libSQL retain their adapter transaction serialization. This keeps

@@ -4,6 +4,7 @@
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { lockTeamLifecycle } from "./teams-runtime.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -123,6 +124,7 @@ export async function readCurrentUserTeamBilling(database: LooseRecord, auth: Lo
  */
 export async function admitTeamBillingActor(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord) {
   requireAuth({ auth }, { linked: true });
+  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
   const sql = transaction.dialect.sql;
   const membership = await transaction.prepare(sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",

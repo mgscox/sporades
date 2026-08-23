@@ -4,6 +4,7 @@
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { lockTeamLifecycle } from "./teams-runtime.js";
 export const TEAM_BILLING_PRODUCT_MAX = 32;
 const PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
 const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
@@ -107,6 +108,7 @@ export async function readCurrentUserTeamBilling(database, auth, teamId) {
  */
 export async function admitTeamBillingActor(database, transaction, auth, input) {
     requireAuth({ auth }, { linked: true });
+    await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
     const sql = transaction.dialect.sql;
     const membership = await transaction.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(input.teamId, auth.userId);
     if (membership?.role !== "admin")

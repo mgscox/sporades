@@ -110,6 +110,7 @@ export declare function validateTeamJoinLink(database: LooseRecord, auth: LooseR
 export declare function joinCurrentUserTeam(database: LooseRecord, auth: LooseRecord, code: any, eventContext?: LooseRecord): Promise<{
     team: any;
 }>;
+export declare function lockTeamLifecycle(tx: LooseRecord, teamId: string, missingTeamError?: () => Error): Promise<void>;
 export declare function listCurrentUserTeams(database: LooseRecord, auth: LooseRecord): Promise<{
     teams: any[];
 }>;

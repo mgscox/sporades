@@ -14612,6 +14612,7 @@ async function readCurrentUserTeamBilling(database, auth, teamId) {
 }
 async function admitTeamBillingActor(database, transaction, auth, input) {
   requireAuth({ auth }, { linked: true });
+  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
   const sql = transaction.dialect.sql;
   const membership = await transaction.prepare(sql(
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
