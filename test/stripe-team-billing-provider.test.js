@@ -21,7 +21,7 @@ const input = {
   productKey: "agency",
   mode: "subscription",
   priceId: "price_test_agency",
-  quantity: 7,
+  quantity: 999_999,
   successPath: "/settings/billing/success",
   cancelPath: "/settings/billing/cancelled",
   idempotencyKey: "sporades:team-checkout:stable-provider-key",
@@ -62,7 +62,7 @@ test("the internal Team Billing provider sends one exact subscription Checkout e
   assert.equal(observed.headers["idempotency-key"], input.idempotencyKey);
   assert.equal(observed.params.get("mode"), "subscription");
   assert.equal(observed.params.get("line_items[0][price]"), input.priceId);
-  assert.equal(observed.params.get("line_items[0][quantity]"), "7");
+  assert.equal(observed.params.get("line_items[0][quantity]"), "999999");
   assert.equal(observed.params.get("customer"), input.customerId);
   assert.equal(observed.params.get("client_reference_id"), input.operationId);
   assert.equal(observed.params.get("metadata[sporades_team_billing_operation]"), input.operationId);

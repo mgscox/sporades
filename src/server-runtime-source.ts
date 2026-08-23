@@ -50,6 +50,7 @@ import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, crea
 import {
   TEAM_BILLING_CHECKOUT_JOB,
   TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
+  TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS,
   applyVerifiedTeamBillingCheckoutObservation,
   expireTeamBillingCheckout,
   normalizeTeamBillingDefinition,
@@ -679,7 +680,7 @@ export async function openDevDatabase(
         : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
     },
     performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
-      performTeamBillingCheckout(database, context, payload),
+      performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
       expireTeamBillingCheckout(database, context, payload),
   })];
@@ -736,7 +737,7 @@ export async function openDevDatabase(
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
     enqueueTeamBillingCheckoutJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
-      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true),
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
     enqueueTeamBillingCheckoutExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),

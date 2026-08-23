@@ -1880,6 +1880,8 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
   let failNextOperationForQuantity = false;
   let markQuantityFirstAttempt;
   const quantityFirstAttempt = new Promise((resolve) => { markQuantityFirstAttempt = resolve; });
+  let exhaustRetryOperationId = null;
+  let failNextOperationToExhaust = false;
   const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule, {
     serverEnv: { STRIPE_SECRET_KEY: "sk_test_team_checkout", STRIPE_WEBHOOK_SECRET: "whsec_team_checkout" },
     config: {
@@ -1928,6 +1930,12 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
             error.retryable = true;
             throw error;
           }
+          if (failNextOperationToExhaust && exhaustRetryOperationId === null) exhaustRetryOperationId = input.operationId;
+          if (exhaustRetryOperationId === input.operationId) {
+            const error = new Error("persistent transient provider failure");
+            error.retryable = true;
+            throw error;
+          }
           return { ok: true, sessionId: `cs_test_team_checkout_${suffix}`, url: `https://checkout.stripe.com/c/pay/cs_test_team_checkout_${suffix}#fixture` };
         },
       }),
@@ -1949,6 +1957,18 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
       sessionToken: signupResult.data.sessionToken,
     });
     assert.equal(holder.error, null, JSON.stringify(holder.error));
+    await runtime.database.adapter.withTransaction(async (transaction) => {
+      const createdAt = new Date().toISOString();
+      for (let index = 1; index <= 99; index += 1) {
+        const userId = `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+        await transaction.prepare(
+          "INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, ?, NULL, NULL, 1, 0, 'test')",
+        ).run(userId, createdAt, `Seat ${index}`);
+        await transaction.prepare(
+          "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)",
+        ).run(team.id, userId, createdAt);
+      }
+    });
     const input = { teamId: team.id, requestId: "55555555-5555-4555-8555-555555555555", productKey: "agency" };
     const started = await send(owner, { id: "checkout-start", type: "teamBilling.startCheckout", input, sessionToken: signupResult.data.sessionToken });
     assert.equal(started.data.state, "pending", JSON.stringify(started));
@@ -1978,7 +1998,7 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     }, {
       mode: "subscription",
       priceId: "price_test_agency",
-      quantity: 1,
+      quantity: 100,
       successPath: "/settings/billing/success",
       cancelPath: "/settings/billing/cancelled",
       businessReference: providerInputs[0].operationId,
@@ -2066,6 +2086,14 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     const superseded = await waitForTeamCheckout(owner, quantityInput, signupResult.data.sessionToken, "superseded", 4_000);
     assert.equal(superseded.data.state, "superseded");
     assert.equal(providerInputs.filter((candidate) => candidate.operationId === quantityRetryOperationId).length, 1, "changed Team quantity supersedes before provider retry");
+    failNextOperationToExhaust = true;
+    const exhaustedInput = { teamId: team.id, requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", productKey: "studio" };
+    const exhaustedStarted = await send(owner, { id: "checkout-exhausted-start", type: "teamBilling.startCheckout", input: exhaustedInput, sessionToken: signupResult.data.sessionToken });
+    assert.equal(exhaustedStarted.data.state, "pending");
+    const exhausted = await waitForTeamCheckout(owner, exhaustedInput, signupResult.data.sessionToken, "failed", 6_000);
+    assert.equal(exhausted.data.reason, "unavailable");
+    assert.equal(providerInputs.filter((candidate) => candidate.operationId === exhaustRetryOperationId).length, 4, "retry exhaustion terminally fails the operation after the reserved Job budget");
+    failNextOperationToExhaust = false;
     nextHolder = await runtime.open();
     const nextHolderSignup = await signUp(nextHolder, "checkout-next-holder", "checkout-next@example.com", "Next checkout holder");
     await runtime.database.adapter.prepare(

@@ -2,6 +2,7 @@ type LooseRecord = Record<string, any>;
 export declare const TEAM_BILLING_PRODUCT_MAX = 32;
 export declare const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 export declare const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
+export declare const TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
 export declare function createTeamBillingTables(adapter: LooseRecord): any;
 export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
     catalogue: Readonly<LooseRecord>;
@@ -14,7 +15,7 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
 }>;
 export declare function readCurrentUserTeamBilling(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
 export declare function startTeamBillingCheckout(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any): Promise<any>;
-export declare function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any): Promise<{
+export declare function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any, attempt?: number): Promise<{
     observed: boolean;
     ready?: undefined;
 } | {

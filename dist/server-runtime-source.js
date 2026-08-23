@@ -20,7 +20,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingCheckout, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, normalizeTeamBillingDefinition, performTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingCheckout, } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -571,7 +571,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
                     : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
             },
-            performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload),
+            performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
@@ -626,7 +626,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         paymentsConfig,
         createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
-        enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true),
+        enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
         enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,

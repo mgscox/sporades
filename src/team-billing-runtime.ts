@@ -13,12 +13,15 @@ type LooseRecord = Record<string, any>;
 export const TEAM_BILLING_PRODUCT_MAX = 32;
 export const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 export const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
+export const TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
 const CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
 const CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 const PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
 const PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
-const FIXED_QUANTITY_MAX = 1_000_000;
+// Stripe Checkout accepts quantities through 999999; reject larger trusted
+// declarations up front so every admitted policy is executable end to end.
+const FIXED_QUANTITY_MAX = 999_999;
 const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function createTeamBillingTables(adapter: LooseRecord) {
@@ -201,7 +204,7 @@ async function withTeamBillingAdmissionTransaction(database: LooseRecord, callba
   }
 }
 
-export async function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any) {
+export async function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any, attempt = 1) {
   const operationId = payload && typeof payload === "object" && !Array.isArray(payload)
     && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN.test(String(payload.operationId ?? ""))
     ? payload.operationId : null;
@@ -314,7 +317,9 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
     return { ready: true };
   } catch (error: any) {
     const retryable = error?.retryable !== false;
-    await settleCheckoutFailure(database, operationId, retryable ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", retryable ? "retrying" : "failed");
+    const willRetry = retryable && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
+    await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
+    if (!willRetry) error.retryable = false;
     throw error;
   }
 }
@@ -473,7 +478,7 @@ async function checkoutDesiredState(database: LooseRecord, transaction: LooseRec
     : Number((await transaction.prepare(transaction.dialect.sql(
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(teamId))?.count ?? 0);
-  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99) throw checkoutUnavailable();
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
   return { mode, quantity, priceId: product.stripe[mode].priceId };
 }
 

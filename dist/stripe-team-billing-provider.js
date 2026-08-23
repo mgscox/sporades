@@ -54,7 +54,7 @@ function validateInput(input) {
         || input.mode !== "subscription" || !validUuid(input.operationId) || input.businessReference !== input.operationId
         || !validUuid(input.teamId) || typeof input.productKey !== "string"
         || typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(input.priceId)
-        || !Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 99
+        || !Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 999_999
         || !Number.isInteger(input.providerExpiresAt)
         || !validReturnPath(input.successPath) || !validReturnPath(input.cancelPath)
         || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255
