@@ -61,6 +61,15 @@ The repository currently includes:
   Capsule name changes; admission grants no user or Team authority and performs
   no Capsule billing consequence. That durable Job invokes the Capsule's single
   `stripeEvents: stripeEvent(...)` policy seam with the Verified Stripe event.
+  A Capsule may opt into `stripeEvent({ consequence: "atomic" }, handler)` for
+  one runtime-serialized transaction that commits or rolls back its app writes
+  and Job enqueues together while preserving the legacy callback unchanged. A
+  30-second runtime watchdog revokes the narrow context and rolls back a
+  non-cooperative or aborted atomic attempt so it cannot retain the Capsule
+  fence indefinitely or commit late work. The context may read only the exact
+  accepted-membership count for an explicit Team through
+  `teams.countMembers(teamId)`; it exposes no member identities, directory,
+  Team administration, or Team mutation authority.
   Every attempt uses the existing Privileged `started`, then `completed` or
   `errored`, then `finished` audit lifecycle; ordinary Job retry, cancellation,
   and revocation semantics remain in force. Capsule policy must make consequences

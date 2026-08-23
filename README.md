@@ -169,7 +169,10 @@ Sporades currently includes:
   retries converge and no Capsule billing state changes automatically. The Job
   delivers one Verified Stripe event to the blank Capsule's single
   `stripeEvents: stripeEvent(...)` policy seam under the userless Privileged
-  audit lifecycle. Generated policy ignores unknown events and tells authors to
+  audit lifecycle. Capsules that need one serialized, all-or-nothing database
+  consequence can opt into `stripeEvent({ consequence: "atomic" }, handler)`;
+  the legacy declaration remains available for cooperative long-lived handlers.
+  Generated policy ignores unknown events and tells authors to
   make deliberate consequences idempotent and order-independent, reject stale
   later-arriving observations, and avoid logging or retaining raw provider data.
   The catalogue owns each Price mode; browser input owns neither mode nor Stripe

@@ -1,3 +1,4 @@
+const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 export function requireUserAuth(context, options = {}) {
     const linked = normalizeRequireUserAuthOptions(options).linked;
     const auth = context?.auth;
@@ -49,9 +50,17 @@ export function endpoint(options, handler) {
 export function emailEvent(handler) {
     return { kind: "emailEvent", handler };
 }
-/** Declare the single verified Stripe-event subscription for a Capsule. */
-export function stripeEvent(handler) {
-    return { kind: "stripeEvent", handler };
+export function stripeEvent(first, second) {
+    if (typeof first === "function" && second === undefined)
+        return { kind: "stripeEvent", handler: first };
+    if (first !== null && typeof first === "object" && !Array.isArray(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+        const definition = { kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second };
+        Object.defineProperty(definition, atomicStripeEventDefinitionBrand, { value: true });
+        return Object.freeze(definition);
+    }
+    const error = new Error("Invalid Stripe-event declaration.");
+    Object.assign(error, { code: "INVALID_STRIPE_EVENT_DECLARATION" });
+    throw error;
 }
 export function query(handler) {
     return {
@@ -145,6 +154,7 @@ function field(kind) {
 }
 export function serverRuntimeModuleSource() {
     return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {
   const error = new Error("Invalid Auth requirements.");
@@ -301,11 +311,16 @@ export function emailEvent(handler) {
   };
 }
 
-export function stripeEvent(handler) {
-  return {
-    kind: "stripeEvent",
-    handler,
-  };
+export function stripeEvent(first, second) {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (plainObject(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    const definition = { kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second };
+    Object.defineProperty(definition, ATOMIC_STRIPE_EVENT_DEFINITION, { value: true });
+    return Object.freeze(definition);
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  error.code = "INVALID_STRIPE_EVENT_DECLARATION";
+  throw error;
 }
 
 export function query(handler) {

@@ -2,6 +2,8 @@ export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Ref
 export type UnknownRecord = Record<string, unknown>;
 export type Handler<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
 
+const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
+
 export type CapsuleDefinition = UnknownRecord & {
   name: string;
   accessKeys?: { scopes: readonly string[] };
@@ -39,6 +41,13 @@ export type EmailEventDefinition<HandlerType extends Handler = Handler> = {
 
 export type StripeEventDefinition<HandlerType extends Handler = Handler> = {
   kind: "stripeEvent";
+  options?: undefined;
+  handler: HandlerType;
+};
+
+export type AtomicStripeEventDefinition<HandlerType extends Handler = Handler> = {
+  kind: "stripeEvent";
+  options: Readonly<{ consequence: "atomic" }>;
   handler: HandlerType;
 };
 
@@ -201,8 +210,18 @@ export function emailEvent<const HandlerType extends Handler>(handler: HandlerTy
 }
 
 /** Declare the single verified Stripe-event subscription for a Capsule. */
-export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType> {
-  return { kind: "stripeEvent", handler };
+export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType>;
+export function stripeEvent<const HandlerType extends Handler>(options: { consequence: "atomic" }, handler: HandlerType): AtomicStripeEventDefinition<HandlerType>;
+export function stripeEvent<const HandlerType extends Handler>(first: HandlerType | { consequence: "atomic" }, second?: HandlerType): StripeEventDefinition<HandlerType> | AtomicStripeEventDefinition<HandlerType> {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (first !== null && typeof first === "object" && !Array.isArray(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    const definition = { kind: "stripeEvent" as const, options: Object.freeze({ consequence: "atomic" as const }), handler: second };
+    Object.defineProperty(definition, atomicStripeEventDefinitionBrand, { value: true });
+    return Object.freeze(definition);
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  Object.assign(error, { code: "INVALID_STRIPE_EVENT_DECLARATION" });
+  throw error;
 }
 
 export function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType> {
@@ -315,6 +334,7 @@ function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
 
 export function serverRuntimeModuleSource() {
   return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {
   const error = new Error("Invalid Auth requirements.");
@@ -471,11 +491,16 @@ export function emailEvent(handler) {
   };
 }
 
-export function stripeEvent(handler) {
-  return {
-    kind: "stripeEvent",
-    handler,
-  };
+export function stripeEvent(first, second) {
+  if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };
+  if (plainObject(first) && Object.keys(first).length === 1 && first.consequence === "atomic" && typeof second === "function") {
+    const definition = { kind: "stripeEvent", options: Object.freeze({ consequence: "atomic" }), handler: second };
+    Object.defineProperty(definition, ATOMIC_STRIPE_EVENT_DEFINITION, { value: true });
+    return Object.freeze(definition);
+  }
+  const error = new Error("Invalid Stripe-event declaration.");
+  error.code = "INVALID_STRIPE_EVENT_DECLARATION";
+  throw error;
 }
 
 export function query(handler) {

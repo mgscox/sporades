@@ -126,6 +126,7 @@ const mutationResultsWithWrites = new WeakSet<object>();
 const trustedReadPurposes = new Set(["teams.join-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
+const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 // The read-only inspection gate is a module now, and these are the two names the rest of this file
 // reaches into it for: the Database adapters' `runReadOnlyInspectionQuery` opens with the validator
@@ -573,6 +574,7 @@ export async function openDevDatabase(
   if (capsuleDefinition) {
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
+    validateStripeEventSubscription(capsuleDefinition.stripeEvents);
   }
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -656,7 +658,9 @@ export async function openDevDatabase(
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
       prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     dispatchStripeEvent: (context: LooseRecord, event: LooseRecord) =>
-      dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
+      capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
+        ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
+        : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents),
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
@@ -938,6 +942,31 @@ export async function openDevDatabase(
   }
 
   return database;
+}
+
+function validateStripeEventSubscription(subscription: LooseRecord | undefined) {
+  if (subscription === undefined) return;
+  const invalid = () => commandError(
+    "Invalid Stripe-event declaration.",
+    "Use stripeEvent(handler) or stripeEvent({ consequence: \"atomic\" }, handler).",
+    "INVALID_STRIPE_EVENT_DECLARATION",
+  );
+  if (!subscription || typeof subscription !== "object" || Array.isArray(subscription) || subscription.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
+    throw invalid();
+  }
+  const keys = Object.keys(subscription).sort();
+  if (subscription.options === undefined) {
+    if (keys.length !== 2 || keys[0] !== "handler" || keys[1] !== "kind") throw invalid();
+    return;
+  }
+  const options = subscription.options;
+  if (
+    keys.length !== 3 || keys[0] !== "handler" || keys[1] !== "kind" || keys[2] !== "options"
+    || !options || typeof options !== "object" || Array.isArray(options)
+    || Object.keys(options).length !== 1 || options.consequence !== "atomic"
+    || (subscription as any)[atomicStripeEventDefinitionBrand] !== true
+    || !Object.isFrozen(subscription) || !Object.isFrozen(options)
+  ) throw invalid();
 }
 
 function resolveJourneySessionInactivityMinutes(config: RuntimeConfig = {}) {
@@ -1569,7 +1598,8 @@ async function enqueueResolvedScheduledOccurrence(database: LooseRecord, definit
   return state;
 }
 
-async function recoverExpiredJobLeases(database: LooseRecord) {
+/** Internal runtime/test seam; not exported from sporades/server. */
+export async function recoverExpiredJobLeases(database: LooseRecord) {
   const recoveredAt = database.clock.now(); const recoveredIso = recoveredAt.toISOString();
   const sql = database.adapter.dialect.sql;
   const rows = await database.adapter.prepare(sql("SELECT * FROM [sporades_jobs] WHERE [status]='running' ORDER BY [availableAt] ASC, [id] ASC")).all();
@@ -1870,8 +1900,10 @@ export function createRuntimeLogSink(options: { database: any; config: any; serv
       if (process.env.SPORADES_LOG_STDOUT === "1") {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       }
-      const settled = isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
       const pendingWrites = options.database?.[transactionPendingLogWrites];
+      const settled = isPromiseLike(indexed)
+        ? pendingWrites ? indexed.then(() => event) : indexed.then(() => event, () => event)
+        : event;
       if (isPromiseLike(settled) && pendingWrites) pendingWrites.push(settled);
       return settled;
     },
@@ -3152,6 +3184,156 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
   return transactionDatabase;
 }
 
+function atomicStripeAbortError() {
+  const error: any = new Error("Atomic Stripe consequence aborted.");
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+async function acquireAtomicStripeConsequenceFence(adapter: LooseRecord) {
+  const sql = adapter.dialect.sql;
+  let acquired;
+  try {
+    await adapter.prepare(sql(
+      "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING",
+    )).run("stripe-consequence-fence", "0");
+    acquired = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value] = CAST([value] AS INTEGER) + 1 WHERE [key] = ?",
+    )).run("stripe-consequence-fence");
+  } catch (cause: any) {
+    const contention = cause?.errcode === 5 || cause?.code === "SQLITE_BUSY"
+      || cause?.code === "ERR_SQLITE_ERROR" && /\b(?:busy|locked)\b/i.test(String(cause?.message ?? ""))
+      || ["40001", "40P01", "55P03"].includes(cause?.code);
+    if (!contention) throw cause;
+    const error: any = new Error("Atomic Stripe consequence serialization is busy.");
+    error.code = "STRIPE_CONSEQUENCE_FENCE_BUSY";
+    error.retryable = true;
+    error.cause = cause;
+    throw error;
+  }
+  if (Number(acquired?.changes ?? 0) !== 1) {
+    const error: any = new Error("Atomic Stripe consequence serialization is unavailable.");
+    error.code = "STRIPE_CONSEQUENCE_FENCE_UNAVAILABLE";
+    throw error;
+  }
+}
+
+function createAtomicStripeConsequenceContext(database: LooseRecord, parent: LooseRecord) {
+  const context: LooseRecord = {
+    auth: parent.auth,
+    env: database.serverEnv,
+    signal: parent.signal,
+    log: createEndpointLogger(database),
+    __privilegedRunActive: true,
+    __jobEnqueuedBy: parent.__jobEnqueuedBy ?? null,
+    __pendingAclWrites: [],
+  };
+  grantPrivilegedDbAccess(context);
+  const holder = createContextHolder(context);
+  registerHandlerContextMapping(database, holder);
+  context.db = createEndpointDatabaseApi(database, () => holder.current);
+  const privilegedJobs = createPrivilegedJobApi(database, () => holder.current);
+  context.jobs = Object.freeze({
+    enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
+  });
+  const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
+  context.teams = Object.freeze({
+    countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
+  });
+  return context;
+}
+
+async function settleAtomicStripeEventHandler(
+  database: LooseRecord,
+  context: LooseRecord,
+  signal: AbortSignal | undefined,
+  dispatch: () => Promise<any>,
+) {
+  if (signal?.aborted) throw atomicStripeAbortError();
+  let abortHandler: (() => void) | undefined;
+  let watchdog: any;
+  let rejectSettlement: ((reason: any) => void) | undefined;
+  const failClosed = () => {
+    context.__privilegedRunActive = false;
+    revokePrivilegedDbAccess(context);
+    rejectSettlement?.(atomicStripeAbortError());
+  };
+  const aborted = new Promise((_, reject) => {
+    rejectSettlement = reject;
+    if (!signal) return;
+    abortHandler = failClosed;
+    signal.addEventListener("abort", abortHandler, { once: true });
+  });
+  watchdog = database.clock.setTimer(failClosed, RUNTIME_CLAIM_LEASE_MS);
+  try {
+    return await Promise.race([dispatch(), aborted]);
+  } finally {
+    database.clock.clearTimer(watchdog);
+    if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
+  }
+}
+
+export async function runAtomicStripeConsequence(
+  database: LooseRecord,
+  parentContext: LooseRecord,
+  event: LooseRecord,
+  subscription: LooseRecord,
+) {
+  if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+  for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
+    let context: LooseRecord | undefined;
+    try {
+      const result = await database.adapter.withTransaction(async (transactionAdapter: LooseRecord) => {
+        await acquireAtomicStripeConsequenceFence(transactionAdapter);
+        if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+        const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+        let cleanupComplete = false;
+        let handlerFailed = false;
+        try {
+          context = createAtomicStripeConsequenceContext(transactionDatabase, parentContext);
+          const delivered = await settleAtomicStripeEventHandler(
+            database,
+            context,
+            parentContext.signal,
+            () => dispatchVerifiedStripeEvent(context!, event, subscription),
+          );
+          await cleanupTransactionHandler(transactionDatabase, context, false, false);
+          cleanupComplete = true;
+          if (parentContext.signal?.aborted) throw atomicStripeAbortError();
+          return delivered;
+        } catch (error) {
+          handlerFailed = true;
+          throw error;
+        } finally {
+          try {
+            if (!cleanupComplete) {
+              await cleanupTransactionHandler(transactionDatabase, context, handlerFailed, handlerFailed);
+            }
+          } finally {
+            if (context) {
+              context.__privilegedRunActive = false;
+              revokePrivilegedDbAccess(context);
+            }
+          }
+        }
+      });
+      commitPendingJobCancellationAborts(context);
+      await dispatchPendingJobs(context);
+      database.rowCache.clear();
+      return result;
+    } catch (error: any) {
+      dropPendingJobCancellationAborts(context);
+      dropPendingJobDispatch(context);
+      database.rowCache.clear();
+      await reindexPrivilegedAuditEventsAfterRollback(database, context);
+      if (error?.code !== "STRIPE_CONSEQUENCE_FENCE_BUSY" || fenceAttempt === 200 || parentContext.signal?.aborted) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, fenceAttempt)));
+    }
+  }
+  throw new Error("Unreachable atomic Stripe consequence fence state.");
+}
+
 async function readEndpointRequest(database: LooseRecord, requestUrl: URL, request: any, parseJsonBody = true) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
@@ -3318,7 +3500,9 @@ async function cleanupTransactionHandler(
 async function drainPendingLogWrites(database: LooseRecord) {
   const pending = database.__pendingLogWrites;
   while (pending?.length > 0) {
-    await Promise.allSettled(pending.splice(0));
+    const outcomes = await Promise.allSettled(pending.splice(0));
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
   }
 }
 

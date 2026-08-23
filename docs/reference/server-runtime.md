@@ -668,6 +668,32 @@ follow the Job's bounded retry policy under the same identity; committed
 cancellation reaches `ctx.signal`, and callback-scoped Privileged APIs fail once
 the attempt settles or aborts. No current user or Team membership is invented.
 
+When one Event must update several app records as one consequence, opt into the
+atomic form:
+
+```ts
+stripeEvents: stripeEvent({ consequence: "atomic" }, async (ctx, event) => {
+  await ctx.db.providerObservations.insert({ providerEventId: event.providerEventId });
+  await ctx.db.subscriptions.update(/* Capsule-owned correlation and policy */);
+  await ctx.jobs.enqueue("notifyBillingHolder", { providerEventId: event.providerEventId });
+})
+```
+
+Sporades acquires one per-Capsule Stripe-consequence fence before the first app
+read and commits or rolls back the callback's app writes, logs, and Job enqueues
+together. Enqueued Jobs are dispatched only after commit. This narrow context
+has no provider, mail, File, message, auth-management, Schedule, Access-key,
+Team directory, Team-management, or nested Privileged API. Its only Team
+surface is `teams.countMembers(teamId)`, which returns `{ totalCount }` for an
+existing explicit Team through the same transaction and exposes no member
+identities. It is for bounded database
+consequences. A 30-second runtime watchdog revokes database and Job authority,
+rolls back the attempt, and releases the per-Capsule fence if handler code does
+not settle cooperatively; late handler work cannot commit. Keep long-lived
+cooperative handlers on the legacy declaration.
+Delivery remains at least once, so app policy still owns Event idempotency and
+equal-time or stale-event decisions.
+
 The handler receives the same bounded `VerifiedStripeEvent` contract returned
 by verification. Its `raw` provider value is forward-compatible but sensitive;
 do not log or persist it by default. Sporades creates no subscription,
