@@ -7246,6 +7246,11 @@ function stripeEventPayloadRetentionDeadline(settledAt) {
   if (!isCanonicalJobTimestamp(settledAt)) return null;
   return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
 }
+function stripeEventPayloadRetentionStorageValue(settledAt) {
+  const deadline = stripeEventPayloadRetentionDeadline(settledAt);
+  if (deadline !== null) return deadline;
+  return isCanonicalJobTimestamp(settledAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
+}
 async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE) {
@@ -7355,7 +7360,7 @@ async function cleanupExpiredStripeEventPayloads(database, options = {}) {
     let retried = false;
     while (row && remaining > 0) {
       const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-      const unresolvedDeadline = deadline === null && isCanonicalJobTimestamp(row.completedAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
+      const unresolvedDeadline = stripeEventPayloadRetentionStorageValue(row.completedAt);
       const changed = deadline === null ? await adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
       )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
@@ -22688,13 +22693,13 @@ async function runCurrentUserJobWorker(database) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionDeadline(completedAt) : null;
+        const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionStorageValue(completedAt) : null;
         const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
-        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && payloadRetentionUntil !== null) {
+        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
           scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
         }
       } catch (error) {

@@ -134,6 +134,12 @@ export function stripeEventPayloadRetentionDeadline(settledAt: string) {
   return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
 }
 
+export function stripeEventPayloadRetentionStorageValue(settledAt: string) {
+  const deadline = stripeEventPayloadRetentionDeadline(settledAt);
+  if (deadline !== null) return deadline;
+  return isCanonicalJobTimestamp(settledAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
+}
+
 /** Internal privacy maintenance for the reserved Stripe Event Job only. */
 export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, options: LooseRecord = {}) {
   const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
@@ -285,9 +291,7 @@ export async function cleanupExpiredStripeEventPayloads(database: LooseRecord, o
     let retried = false;
     while (row && remaining > 0) {
       const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-      const unresolvedDeadline = deadline === null && isCanonicalJobTimestamp(row.completedAt)
-        ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE
-        : "";
+      const unresolvedDeadline = stripeEventPayloadRetentionStorageValue(row.completedAt);
       const changed = deadline === null
         ? await adapter.prepare(sql(
           "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? " +

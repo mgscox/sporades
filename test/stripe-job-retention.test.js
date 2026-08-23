@@ -436,6 +436,34 @@ for (const engine of DATABASE_ADAPTER_ENGINES) {
   });
 }
 
+test("a newly settled near-ceiling Stripe Event is immediately classified without another cleanup pass", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-retention-ceiling-runtime-"));
+  const clock = createControllableRuntimeClock("9999-12-15T00:00:00.000Z");
+  const capsule = { stripeEvents: declareStripeEvent(() => {}) };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", serverEnv,
+    { name: "stripe-retention-ceiling-runtime", payments: { stripe } }, capsule,
+    { clock, createStripeCallbackEndpoint });
+  try {
+    await database.init();
+    const admitted = await postStripe(database, stripeEvent("evt_retention_ceiling_settlement"));
+    const jobId = JSON.parse(admitted.body).jobId;
+    await clock.runDueTimers();
+
+    const stored = await readStoredJob(database.adapter, jobId);
+    assert.equal(stored.status, "succeeded");
+    assert.notEqual(stored.payloadRetentionUntil, null);
+    assert.notEqual(stored.payloadRetentionUntil, "");
+    assert.deepEqual((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId).payloadRetention, {
+      state: "unresolved",
+      code: "RETENTION_DEADLINE_UNREPRESENTABLE",
+      deadline: null,
+    });
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("automatic cleanup redacts a settled raw event at its deadline without rerunning replay", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-stripe-retention-runtime-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");

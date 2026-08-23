@@ -5,6 +5,7 @@ export declare const STRIPE_EVENT_JOB = "_sporades.stripe-event";
 export declare const STRIPE_EVENT_PAYLOAD_RETENTION_MS: number;
 export declare const STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
 export declare function stripeEventPayloadRetentionDeadline(settledAt: string): string | null;
+export declare function stripeEventPayloadRetentionStorageValue(settledAt: string): string;
 /** Internal privacy maintenance for the reserved Stripe Event Job only. */
 export declare function cleanupExpiredStripeEventPayloads(database: LooseRecord, options?: LooseRecord): Promise<Readonly<{
     assignedCount: number;

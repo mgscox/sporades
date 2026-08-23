@@ -118,7 +118,7 @@ import {
   normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload,
   RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure,
   scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup,
-  STRIPE_EVENT_JOB, stripeEventPayloadRetentionDeadline,
+  STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue,
   scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduleSummary, scheduledOccurrenceIdentity,
 } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
@@ -6149,7 +6149,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
         const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB
-          ? stripeEventPayloadRetentionDeadline(completedAt)
+          ? stripeEventPayloadRetentionStorageValue(completedAt)
           : null;
         const settled = row.handler === STRIPE_EVENT_JOB
           ? await database.adapter.prepare(sql(
@@ -6160,7 +6160,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
             "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?",
           )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
-        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && payloadRetentionUntil !== null) {
+        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
           scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
         }
       } catch (error: any) {
