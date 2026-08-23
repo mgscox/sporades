@@ -54,7 +54,6 @@ import {
   TEAM_BILLING_PORTAL_EXPIRY_JOB,
   TEAM_BILLING_PORTAL_JOB,
   TEAM_BILLING_PORTAL_MAX_ATTEMPTS,
-  applyVerifiedTeamBillingCheckoutObservation,
   expireTeamBillingCheckout,
   expireTeamBillingPortal,
   normalizeTeamBillingDefinition,
@@ -65,6 +64,7 @@ import {
   startTeamBillingCheckout,
   startTeamBillingPortal,
 } from "./team-billing-runtime.js";
+import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -681,10 +681,16 @@ export async function openDevDatabase(
     prepareEmailPasswordResetDelivery: (context: LooseRecord, payload: LooseRecord) =>
       prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     dispatchStripeEvent: async (context: LooseRecord, event: LooseRecord) => {
-      await applyVerifiedTeamBillingCheckoutObservation(database, event);
-      return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
-        ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
-        : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+      const subscription = capsuleDefinition?.stripeEvents;
+      const atomicSubscription = subscription?.options?.consequence === "atomic" ? subscription : undefined;
+      const platformConsequence = database.teamBillingDefinition ? applyVerifiedTeamBillingObservation : undefined;
+      if (atomicSubscription || platformConsequence) {
+        const result = await runAtomicStripeConsequence(database, context, event, atomicSubscription, platformConsequence);
+        return !atomicSubscription && subscription
+          ? dispatchVerifiedStripeEvent(context, event, subscription)
+          : result;
+      }
+      return dispatchVerifiedStripeEvent(context, event, subscription);
     },
     performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
       performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
@@ -3351,7 +3357,8 @@ export async function runAtomicStripeConsequence(
   database: LooseRecord,
   parentContext: LooseRecord,
   event: LooseRecord,
-  subscription: LooseRecord,
+  subscription?: LooseRecord,
+  platformConsequence?: (database: LooseRecord, event: LooseRecord) => Promise<any>,
 ) {
   if (parentContext.signal?.aborted) throw atomicStripeAbortError();
   for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
@@ -3369,7 +3376,10 @@ export async function runAtomicStripeConsequence(
             database,
             context,
             parentContext.signal,
-            () => dispatchVerifiedStripeEvent(context!, event, subscription),
+            async () => {
+              await platformConsequence?.(transactionDatabase, event);
+              return dispatchVerifiedStripeEvent(context!, event, subscription);
+            },
           );
           await cleanupTransactionHandler(transactionDatabase, context, false, false);
           cleanupComplete = true;

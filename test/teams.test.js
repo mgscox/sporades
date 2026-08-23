@@ -2037,20 +2037,26 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     assert.equal(overlapping.error.code, "TEAM_BILLING_CHECKOUT_ACTIVE");
     assert.equal(providerInputs.length, 2, "one Team cannot start a second provider Checkout while one is active");
     const eventFirstObservation = verifiedCheckoutObservation(providerInputs[1], "cs_test_team_checkout_2", "evt_team_checkout_completed_2", "checkout.session.completed");
-    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, {
-      ...eventFirstObservation,
+    const mismatchedObjectObservation = { ...eventFirstObservation,
+      providerEventId: "evt_team_checkout_mismatched_object",
       objectId: "cs_test_different",
-    }), { applied: false }, "the normalized observation ID must match the verified Checkout object");
-    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, {
-      ...eventFirstObservation,
-      raw: { ...eventFirstObservation.raw, data: { object: { ...eventFirstObservation.raw.data.object, mode: "payment" } } },
-    }), { applied: false }, "only subscription Checkout observations belong to Team Billing");
+      raw: { ...eventFirstObservation.raw, id: "evt_team_checkout_mismatched_object" },
+    };
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, mismatchedObjectObservation), { applied: false },
+      "the normalized observation ID must match the verified Checkout object");
+    const paymentModeObservation = { ...eventFirstObservation,
+      providerEventId: "evt_team_checkout_payment_mode",
+      raw: { ...eventFirstObservation.raw, id: "evt_team_checkout_payment_mode", data: { object: { ...eventFirstObservation.raw.data.object, mode: "payment" } } },
+    };
+    assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, paymentModeObservation), { applied: false },
+      "only subscription Checkout observations belong to Team Billing");
     assert.deepEqual(await applyVerifiedTeamBillingCheckoutObservation(runtime.database, eventFirstObservation), { applied: true });
     releaseBlockedProvider();
     const eventFirstCompleted = await waitForTeamCheckout(owner, eventFirstInput, signupResult.data.sessionToken, "completed");
     assert.equal("url" in eventFirstCompleted.data, false, "event-before-response never re-exposes a continuation");
     const stillNoEntitlement = await send(owner, { id: "checkout-still-no-entitlement", type: "teamBilling.get", teamId: team.id, sessionToken: signupResult.data.sessionToken });
-    assert.deepEqual(stillNoEntitlement.data, { state: "inactive", teamId: team.id });
+    assert.deepEqual(stillNoEntitlement.data, { state: "attention-required", teamId: team.id, reason: "provider-state-ambiguous" },
+      "malformed supported evidence remains fail-closed and Checkout completion still grants no entitlement");
 
     blockNextProvider = false;
     failNextOperationOnce = true;
@@ -2473,7 +2479,8 @@ async function waitForCheckoutSignal(signal, description, timeoutMs = 2_000) {
 }
 
 function verifiedCheckoutObservation(providerInput, sessionId, providerEventId, type) {
-  const occurredAt = new Date().toISOString();
+  const occurredAt = new Date(Math.floor(Date.now() / 1_000) * 1_000).toISOString();
+  const completed = type === "checkout.session.completed";
   return {
     provider: "stripe",
     providerEventId,
@@ -2492,6 +2499,8 @@ function verifiedCheckoutObservation(providerInput, sessionId, providerEventId, 
         object: "checkout.session",
         mode: "subscription",
         livemode: false,
+        status: completed ? "complete" : "expired",
+        ...(completed ? { customer: "cus_team_checkout", subscription: `sub_${sessionId}` } : {}),
         client_reference_id: providerInput.operationId,
         metadata: { sporades_team_billing_operation: providerInput.operationId },
       } },

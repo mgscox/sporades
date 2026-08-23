@@ -150,8 +150,9 @@ export declare function capsule<const Definition extends CapsuleDefinition>(defi
 export declare function endpoint<const HandlerType extends Handler>(options: EndpointOptions, handler: HandlerType): EndpointDefinition<HandlerType>;
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export declare function emailEvent<const HandlerType extends Handler>(handler: HandlerType): EmailEventDefinition<HandlerType>;
-/** Declare the single verified Stripe-event subscription for a Capsule. */
+/** Declare the single verified Stripe-event subscription for a Capsule. A declared Team Billing platform consequence commits before this compatible legacy handler runs. */
 export declare function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType>;
+/** Share one runtime-serialized transaction with any declared Team Billing platform consequence for the verified Event. */
 export declare function stripeEvent<const HandlerType extends Handler>(options: {
     consequence: "atomic";
 }, handler: HandlerType): AtomicStripeEventDefinition<HandlerType>;

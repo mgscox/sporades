@@ -1114,9 +1114,9 @@ export function endpoint<Handler extends (...args: any[]) => any>(options: Endpo
 
 /** Declare the single provider-neutral email-event subscription for a Capsule. */
 export function emailEvent<Handler extends EmailEventHandler>(handler: Handler): EmailEventDefinition<Handler>;
-/** Declare the single verified Stripe-event subscription for a Capsule. */
+/** Declare the single verified Stripe-event subscription for a Capsule. A declared Team Billing platform consequence commits before this compatible legacy handler runs. */
 export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
-/** Opt into one runtime-serialized, transaction-owned Stripe consequence per Job attempt. */
+/** Opt into one runtime-serialized, transaction-owned Stripe consequence per Job attempt, shared with any declared Team Billing platform consequence for the verified Event. */
 export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: { consequence: "atomic" }, handler: Handler): AtomicStripeEventDefinition<Handler>;
 /** Define a named query for subscribed client reads. */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(

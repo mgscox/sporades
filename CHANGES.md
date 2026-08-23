@@ -6,6 +6,10 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Converge verified Team Checkout, Subscription, and failed-invoice evidence
+  through the existing cross-runtime atomic Stripe fence, with exact catalogue
+  validation, deterministic semantic ratchets, terminal cancellation latches,
+  and provider-free quarantine for malformed or ambiguous observations.
 - Add durable headless Team Customer Portal sessions pinned to explicitly
   attested sandbox/live configurations, compatible Plan-switch catalogues,
   period-end cancellation, disabled quantity editing, and app-owned rendering.

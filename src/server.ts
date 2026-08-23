@@ -209,8 +209,9 @@ export function emailEvent<const HandlerType extends Handler>(handler: HandlerTy
   return { kind: "emailEvent", handler };
 }
 
-/** Declare the single verified Stripe-event subscription for a Capsule. */
+/** Declare the single verified Stripe-event subscription for a Capsule. A declared Team Billing platform consequence commits before this compatible legacy handler runs. */
 export function stripeEvent<const HandlerType extends Handler>(handler: HandlerType): StripeEventDefinition<HandlerType>;
+/** Share one runtime-serialized transaction with any declared Team Billing platform consequence for the verified Event. */
 export function stripeEvent<const HandlerType extends Handler>(options: { consequence: "atomic" }, handler: HandlerType): AtomicStripeEventDefinition<HandlerType>;
 export function stripeEvent<const HandlerType extends Handler>(first: HandlerType | { consequence: "atomic" }, second?: HandlerType): StripeEventDefinition<HandlerType> | AtomicStripeEventDefinition<HandlerType> {
   if (typeof first === "function" && second === undefined) return { kind: "stripeEvent", handler: first };

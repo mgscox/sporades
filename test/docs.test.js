@@ -209,13 +209,14 @@ test("Built-in Teams is discoverable without overstating its authorization model
 });
 
 test("headless Team Billing docs preserve the platform-mechanics and app-rendering boundary", async () => {
-  const [changes, readme, prd, context, reference, guide, serverTypes, clientTypes] = await Promise.all([
+  const [changes, readme, prd, context, reference, guide, convergenceAdr, serverTypes, clientTypes] = await Promise.all([
     readProjectFile("CHANGES.md"),
     readProjectFile("README.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("CONTEXT.md"),
     readProjectFile("docs/reference/teams.md"),
     readProjectFile("docs/guide/reference.md"),
+    readProjectFile("docs/adr/0047-team-billing-truth-converges-inside-the-atomic-stripe-fence.md"),
     readProjectFile("src/types/server.d.ts"),
     readProjectFile("src/types/client.d.ts"),
   ]);
@@ -233,6 +234,15 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /mutable Dashboard default has\s+no effect/i);
   assert.match(reference, /Retries reuse identical provider parameters/i);
   assert.match(reference, /Verified[\s\S]*terminal[\s\S]*cannot revive the URL/i);
+  assert.match(reference, /Checkout\s+completion[\s\S]*never establishes paid entitlement/i);
+  assert.match(reference, /single\s+licensed item[\s\S]*declared Price[\s\S]*quantity[\s\S]*period[\s\S]*supported status/i);
+  assert.match(reference, /cancellation outranks failed payment[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
+  assert.match(reference, /Deletion permanently latches[\s\S]*no delayed update can resurrect/i);
+  assert.match(reference, /Malformed supported evidence[\s\S]*Raw Stripe JSON[\s\S]*never enter Team Billing tables/i);
+  assert.match(reference, /opt-in atomic[\s\S]*same transaction[\s\S]*legacy `stripeEvent\(handler\)`[\s\S]*after the platform commit/i);
+  assert.match(convergenceAdr, /Verified delivery is evidence, not billing truth/i);
+  assert.match(convergenceAdr, /deleted Subscription ID is permanently terminal/i);
+  assert.match(convergenceAdr, /Provider Event identifiers are replay identities, not a business\s+ordering rule/i);
   assert.match(guide, /Declare headless Team Billing/);
   assert.match(serverTypes, /teamBilling\?: TeamBillingDefinition<Schema>/);
   assert.match(clientTypes, /get\(teamId: string\): Promise<SporadesResult<TeamBillingProjection>>/);

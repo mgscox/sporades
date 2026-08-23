@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash7, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash8, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -4710,7 +4710,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash5, randomBytes as randomBytes5, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes5, randomUUID as randomUUID5 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -6421,7 +6421,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash4, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash5, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -7229,7 +7229,367 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
+
+// src/team-billing-convergence.ts
 import { createHash as createHash3, randomUUID } from "node:crypto";
+var SUPPORTED = /* @__PURE__ */ new Set([
+  "checkout.session.completed",
+  "checkout.session.expired",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.payment_failed"
+]);
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var EVENT_ID = /^evt_[A-Za-z0-9_]{1,240}$/;
+var CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
+var CUSTOMER_ID = /^cus_[A-Za-z0-9_]{1,120}$/;
+var SUBSCRIPTION_ID = /^sub_[A-Za-z0-9_]{1,240}$/;
+var ITEM_ID = /^si_[A-Za-z0-9_]{1,240}$/;
+var PRICE_ID = /^price_[A-Za-z0-9_]{1,249}$/;
+var PRODUCT_ID = /^prod_[A-Za-z0-9_]{1,240}$/;
+var CANONICAL_TIME = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
+var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
+var Quarantine = class extends Error {
+  teamId;
+  reason;
+  rank;
+  objectId;
+  constructor(reason, teamId = null, rank = 50, objectId = null) {
+    super(reason);
+    this.teamId = teamId;
+    this.reason = reason;
+    this.rank = rank;
+    this.objectId = objectId;
+  }
+};
+async function applyVerifiedTeamBillingObservation(database, event) {
+  if (!SUPPORTED.has(event?.type)) return Object.freeze({ applied: false, ignored: true });
+  const transaction = database?.adapter;
+  if (!transaction?.prepare || !database.teamBillingDefinition) return Object.freeze({ applied: false, ignored: true });
+  const digest = safeDigest(event?.raw);
+  const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
+  const occurredAt = canonicalTimestamp(event?.occurredAt);
+  const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
+  const preliminaryTeamId = await inferTeamId(transaction, event);
+  if (eventId && digest) {
+    const existing = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [payloadDigest], [teamId], [outcome] FROM [sporades_team_billing_observations] WHERE [providerEventId] = ?"
+    )).get(eventId);
+    if (existing) {
+      if (existing.payloadDigest !== digest) {
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_observations] SET [outcome] = 'quarantined', [safeReason] = 'provider-state-ambiguous' WHERE [providerEventId] = ?"
+        )).run(eventId);
+        return Object.freeze({ applied: false, quarantined: true });
+      }
+      return Object.freeze({ applied: false, duplicate: true });
+    }
+  }
+  try {
+    validateEnvelope2(database, event);
+    let result;
+    if (event.type.startsWith("checkout.session.")) result = await applyCheckout(database, event, expectedMode);
+    else if (event.type.startsWith("customer.subscription.")) result = await applySubscription(database, event, expectedMode);
+    else result = await applyInvoiceFailure(database, event, expectedMode);
+    const outcome = result.outcome ?? "applied";
+    await recordObservation(database, event, digest, result.teamId, result.objectId, result.rank, outcome, null);
+    return Object.freeze({ applied: outcome === "applied" });
+  } catch (error) {
+    if (!(error instanceof Quarantine)) throw error;
+    const quarantine = error;
+    if (eventId && digest && occurredAt) {
+      await recordObservation(database, event, digest, quarantine.teamId ?? preliminaryTeamId, quarantine.objectId ?? boundedObjectId(event?.objectId), quarantine.rank, "quarantined", quarantine.reason);
+    }
+    return Object.freeze({ applied: false, quarantined: true });
+  }
+}
+function validateEnvelope2(database, event) {
+  const raw = event?.raw;
+  const object = raw?.data?.object;
+  if (event?.provider !== "stripe" || !EVENT_ID.test(String(event.providerEventId ?? "")) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode) || !canonicalTimestamp(event.occurredAt) || !isRecord3(raw) || raw.object !== "event" || raw.id !== event.providerEventId || raw.type !== event.type || raw.livemode !== event.livemode || !Number.isInteger(raw.created) || new Date(raw.created * 1e3).toISOString() !== event.occurredAt || !isRecord3(raw.data) || !isRecord3(object) || event.objectId !== object.id || !boundedObjectId(object.id)) {
+    throw new Quarantine("provider-state-ambiguous");
+  }
+}
+async function applyCheckout(database, event, mode) {
+  const tx = database.adapter;
+  const object = event.raw.data.object;
+  const operationId = object.client_reference_id;
+  if (object.object !== "checkout.session" || object.mode !== "subscription" || object.livemode !== event.livemode || !CHECKOUT_ID.test(String(object.id ?? "")) || !UUID.test(String(operationId ?? "")) || object.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object.id));
+  const operation = await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+  )).get(operationId);
+  if (!operation || operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", operation?.teamId ?? null, 50, object.id);
+  if (operation.providerObjectId && operation.providerObjectId !== object.id) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object.id);
+  const completed = event.type === "checkout.session.completed";
+  const customerId = completed && CUSTOMER_ID.test(String(object.customer ?? "")) ? object.customer : null;
+  const subscriptionId = completed && SUBSCRIPTION_ID.test(String(object.subscription ?? "")) ? object.subscription : null;
+  if (completed && (!customerId || !subscriptionId || object.status !== "complete") || !completed && object.status !== "expired") {
+    throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object.id);
+  }
+  if (operation.providerCustomerId && customerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object.id);
+  if (operation.providerSubscriptionId && subscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object.id);
+  if (customerId) await bindCustomer(tx, operation.teamId, mode, customerId, event.occurredAt);
+  let outcome = "ignored";
+  const currentRank = operation.status === "completed" ? 2 : operation.status === "expired" ? 1 : 0;
+  const nextRank = completed ? 2 : 1;
+  if (!operation.terminalObservedAt || nextRank > currentRank) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [providerCustomerId] = COALESCE(?, [providerCustomerId]), [providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(completed ? "completed" : "expired", object.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
+    outcome = "applied";
+  }
+  return { teamId: operation.teamId, objectId: object.id, rank: 10, outcome };
+}
+async function applySubscription(database, event, mode) {
+  const tx = database.adapter;
+  const object = event.raw.data.object;
+  const subscriptionId = object.id;
+  const customerId = object.customer;
+  const metadataOperationId = object.metadata?.sporades_team_billing_operation;
+  if (object.object !== "subscription" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object.livemode !== event.livemode) {
+    throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
+  }
+  const existing = await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+  )).get(subscriptionId);
+  const operation = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+  )).get(metadataOperationId) : null;
+  const teamId = existing?.teamId ?? operation?.teamId ?? null;
+  if (!teamId || existing && operation && existing.teamId !== operation.teamId || existing?.mode !== void 0 && existing.mode !== mode || operation?.mode !== void 0 && operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  if (operation?.providerCustomerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  if (operation?.providerSubscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  await assertCustomerAssociation(tx, teamId, mode, customerId);
+  const deleted = event.type === "customer.subscription.deleted";
+  const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId))?.count ?? 0);
+  const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, deleted, teamId, desiredTeamQuantity);
+  if (existing?.terminalLatch === 1) {
+    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  if (existing && !deleted && !winsRatchet(
+    normalized.periodStart,
+    event.occurredAt,
+    normalized.rank,
+    existing.currentPeriodStart,
+    existing.lastEventOccurredAt,
+    Number(existing.lastEventRank ?? 0)
+  )) {
+    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
+  if (!existing) {
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )).run(
+      randomUUID(),
+      teamId,
+      mode,
+      subscriptionId,
+      normalized.priceId,
+      normalized.itemId,
+      normalized.productKey,
+      normalized.quantity,
+      normalized.state,
+      normalized.cancelAtPeriodEnd,
+      normalized.periodStart,
+      normalized.periodEnd,
+      event.occurredAt,
+      event.occurredAt,
+      event.occurredAt,
+      normalized.kind,
+      normalized.rank,
+      deleted ? 1 : 0
+    );
+  } else {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?"
+    )).run(
+      normalized.priceId,
+      normalized.itemId,
+      normalized.productKey,
+      normalized.quantity,
+      normalized.state,
+      normalized.cancelAtPeriodEnd,
+      normalized.periodStart,
+      normalized.periodEnd,
+      event.occurredAt,
+      event.occurredAt,
+      event.occurredAt,
+      normalized.kind,
+      normalized.rank,
+      deleted ? 1 : 0,
+      subscriptionId
+    );
+  }
+  if (operation) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(customerId, subscriptionId, event.occurredAt, operation.id);
+  }
+  return { teamId, objectId: subscriptionId, rank: normalized.rank };
+}
+function normalizeSubscription(definition, object, operation, mode, deleted, teamId, desiredTeamQuantity) {
+  const items = object.items?.data;
+  if (!Array.isArray(items) || items.length !== 1 || !isRecord3(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const item = items[0];
+  const priceId = item.price?.id;
+  const productId = typeof item.price?.product === "string" ? item.price.product : item.price?.product?.id;
+  if (item.object !== "subscription_item" || item.subscription !== object.id || item.price?.recurring?.usage_type !== "licensed" || !ITEM_ID.test(String(item.id ?? "")) || !PRICE_ID.test(String(priceId ?? "")) || !PRODUCT_ID.test(String(productId ?? "")) || !Number.isSafeInteger(item.quantity) || item.quantity < 1) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const matches = Object.entries(definition.catalogue).filter(([, product2]) => {
+    const binding = product2.stripe?.[mode];
+    return binding?.priceId === priceId && (!binding.productId || binding.productId === productId);
+  });
+  if (matches.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  const [productKey, product] = matches[0];
+  if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1 || desiredTeamQuantity !== item.quantity)) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  }
+  const periodStart = unixTimestamp(item.current_period_start);
+  const periodEnd = unixTimestamp(item.current_period_end);
+  if (!periodStart || !periodEnd || periodEnd <= periodStart) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const cancel = object.cancel_at_period_end;
+  if (typeof cancel !== "boolean") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  let state;
+  let kind;
+  if (deleted) {
+    if (object.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    state = "cancelled";
+    kind = "cancelled";
+  } else if (object.status === "active") {
+    state = "active";
+    kind = cancel ? "cancelling" : "active";
+  } else if (object.status === "past_due" || object.status === "unpaid") {
+    state = "past-due";
+    kind = "past-due";
+  } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  return {
+    productKey,
+    priceId,
+    itemId: item.id,
+    quantity: item.quantity,
+    periodStart,
+    periodEnd,
+    state,
+    cancelAtPeriodEnd: cancel ? 1 : 0,
+    kind,
+    rank: RANK[kind]
+  };
+}
+async function applyInvoiceFailure(database, event, mode) {
+  const tx = database.adapter;
+  const object = event.raw.data.object;
+  const subscriptionId = typeof object.subscription === "string" ? object.subscription : object.parent?.subscription_details?.subscription;
+  const customerId = object.customer;
+  if (object.object !== "invoice" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object.livemode !== event.livemode || object.status !== "open" || object.paid !== false || !Number.isInteger(object.attempt_count) || object.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object.id));
+  const subscription = await tx.prepare(tx.dialect.sql(
+    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+  )).get(subscriptionId);
+  if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object.id));
+  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome: "ignored" };
+  await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
+  const lines = object.lines?.data;
+  if (!Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
+  const line = lines[0];
+  const details = line?.parent?.subscription_item_details;
+  const pricing = line?.pricing?.price_details;
+  if (!isRecord3(line) || line.object !== "line_item" || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
+  let outcome = "ignored";
+  if (winsRatchet(
+    subscription.currentPeriodStart,
+    event.occurredAt,
+    RANK["past-due"],
+    subscription.currentPeriodStart,
+    subscription.lastEventOccurredAt,
+    Number(subscription.lastEventRank ?? 0)
+  )) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_subscriptions] SET [state] = 'past-due', [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'invoice-failed', [lastEventRank] = ? WHERE [providerSubscriptionId] = ?"
+    )).run(event.occurredAt, event.occurredAt, event.occurredAt, RANK["past-due"], subscriptionId);
+    outcome = "applied";
+  }
+  return { teamId: subscription.teamId, objectId: object.id, rank: RANK["past-due"], outcome };
+}
+async function inferTeamId(tx, event) {
+  const object = event?.raw?.data?.object;
+  const operationId = object?.client_reference_id ?? object?.metadata?.sporades_team_billing_operation;
+  if (UUID.test(String(operationId ?? ""))) {
+    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operationId);
+    if (row?.teamId) return row.teamId;
+  }
+  const subscriptionId = object?.object === "subscription" ? object.id : object?.subscription ?? object?.parent?.subscription_details?.subscription;
+  if (SUBSCRIPTION_ID.test(String(subscriptionId ?? ""))) {
+    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
+    if (row?.teamId) return row.teamId;
+  }
+  return null;
+}
+async function assertCustomerAssociation(tx, teamId, mode, customerId) {
+  const sql = tx.dialect.sql;
+  const byTeam = await tx.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
+  const byProvider = await tx.prepare(sql("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
+  if (byTeam && (byTeam.mode !== mode || byTeam.providerCustomerId !== customerId) || byProvider && (byProvider.teamId !== teamId || byProvider.mode !== mode)) throw new Quarantine("provider-state-ambiguous", teamId);
+}
+async function bindCustomer(tx, teamId, mode, customerId, now) {
+  await assertCustomerAssociation(tx, teamId, mode, customerId);
+  await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT ([teamId]) DO UPDATE SET [updatedAt] = excluded.[updatedAt]"
+  )).run(teamId, mode, customerId, now, now);
+}
+async function recordObservation(database, event, digest, teamId, objectId, rank, outcome, safeReason) {
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
+  )).run(
+    randomUUID(),
+    teamId,
+    event.livemode ? "live" : "sandbox",
+    event.providerEventId,
+    objectId,
+    digest,
+    event.occurredAt,
+    database.clock?.now?.().toISOString?.() ?? event.occurredAt,
+    event.type,
+    rank,
+    outcome,
+    safeReason
+  );
+}
+function winsRatchet(periodStart, occurredAt, rank, previousPeriodStart, previousAt, previousRank) {
+  if (!canonicalTimestamp(previousPeriodStart)) return true;
+  if (periodStart !== previousPeriodStart) return periodStart > previousPeriodStart;
+  if (!canonicalTimestamp(previousAt)) return true;
+  return occurredAt > previousAt || occurredAt === previousAt && rank > previousRank;
+}
+function unixTimestamp(value) {
+  if (!Number.isInteger(value) || value < 1) return null;
+  const date = new Date(value * 1e3);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+function canonicalTimestamp(value) {
+  if (typeof value !== "string" || !CANONICAL_TIME.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
+}
+function boundedObjectId(value) {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(value) ? value : null;
+}
+function safeDigest(raw) {
+  try {
+    return createHash3("sha256").update(JSON.stringify(raw)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+function isRecord3(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/team-billing-runtime.ts
 var TEAM_BILLING_PRODUCT_MAX = 32;
 var TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 var TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
@@ -7253,18 +7613,22 @@ function createTeamBillingTables(adapter) {
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
     () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
     )),
     () => adapter.exec(sql(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL)"
     )),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
     )),
-    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "configurationId", "returnPath"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))
+    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT")),
+    ...["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT")),
+    ...["lastEventRank", "terminalLatch"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER")),
+    ...["eventType", "outcome", "safeReason"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT")),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER")
   ]);
 }
 function normalizeTeamBillingDefinition(value) {
@@ -7374,14 +7738,14 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     const active = await transaction.prepare(sql(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now, active.id);
     } else if (active) {
       throw checkoutActive();
     }
-    const operationId = randomUUID();
+    const operationId = randomUUID2();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql(
@@ -7418,12 +7782,12 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
     const active = await transaction.prepare(sql(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'portal' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now, active.id);
     } else if (active) throw checkoutActive();
-    const operationId = randomUUID();
+    const operationId = randomUUID2();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
@@ -7695,31 +8059,6 @@ async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, paylo
     "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = ? AND [status] IN ('queued', 'running', 'retrying')"
   )).run(now, operationId, kind);
 }
-async function applyVerifiedTeamBillingCheckoutObservation(database, event) {
-  if (!database.teamBillingDefinition || event?.provider !== "stripe" || !["checkout.session.completed", "checkout.session.expired"].includes(event?.type)) return { applied: false };
-  const object = event?.raw?.data?.object;
-  const operationId = object?.client_reference_id;
-  if (!object || typeof object !== "object" || Array.isArray(object) || object.object !== "checkout.session" || object.mode !== "subscription" || object.livemode !== event.livemode || event.objectId !== object.id || event.raw?.id !== event.providerEventId || event.raw?.type !== event.type || event.raw?.livemode !== event.livemode || !TEAM_ID_PATTERN.test(String(operationId ?? "")) || object?.metadata?.sporades_team_billing_operation !== operationId || !validCheckoutContinuation(`https://checkout.stripe.com/c/pay/${object.id}`, object.id) || typeof event.providerEventId !== "string" || !/^evt_[A-Za-z0-9_]{1,240}$/.test(event.providerEventId) || !canonicalTimestamp(event.occurredAt) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode)) return { applied: false };
-  const status = event.type === "checkout.session.completed" ? "completed" : "expired";
-  return database.adapter.withTransaction(async (transaction) => {
-    const sql = transaction.dialect.sql;
-    const operation = await transaction.prepare(sql(
-      "SELECT [id], [teamId], [mode], [providerObjectId], [status], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
-    )).get(operationId);
-    const expectedMode = event.livemode ? "live" : "sandbox";
-    if (!operation || operation.mode !== expectedMode || operation.providerObjectId && operation.providerObjectId !== object.id) return { applied: false };
-    const payloadDigest = createHash3("sha256").update(JSON.stringify(event.raw)).digest("hex");
-    const inserted = await transaction.prepare(sql(
-      "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
-    )).run(randomUUID(), operation.teamId, expectedMode, event.providerEventId, object.id, payloadDigest, event.occurredAt, database.clock.now().toISOString());
-    if (Number(inserted?.changes ?? 0) !== 1) return { applied: false };
-    if (operation.terminalObservedAt && operation.terminalObservedAt > event.occurredAt) return { applied: false };
-    await transaction.prepare(sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(status, object.id, event.occurredAt, database.clock.now().toISOString(), operationId);
-    return { applied: true };
-  });
-}
 async function admitTeamBillingActor(database, transaction, auth, input) {
   requireAuth({ auth }, { linked: true });
   await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
@@ -7743,7 +8082,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
     "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   if (operation) {
-    const requestedAt = canonicalTimestamp(operation.createdAt);
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
     if (!requestedAt) {
       return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
@@ -7756,9 +8095,25 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
       requestedAt
     });
   }
-  const row = await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1"
+  const currentRows = await transaction.prepare(sql(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
+  )).all(teamId);
+  if (currentRows.length > 1) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  const row = currentRows[0] ?? await transaction.prepare(sql(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
+  const quarantine = await transaction.prepare(sql(
+    "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  if (quarantine && (!row || !canonicalTimestamp2(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt || quarantine.observedAt === row.lastEventOccurredAt && Number(quarantine.eventRank ?? 0) >= Number(row.lastEventRank ?? 0))) {
+    return Object.freeze({
+      state: "attention-required",
+      teamId,
+      reason: quarantine.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
+    });
+  }
   if (!row) return Object.freeze({ state: "inactive", teamId });
   const product = definition.catalogue[row.productKey];
   const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
@@ -7771,7 +8126,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   }
   const common = { teamId, productKey: row.productKey, quantity };
   if (row.state === "active") {
-    const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
+    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
     if (!currentPeriodEnd) {
       return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
@@ -7781,7 +8136,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
   return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
 }
-function canonicalTimestamp(value) {
+function canonicalTimestamp2(value) {
   if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
@@ -7870,11 +8225,11 @@ async function supersedeBillingOperation(database, transaction, operationId) {
 async function checkoutOperationResult(database, transaction, teamId, requestId, operation) {
   const common = { teamId, requestId, productKey: operation.productKey };
   if (["queued", "running", "retrying"].includes(operation.status)) {
-    const requestedAt = canonicalTimestamp(operation.createdAt);
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
     return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
   }
   if (operation.status === "ready") {
-    const expiresAt = canonicalTimestamp(operation.continuationExpiresAt);
+    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
     if (expiresAt && expiresAt > database.clock.now().toISOString() && validCheckoutContinuation(operation.continuationUrl, operation.providerObjectId)) {
       return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
     }
@@ -7892,7 +8247,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest = createHash3("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest = createHash4("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest}`;
 }
 function exactOperationId(payload) {
@@ -7919,7 +8274,7 @@ function validPortalContinuation(urlValue, sessionIdValue) {
 async function portalOperationResult(database, transaction, teamId, requestId, operation) {
   const common = { teamId, requestId };
   if (["queued", "running", "retrying"].includes(operation.status)) {
-    const requestedAt = canonicalTimestamp(operation.createdAt);
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
     return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
   }
   if (operation.status === "ready") {
@@ -7935,7 +8290,7 @@ async function portalOperationResult(database, transaction, teamId, requestId, o
       )).run(database.clock.now().toISOString(), teamId, requestId);
       return Object.freeze({ state: "superseded", ...common });
     }
-    const expiresAt = canonicalTimestamp(operation.continuationExpiresAt);
+    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
     if (expiresAt && expiresAt > database.clock.now().toISOString() && validPortalContinuation(operation.continuationUrl, operation.providerObjectId)) {
       return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
     }
@@ -11584,7 +11939,7 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso);
       const secret = await teamJoinSigningSecret(tx, nowIso);
-      const id = randomUUID2();
+      const id = randomUUID3();
       const selector = randomBytes4(16).toString("base64url");
       const verifier = randomBytes4(32).toString("base64url");
       const expiresAt = new Date(now.getTime() + ttlSeconds * 1e3).toISOString();
@@ -11911,7 +12266,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash4("sha256").update(verifier).digest("base64url");
+  return createHash5("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -12050,7 +12405,7 @@ async function createAdditionalTeam(database, auth, name, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id = randomUUID2();
+    const id = randomUUID3();
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -12365,7 +12720,7 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql = tx.dialect.sql;
-  const id = randomUUID2();
+  const id = randomUUID3();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
@@ -15471,7 +15826,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
@@ -18168,7 +18523,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID3().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID4().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -18577,8 +18932,14 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
     prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     dispatchStripeEvent: async (context, event) => {
-      await applyVerifiedTeamBillingCheckoutObservation(database, event);
-      return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic" ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents) : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+      const subscription = capsuleDefinition?.stripeEvents;
+      const atomicSubscription = subscription?.options?.consequence === "atomic" ? subscription : void 0;
+      const platformConsequence = database.teamBillingDefinition ? applyVerifiedTeamBillingObservation : void 0;
+      if (atomicSubscription || platformConsequence) {
+        const result = await runAtomicStripeConsequence(database, context, event, atomicSubscription, platformConsequence);
+        return !atomicSubscription && subscription ? dispatchVerifiedStripeEvent(context, event, subscription) : result;
+      }
+      return dispatchVerifiedStripeEvent(context, event, subscription);
     },
     performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
@@ -18971,7 +19332,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID4() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID5() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -19188,7 +19549,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID4();
+  const token = randomUUID5();
   const now = database.clock.now();
   const nowIso = now.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
@@ -19884,7 +20245,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID4(),
+      id: input.request.id ?? randomUUID5(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -20823,7 +21184,7 @@ async function settleAtomicStripeEventHandler(database, context, signal, dispatc
     if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
   }
 }
-async function runAtomicStripeConsequence(database, parentContext, event, subscription) {
+async function runAtomicStripeConsequence(database, parentContext, event, subscription, platformConsequence) {
   if (parentContext.signal?.aborted) throw atomicStripeAbortError();
   for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
     let context;
@@ -20840,7 +21201,10 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
             database,
             context,
             parentContext.signal,
-            () => dispatchVerifiedStripeEvent(context, event, subscription)
+            async () => {
+              await platformConsequence?.(transactionDatabase, event);
+              return dispatchVerifiedStripeEvent(context, event, subscription);
+            }
           );
           await cleanupTransactionHandler(transactionDatabase, context, false, false);
           cleanupComplete = true;
@@ -21244,7 +21608,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID4(),
+        id: randomUUID5(),
         createdAt: now,
         updatedAt: now
       };
@@ -21281,7 +21645,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID4(),
+        id: randomUUID5(),
         createdAt: now,
         updatedAt: now
       };
@@ -22631,7 +22995,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID4(),
+    randomUUID5(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -22669,7 +23033,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash5("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash6("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -23513,7 +23877,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID4();
+      const claimToken = randomUUID5();
       const claimed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -23663,7 +24027,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID4(),
+    id: randomUUID5(),
     createdAt: now,
     updatedAt: now
   };
@@ -27005,7 +27369,7 @@ function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
   }
-  if (!isRecord3(services)) {
+  if (!isRecord4(services)) {
     throw commandError3("Invalid Capsule services declaration.", "Set `services` in sporades.json to an object.");
   }
   for (const key of Object.keys(services)) {
@@ -27051,7 +27415,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile6(credentialsPath, "utf8"));
-    if (isRecord3(parsed)) {
+    if (isRecord4(parsed)) {
       existing = parsed;
     }
   } catch {
@@ -27165,7 +27529,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
   return model;
 }
 function validateDatabaseServiceConfig(database) {
-  if (!isRecord3(database)) {
+  if (!isRecord4(database)) {
     throw commandError3(
       "Invalid database Capsule service declaration.",
       'Set `services.database` to `{ "kind": "database", "engine": "libsql" }` or `{ "kind": "database", "engine": "postgres" }`.'
@@ -27185,7 +27549,7 @@ function validateDatabaseServiceConfig(database) {
   }
 }
 function validateStorageServiceConfig(storage) {
-  if (!isRecord3(storage)) {
+  if (!isRecord4(storage)) {
     throw commandError3(
       "Invalid storage Capsule service declaration.",
       'Set `services.storage` to `{ "kind": "storage", "engine": "minio" }`.'
@@ -27286,7 +27650,7 @@ function serviceLabels(labels, kind, engine) {
     "com.sporades.capsule-service.engine": engine
   };
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function commandError3(message, hint) {
@@ -27938,7 +28302,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -28227,7 +28591,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash6("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash7("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -32785,7 +33149,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash7("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash8("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;

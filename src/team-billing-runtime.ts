@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 
 type LooseRecord = Record<string, any>;
@@ -41,8 +42,9 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] (" +
       "[id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, " +
-      "[providerPriceId] TEXT NOT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, " +
-      "[cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL" +
+      "[providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, " +
+      "[cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, " +
+      "[lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0" +
       ")",
     )),
     () => adapter.exec(sql(
@@ -56,7 +58,8 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] (" +
       "[id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, " +
-      "[providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
+      "[providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, " +
+      "[eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL" +
       ")",
     )),
     () => adapter.exec(sql(
@@ -64,8 +67,15 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       "[providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL" +
       ")",
     )),
-    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "configurationId", "returnPath"]
+    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
+    ...(["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
+      .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
+    ...(["lastEventRank", "terminalLatch"]
+      .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
+    ...(["eventType", "outcome", "safeReason"]
+      .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
   ]);
 }
 
@@ -540,43 +550,12 @@ export async function settleExhaustedTeamBillingCheckoutJob(transaction: LooseRe
   )).run(now, operationId, kind);
 }
 
-/** Applies only terminal, verified Checkout observations; Subscription truth is a later convergence concern. */
+/** Compatibility wrapper for callers that have not moved into the atomic Stripe consequence transaction. */
 export async function applyVerifiedTeamBillingCheckoutObservation(database: LooseRecord, event: any) {
   if (!database.teamBillingDefinition || event?.provider !== "stripe"
     || !["checkout.session.completed", "checkout.session.expired"].includes(event?.type)) return { applied: false };
-  const object = event?.raw?.data?.object;
-  const operationId = object?.client_reference_id;
-  if (!object || typeof object !== "object" || Array.isArray(object)
-    || object.object !== "checkout.session" || object.mode !== "subscription"
-    || object.livemode !== event.livemode || event.objectId !== object.id
-    || event.raw?.id !== event.providerEventId || event.raw?.type !== event.type || event.raw?.livemode !== event.livemode
-    || !TEAM_ID_PATTERN.test(String(operationId ?? ""))
-    || object?.metadata?.sporades_team_billing_operation !== operationId
-    || !validCheckoutContinuation(`https://checkout.stripe.com/c/pay/${object.id}`, object.id)
-    || typeof event.providerEventId !== "string" || !/^evt_[A-Za-z0-9_]{1,240}$/.test(event.providerEventId)
-    || !canonicalTimestamp(event.occurredAt) || typeof event.livemode !== "boolean"
-    || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode)) return { applied: false };
-  const status = event.type === "checkout.session.completed" ? "completed" : "expired";
-  return database.adapter.withTransaction(async (transaction: LooseRecord) => {
-    const sql = transaction.dialect.sql;
-    const operation = await transaction.prepare(sql(
-      "SELECT [id], [teamId], [mode], [providerObjectId], [status], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
-    )).get(operationId);
-    const expectedMode = event.livemode ? "live" : "sandbox";
-    if (!operation || operation.mode !== expectedMode
-      || (operation.providerObjectId && operation.providerObjectId !== object.id)) return { applied: false };
-    const payloadDigest = createHash("sha256").update(JSON.stringify(event.raw)).digest("hex");
-    const inserted = await transaction.prepare(sql(
-      "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING",
-    )).run(randomUUID(), operation.teamId, expectedMode, event.providerEventId, object.id, payloadDigest, event.occurredAt, database.clock.now().toISOString());
-    if (Number(inserted?.changes ?? 0) !== 1) return { applied: false };
-    if (operation.terminalObservedAt && operation.terminalObservedAt > event.occurredAt) return { applied: false };
-    await transaction.prepare(sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?",
-    )).run(status, object.id, event.occurredAt, database.clock.now().toISOString(), operationId);
-    return { applied: true };
-  });
+  const result = await database.adapter.withTransaction((transaction: LooseRecord) => applyVerifiedTeamBillingObservation({ ...database, adapter: transaction }, event));
+  return { applied: result.applied === true };
 }
 
 /**
@@ -603,7 +582,7 @@ export async function admitTeamBillingActor(database: LooseRecord, transaction: 
   return Object.freeze({ admitted: true as const });
 }
 
-async function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string) {
+export async function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string) {
   const sql = transaction.dialect.sql;
   const operation = await transaction.prepare(sql(
     "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
@@ -624,10 +603,26 @@ async function safeTeamBillingProjection(transaction: LooseRecord, definition: L
       requestedAt,
     });
   }
-  const row = await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd] " +
-    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [observedAt] DESC, [id] DESC LIMIT 1",
+  const currentRows = await transaction.prepare(sql(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] " +
+    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC",
+  )).all(teamId);
+  if (currentRows.length > 1) {
+    return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
+  }
+  const row = currentRows[0] ?? await transaction.prepare(sql(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventRank] " +
+    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1",
   )).get(teamId);
+  const quarantine = await transaction.prepare(sql(
+    "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] " +
+    "WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1",
+  )).get(teamId);
+  if (quarantine && (!row || !canonicalTimestamp(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt
+    || (quarantine.observedAt === row.lastEventOccurredAt && Number(quarantine.eventRank ?? 0) >= Number(row.lastEventRank ?? 0)))) {
+    return Object.freeze({ state: "attention-required" as const, teamId,
+      reason: quarantine.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" as const : "provider-state-ambiguous" as const });
+  }
   if (!row) return Object.freeze({ state: "inactive" as const, teamId });
   const product = definition.catalogue[row.productKey];
   const binding = (row.mode === "sandbox" || row.mode === "live") ? product?.stripe?.[row.mode] : null;

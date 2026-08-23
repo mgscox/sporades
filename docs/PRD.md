@@ -107,7 +107,13 @@ The repository currently includes:
   `teamBilling.openPortal(...)`. Sporades retrieves and attests the exact active
   mode configuration on every attempt, permits only Price switches within one
   compatible quantity-policy configuration, requires period-end cancellation,
-  and rejects quantity editing or mutable Dashboard defaults. Omission creates no Team Billing tables and preserves
+  and rejects quantity editing or mutable Dashboard defaults. Supported
+  verified Checkout, Subscription, and failed-invoice observations converge
+  inside the cross-runtime atomic Stripe fence. Exact association, catalogue,
+  item, quantity, period, and status validation plus semantic ratchets and a
+  terminal deletion latch prevent stale or ambiguous evidence from granting
+  entitlement; quarantine retains only bounded normalized correlation and a
+  digest, never raw provider JSON. Omission creates no Team Billing tables and preserves
   existing Capsules. Sporades renders no billing UI; the Capsule owns every
   component, route, word, entitlement, and local business rule.
 - `sporades dev` for local Node execution with bundling, file watching,

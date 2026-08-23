@@ -38,8 +38,10 @@ export declare function expireTeamBillingCheckout(database: LooseRecord, _contex
 export declare function expireTeamBillingPortal(database: LooseRecord, _context: LooseRecord, payload: any): Promise<null>;
 /** Reconciles a runtime-owned Checkout operation when its final claimed Job lease expires after a process crash. */
 export declare function settleExhaustedTeamBillingCheckoutJob(transaction: LooseRecord, handler: any, payloadJson: any, now: string): Promise<void>;
-/** Applies only terminal, verified Checkout observations; Subscription truth is a later convergence concern. */
-export declare function applyVerifiedTeamBillingCheckoutObservation(database: LooseRecord, event: any): Promise<any>;
+/** Compatibility wrapper for callers that have not moved into the atomic Stripe consequence transaction. */
+export declare function applyVerifiedTeamBillingCheckoutObservation(database: LooseRecord, event: any): Promise<{
+    applied: boolean;
+}>;
 /**
  * Reusable last-moment admission for provider-facing Team Billing operations.
  * It deliberately returns no capability: callers must invoke it in the same
@@ -47,6 +49,42 @@ export declare function applyVerifiedTeamBillingCheckoutObservation(database: Lo
  */
 export declare function admitTeamBillingActor(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord): Promise<Readonly<{
     admitted: true;
+}>>;
+export declare function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string): Promise<Readonly<{
+    requestedAt: string;
+    productKey?: any;
+    state: "pending";
+    teamId: string;
+    operation: any;
+}> | Readonly<{
+    state: "attention-required";
+    teamId: string;
+    reason: "catalogue-mismatch" | "provider-state-ambiguous";
+}> | Readonly<{
+    state: "inactive";
+    teamId: string;
+}> | Readonly<{
+    endsAt: string;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "cancelling";
+} | {
+    renewsAt: string;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "active";
+}> | Readonly<{
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "past-due";
+}> | Readonly<{
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "cancelled";
 }>>;
 export declare function teamBillingDenied(): import("./runtime-errors.js").HelperError;
 export {};

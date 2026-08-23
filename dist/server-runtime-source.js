@@ -20,7 +20,8 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, applyVerifiedTeamBillingCheckoutObservation, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
+import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -566,10 +567,16 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers({
             prepareEmailPasswordResetDelivery: (context, payload) => prepareEmailPasswordResetDelivery(database, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             dispatchStripeEvent: async (context, event) => {
-                await applyVerifiedTeamBillingCheckoutObservation(database, event);
-                return capsuleDefinition?.stripeEvents?.options?.consequence === "atomic"
-                    ? runAtomicStripeConsequence(database, context, event, capsuleDefinition.stripeEvents)
-                    : dispatchVerifiedStripeEvent(context, event, capsuleDefinition?.stripeEvents);
+                const subscription = capsuleDefinition?.stripeEvents;
+                const atomicSubscription = subscription?.options?.consequence === "atomic" ? subscription : undefined;
+                const platformConsequence = database.teamBillingDefinition ? applyVerifiedTeamBillingObservation : undefined;
+                if (atomicSubscription || platformConsequence) {
+                    const result = await runAtomicStripeConsequence(database, context, event, atomicSubscription, platformConsequence);
+                    return !atomicSubscription && subscription
+                        ? dispatchVerifiedStripeEvent(context, event, subscription)
+                        : result;
+                }
+                return dispatchVerifiedStripeEvent(context, event, subscription);
             },
             performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
@@ -3053,7 +3060,7 @@ async function settleAtomicStripeEventHandler(database, context, signal, dispatc
             signal.removeEventListener("abort", abortHandler);
     }
 }
-export async function runAtomicStripeConsequence(database, parentContext, event, subscription) {
+export async function runAtomicStripeConsequence(database, parentContext, event, subscription, platformConsequence) {
     if (parentContext.signal?.aborted)
         throw atomicStripeAbortError();
     for (let fenceAttempt = 1; fenceAttempt <= 200; fenceAttempt += 1) {
@@ -3068,7 +3075,10 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
                 let handlerFailed = false;
                 try {
                     context = createAtomicStripeConsequenceContext(transactionDatabase, parentContext);
-                    const delivered = await settleAtomicStripeEventHandler(database, context, parentContext.signal, () => dispatchVerifiedStripeEvent(context, event, subscription));
+                    const delivered = await settleAtomicStripeEventHandler(database, context, parentContext.signal, async () => {
+                        await platformConsequence?.(transactionDatabase, event);
+                        return dispatchVerifiedStripeEvent(context, event, subscription);
+                    });
                     await cleanupTransactionHandler(transactionDatabase, context, false, false);
                     cleanupComplete = true;
                     if (parentContext.signal?.aborted)

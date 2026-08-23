@@ -259,6 +259,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // projection boundary. The private timestamp validator is the final gate
   // before runtime-owned text can cross into browser state.
   { file: "team-billing-runtime.js", atLeast: 7, sentinel: "canonicalTimestamp" },
+  { file: "team-billing-convergence.js", atLeast: 15, sentinel: "winsRatchet" },
   // Purpose-specific Stripe Team Checkout transport validates the complete
   // provider envelope and response without widening the public Stripe helper.
   { file: "stripe-team-billing-provider.js", atLeast: 6, sentinel: "validateInput" },

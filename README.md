@@ -66,8 +66,11 @@ sporades host push --restart
   exposes the closed, provider-free `teamBilling.get(teamId)` projection plus
   durable `teamBilling.startCheckout(...)` and `teamBilling.openPortal(...)`.
   Those commands may return only validated, short-lived Stripe-hosted URL
-  capabilities; the Capsule owns every
-  component, route, message, and entitlement decision.
+  capabilities. Verified Checkout, Subscription, and failed-invoice evidence
+  converges through runtime-owned semantic ratchets and terminal latches;
+  malformed or ambiguous evidence fails closed without exposing provider
+  identifiers. The Capsule owns every component, route, message, and
+  entitlement decision.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation

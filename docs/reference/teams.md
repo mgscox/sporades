@@ -252,9 +252,35 @@ button, progress state, error, retry, and navigation action; Portal return and
 provider acknowledgement never update billing truth.
 
 Customer, Subscription, operation, observation, and replay correlation lives
-in runtime-owned storage on SQLite, libSQL, and Postgres. Managed
-Plan-transition, subscription convergence, and erasure remain later
-operation-specific surfaces rather than a generic Stripe proxy.
+in runtime-owned storage on SQLite, libSQL, and Postgres. Supported verified
+`checkout.session.completed`, `checkout.session.expired`,
+`customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, and `invoice.payment_failed` observations
+converge inside the existing cross-runtime atomic Stripe fence. Checkout
+completion establishes correlation but never establishes paid entitlement. A Subscription
+snapshot must instead prove the exact mode, Customer, Subscription, single
+licensed item, declared Price, quantity, period, and supported status.
+
+Newer periods and observations advance the projection. At the same provider
+time, cancellation outranks failed payment, failed payment outranks
+cancelling, and cancelling outranks active; provider Event identifiers are not
+invented as business ordering. Deletion permanently latches that Subscription
+ID, so no delayed update can resurrect it. A later verified recovery may clear
+past-due state for a non-terminal Subscription. Duplicate and out-of-order
+delivery therefore converges to the same result across independent runtimes.
+
+Malformed supported evidence, unknown Prices, multiple licensed items,
+conflicting associations, and multiple current Subscriptions are retained only
+as bounded digest and private correlation with a safe reason. Raw Stripe JSON
+and errors never enter Team Billing tables or the client projection. Team-linked
+ambiguity produces provider-free `attention-required` state; evidence that
+cannot be associated safely remains operator-only. An app's opt-in atomic
+Stripe consequence shares the same transaction. A legacy `stripeEvent(handler)`
+runs after the platform commit and keeps its existing independent retry model.
+
+Managed Plan-transition, automatic Team-member quantity convergence, and
+erasure remain later operation-specific surfaces rather than a generic Stripe
+proxy.
 
 ## Security, storage, and audit boundaries
 

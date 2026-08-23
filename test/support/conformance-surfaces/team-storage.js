@@ -26,11 +26,26 @@ export const CONFORMANCE_SURFACE = {
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run("operation-1", "request-1", "billing-team", "billing-admin", "checkout", "agency", "queued", null, "private-idempotency", null, NOW, NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run("observation-1", "billing-team", "sandbox", "evt_private", "sub_private", "digest", NOW, NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_replay] ([providerEventId], [payloadDigest], [settledAt], [retainedUntil]) VALUES (?, ?, ?, ?)")).run("evt_private", "digest", NOW, "2026-09-13T12:00:00.000Z");
+        await adapter.prepare(sql(
+          "UPDATE [sporades_team_billing_subscriptions] SET [providerSubscriptionItemId] = 'si_private', [currentPeriodStart] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'cancelled', [lastEventRank] = 50, [terminalLatch] = 1 WHERE [id] = 'local-sub'",
+        )).run(NOW, NOW);
+        await adapter.prepare(sql(
+          "UPDATE [sporades_team_billing_operations] SET [providerSubscriptionId] = 'sub_private' WHERE [id] = 'operation-1'",
+        )).run();
+        await adapter.prepare(sql(
+          "UPDATE [sporades_team_billing_observations] SET [eventType] = 'customer.subscription.deleted', [eventRank] = 50, [outcome] = 'applied', [safeReason] = NULL WHERE [id] = 'observation-1'",
+        )).run();
 
         await adapter.ensureTeamBillingStorage();
         for (const table of ["customers", "subscriptions", "operations", "observations", "replay"]) {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 1, table);
         }
+        assert.equal(await count(adapter,
+          "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionItemId] = 'si_private' AND [currentPeriodStart] = ? AND [lastEventRank] = 50 AND [terminalLatch] = 1", NOW), 1);
+        assert.equal(await count(adapter,
+          "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_operations] WHERE [providerSubscriptionId] = 'sub_private'"), 1);
+        assert.equal(await count(adapter,
+          "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations] WHERE [eventType] = 'customer.subscription.deleted' AND [eventRank] = 50 AND [outcome] = 'applied'"), 1);
       },
     },
     {

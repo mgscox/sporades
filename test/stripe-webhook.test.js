@@ -51,7 +51,7 @@ function stripeEvent(id = "evt_runtime_1", options = {}) {
     object: "event",
     api_version: "2026-07-29.dahlia",
     created,
-    data: { object: { id: "cs_test_runtime_1", object: "checkout.session" } },
+    data: { object: options.object ?? { id: "cs_test_runtime_1", object: "checkout.session" } },
     livemode: false,
     pending_webhooks: 1,
     request: null,
@@ -694,6 +694,120 @@ test("an opt-in atomic Stripe consequence commits or rolls back all app writes",
     ]);
   }, { clock });
 });
+
+test("built-in Team billing convergence shares the atomic Capsule consequence transaction", async () => {
+  let shouldFail = true;
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const capsule = {
+    teamBilling: testTeamBillingDefinition(),
+    stripeEvents: declareStripeEvent({ consequence: "atomic" }, () => {
+      if (shouldFail) throw new Error("injected app consequence failure after platform convergence");
+    }),
+  };
+  await withDatabase({ name: "stripe-team-billing-atomic", payments: { stripe } }, capsule, async (database) => {
+    await database.init();
+    const body = stripeEvent("evt_runtime_team_billing_atomic_1", {
+      type: "customer.subscription.updated",
+      object: { id: "sub_team_billing_atomic", object: "subscription", livemode: false, private_marker: "must-not-persist" },
+    });
+    const admission = await postStripe(database, body);
+    const jobId = JSON.parse(admission.response.body).jobId;
+    await clock.runDueTimers();
+    assert.equal((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId)?.status, "delayed");
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations]").get()).count, 0,
+      "platform convergence rolls back when the atomic app consequence fails");
+
+    shouldFail = false;
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+    assert.equal((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId)?.status, "succeeded");
+    const rows = await database.adapter.prepare("SELECT * FROM [sporades_team_billing_observations]").all();
+    assert.equal(rows.length, 1);
+    assert.doesNotMatch(JSON.stringify(rows), /must-not-persist/);
+  }, { clock });
+});
+
+test("legacy Stripe handlers remain outside committed Team billing convergence", async () => {
+  let attempts = 0;
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const capsule = {
+    teamBilling: testTeamBillingDefinition(),
+    stripeEvents: declareStripeEvent(() => {
+      attempts += 1;
+      throw new Error("legacy handler remains independently retryable");
+    }),
+  };
+  await withDatabase({ name: "stripe-team-billing-legacy", payments: { stripe } }, capsule, async (database) => {
+    await database.init();
+    const body = stripeEvent("evt_runtime_team_billing_legacy_1", {
+      type: "customer.subscription.updated",
+      object: { id: "sub_team_billing_legacy", object: "subscription", livemode: false },
+    });
+    const admission = await postStripe(database, body);
+    const jobId = JSON.parse(admission.response.body).jobId;
+    await clock.runDueTimers();
+    assert.equal((await inspectRuntimeJobs(database.adapter)).find((job) => job.id === jobId)?.status, "delayed");
+    assert.equal(attempts, 1);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations]").get()).count, 1,
+      "the platform consequence commits before a legacy handler runs");
+    clock.advanceBy(1_001);
+    await clock.runDueTimers();
+    assert.equal(attempts, 2);
+    assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations]").get()).count, 1,
+      "legacy retries do not duplicate the committed platform observation");
+  }, { clock });
+});
+
+test("queued Team billing convergence recovers after restart without duplicate observation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-convergence-restart-"));
+  const databasePath = path.join(dir, "data.db");
+  const config = { name: "stripe-team-billing-restart", payments: { stripe } };
+  const capsule = { teamBilling: testTeamBillingDefinition() };
+  const body = stripeEvent("evt_runtime_team_billing_restart_1", {
+    type: "customer.subscription.updated",
+    object: { id: "sub_team_billing_restart", object: "subscription", livemode: false },
+  });
+  let first; let second;
+  try {
+    first = await openDevDatabase(databasePath, "", serverEnv, config, capsule,
+      { createStripeCallbackEndpoint, clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z") });
+    await first.init();
+    const admitted = await postStripe(first, body);
+    const jobId = JSON.parse(admitted.response.body).jobId;
+    assert.equal((await inspectRuntimeJobs(first.adapter)).find((job) => job.id === jobId)?.status, "queued");
+    await first.close();
+    first = null;
+
+    second = await openDevDatabase(databasePath, "", serverEnv, config, capsule,
+      { createStripeCallbackEndpoint, clock: createControllableRuntimeClock("2030-01-01T00:00:00.000Z") });
+    await second.init();
+    await runCurrentUserJobWorker(second);
+    assert.equal((await inspectRuntimeJobs(second.adapter)).find((job) => job.id === jobId)?.status, "succeeded");
+    assert.equal((await second.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations]").get()).count, 1);
+    const duplicate = await postStripe(second, body);
+    assert.equal(JSON.parse(duplicate.response.body).jobId, jobId);
+    await runCurrentUserJobWorker(second);
+    assert.equal((await second.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations]").get()).count, 1);
+  } finally {
+    await Promise.all([first?.close(), second?.close()]);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function testTeamBillingDefinition() {
+  return {
+    catalogue: {
+      agency: {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: {
+          sandbox: { priceId: "price_test_team_billing_atomic" },
+          live: { priceId: "price_live_team_billing_atomic" },
+        },
+      },
+    },
+    authorize: async () => ({ allow: true }),
+  };
+}
 
 test("a rejected transaction-bound log write rolls back an atomic Stripe consequence", async () => {
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");

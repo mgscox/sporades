@@ -69,6 +69,7 @@
       "src/stripe-payment-integration.ts",
       "src/stripe-team-billing-provider.ts",
       "src/stripe-webhook-runtime.ts",
+      "src/team-billing-convergence.ts",
       "src/team-billing-runtime.ts",
       "src/teams-runtime.ts",
       "src/templates/client-runtime-template.ts",
@@ -83,7 +84,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "aa235a67ee50db09c1d02b118928c99ba504d6a00f8bf8bd92907c0352ba170f"
+    "digest": "6567a4bda6d71c6d5f81f5c6579feb1a16d77600ddbb38ca0e8546e2f1ef8da0"
   },
   "outputs": {
     "files": [
@@ -333,6 +334,10 @@
       "dist/stripe-webhook-runtime.d.ts.map",
       "dist/stripe-webhook-runtime.js",
       "dist/stripe-webhook-runtime.js.map",
+      "dist/team-billing-convergence.d.ts",
+      "dist/team-billing-convergence.d.ts.map",
+      "dist/team-billing-convergence.js",
+      "dist/team-billing-convergence.js.map",
       "dist/team-billing-runtime.d.ts",
       "dist/team-billing-runtime.d.ts.map",
       "dist/team-billing-runtime.js",
@@ -362,6 +367,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "ad2b91f0824397c43cdaefd0ba1009d71b59d6e9fe34f08a8613495761c3a009"
+    "digest": "ec270a9ea8115adac4b0f3cd0c9587c2410db291610c32674f93e2d582f299af"
   }
 }
