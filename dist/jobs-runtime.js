@@ -120,8 +120,7 @@ function serializeStripeEventPayloadSentinelMaintenance(afterId, recheckAt) {
 export function stripeEventPayloadRetentionDeadline(settledAt) {
     if (!isCanonicalJobTimestamp(settledAt))
         return null;
-    return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS)
-        ?? new Date(MAX_JOB_TIMESTAMP_MS).toISOString();
+    return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
 }
 /** Internal privacy maintenance for the reserved Stripe Event Job only. */
 export async function cleanupExpiredStripeEventPayloads(database, options = {}) {

@@ -6031,7 +6031,13 @@ async function deferAtomicStripeFenceContention(database: LooseRecord, jobId: st
     "[startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
     "WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NULL",
   )).run(availableAt, jobId, claimToken);
-  if (Number(changed?.changes ?? 0) !== 1) return "lost";
+  if (Number(changed?.changes ?? 0) !== 1) {
+    const currentClaim = await database.adapter.prepare(sql(
+      "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?",
+    )).get(jobId, claimToken);
+    if (currentClaim?.cancelRequestedAt) return "cancelled";
+    return "lost";
+  }
   scheduleJobWorkerWake(database, 26);
   return "deferred";
 }

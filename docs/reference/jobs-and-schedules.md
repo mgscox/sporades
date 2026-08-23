@@ -115,7 +115,9 @@ restart.
 The runtime-owned `_sporades.stripe-event` Job retains the complete frozen
 Verified Stripe event only while delivery is unresolved and for a fixed 30-day
 period after successful settlement. Its deadline starts at the successful
-Job's durable `completedAt`. At the deadline, bounded runtime maintenance
+Job's durable `completedAt`. If the exact deadline cannot be represented in the
+canonical four-digit timestamp range, retention remains explicitly unresolved
+rather than expiring early. At a representable deadline, bounded runtime maintenance
 replaces the payload with a non-sensitive marker and clears its result. The
 successful Job row and digest-only idempotency key remain, so callback replay
 still returns the same terminal Job and never re-executes the consequence.

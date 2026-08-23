@@ -7243,7 +7243,7 @@ function serializeStripeEventPayloadSentinelMaintenance(afterId, recheckAt) {
 }
 function stripeEventPayloadRetentionDeadline(settledAt) {
   if (!isCanonicalJobTimestamp(settledAt)) return null;
-  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS) ?? new Date(MAX_JOB_TIMESTAMP_MS).toISOString();
+  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
 }
 async function cleanupExpiredStripeEventPayloads(database, options = {}) {
   const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
@@ -22574,7 +22574,13 @@ async function deferAtomicStripeFenceContention(database, jobId, claimToken) {
   const changed = await database.adapter.prepare(sql(
     "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [attempts]=CASE WHEN [attempts] > 0 THEN [attempts] - 1 ELSE 0 END, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NULL"
   )).run(availableAt, jobId, claimToken);
-  if (Number(changed?.changes ?? 0) !== 1) return "lost";
+  if (Number(changed?.changes ?? 0) !== 1) {
+    const currentClaim = await database.adapter.prepare(sql(
+      "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
+    )).get(jobId, claimToken);
+    if (currentClaim?.cancelRequestedAt) return "cancelled";
+    return "lost";
+  }
   scheduleJobWorkerWake(database, 26);
   return "deferred";
 }

@@ -15,6 +15,7 @@ import {
   inspectRuntimeJobs,
   openDevDatabase,
   routeEndpoint,
+  stripeEventPayloadRetentionDeadline,
 } from "../dist/server-runtime-source.js";
 import { stripeEvent as declareStripeEvent } from "../dist/server.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
@@ -110,6 +111,12 @@ async function readSentinelMaintenance(adapter) {
 test("reserved Stripe Event payload retention is a fixed finite runtime contract", () => {
   assert.equal(STRIPE_EVENT_PAYLOAD_RETENTION_MS, 30 * 24 * 60 * 60 * 1_000);
   assert.equal(typeof cleanupExpiredStripeEventPayloads, "function");
+  assert.equal(stripeEventPayloadRetentionDeadline("2030-01-01T00:00:00.000Z"), "2030-01-31T00:00:00.000Z");
+  assert.equal(
+    stripeEventPayloadRetentionDeadline("9999-12-15T00:00:00.000Z"),
+    null,
+    "an unrepresentable exact deadline remains unresolved instead of redacting early",
+  );
 });
 
 for (const engine of DATABASE_ADAPTER_ENGINES) {
