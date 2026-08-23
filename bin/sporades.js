@@ -7217,6 +7217,255 @@ function isPlainObject2(value) {
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
 var STRIPE_EVENT_JOB = "_sporades.stripe-event";
+var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
+var STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
+var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+var STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
+var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
+var STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1e3;
+var STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2147483647;
+function parseStripeEventPayloadSentinelMaintenance(value) {
+  if (typeof value !== "string") return { afterId: "", recheckAt: null };
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && typeof parsed.afterId === "string") {
+      return {
+        afterId: parsed.afterId,
+        recheckAt: isCanonicalJobTimestamp(parsed.recheckAt) ? parsed.recheckAt : null
+      };
+    }
+  } catch {
+  }
+  return { afterId: value, recheckAt: null };
+}
+function serializeStripeEventPayloadSentinelMaintenance(afterId, recheckAt) {
+  return JSON.stringify({ afterId, recheckAt });
+}
+function stripeEventPayloadRetentionDeadline(settledAt) {
+  if (!isCanonicalJobTimestamp(settledAt)) return null;
+  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS) ?? new Date(MAX_JOB_TIMESTAMP_MS).toISOString();
+}
+async function cleanupExpiredStripeEventPayloads(database, options = {}) {
+  const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE) {
+    throw jobError("STRIPE_EVENT_PAYLOAD_CLEANUP_INVALID", "Invalid Stripe Event payload cleanup batch.", "Use the runtime-owned bounded cleanup batch.");
+  }
+  const adapter = database.adapter;
+  const sql = adapter.dialect.sql;
+  const nowIso = database.clock.now().toISOString();
+  let assignedCount = 0;
+  let classifiedCount = 0;
+  let redactedCount = 0;
+  let remaining = batchSize;
+  let sentinelScanPending = false;
+  let sentinelRecheckAt = null;
+  const due = await adapter.prepare(sql(
+    "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, nowIso, remaining);
+  for (const row of due) {
+    const changed = await adapter.prepare(sql(
+      "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso);
+    const mutations = Number(changed?.changes ?? 0);
+    redactedCount += mutations;
+    remaining -= mutations;
+  }
+  const cursorRow = await adapter.prepare(sql(
+    "SELECT [value] FROM [sporades] WHERE [key]=?"
+  )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
+  let observedMaintenanceValue = typeof cursorRow?.value === "string" ? cursorRow.value : serializeStripeEventPayloadSentinelMaintenance("", null);
+  let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
+  const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso;
+  if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
+  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? ORDER BY [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, sentinelMaintenance.afterId, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
+  let processedSentinelCount = 0;
+  let processedSentinelCursor = sentinelMaintenance.afterId;
+  for (const observed of sentinelCandidates.slice(0, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE)) {
+    if (remaining === 0) break;
+    processedSentinelCount += 1;
+    processedSentinelCursor = String(observed.id);
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      if (deadline === null) break;
+      const changed = await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      row = await adapter.prepare(sql(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
+  }
+  if (remaining === 0 && processedSentinelCount === 0) {
+    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+  } else if (processedSentinelCount > 0) {
+    const pageHasMore = sentinelCandidates.length > processedSentinelCount;
+    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+    const nextCursor = pageHasMore ? processedSentinelCursor : "";
+    const nextRecheckAt = !pageHasMore && unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance(nextCursor, nextRecheckAt);
+    const advanced = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(advanced?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: nextCursor, recheckAt: nextRecheckAt };
+      sentinelScanPending = pageHasMore;
+      sentinelRecheckAt = nextRecheckAt;
+    }
+  } else if (!recheckIsWaiting && (sentinelMaintenance.afterId !== "" || sentinelMaintenance.recheckAt !== null)) {
+    const unresolvedSentinel = Boolean(await adapter.prepare(sql(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+    const nextRecheckAt = unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
+    const wrapped = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(wrapped?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: "", recheckAt: nextRecheckAt };
+      sentinelRecheckAt = nextRecheckAt;
+    }
+  }
+  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, remaining);
+  for (const observed of unassigned) {
+    if (remaining === 0) break;
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      const changed = deadline === null ? await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]='' WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        if (deadline === null) classifiedCount += mutations;
+        else assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      row = await adapter.prepare(sql(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
+  }
+  const moreUnassigned = await adapter.prepare(sql(
+    "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1"
+  )).get(STRIPE_EVENT_JOB);
+  if (!sentinelScanPending && sentinelMaintenance.afterId === "" && sentinelRecheckAt === null && classifiedCount > 0) {
+    const nextRecheckAt = jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS);
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
+    const scheduled = await adapter.prepare(sql(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(scheduled?.changes ?? 0) === 0) sentinelScanPending = true;
+    else sentinelRecheckAt = nextRecheckAt;
+  }
+  const next = await adapter.prepare(sql(
+    "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1"
+  )).get(STRIPE_EVENT_JOB);
+  const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+  const scheduledCleanupAt = sentinelRecheckAt !== null && nextDeadline !== null ? sentinelRecheckAt < nextDeadline ? sentinelRecheckAt : nextDeadline : sentinelRecheckAt ?? nextDeadline;
+  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso : scheduledCleanupAt;
+  return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
+}
+function scheduleStripeEventPayloadCleanup(database, dueAt) {
+  if (database.__jobStopped) return;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    if (dueAt !== null) {
+      database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? dueAt : Math.min(database.__stripeEventPayloadCleanupRequestedAt, dueAt);
+    }
+    return;
+  }
+  if (dueAt !== null && database.__stripeEventPayloadCleanupTimer && database.__stripeEventPayloadCleanupDueAt !== null && database.__stripeEventPayloadCleanupDueAt <= dueAt) return;
+  installStripeEventPayloadCleanupTimer(database, dueAt);
+}
+function installStripeEventPayloadCleanupTimer(database, dueAt) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = dueAt;
+  if (dueAt === null) return;
+  database.__stripeEventPayloadCleanupTimer = database.clock.setTimer(async () => {
+    database.__stripeEventPayloadCleanupTimer = null;
+    database.__stripeEventPayloadCleanupDueAt = null;
+    if (!database.__jobStopped) await startStripeEventPayloadCleanup(database);
+  }, Math.min(STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS, Math.max(0, dueAt - database.clock.now().getTime())));
+}
+function startStripeEventPayloadCleanup(database) {
+  if (database.__jobStopped) return void 0;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    const now = database.clock.now().getTime();
+    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? now : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now);
+    return database.__stripeEventPayloadCleanupPromise;
+  }
+  const cleanup = runStripeEventPayloadCleanupChain(database);
+  database.__stripeEventPayloadCleanupPromise = cleanup;
+  cleanup.finally(() => {
+    if (database.__stripeEventPayloadCleanupPromise === cleanup) database.__stripeEventPayloadCleanupPromise = null;
+  }).catch(() => {
+  });
+  return cleanup;
+}
+async function runStripeEventPayloadCleanupChain(database) {
+  while (!database.__jobStopped) {
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    let nextDueAt;
+    try {
+      const result = await cleanupExpiredStripeEventPayloads(database);
+      nextDueAt = result.nextCleanupAt === null ? null : Date.parse(result.nextCleanupAt);
+    } catch (error) {
+      try {
+        await database.log.emit({
+          category: "platform",
+          event: "stripe.event_payload_cleanup.failed",
+          level: "error",
+          message: "Stripe Event payload cleanup failed",
+          data: { code: String(error?.code ?? "STRIPE_EVENT_PAYLOAD_CLEANUP_FAILED").slice(0, 80) }
+        });
+      } catch {
+      }
+      nextDueAt = database.clock.now().getTime() + STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS;
+    }
+    if (database.__jobStopped) return;
+    const requestedAt = database.__stripeEventPayloadCleanupRequestedAt;
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
+    const dueAt = requestedAt === null ? nextDueAt : nextDueAt === null ? requestedAt : Math.min(nextDueAt, requestedAt);
+    installStripeEventPayloadCleanupTimer(database, dueAt);
+    return;
+  }
+}
+function stopStripeEventPayloadCleanup(database) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = null;
+  database.__stripeEventPayloadCleanupRequestedAt = null;
+  return database.__stripeEventPayloadCleanupPromise ? Promise.resolve(database.__stripeEventPayloadCleanupPromise).then(() => void 0) : void 0;
+}
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
@@ -7649,6 +7898,10 @@ function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
 }
 async function ensureJobStorage(sqlite) {
   const sql = sqlite.dialect.sql;
+  await sqlite.exec(sql("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+  await sqlite.prepare(sql(
+    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
+  )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, serializeStripeEventPayloadSentinelMaintenance("", null));
   await sqlite.exec(
     sql(
       "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
@@ -7662,7 +7915,10 @@ async function ensureJobStorage(sqlite) {
   await sqlite.exec(
     sql("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  await sqlite.exec(sql(
+    "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
+  ));
   await sqlite.exec(
     sql("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
   );
@@ -18426,6 +18682,11 @@ function activateCurrentUserJobExecution(database, recoveryAt) {
   } catch (error) {
     failures.push(error);
   }
+  try {
+    startStripeEventPayloadCleanup(database);
+  } catch (error) {
+    failures.push(error);
+  }
   if (failures.length > 1) throw new AggregateError(failures, "Job activation scheduling failed.");
   if (failures.length === 1) throw failures[0];
 }
@@ -22252,7 +22513,8 @@ function stopCurrentUserJobWorker(database) {
   database.__jobLeaseRecoveryDueAt = null;
   database.__jobLeaseRecoveryRequestedAt = null;
   for (const activeClaim of database.__jobAbortControllers?.values?.() ?? []) (activeClaim?.controller ?? activeClaim)?.abort?.();
-  const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise].filter(Boolean).map((pending) => Promise.resolve(pending));
+  const payloadCleanupSettlement = stopStripeEventPayloadCleanup(database);
+  const settlements = [database.__jobWorkerPromise, database.__jobLeaseRecoveryPromise, payloadCleanupSettlement].filter(Boolean).map((pending) => Promise.resolve(pending));
   if (settlements.length === 0) return void 0;
   if (settlements.length === 1) return settlements[0];
   return Promise.all(settlements).then(() => void 0);
@@ -22370,7 +22632,7 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" }, { ordinaryCredential: false });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.handler === STRIPE_EVENT_JOB && typeof jobPayload?.providerEventId === "string" ? { providerEventId: jobPayload.providerEventId } : {}, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, async (privilegedCtx) => {
             handlerStarted = true;
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             try {
@@ -22400,9 +22662,15 @@ async function runCurrentUserJobWorker(database) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        await database.adapter.prepare(sql(
+        const payloadRetentionUntil = row.handler === STRIPE_EVENT_JOB ? stripeEventPayloadRetentionDeadline(completedAt) : null;
+        const settled = row.handler === STRIPE_EVENT_JOB ? await database.adapter.prepare(sql(
+          "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ?, [payloadRetentionUntil] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
+        )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && payloadRetentionUntil !== null) {
+          scheduleStripeEventPayloadCleanup(database, Date.parse(payloadRetentionUntil));
+        }
       } catch (error) {
         if (database.__jobStopped && !handlerStarted) {
           await relinquishUnstartedJobClaim(database, row.id, claimToken);

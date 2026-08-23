@@ -309,6 +309,24 @@ newer state. Unknown event types are forward-compatible and safe to ignore. The
 verified raw provider value is sensitive: do not log or persist it by default;
 store only bounded fields required by deliberate Capsule policy. Sporades stores
 no second raw-event history and routine Job inspection omits the durable payload.
+The reserved Job retains that payload while work is unresolved and for 30 days
+after successful settlement, then replaces it with a non-sensitive marker while
+keeping the digest-backed terminal replay tombstone. Failed, exhausted,
+cancelled, queued, delayed, and running deliveries remain explicit unresolved
+exceptions; Sporades never pretends discarded repair evidence was resolved.
+A legacy successful row with an absent or malformed completion timestamp is
+likewise unresolved and retains raw data without a deadline. Safe Job inspection
+reports `INVALID_COMPLETED_AT`; once storage recovery restores a canonical
+completion timestamp, inspection reports `CANONICAL_REPAIR_PENDING` until
+cleanup automatically derives and applies the 30-day clock, without exposing a
+general Job mutation surface.
+Repair discovery is bounded and starvation-safe: a durable runtime-only opaque
+cursor pages across classified rows, survives restart and overlapping cleanup,
+and contains no Stripe identity or payload value. Incomplete pages re-arm
+immediately. Once a full cycle still contains malformed rows, the runtime stores
+a 24-hour safety deadline and resets the cursor; this bounds idle scanning while
+guaranteeing that a direct canonical storage repair is detected within 24 hours
+plus the time needed to drain any bounded 100-row pages ahead of it.
 
 Subscription Checkout begins provider billing; it does not grant local access.
 Verified events and Capsule policy determine any subscription, entitlement,

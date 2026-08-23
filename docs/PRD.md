@@ -76,6 +76,16 @@ The repository currently includes:
   idempotent and order-independent, may ignore unknown types, and alone owns any
   Team, billing-holder, subscription, entitlement, notification, retention,
   export, or erasure state. Existing and non-blank Capsules remain unchanged.
+  Successful reserved Stripe Event Jobs retain their frozen verified payload
+  for 30 days after durable settlement, then runtime-owned bounded cleanup
+  leaves a digest-backed terminal replay tombstone and no provider payload or
+  result. Pending, retrying, exhausted, and cancelled deliveries remain explicit
+  unresolved exceptions. A legacy successful row with an absent or noncanonical
+  completion time is also unresolved, retains its raw payload without a deadline,
+  and exposes only a safe operator reason code until storage repair restores a
+  canonical time. Cleanup is restart-safe across Database adapters, shares one
+  100-mutation budget between due redaction and legacy classification, and
+  exposes neither a generic payload API nor provider identifiers in its logs.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

@@ -110,6 +110,59 @@ duplicate-safe and use idempotency keys for caller retries.
 Durable queued and delayed Job state remains stored and recovers on runtime
 restart.
 
+### Reserved Stripe Event payload retention
+
+The runtime-owned `_sporades.stripe-event` Job retains the complete frozen
+Verified Stripe event only while delivery is unresolved and for a fixed 30-day
+period after successful settlement. Its deadline starts at the successful
+Job's durable `completedAt`. At the deadline, bounded runtime maintenance
+replaces the payload with a non-sensitive marker and clears its result. The
+successful Job row and digest-only idempotency key remain, so callback replay
+still returns the same terminal Job and never re-executes the consequence.
+
+Queued, delayed, running, failed (including exhausted attempts), and cancelled
+Stripe Event Jobs are unresolved exceptions and are not age-redacted. This
+preserves retry and repair evidence rather than silently turning an unresolved
+provider delivery into apparent success. Resolve that lifecycle before treating
+the provider data as settled. Sporades exposes no generic Job-payload read,
+delete, or status-rewrite API.
+
+A legacy successful Stripe Event Job with an absent or noncanonical
+`completedAt` is also unresolved: its raw payload remains retained with no
+deadline. Operator Job inspection reports `payloadRetention.state` as
+`unresolved`, code `INVALID_COMPLETED_AT`, and `deadline: null`; it never reveals
+the payload or provider identity. Sporades intentionally exposes no generic Job
+editor. If a supported storage recovery or migration restores a canonical
+`completedAt`, the next cleanup pass reselects the row and derives the ordinary
+30-day deadline. Exact compare-and-set classification cannot overwrite a
+concurrent repair. Between the canonical repair and that cleanup pass, safe
+inspection reports `CANONICAL_REPAIR_PENDING`; still-malformed sentinel rows
+remain `INVALID_COMPLETED_AT` and receive one bounded periodic safety scan every
+24 hours rather than repeatedly re-arming cleanup.
+
+Cleanup runs at runtime activation, after restart, and at the next deadline. It
+performs at most 100 successful row mutations in total per invocation. It
+redacts already-due rows first, then spends only the remaining shared budget
+assigning or classifying legacy deadlines. Further restart-safe passes drain a
+larger mixed backlog. Exact terminal-state/deadline/lease
+compare-and-set guards, so overlapping runtimes are restart-safe and cannot
+redact pending work. Successful cleanup emits no log. Failures expose only a
+bounded runtime error code—never a Job ID, provider Event ID, object ID,
+idempotency key, or payload value. Routine Job and Schedule inspection continues
+to omit payloads and idempotency-key values.
+
+Repair discovery reads at most 101 sentinel rows per page. A durable opaque
+Job-row keyset cursor advances across rejected impossible dates without using
+dialect-specific date parsing; cursor writes do not consume the 100-Job-mutation
+budget. Non-final pages re-arm immediately, the cursor survives restart, and
+compare-and-set advancement lets concurrent cleaners converge. Completing a
+fully malformed cycle resets the cursor and stores a durable 24-hour safety
+deadline rather than hot-looping. A canonical repair made behind the cursor or
+after wrap is therefore detected within 24 hours plus the time needed to drain
+bounded 100-row pages ahead of it. Restart before that deadline does not scan
+early. The maintenance state stores only the opaque cursor and safety deadline,
+never provider identity, idempotency value, or payload data.
+
 An orderly runtime shutdown or Dev restart stops scheduling new Job work,
 clears immediate, delayed, and retry worker timers plus the retained-lease
 recovery wake, aborts active Job handlers, and awaits scheduled worker
@@ -343,6 +396,15 @@ envelope with the Capsule name and all Jobs ordered newest first. The bounded
 operational state includes handler, status, actor, provenance, attempts, retry
 policy, lifecycle timestamps, and safe result or failure metadata. Input
 payloads and idempotency-key values are omitted.
+
+Reserved Stripe Event Jobs additionally include a non-sensitive
+`payloadRetention` projection. `retained` includes the canonical deadline;
+`redacted` includes the deadline and redaction time; and `unresolved` includes
+an opaque reason code and an absent deadline. The unresolved codes are
+`JOB_NOT_SUCCESSFULLY_SETTLED`, `RETENTION_DEADLINE_UNASSIGNED`, and
+`INVALID_COMPLETED_AT`; a canonically repaired classified row temporarily uses
+`CANONICAL_REPAIR_PENDING`. None disclose provider values or make inspection a
+repair API.
 
 This first operator surface intentionally has no filters, cursor, pagination,
 human renderer, or offline inspection. Pipe the JSON through tools such as

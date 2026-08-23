@@ -388,7 +388,7 @@ test("an admitted Stripe Event is delivered once through its durable Privileged 
     await assert.rejects(() => leakedTeams.countMembers("00000000-0000-4000-8000-000000000000"), (error) => error.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
 
     const auditEvents = await stripeJobAuditEvents(database, jobId);
-    assert.deepEqual(auditEvents.map((event) => event.data.metadata.providerEventId), Array(3).fill(expectedRaw.id));
+    assert.equal(auditEvents.every((event) => !("providerEventId" in event.data.metadata)), true);
     const outcomes = auditEvents.map((event) => event.data.outcome);
     assert.deepEqual(outcomes, ["started", "completed", "finished"]);
   });
@@ -420,7 +420,7 @@ test("Stripe event handler failure retries under the same durable Job identity",
     assert.equal(job.attempts, 2);
     assert.equal(attempts, 2);
     const auditEvents = await stripeJobAuditEvents(database, jobId);
-    assert.deepEqual(auditEvents.map((event) => event.data.metadata.providerEventId), Array(6).fill("evt_runtime_retry_1"));
+    assert.equal(auditEvents.every((event) => !("providerEventId" in event.data.metadata)), true);
     assert.deepEqual(auditEvents.map((event) => event.data.outcome), ["started", "errored", "finished", "started", "completed", "finished"]);
   }, { clock });
 });
@@ -451,7 +451,7 @@ test("Stripe event handler exhaustion becomes one bounded terminal Job failure",
     assert.deepEqual(job.failure, { code: "JOB_FAILED", message: "Job handler failed." });
     assert.doesNotMatch(JSON.stringify(job), /obj_terminal_secret|raw-provider-marker/);
     const auditEvents = await stripeJobAuditEvents(database, jobId);
-    assert.deepEqual(auditEvents.map((event) => event.data.metadata.providerEventId), Array(15).fill("evt_runtime_terminal_1"));
+    assert.equal(auditEvents.every((event) => !("providerEventId" in event.data.metadata)), true);
     assert.deepEqual(auditEvents.map((event) => event.data.outcome), Array.from({ length: 5 }, () => ["started", "errored", "finished"]).flat());
   }, { clock });
 });
@@ -496,7 +496,7 @@ test("cancelling a running Stripe event Job aborts and revokes its Privileged ha
     assert.equal(job.attempts, 1);
     await assert.rejects(() => leakedJobs.list(), (error) => error.code === "PRIVILEGED_JOB_ACCESS_INACTIVE");
     const auditEvents = await stripeJobAuditEvents(database, jobId);
-    assert.deepEqual(auditEvents.map((event) => event.data.metadata.providerEventId), Array(3).fill("evt_runtime_cancel_1"));
+    assert.equal(auditEvents.every((event) => !("providerEventId" in event.data.metadata)), true);
     assert.deepEqual(auditEvents.map((event) => event.data.outcome), ["started", "errored", "finished"]);
   }, { clock });
 });

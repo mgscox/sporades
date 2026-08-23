@@ -6,6 +6,9 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Bound successful reserved Stripe Event Job payloads to 30 days with
+  restart-safe, adapter-portable cleanup, safe unresolved-retention inspection,
+  one shared bounded mutation budget, and digest-backed replay tombstones.
 - Allow token-shaped Access-key metadata (7211528).
 - Implement verified Stripe event policy delivery (7a68cbe).
 - Implement signed Stripe callback admission (8721c85).
@@ -147,4 +150,3 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-

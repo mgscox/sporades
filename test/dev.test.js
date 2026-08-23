@@ -10215,6 +10215,7 @@ test("sporades db dump returns structured table data from the running dev sessio
               name: "sporades",
               columns: ["key", "value"],
               rows: [
+                { key: "stripe-event-payload-retention-sentinel-cursor-v1", value: '{"afterId":"","recheckAt":null}' },
                 { key: "schedule-reconciliation-lock", value: "v1" },
                 { key: "schedule-legacy-adoption-lineage-v1", value: "complete" },
                 { key: "schemaVersion", value: "v1:additive-fields" },
@@ -10357,6 +10358,8 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "scheduledFor",
                 "authSnapshotJson",
                 "credentialJson",
+                "payloadRetentionUntil",
+                "payloadRedactedAt",
               ],
               rows: [],
             },
