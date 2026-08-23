@@ -148,6 +148,12 @@ export const teams = {
   },
 };
 
+export const teamBilling = {
+  get(teamId) {
+    return connect().teamBillingGet(teamId);
+  },
+};
+
 export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
@@ -1216,6 +1222,7 @@ function createConnection() {
     teamsRemoveMember(teamId, userId) { return request("teams.removeMember", { teamId, userId }); },
     teamsLeave(teamId) { return request("teams.leave", { teamId }); },
     teamsDelete(teamId) { return request("teams.delete", { teamId }); },
+    teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;

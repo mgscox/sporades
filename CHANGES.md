@@ -6,6 +6,9 @@ Changes since v0.8.7.
 
 ### 🚀 Features
 
+- Add dormant headless Team Billing declarations with exact sandbox/live Price
+  catalogues, transaction-bound Capsule authority, private runtime correlation,
+  and a provider-free client projection while leaving all rendered UI to apps.
 - Add opt-in transaction-owned, cross-runtime-serialized atomic Stripe
   consequences with exact read-only `teams.countMembers(teamId)` policy access.
 - Bound successful reserved Stripe Event Job payloads to 30 days with

@@ -7,6 +7,7 @@ export const accessKeys = runtime.accessKeys;
 export const files = runtime.files;
 export const preferences = runtime.preferences;
 export const teams = runtime.teams;
+export const teamBilling = runtime.teamBilling;
 export const journey = runtime.journey;
 export const mutations = runtime.mutations;
 export const queries = runtime.queries;

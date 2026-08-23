@@ -47,6 +47,7 @@ import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { normalizeTeamBillingDefinition, readCurrentUserTeamBilling } from "./team-billing-runtime.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -124,7 +125,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission"]);
+const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -586,6 +587,9 @@ export async function openDevDatabase(
     throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
+  const teamBillingDefinition = capsuleDefinition?.teamBilling === undefined
+    ? null
+    : normalizeTeamBillingDefinition(capsuleDefinition.teamBilling);
   if (capsuleDefinition?.files !== undefined && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
     throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
   }
@@ -719,6 +723,7 @@ export async function openDevDatabase(
     passwordResetConfig: resolvePasswordResetConfig(config),
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
+    teamBillingDefinition,
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
       ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: any) {
         const rootDatabase = this.__rootDatabase ?? this;
@@ -736,6 +741,25 @@ export async function openDevDatabase(
           ));
         } finally {
           await drainPendingLogWrites(admissionDatabase);
+        }
+      }
+      : undefined,
+    runTeamBillingAuthority: teamBillingDefinition
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord) {
+        const rootDatabase = this.__rootDatabase ?? this;
+        const trustedTransaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        const policyDatabase = createTransactionDatabase(rootDatabase, trustedTransaction);
+        try {
+          return await withTrustedRead(rootDatabase, {
+            transaction: trustedTransaction,
+            purpose: "team-billing.authority",
+            subject: { teamId: input.teamId, userId: auth.userId, operation: input.operation },
+          }, (trustedDb) => teamBillingDefinition.authorize(
+            createTeamBillingAuthorityContext(policyDatabase, auth, trustedDb),
+            input,
+          ));
+        } finally {
+          await drainPendingLogWrites(policyDatabase);
         }
       }
       : undefined,
@@ -932,6 +956,7 @@ export async function openDevDatabase(
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureTeamsStorage();
+  if (teamBillingDefinition) await sqlite.ensureTeamBillingStorage();
   await ensureJobStorage(sqlite);
   await ensureScheduleStorage(sqlite, options?.scheduleStorageFault);
   await sqlite.ensureFileStorage();
@@ -4705,6 +4730,25 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return;
     }
 
+    if (message.type === "teamBilling.get") {
+      try {
+        const data = await readCurrentUserTeamBilling(database, client.session.auth, message.teamId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.get.result", data, error: null });
+      } catch (error: any) {
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code: "TEAM_BILLING_DENIED",
+            message: "Team Billing is unavailable.",
+            hint: "Sign in as the current policy-approved billing administrator for this Team and retry.",
+          },
+        });
+      }
+      return;
+    }
+
     if (message.type === "teams.create") {
       try {
         const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -5669,7 +5713,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
 
 function validateAppMessageType(type: any) {
   const value = String(type ?? "");
-  const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "upload."];
+  const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "teamBilling.", "upload."];
   const reservedExact = new Set(["error", "refresh"]);
   if (reservedExact.has(value) || reservedPrefixes.some((prefix) => value.startsWith(prefix))) {
     throw commandError(
@@ -5794,6 +5838,15 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
     db: trustedDb,
   };
   return context;
+}
+
+function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord) {
+  return {
+    auth: Object.freeze({ ...auth }),
+    env: database.serverEnv,
+    log: createEndpointLogger(database),
+    db: trustedDb,
+  };
 }
 
 function deferOrScheduleJobDispatch(database: LooseRecord, queueDatabase: LooseRecord, context: LooseRecord | undefined = undefined) {

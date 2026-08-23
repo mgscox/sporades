@@ -169,6 +169,7 @@ import { assertJsonCompatible, commandError, invalidReferenceError } from "./run
 import { normalizeDateValue } from "./stored-value-coding.js";
 import { createUserPreferencesTables } from "./user-preferences-runtime.js";
 import { createTeamTables } from "./teams-runtime.js";
+import { createTeamBillingTables } from "./team-billing-runtime.js";
 // Synchronous access to two Node builtins without an import — see the header, and ADR-0042. `process`
 // is a global in both places this module runs: `dist/database-runtime.js` loaded as an ES module, and
 // the esbuild IIFE the emitted-list bundle splices into a deployed Capsule. Bound as namespaces and
@@ -876,6 +877,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         ensureTeamsStorage() {
             return createTeamTables(this);
+        },
+        ensureTeamBillingStorage() {
+            return createTeamBillingTables(this);
         },
         readUserPreferences(userId) {
             return this.prepare(sql("SELECT [userId], [value], [updatedAt] FROM [sporades_user_preferences] WHERE [userId] = ?")).get(userId) ?? null;

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { createWebSocketHub, handleFileHttpRoute, openDevDatabase, routeEndpoint, runMutation, runQuery } from "../dist/server-runtime-source.js";
 import { Number as NumberField, String as StringField, endpoint, job, mutation, query, table } from "../dist/server.js";
 import { createAdditionalTeam, joinCurrentUserTeam } from "../dist/teams-runtime.js";
+import { readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
 import { withPostgresAdapter } from "./support/database-adapter-engines.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
@@ -130,6 +131,48 @@ const admissionCapsule = {
       await ctx.db.seatPolicies.update(policyId, { maximumMembers });
       return ctx.teams.join(code);
     }),
+  },
+};
+
+let capturedBillingPolicyTable = null;
+const billingPolicyChecks = [];
+const billingCapsule = {
+  ...capsule,
+  name: "team-billing-test",
+  schema: {
+    billingHolders: table({ teamId: StringField(), userId: StringField() }).unique("teamId"),
+  },
+  mutations: {
+    ...capsule.mutations,
+    setBillingHolder: mutation(async (ctx, teamId, userId) => {
+      const existing = await ctx.db.billingHolders.where("teamId", teamId).get();
+      return existing
+        ? ctx.db.billingHolders.update(existing.id, { userId })
+        : ctx.db.billingHolders.insert({ teamId, userId });
+    }),
+  },
+  teamBilling: {
+    catalogue: {
+      studio: {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: { sandbox: { priceId: "price_test_studio" }, live: { priceId: "price_live_studio" } },
+      },
+      agency: {
+        quantity: { kind: "team-members" },
+        stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } },
+      },
+    },
+    async authorize(ctx, input) {
+      const holder = await ctx.db.billingHolders.where("teamId", input.teamId).get();
+      capturedBillingPolicyTable = ctx.db.billingHolders;
+      billingPolicyChecks.push({
+        input,
+        actorUserId: ctx.auth.userId,
+        contextKeys: Object.keys(ctx).sort(),
+        tableKeys: Object.keys(ctx.db.billingHolders).sort(),
+      });
+      return { allow: holder?.userId === ctx.auth.userId };
+    },
   },
 };
 
@@ -1673,6 +1716,163 @@ test("normal File URLs, public URLs, and deletes honour explicit Team File ACLs 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("headless Team Billing returns only policy-approved provider-free state and rechecks every request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-headless-team-billing-"));
+  const runtime = await startRuntime(path.join(dir, "data.db"), billingCapsule);
+  let owner;
+  let nextHolder;
+  let outsider;
+  let anonymous;
+  try {
+    owner = await runtime.open();
+    nextHolder = await runtime.open();
+    outsider = await runtime.open();
+    anonymous = await runtime.open();
+    const ownerSignUp = await signUp(owner, "billing-owner-sign-up", "billing-owner@example.com", "Billing owner");
+    const nextHolderSignUp = await signUp(nextHolder, "billing-next-sign-up", "billing-next@example.com", "Next holder");
+    const outsiderSignUp = await signUp(outsider, "billing-outsider-sign-up", "billing-outsider@example.com", "Outsider");
+    const team = (await send(owner, { id: "billing-team", type: "teams.list", sessionToken: ownerSignUp.data.sessionToken })).data.teams[0];
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)",
+    ).run(team.id, nextHolderSignUp.data.auth.userId, new Date().toISOString());
+    const holderSet = await send(owner, {
+      id: "set-billing-holder",
+      type: "mutation.run",
+      mutation: "setBillingHolder",
+      args: [team.id, ownerSignUp.data.auth.userId],
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(holderSet.error, null, JSON.stringify(holderSet.error));
+
+    const inactive = await send(owner, { id: "billing-inactive", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(inactive.error, null, JSON.stringify(inactive.error));
+    assert.deepEqual(inactive.data, { state: "inactive", teamId: team.id });
+    assert.deepEqual(billingPolicyChecks.at(-1).input, { operation: "read", teamId: team.id, teamRole: "admin" });
+    assert.deepEqual(billingPolicyChecks.at(-1).contextKeys, ["auth", "db", "env", "log"]);
+    assert.deepEqual(billingPolicyChecks.at(-1).tableKeys, ["all", "get", "limit", "orderBy", "where"]);
+    assert.throws(() => capturedBillingPolicyTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+    const reservedNamespace = await send(owner, {
+      id: "billing-reserved-message",
+      type: "app.send",
+      message: "teamBilling.get",
+      data: null,
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(reservedNamespace.error.message, "Reserved app message type: teamBilling.get");
+
+    const now = new Date().toISOString();
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', ?, ?, ?)",
+    ).run(team.id, "cus_private_123", now, now);
+    await runtime.database.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, 'sandbox', ?, ?, 'agency', 7, 'active', 0, ?, ?, ?)",
+    ).run("sub-local-1", team.id, "sub_private_123", "price_test_agency", "2026-09-23T00:00:00.000Z", now, now);
+    const active = await send(owner, { id: "billing-active", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.deepEqual(active.data, {
+      state: "active",
+      teamId: team.id,
+      productKey: "agency",
+      quantity: 7,
+      renewsAt: "2026-09-23T00:00:00.000Z",
+    });
+    assert.doesNotMatch(JSON.stringify(active), /cus_private|sub_private|price_test_agency|provider/i);
+
+    for (const [name, socket, sessionToken] of [
+      ["anonymous", anonymous, null],
+      ["cross-team", outsider, outsiderSignUp.data.sessionToken],
+      ["non-holder-admin", nextHolder, nextHolderSignUp.data.sessionToken],
+    ]) {
+      const denied = await send(socket, { id: `billing-${name}`, type: "teamBilling.get", teamId: team.id, ...(sessionToken ? { sessionToken } : {}) });
+      assert.equal(denied.type, "error");
+      assert.equal(denied.error.code, "TEAM_BILLING_DENIED");
+      assert.equal(denied.data, null);
+      assert.doesNotMatch(JSON.stringify(denied), new RegExp(`${team.id}|agency|cus_|sub_|price_`, "i"));
+    }
+
+    const holderChanged = await send(owner, {
+      id: "change-billing-holder",
+      type: "mutation.run",
+      mutation: "setBillingHolder",
+      args: [team.id, nextHolderSignUp.data.auth.userId],
+      sessionToken: ownerSignUp.data.sessionToken,
+    });
+    assert.equal(holderChanged.error, null, JSON.stringify(holderChanged.error));
+    const formerHolder = await send(owner, { id: "billing-former-holder", type: "teamBilling.get", teamId: team.id, sessionToken: ownerSignUp.data.sessionToken });
+    assert.equal(formerHolder.error.code, "TEAM_BILLING_DENIED");
+    const currentHolder = await send(nextHolder, { id: "billing-current-holder", type: "teamBilling.get", teamId: team.id, sessionToken: nextHolderSignUp.data.sessionToken });
+    assert.deepEqual(currentHolder.data, active.data);
+
+    await runtime.database.adapter.prepare("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?").run(team.id, nextHolderSignUp.data.auth.userId);
+    const capturedSession = await send(nextHolder, { id: "billing-captured-session", type: "teamBilling.get", teamId: team.id, sessionToken: nextHolderSignUp.data.sessionToken });
+    assert.equal(capturedSession.error.code, "TEAM_BILLING_DENIED");
+  } finally {
+    owner?.close(); nextHolder?.close(); outsider?.close(); anonymous?.close();
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("libSQL Team Billing authority and projection use the same transaction-owned contract", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-libsql-"));
+  await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+    const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+    const database = await openDevDatabase(path.join(dir, "unused.db"), "", serverEnv, {
+      name: "team-billing-libsql",
+      auth: { providers: { anonymous: true, email: true } },
+      services: { database: { kind: "database", engine: "libsql" } },
+    }, billingCapsule, { serviceEnv: serverEnv });
+    try {
+      await proveTeamBillingAuthorityOnAdapter(database, "33333333-3333-4333-8333-333333333333", "libsql-billing-admin");
+    } finally {
+      await database.close();
+    }
+  });
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("Postgres Team Billing authority and projection use the same transaction-owned contract", {
+  skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres Team Billing test.",
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-postgres-"));
+  await withPostgresAdapter(async () => {}, { appTableNames: ["billingHolders"] });
+  const serverEnv = {
+    SPORADES_SERVICE_DATABASE_ENGINE: "postgres",
+    SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL,
+  };
+  const database = await openDevDatabase(path.join(dir, "unused.db"), "", serverEnv, {
+    name: "team-billing-postgres",
+    auth: { providers: { anonymous: true, email: true } },
+    services: { database: { engine: "postgres" } },
+  }, billingCapsule, { serviceEnv: serverEnv });
+  try {
+    await proveTeamBillingAuthorityOnAdapter(database, "44444444-4444-4444-8444-444444444444", "postgres-billing-admin");
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function proveTeamBillingAuthorityOnAdapter(database, teamId, userId) {
+  const sql = database.adapter.dialect.sql;
+  const now = new Date().toISOString();
+  const auth = {
+    userId,
+    displayName: "Billing admin",
+    email: `${userId}@example.com`,
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  await database.adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(teamId, "Billing Team", now, userId);
+  await database.adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(teamId, userId, now);
+  await database.adapter.prepare(sql("INSERT INTO [billingHolders] ([id], [createdAt], [updatedAt], [teamId], [userId]) VALUES (?, ?, ?, ?, ?)")).run(`${userId}-holder`, now, now, teamId, userId);
+  assert.deepEqual(await readCurrentUserTeamBilling(database, auth, teamId), { state: "inactive", teamId });
+  assert.throws(() => capturedBillingPolicyTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
+  await database.adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+  await assert.rejects(() => readCurrentUserTeamBilling(database, auth, teamId), (error) => error?.code === "TEAM_BILLING_DENIED");
+}
 
 async function startRuntime(databasePath, capsuleDefinition = capsule, options = {}) {
   const database = await openDevDatabase(databasePath, "", options.serverEnv ?? {}, {

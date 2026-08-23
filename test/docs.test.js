@@ -208,6 +208,33 @@ test("Built-in Teams is discoverable without overstating its authorization model
   assert.match(nav, /\{ text: "Built-in Teams", link: "\/reference\/teams" \}/);
 });
 
+test("headless Team Billing docs preserve the platform-mechanics and app-rendering boundary", async () => {
+  const [changes, readme, prd, context, reference, guide, serverTypes, clientTypes] = await Promise.all([
+    readProjectFile("CHANGES.md"),
+    readProjectFile("README.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/reference/teams.md"),
+    readProjectFile("docs/guide/reference.md"),
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("src/types/client.d.ts"),
+  ]);
+  for (const document of [changes, readme, prd, context, reference]) {
+    assert.match(document, /headless Team Billing/i);
+    assert.match(document, /provider[- ]free/i);
+  }
+  assert.match(reference, /Omit `teamBilling`[\s\S]*creates no Team Billing storage/i);
+  assert.match(reference, /current linked Team administrator[\s\S]*transaction-bound read-only app tables/i);
+  assert.match(reference, /Customer, Subscription, operation, observation, and replay correlation[\s\S]*runtime-owned storage/i);
+  assert.match(reference, /does not render[\s\S]*product\s+copy/i);
+  assert.match(reference, /currently exposes only[\s\S]*teamBilling\.get\(teamId\)/i);
+  assert.match(reference, /Checkout, Portal,[\s\S]*not part of this\s+read-only foundation/i);
+  assert.match(guide, /Declare headless Team Billing/);
+  assert.match(serverTypes, /teamBilling\?: TeamBillingDefinition<Schema>/);
+  assert.match(clientTypes, /get\(teamId: string\): Promise<SporadesResult<TeamBillingProjection>>/);
+  assert.doesNotMatch(clientTypes, /providerCustomerId|providerSubscriptionId|providerPriceId|providerEventId|idempotencyKey/);
+});
+
 test("canonical docs describe the implemented platform scope", async () => {
   const [prd, context, endpointAdr, envAdr, fieldBuilderAdr, authAdr, scaffoldTemplate] = await Promise.all([
     readProjectFile("docs/PRD.md"),

@@ -172,6 +172,7 @@ import { assertJsonCompatible, commandError, invalidReferenceError } from "./run
 import { normalizeDateValue } from "./stored-value-coding.js";
 import { createUserPreferencesTables } from "./user-preferences-runtime.js";
 import { createTeamTables } from "./teams-runtime.js";
+import { createTeamBillingTables } from "./team-billing-runtime.js";
 
 // Synchronous access to two Node builtins without an import — see the header, and ADR-0042. `process`
 // is a global in both places this module runs: `dist/database-runtime.js` loaded as an ES module, and
@@ -1127,6 +1128,9 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     },
     ensureTeamsStorage() {
       return createTeamTables(this);
+    },
+    ensureTeamBillingStorage() {
+      return createTeamBillingTables(this);
     },
     readUserPreferences(userId: any) {
       return this.prepare(

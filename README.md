@@ -59,6 +59,12 @@ sporades host push --restart
   decisions—without a hidden current Team or automatic data partitioning.
   Trusted `teams.admitJoin` policies may make atomic seat decisions from
   read-only app state hidden by the joining user's ordinary row ACLs.
+- **Headless Team Billing, app-rendered**: an optional `teamBilling` declaration
+  binds stable product keys to exact sandbox/live Stripe Prices and a fixed or
+  accepted-Team-member quantity policy. Sporades rechecks current Team-admin
+  authority plus the Capsule's transaction-bound policy on every operation and
+  exposes only the closed, provider-free `teamBilling.get(teamId)` projection;
+  the Capsule owns every component, route, message, and entitlement decision.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation
@@ -68,7 +74,8 @@ sporades host push --restart
 - [Feature reference](https://mgscox.github.io/sporades/guide/reference): exhaustive contracts and
   command lookup, split into focused topic pages.
 - [Built-in Teams](https://mgscox.github.io/sporades/reference/teams): collaboration model, Join
-  links, application roles, and explicit Team ACL decisions.
+  links, application roles, explicit Team ACL decisions, and the headless Team
+  Billing declaration and safe projection.
 - [Access-key server and operator reference](https://mgscox.github.io/sporades/reference/server-runtime#gate-handlers-with-requireauth):
   scoped Bearer admission, user-owned lifecycle, Credential provenance, and
   the bounded operator CLI.

@@ -486,6 +486,34 @@ export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDef
   /** Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
 };
+export type TeamBillingQuantityPolicy =
+  | { kind: "fixed"; value: number }
+  | { kind: "team-members" };
+export type TeamBillingProductDeclaration = {
+  quantity: TeamBillingQuantityPolicy;
+  stripe: {
+    sandbox: { priceId: string };
+    live: { priceId: string };
+  };
+};
+export type TeamBillingOperation = "read" | "checkout" | "portal" | "plan-transition" | "erasure";
+export type TeamBillingAuthorityInput = {
+  teamId: string;
+  teamRole: "admin";
+  operation: TeamBillingOperation;
+  productKey?: string;
+};
+export type TeamBillingAuthorityDecision = { allow: boolean };
+export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+  /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+};
+export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
+  /** Exact allow-list of product keys and distinct Stripe sandbox/live Price bindings. */
+  catalogue: Record<string, TeamBillingProductDeclaration>;
+  /** Rechecked inside every operation transaction after current Team-admin admission. */
+  authorize(ctx: TeamBillingAuthorityContext<Schema>, input: TeamBillingAuthorityInput): MaybePromise<TeamBillingAuthorityDecision>;
+};
 export type CurrentUserTeamsApi = {
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
@@ -1002,6 +1030,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
     /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
     admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
   };
+  /** Optional headless Team Billing control plane. Omission leaves billing dormant and creates no billing storage. */
+  teamBilling?: TeamBillingDefinition<Schema>;
   /** Optional File ACL rules for deliberate non-owner access to normal File operations. File ownership and public-URL revocation remain with the File owner. */
   files?: CapsuleFilesDefinition;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */

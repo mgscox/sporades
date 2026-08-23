@@ -70,7 +70,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
-import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
+import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 const dormantStripe = createStripePaymentIntegration({ enabled: false });
 // @ts-expect-error Lease recovery is an internal runtime/test seam, not Capsule API.
@@ -166,6 +166,29 @@ const app = capsule({
       // @ts-expect-error admission receives only transaction-bound data access, auth, env, and logging.
       ctx.teams.list();
       return { allow: rows.length === 0 };
+    },
+  },
+  teamBilling: {
+    catalogue: {
+      studio: {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: { sandbox: { priceId: "price_test_studio" }, live: { priceId: "price_live_studio" } },
+      },
+      agency: {
+        quantity: { kind: "team-members" },
+        stripe: { sandbox: { priceId: "price_test_agency" }, live: { priceId: "price_live_agency" } },
+      },
+    },
+    authorize: async (ctx, input) => {
+      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      input.teamRole satisfies "admin";
+      input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
+      input.productKey?.toUpperCase();
+      // @ts-expect-error Team Billing authority reads are transaction-bound and read-only.
+      ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
+      // @ts-expect-error Team Billing authority receives no Team management surface.
+      ctx.teams.list();
+      return { allow: rows.length > 0 };
     },
   },
   files: {
@@ -631,6 +654,14 @@ teams.demote("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-00
 teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000000").then((result) => result.data?.removed.valueOf());
 teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
 teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
+teamBilling.get("00000000-0000-4000-8000-000000000000").then((result) => {
+  if (result.data?.state === "active") result.data.productKey.toUpperCase();
+  if (result.data?.state === "attention-required") result.data.reason.toUpperCase();
+});
+// @ts-expect-error Team Billing reads require an explicit Team id.
+teamBilling.get();
+// @ts-expect-error Team Billing never accepts provider identifiers from the browser.
+teamBilling.get("00000000-0000-4000-8000-000000000000", "price_private");
 // @ts-expect-error the initial Teams interface does not accept a current-Team selection or inputs.
 teams.list("current-team");
 // @ts-expect-error Team names must be strings.

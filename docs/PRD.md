@@ -88,6 +88,19 @@ The repository currently includes:
   `RETENTION_DEADLINE_UNREPRESENTABLE` rather than expiring early. Cleanup is restart-safe across Database adapters, shares one
   100-mutation budget between due redaction and legacy classification, and
   exposes neither a generic payload API nor provider identifiers in its logs.
+- An optional headless Team Billing declaration for Capsules that bill an
+  explicit Team. The declaration names 1-32 stable product keys, exact distinct
+  Stripe sandbox/live Price bindings, fixed or accepted-Team-member quantity,
+  and one transaction-bound read-only authorization policy. Sporades first
+  requires the current linked caller to remain an administrator of the exact
+  Team, then rechecks Capsule policy on every operation without issuing a
+  reusable capability. Runtime-owned tables retain private Customer,
+  Subscription, operation, observation, and replay correlation across SQLite,
+  libSQL, and Postgres. The current browser surface is deliberately read-only:
+  `teamBilling.get(teamId)` returns a closed provider-free product-key
+  projection. Omission creates no Team Billing tables and preserves
+  existing Capsules. Sporades renders no billing UI; the Capsule owns every
+  component, route, word, entitlement, and local business rule.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

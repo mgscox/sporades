@@ -127,6 +127,76 @@ files: {
 
 See [Files and Realtime](./files-and-realtime.md#file-uploads) for normal File operations and their opaque denial behaviour.
 
+## Declare headless Team Billing
+
+Team Billing is an optional server declaration and a provider-free client
+projection. It does not render Settings, buttons, progress, errors, or product
+copy. Omit `teamBilling` and the runtime creates no Team Billing storage or
+client authority.
+
+```ts
+capsule({
+  name: "example",
+  schema,
+  teamBilling: {
+    catalogue: {
+      studio: {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: {
+          sandbox: { priceId: "price_test_studio" },
+          live: { priceId: "price_live_studio" },
+        },
+      },
+      agency: {
+        quantity: { kind: "team-members" },
+        stripe: {
+          sandbox: { priceId: "price_test_agency" },
+          live: { priceId: "price_live_agency" },
+        },
+      },
+    },
+    async authorize(ctx, input) {
+      const holder = await ctx.db.billingHolders.where("teamId", input.teamId).get();
+      return { allow: holder?.userId === ctx.auth.userId };
+    },
+  },
+});
+```
+
+Product keys are lowercase stable application identities. Each product binds
+one exact sandbox Price and one different live Price and declares either a
+positive fixed quantity or `team-members`. The declaration is server-only; the
+browser cannot select a mode or Price.
+
+Every operation re-reads the exact Team membership inside its transaction. Only
+a current linked Team administrator reaches `authorize`; the policy then makes
+the Capsule-specific decision from transaction-bound read-only app tables.
+Captured policy tables expire when the callback settles. Removing membership or
+changing the app's billing-holder record therefore denies the next request even
+when the browser retains the same Session.
+
+The client currently exposes only the safe observation seam:
+
+```ts
+import { teamBilling } from "sporades/client";
+
+const result = await teamBilling.get(teamId);
+```
+
+The result is a closed `inactive`, `pending`, `active`, `cancelling`,
+`past-due`, `cancelled`, or `attention-required` projection containing Team ID,
+declared product key, safe quantity, and bounded lifecycle timestamps where
+appropriate. It never contains Stripe Customer, Subscription, Price, Event, or
+operation identifiers, raw provider errors, Job state, idempotency keys, or an
+unvalidated URL. Cross-Team, former-holder, anonymous, non-admin, and stale
+Session requests receive the same generic `TEAM_BILLING_DENIED` result.
+
+Customer, Subscription, operation, observation, and replay correlation lives
+in runtime-owned storage on SQLite, libSQL, and Postgres. Checkout, Portal,
+managed Plan-transition, convergence, and erasure commands are not part of this
+read-only foundation; they are added as operation-specific surfaces rather than
+a generic Stripe proxy.
+
 ## Security, storage, and audit boundaries
 
 Team state is runtime-owned and persists outside the Capsule schema through the configured Database adapter. Team creation, bootstrap, Join redemption, membership changes, role reconciliation, and last-admin checks use transaction boundaries so concurrency cannot create duplicate memberships or an adminless Team. Team state survives runtime restart and has adapter conformance coverage.

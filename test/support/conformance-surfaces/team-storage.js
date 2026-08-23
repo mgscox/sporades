@@ -10,7 +10,29 @@ async function count(adapter, statement, ...values) {
 export const CONFORMANCE_SURFACE = {
   title: "Database adapter conformance (runtime Team storage)",
   appTableNames: [],
+  async prepareStorage(adapter) {
+    await adapter.ensureTeamsStorage();
+    await adapter.ensureTeamBillingStorage();
+  },
   cases: [
+    {
+      name: "ensureTeamBillingStorage creates and preserves private provider correlation on every engine",
+      async run(adapter) {
+        await adapter.ensureTeamsStorage();
+        await adapter.ensureTeamBillingStorage();
+        const sql = adapter.dialect.sql;
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?)")).run("billing-team", "sandbox", "cus_private", NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [observedAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run("local-sub", "billing-team", "sandbox", "sub_private", "price_private", "agency", 3, "active", 0, "2026-09-14T12:00:00.000Z", NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run("operation-1", "request-1", "billing-team", "billing-admin", "checkout", "agency", "queued", null, "private-idempotency", null, NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run("observation-1", "billing-team", "sandbox", "evt_private", "sub_private", "digest", NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_replay] ([providerEventId], [payloadDigest], [settledAt], [retainedUntil]) VALUES (?, ?, ?, ?)")).run("evt_private", "digest", NOW, "2026-09-13T12:00:00.000Z");
+
+        await adapter.ensureTeamBillingStorage();
+        for (const table of ["customers", "subscriptions", "operations", "observations", "replay"]) {
+          assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 1, table);
+        }
+      },
+    },
     {
       name: "ensureTeamsStorage creates empty writable runtime tables and preserves existing Team history",
       async run(adapter) {

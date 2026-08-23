@@ -328,6 +328,20 @@ export type TeamsApi = {
   delete(teamId: string): Promise<SporadesResult<{ deleted: true }>>;
 };
 
+/** Closed, provider-identifier-free Team Billing state for app-owned rendering. */
+export type TeamBillingProjection =
+  | { state: "inactive"; teamId: string }
+  | { state: "pending"; teamId: string; operation: "checkout" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
+  | { state: "active"; teamId: string; productKey: string; quantity: number; renewsAt: string }
+  | { state: "cancelling"; teamId: string; productKey: string; quantity: number; endsAt: string }
+  | { state: "past-due" | "cancelled"; teamId: string; productKey: string; quantity: number }
+  | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
+
+/** Headless Team Billing transport. Apps own every rendered element and all copy. */
+export type TeamBillingApi = {
+  get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
+};
+
 /** Hook state returned by `useQuery()`. */
 export type QueryState<Data = unknown> = {
   data: Data | null;
@@ -582,6 +596,8 @@ export const files: FilesApi;
 export const preferences: PreferencesApi;
 /** Runtime-owned Teams for the current linked user. */
 export const teams: TeamsApi;
+/** Provider-free Team Billing state for app-owned UI. */
+export const teamBilling: TeamBillingApi;
 /** Explicit, page-runtime User journey publication lifecycle; server sessions are created lazily by accepted publications. */
 export const journey: JourneyApi;
 /** Framework-neutral query state subscriptions. */

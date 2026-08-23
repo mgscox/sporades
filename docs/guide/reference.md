@@ -63,6 +63,7 @@ Runtime-owned Teams, membership application roles, email-bound Join links, and e
 ### [Manage Teams from a Capsule](../reference/teams.md#manage-teams-from-a-capsule) {#manage-teams-from-a-capsule}
 ### [Email-bound Join links](../reference/teams.md#email-bound-join-links) {#email-bound-join-links}
 ### [Authorize explicit Team resources](../reference/teams.md#authorize-explicit-team-resources) {#authorize-explicit-team-resources}
+### [Declare headless Team Billing](../reference/teams.md#declare-headless-team-billing) {#declare-headless-team-billing}
 ### [Security, storage, and audit boundaries](../reference/teams.md#security-storage-and-audit-boundaries) {#security-storage-and-audit-boundaries}
 
 ## Jobs and Schedules

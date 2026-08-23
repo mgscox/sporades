@@ -46,6 +46,11 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_team_membership_counters",
   "sporades_team_memberships",
   "sporades_teams",
+  "sporades_team_billing_customers",
+  "sporades_team_billing_subscriptions",
+  "sporades_team_billing_operations",
+  "sporades_team_billing_observations",
+  "sporades_team_billing_replay",
   "sporades_user_preferences",
 ];
 
