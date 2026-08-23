@@ -53,6 +53,9 @@ const RUNTIME_TABLE_NAMES = [
   "sporades_team_billing_replay",
   "sporades_team_billing_desired_state",
   "sporades_team_billing_provider_lanes",
+  "sporades_team_billing_erasure_state",
+  "sporades_team_billing_erasure_tombstones",
+  "sporades_team_billing_erasure_object_tombstones",
   "sporades_user_preferences",
 ];
 

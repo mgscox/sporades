@@ -80,7 +80,7 @@ test("Team Billing declaration is dormant when omitted and validates an exact tw
       teamBilling: { catalogue: definition.catalogue, authorize },
     });
     assert.deepEqual(Object.keys(declared.teamBillingDefinition.catalogue), ["agency", "studio"]);
-    assert.equal(declared.adapter.prepare("SELECT COUNT(*) AS [count] FROM sqlite_master WHERE [type] = 'table' AND [name] LIKE 'sporades_team_billing_%'").get().count, 7);
+    assert.equal(declared.adapter.prepare("SELECT COUNT(*) AS [count] FROM sqlite_master WHERE [type] = 'table' AND [name] LIKE 'sporades_team_billing_%'").get().count, 10);
     await declared.close();
 
     for (const invalid of [
@@ -119,7 +119,7 @@ test("Team Billing provider correlation tables are platform-owned and created in
   assert.equal(calls.length, 1);
   releaseFirst();
   await created;
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, 10);
   assert.match(calls[0], /sporades_team_billing_customers/);
   assert.match(calls[1], /sporades_team_billing_subscriptions/);
   assert.match(calls[2], /sporades_team_billing_operations/);
@@ -127,4 +127,7 @@ test("Team Billing provider correlation tables are platform-owned and created in
   assert.match(calls[4], /sporades_team_billing_replay/);
   assert.match(calls[5], /sporades_team_billing_desired_state/);
   assert.match(calls[6], /sporades_team_billing_provider_lanes/);
+  assert.match(calls[7], /sporades_team_billing_erasure_state/);
+  assert.match(calls[8], /sporades_team_billing_erasure_tombstones/);
+  assert.match(calls[9], /sporades_team_billing_erasure_object_tombstones/);
 });

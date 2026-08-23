@@ -21,6 +21,25 @@ const operationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const periodStart = 1_787_952_000;
 const periodEnd = 1_790_630_400;
 
+test("late provider events matching an erasure identity tombstone cannot recreate entitlement", async () => {
+  const fixture = await openFixture();
+  try {
+    fixture.database.capsuleIdentity = "late-erasure-capsule";
+    fixture.database.teamBillingErasureObjectKey = (providerObjectId) =>
+      runtime.teamBillingErasureObjectKey(fixture.database, providerObjectId);
+    const key = fixture.database.teamBillingErasureObjectKey("sub_converge");
+    fixture.adapter.prepare(
+      "INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, 'subscription', 'cancelled', ?, ?)",
+    ).run(key, "2026-08-23T12:00:00.000Z", "2026-08-23T12:00:00.000Z");
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_erased_late", "customer.subscription.updated")), { applied: false, erased: true });
+    assert.equal(fixture.getSubscription(), undefined);
+    assert.equal(JSON.stringify(fixture.adapter.prepare(
+      "SELECT * FROM [sporades_team_billing_erasure_object_tombstones]",
+    ).get()).includes("sub_converge"), false);
+  } finally { fixture.close(); }
+});
+
 test("verified Team Billing observations converge with semantic ratchets and safe quarantine", async () => {
   const fixture = await openFixture();
   try {

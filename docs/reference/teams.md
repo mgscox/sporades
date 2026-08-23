@@ -323,8 +323,31 @@ cannot be associated safely is visible only through bounded provider-free
 Stripe consequence shares the same transaction. A legacy `stripeEvent(handler)`
 runs after the platform commit and keeps its existing independent retry model.
 
-Erasure remains a later operation-specific surface rather than a generic
-Stripe proxy.
+### Prepare provider-safe Team erasure
+
+Call `teamBilling.prepareErasure({ teamId, requestId })` before the app's
+separate local Team deletion mutation. The result is provider-free `pending`
+or `authorized` state for app-owned rendering. While preparation is active,
+Sporades blocks new Team Checkout, Portal, managed Plan, and seat work.
+
+The reserved Job resolves every issued Checkout without guessing, immediately
+cancels every known or newly discovered live Subscription, and retries with
+stable provider idempotency. Exact 404 responses may establish safely closed
+objects; network absence and incomplete lists may not. An open Checkout that
+completes during expiry is accepted only after Stripe's exact non-expireable
+response and a fresh verified retrieve. Restart and provider-lane recovery use
+fresh fenced Job generations, and stale claim tokens cannot settle erasure.
+Sporades does not delete the Stripe Customer.
+
+After authorization, the app's own deletion mutation must call
+`await ctx.teamBilling.admitLocalErasure(teamId)`. This transaction-bound,
+provider-free check returns only `{ allowed: true }`; the app remains
+responsible for its local rows and all UI. Retained, detached, aborted,
+rolled-back, or post-settlement use fails closed. Runtime tombstones are identity-only
+digests with terminal classes and timestamps. They retain no Team, User,
+email, holder, product, Plan, quantity, invoice, raw provider evidence, or
+recoverable provider identifier, and they prevent late verified events from
+recreating entitlement.
 
 ## Security, storage, and audit boundaries
 

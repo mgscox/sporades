@@ -125,6 +125,15 @@ The repository currently includes:
   digest, never raw provider JSON. Omission creates no Team Billing tables and preserves
   existing Capsules. Sporades renders no billing UI; the Capsule owns every
   component, route, word, entitlement, and local business rule.
+  Provider-safe erasure is a dedicated durable operation:
+  `teamBilling.prepareErasure(...)` fences new billing work, exactly resolves
+  every issued Checkout, and immediately cancels every associated or newly
+  discovered live Subscription. Only complete provider evidence permits the
+  transaction-bound, provider-free `ctx.teamBilling.admitLocalErasure(teamId)`
+  check in the Capsule's separate local deletion mutation. Identity-only
+  tombstones prevent late events from recreating entitlement and retain no
+  Team, User, email, holder, Plan, quantity, invoice, raw provider evidence, or
+  recoverable provider identifier. Stripe Customer deletion is out of scope.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

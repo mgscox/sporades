@@ -504,6 +504,10 @@ export type TeamBillingAuthorityInput = {
   productKey?: string;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
+export type CurrentUserTeamBillingApi = {
+  /** Admits only the app's separate local deletion transaction after provider quiescence is durably proven. */
+  admitLocalErasure(teamId: string): Promise<{ allowed: true }>;
+};
 export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
@@ -759,6 +763,8 @@ export type CapsuleContext<
   serverAuth: ServerAuthApi;
   /** Runtime-owned current-user Teams with normal linked-user authorization. */
   teams: CurrentUserTeamsApi;
+  /** Provider-free, transaction-bound Team Billing deletion admission. */
+  teamBilling: CurrentUserTeamBillingApi;
   /** Runtime-owned Access keys issued and managed by the current linked Session owner. */
   accessKeys: CurrentUserAccessKeysApi;
 };

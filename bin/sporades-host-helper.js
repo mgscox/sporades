@@ -187,6 +187,9 @@ var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled
 var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
 var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 
+// src/team-billing-erasure.ts
+var CLAIM_TTL_MS2 = 5 * 6e4;
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;

@@ -50,6 +50,9 @@ export declare function applyVerifiedTeamBillingCheckoutObservation(database: Lo
 export declare function admitTeamBillingActor(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord): Promise<Readonly<{
     admitted: true;
 }>>;
+export declare function teamBillingErasureKey(database: LooseRecord, teamId: string): string;
+export declare function teamBillingErasureObjectKey(database: LooseRecord, providerObjectId: string): string;
+export declare function assertTeamBillingErasureInactive(database: LooseRecord, transaction: LooseRecord, teamId: string): Promise<void>;
 export declare function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string): Promise<Readonly<{
     state: "attention-required";
     teamId: string;

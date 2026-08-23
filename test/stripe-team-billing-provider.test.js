@@ -60,6 +60,159 @@ const managedSubscriptionInput = {
   operationKind: "plan-transition",
 };
 
+const erasureInput = {
+  mode: "sandbox",
+  customerId: "cus_existing_team",
+  checkoutSessionIds: ["cs_test_erasure_complete", "cs_test_erasure_open", "cs_test_erasure_open_race"],
+  subscriptionIds: ["sub_erasure_known"],
+  idempotencyKey: "sporades:team-erasure:stable-provider-key",
+};
+
+test("provider-safe erasure expires open Checkouts and immediately cancels known and newly discovered Subscriptions", async () => {
+  const observed = [];
+  let listPass = 0;
+  let racingCheckoutRetrieves = 0;
+  await withProvider(async (request, response) => {
+    observed.push({ method: request.method, url: request.url, idempotencyKey: request.headers["idempotency-key"] });
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_open" && request.method === "GET") {
+      response.end(JSON.stringify(validErasureCheckout("cs_test_erasure_open", "open"))); return;
+    }
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_open/expire") {
+      response.end(JSON.stringify(validErasureCheckout("cs_test_erasure_open", "expired"))); return;
+    }
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_open_race" && request.method === "GET") {
+      racingCheckoutRetrieves += 1;
+      response.end(JSON.stringify(racingCheckoutRetrieves === 1
+        ? validErasureCheckout("cs_test_erasure_open_race", "open")
+        : { ...validErasureCheckout("cs_test_erasure_open_race", "complete"),
+          customer: erasureInput.customerId, subscription: "sub_erasure_from_expire_race" })); return;
+    }
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_open_race/expire") {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: {
+        type: "invalid_request_error",
+        message: "Only Checkout Sessions with a status in [\"open\"] can be expired. This Checkout Session has a status of `complete`.",
+      } })); return;
+    }
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_complete") {
+      response.end(JSON.stringify({ ...validErasureCheckout("cs_test_erasure_complete", "complete"),
+        customer: erasureInput.customerId, subscription: "sub_erasure_from_checkout" })); return;
+    }
+    if (request.url?.startsWith("/v1/subscriptions?")) {
+      listPass += 1;
+      const status = listPass === 1 ? "active" : "canceled";
+      response.end(JSON.stringify({ object: "list", has_more: false, data: [
+        validErasureSubscription("sub_erasure_known", status),
+        validErasureSubscription("sub_erasure_from_checkout", "canceled"),
+        validErasureSubscription("sub_erasure_from_expire_race", "canceled"),
+        validErasureSubscription("sub_erasure_discovered", status),
+      ] })); return;
+    }
+    if (request.method === "DELETE" && request.url?.startsWith("/v1/subscriptions/")) {
+      response.end(JSON.stringify(validErasureSubscription(request.url.split("/").at(-1), "canceled"))); return;
+    }
+    response.writeHead(500).end();
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    const result = await provider.quiesceTeamBilling(erasureInput);
+    assert.deepEqual(result.checkouts, [
+      { id: "cs_test_erasure_complete", state: "complete" },
+      { id: "cs_test_erasure_open", state: "expired" },
+      { id: "cs_test_erasure_open_race", state: "complete" },
+    ]);
+    assert.deepEqual(result.subscriptions, [
+      { id: "sub_erasure_discovered", state: "cancelled" },
+      { id: "sub_erasure_from_checkout", state: "cancelled" },
+      { id: "sub_erasure_from_expire_race", state: "cancelled" },
+      { id: "sub_erasure_known", state: "cancelled" },
+    ]);
+    assert.equal(result.ok, true);
+    assert.equal(result.outcome, "quiesced");
+  });
+  const cancellations = observed.filter((entry) => entry.method === "DELETE");
+  assert.deepEqual(cancellations.map((entry) => entry.url).sort(), [
+    "/v1/subscriptions/sub_erasure_discovered", "/v1/subscriptions/sub_erasure_known",
+  ]);
+  assert.ok(cancellations.every((entry) => /^sporades-team-billing-cancel-[a-f0-9]{64}$/.test(entry.idempotencyKey)));
+  assert.equal(racingCheckoutRetrieves, 2, "the exact non-expireable response is resolved by fresh provider evidence");
+});
+
+test("provider-safe erasure treats exact 404 resources as safely closed without inventing provider state", async () => {
+  await withProvider(async (_request, response) => {
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { type: "invalid_request_error", code: "resource_missing", message: "raw provider detail" } }));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    const result = await provider.quiesceTeamBilling({
+      mode: "sandbox", checkoutSessionIds: ["cs_test_erasure_missing"], subscriptionIds: ["sub_erasure_missing"],
+      idempotencyKey: erasureInput.idempotencyKey,
+    });
+    assert.deepEqual(result.checkouts, [{ id: "cs_test_erasure_missing", state: "safely-closed" }]);
+    assert.deepEqual(result.subscriptions, [{ id: "sub_erasure_missing", state: "safely-closed" }]);
+    assert.equal(JSON.stringify(result).includes("raw provider detail"), false);
+  });
+});
+
+test("provider-safe erasure does not reclassify a different invalid-request response as a completion race", async () => {
+  let retrieves = 0;
+  await withProvider(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.method === "GET") {
+      retrieves += 1;
+      response.end(JSON.stringify(validErasureCheckout("cs_test_erasure_wrong_error", "open"))); return;
+    }
+    response.writeHead(400);
+    response.end(JSON.stringify({ error: {
+      type: "invalid_request_error",
+      message: "Only Checkout Sessions with a status in [\"open\"] can be expired. This request was rejected for another reason.",
+    } }));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    await assert.rejects(provider.quiesceTeamBilling({
+      mode: "sandbox", checkoutSessionIds: ["cs_test_erasure_wrong_error"], subscriptionIds: [],
+      idempotencyKey: erasureInput.idempotencyKey,
+    }), (error) => error?.code === "TEAM_BILLING_PROVIDER_REJECTED" && error?.retryable === false);
+  });
+  assert.equal(retrieves, 1, "only the exact non-expireable response permits a verification re-read");
+});
+
+test("provider-safe erasure replays a lost Checkout response with the original exact idempotent request", async () => {
+  let created;
+  await withProvider(async (request, response) => {
+    const body = await readBody(request);
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/v1/checkout/sessions" && request.method === "POST") {
+      created = { key: request.headers["idempotency-key"], params: new URLSearchParams(body) };
+      response.end(JSON.stringify({
+        ...validErasureCheckout("cs_test_erasure_recovered", "expired"),
+        mode: "subscription", client_reference_id: input.operationId,
+        expires_at: input.providerExpiresAt,
+        url: "https://checkout.stripe.com/c/pay/cs_test_erasure_recovered#fixture",
+      })); return;
+    }
+    if (request.url === "/v1/checkout/sessions/cs_test_erasure_recovered") {
+      response.end(JSON.stringify(validErasureCheckout("cs_test_erasure_recovered", "expired"))); return;
+    }
+    if (request.url?.startsWith("/v1/subscriptions?")) {
+      response.end(JSON.stringify({ object: "list", has_more: false, data: [] })); return;
+    }
+    response.writeHead(500).end();
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    const result = await provider.quiesceTeamBilling({
+      mode: "sandbox", customerId: input.customerId, checkoutSessionIds: [], subscriptionIds: [],
+      checkoutRecoveries: [input], idempotencyKey: erasureInput.idempotencyKey,
+    });
+    assert.deepEqual(result.checkouts, [{ id: "cs_test_erasure_recovered", state: "expired" }]);
+  });
+  assert.equal(created.key, input.idempotencyKey);
+  assert.equal(created.params.get("line_items[0][price]"), input.priceId);
+  assert.equal(created.params.get("line_items[0][quantity]"), String(input.quantity));
+  assert.equal(created.params.get("client_reference_id"), input.operationId);
+  assert.equal(created.params.get("expires_at"), String(input.providerExpiresAt));
+});
+
 test("the internal Team Billing provider sends one exact subscription Checkout envelope", async () => {
   let observed;
   await withProvider(async (request, response) => {
@@ -371,6 +524,14 @@ function validPortalConfiguration() {
       },
     },
   };
+}
+
+function validErasureCheckout(id, status) {
+  return { id, object: "checkout.session", mode: "subscription", livemode: false, status };
+}
+
+function validErasureSubscription(id, status) {
+  return { id, object: "subscription", customer: erasureInput.customerId, livemode: false, status };
 }
 
 function mergePortalConfiguration(base, override) {

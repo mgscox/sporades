@@ -115,7 +115,154 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         outcome: paymentActionRequired ? "payment-action-required" : "acknowledged",
       });
     },
+    async quiesceTeamBilling(input: LooseRecord) {
+      validateErasureInput(input, config.livemode);
+      throwIfAborted(options.signal);
+      const checkouts: LooseRecord[] = [];
+      const subscriptionIds = new Set<string>(input.subscriptionIds);
+      const checkoutSessionIds = new Set<string>(input.checkoutSessionIds);
+      let customerId = input.customerId ?? null;
+      for (const recovery of input.checkoutRecoveries ?? []) {
+        let recovered: LooseRecord;
+        try {
+          recovered = await stripe.checkout.sessions.create({
+            mode: "subscription",
+            line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
+            success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
+            cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
+            client_reference_id: recovery.businessReference,
+            expires_at: recovery.providerExpiresAt,
+            metadata: { sporades_team_billing_operation: recovery.operationId },
+            subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId } },
+            ...(recovery.customerId ? { customer: recovery.customerId } : {}),
+          }, { idempotencyKey: recovery.idempotencyKey });
+        } catch (error: any) { throwProviderOperationFailure(error); }
+        if (!validSessionId(recovered?.id) || recovered.client_reference_id !== recovery.operationId
+          || recovered.livemode !== config.livemode || recovered.mode !== "subscription") throw providerFailure(false);
+        checkoutSessionIds.add(recovered.id);
+      }
+      for (const sessionId of [...checkoutSessionIds].sort()) {
+        let session: LooseRecord | null;
+        try { session = await stripe.checkout.sessions.retrieve(sessionId); }
+        catch (error: any) {
+          if (Number(error?.statusCode) === 404) { checkouts.push({ id: sessionId, state: "safely-closed" }); continue; }
+          throwProviderOperationFailure(error);
+        }
+        attestErasureCheckout(session, sessionId, config.livemode);
+        if (session.status === "open") {
+          try { session = await stripe.checkout.sessions.expire(sessionId); }
+          catch (error: any) {
+            if (Number(error?.statusCode) !== 404 && !isCheckoutNonExpireableRace(error)) {
+              throwProviderOperationFailure(error);
+            }
+            try { session = await stripe.checkout.sessions.retrieve(sessionId); }
+            catch (retrieval: any) {
+              if (Number(retrieval?.statusCode) === 404) { checkouts.push({ id: sessionId, state: "safely-closed" }); continue; }
+              throwProviderOperationFailure(retrieval);
+            }
+          }
+          attestErasureCheckout(session, sessionId, config.livemode);
+        }
+        if (session.status === "complete") {
+          if (session.customer && !validCustomerId(session.customer)) throw providerFailure(false);
+          if (session.subscription && !validSubscriptionId(session.subscription)) throw providerFailure(false);
+          if (customerId && session.customer && customerId !== session.customer) throw providerFailure(false);
+          customerId ??= session.customer ?? null;
+          if (session.subscription) subscriptionIds.add(session.subscription);
+          checkouts.push({ id: sessionId, state: "complete" });
+        } else if (session.status === "expired") checkouts.push({ id: sessionId, state: "expired" });
+        else throw providerFailure(false);
+      }
+      const subscriptions = new Map<string, LooseRecord>();
+      for (let pass = 0; pass < 4; pass += 1) {
+        if (customerId) {
+          let startingAfter: string | undefined;
+          do {
+            let page: LooseRecord;
+            try { page = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) }); }
+            catch (error: any) { throwProviderOperationFailure(error); }
+            if (page?.object !== "list" || !Array.isArray(page.data) || typeof page.has_more !== "boolean") throw providerFailure(false);
+            for (const subscription of page.data) {
+              attestErasureSubscription(subscription, subscription.id, customerId, config.livemode);
+              subscriptionIds.add(subscription.id);
+              subscriptions.set(subscription.id, subscription);
+            }
+            startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+            if (page.has_more && !validSubscriptionId(startingAfter)) throw providerFailure(false);
+          } while (startingAfter);
+        }
+        let changed = false;
+        for (const subscriptionId of [...subscriptionIds].sort()) {
+          let subscription = subscriptions.get(subscriptionId);
+          if (!subscription) {
+            try { subscription = await stripe.subscriptions.retrieve(subscriptionId); }
+            catch (error: any) {
+              if (Number(error?.statusCode) === 404) { subscriptions.set(subscriptionId, { id: subscriptionId, safelyClosed: true }); continue; }
+              throwProviderOperationFailure(error);
+            }
+            const inferredCustomer = subscription.customer;
+            if (!customerId && validCustomerId(inferredCustomer)) customerId = inferredCustomer;
+            if (!customerId) throw providerFailure(false);
+            attestErasureSubscription(subscription, subscriptionId, customerId, config.livemode);
+            subscriptions.set(subscriptionId, subscription);
+          }
+          if (!subscription.safelyClosed && subscription.status !== "canceled") {
+            try { subscription = await stripe.subscriptions.cancel(subscriptionId, {}, { idempotencyKey: erasureCancellationKey(input.idempotencyKey, subscriptionId) }); }
+            catch (error: any) {
+              if (Number(error?.statusCode) === 404) { subscriptions.set(subscriptionId, { id: subscriptionId, safelyClosed: true }); continue; }
+              throwProviderOperationFailure(error);
+            }
+            attestErasureSubscription(subscription, subscriptionId, customerId!, config.livemode);
+            if (subscription.status !== "canceled") throw providerFailure(false);
+            subscriptions.set(subscriptionId, subscription);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+        if (pass === 3) throw providerFailure(true);
+      }
+      throwIfAborted(options.signal);
+      return Object.freeze({
+        ok: true,
+        outcome: "quiesced",
+        providerObservedAt: new Date().toISOString(),
+        checkouts: Object.freeze(checkouts.sort((left, right) => left.id.localeCompare(right.id)).map(Object.freeze)),
+        subscriptions: Object.freeze([...subscriptions.values()].sort((left, right) => left.id.localeCompare(right.id))
+          .map((subscription) => Object.freeze({ id: subscription.id, state: subscription.safelyClosed ? "safely-closed" : "cancelled" }))),
+      });
+    },
   });
+}
+
+function validateErasureInput(input: LooseRecord, livemode: boolean) {
+  const keys = Object.keys(input ?? {}).sort();
+  const expected = ["checkoutSessionIds", "idempotencyKey", "mode", "subscriptionIds",
+    ...(input?.customerId === undefined ? [] : ["customerId"]), ...(input?.checkoutRecoveries === undefined ? [] : ["checkoutRecoveries"])].sort();
+  if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== expected.join("\0")
+    || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
+    || input.customerId !== undefined && !validCustomerId(input.customerId)
+    || !Array.isArray(input.checkoutSessionIds) || !input.checkoutSessionIds.every(validSessionId)
+    || !Array.isArray(input.subscriptionIds) || !input.subscriptionIds.every(validSubscriptionId)
+    || new Set(input.checkoutSessionIds).size !== input.checkoutSessionIds.length
+    || new Set(input.subscriptionIds).size !== input.subscriptionIds.length
+    || input.checkoutRecoveries !== undefined && (!Array.isArray(input.checkoutRecoveries)
+      || !input.checkoutRecoveries.every((recovery: any) => { try { validateInput(recovery); return true; } catch { return false; } }))
+    || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255) throw providerFailure(false);
+}
+
+function attestErasureCheckout(session: LooseRecord, sessionId: string, livemode: boolean) {
+  if (session?.object !== "checkout.session" || session.id !== sessionId || session.mode !== "subscription"
+    || session.livemode !== livemode || !["open", "complete", "expired"].includes(session.status)) throw providerFailure(false);
+}
+
+function attestErasureSubscription(subscription: LooseRecord, subscriptionId: string, customerId: string, livemode: boolean) {
+  if (subscription?.object !== "subscription" || subscription.id !== subscriptionId
+    || subscription.customer !== customerId || subscription.livemode !== livemode || typeof subscription.status !== "string") throw providerFailure(false);
+}
+
+function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
+  const crypto = process.getBuiltinModule("node:crypto");
+  return `sporades-team-billing-cancel-${crypto.createHash("sha256").update(`${erasureKey}\0${subscriptionId}`).digest("hex")}`;
 }
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
@@ -273,6 +420,14 @@ function validPortalUrl(value: any) {
       && /^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)
       && !url.username && !url.password && !url.port;
   } catch { return false; }
+}
+
+function isCheckoutNonExpireableRace(error: any) {
+  const message = error?.raw?.message ?? error?.message;
+  return Number(error?.statusCode) === 400
+    && error?.type === "StripeInvalidRequestError"
+    && error?.raw?.type === "invalid_request_error"
+    && /^Only Checkout Sessions with a status in \["open"\] can be expired\. This Checkout Session has a status of `(complete|expired)`\.$/.test(message);
 }
 
 function throwProviderOperationFailure(error: any): never {

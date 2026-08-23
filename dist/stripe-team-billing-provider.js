@@ -119,7 +119,203 @@ export function createStripeTeamBillingProvider(options) {
                 outcome: paymentActionRequired ? "payment-action-required" : "acknowledged",
             });
         },
+        async quiesceTeamBilling(input) {
+            validateErasureInput(input, config.livemode);
+            throwIfAborted(options.signal);
+            const checkouts = [];
+            const subscriptionIds = new Set(input.subscriptionIds);
+            const checkoutSessionIds = new Set(input.checkoutSessionIds);
+            let customerId = input.customerId ?? null;
+            for (const recovery of input.checkoutRecoveries ?? []) {
+                let recovered;
+                try {
+                    recovered = await stripe.checkout.sessions.create({
+                        mode: "subscription",
+                        line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
+                        success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
+                        cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
+                        client_reference_id: recovery.businessReference,
+                        expires_at: recovery.providerExpiresAt,
+                        metadata: { sporades_team_billing_operation: recovery.operationId },
+                        subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId } },
+                        ...(recovery.customerId ? { customer: recovery.customerId } : {}),
+                    }, { idempotencyKey: recovery.idempotencyKey });
+                }
+                catch (error) {
+                    throwProviderOperationFailure(error);
+                }
+                if (!validSessionId(recovered?.id) || recovered.client_reference_id !== recovery.operationId
+                    || recovered.livemode !== config.livemode || recovered.mode !== "subscription")
+                    throw providerFailure(false);
+                checkoutSessionIds.add(recovered.id);
+            }
+            for (const sessionId of [...checkoutSessionIds].sort()) {
+                let session;
+                try {
+                    session = await stripe.checkout.sessions.retrieve(sessionId);
+                }
+                catch (error) {
+                    if (Number(error?.statusCode) === 404) {
+                        checkouts.push({ id: sessionId, state: "safely-closed" });
+                        continue;
+                    }
+                    throwProviderOperationFailure(error);
+                }
+                attestErasureCheckout(session, sessionId, config.livemode);
+                if (session.status === "open") {
+                    try {
+                        session = await stripe.checkout.sessions.expire(sessionId);
+                    }
+                    catch (error) {
+                        if (Number(error?.statusCode) !== 404 && !isCheckoutNonExpireableRace(error)) {
+                            throwProviderOperationFailure(error);
+                        }
+                        try {
+                            session = await stripe.checkout.sessions.retrieve(sessionId);
+                        }
+                        catch (retrieval) {
+                            if (Number(retrieval?.statusCode) === 404) {
+                                checkouts.push({ id: sessionId, state: "safely-closed" });
+                                continue;
+                            }
+                            throwProviderOperationFailure(retrieval);
+                        }
+                    }
+                    attestErasureCheckout(session, sessionId, config.livemode);
+                }
+                if (session.status === "complete") {
+                    if (session.customer && !validCustomerId(session.customer))
+                        throw providerFailure(false);
+                    if (session.subscription && !validSubscriptionId(session.subscription))
+                        throw providerFailure(false);
+                    if (customerId && session.customer && customerId !== session.customer)
+                        throw providerFailure(false);
+                    customerId ??= session.customer ?? null;
+                    if (session.subscription)
+                        subscriptionIds.add(session.subscription);
+                    checkouts.push({ id: sessionId, state: "complete" });
+                }
+                else if (session.status === "expired")
+                    checkouts.push({ id: sessionId, state: "expired" });
+                else
+                    throw providerFailure(false);
+            }
+            const subscriptions = new Map();
+            for (let pass = 0; pass < 4; pass += 1) {
+                if (customerId) {
+                    let startingAfter;
+                    do {
+                        let page;
+                        try {
+                            page = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) });
+                        }
+                        catch (error) {
+                            throwProviderOperationFailure(error);
+                        }
+                        if (page?.object !== "list" || !Array.isArray(page.data) || typeof page.has_more !== "boolean")
+                            throw providerFailure(false);
+                        for (const subscription of page.data) {
+                            attestErasureSubscription(subscription, subscription.id, customerId, config.livemode);
+                            subscriptionIds.add(subscription.id);
+                            subscriptions.set(subscription.id, subscription);
+                        }
+                        startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+                        if (page.has_more && !validSubscriptionId(startingAfter))
+                            throw providerFailure(false);
+                    } while (startingAfter);
+                }
+                let changed = false;
+                for (const subscriptionId of [...subscriptionIds].sort()) {
+                    let subscription = subscriptions.get(subscriptionId);
+                    if (!subscription) {
+                        try {
+                            subscription = await stripe.subscriptions.retrieve(subscriptionId);
+                        }
+                        catch (error) {
+                            if (Number(error?.statusCode) === 404) {
+                                subscriptions.set(subscriptionId, { id: subscriptionId, safelyClosed: true });
+                                continue;
+                            }
+                            throwProviderOperationFailure(error);
+                        }
+                        const inferredCustomer = subscription.customer;
+                        if (!customerId && validCustomerId(inferredCustomer))
+                            customerId = inferredCustomer;
+                        if (!customerId)
+                            throw providerFailure(false);
+                        attestErasureSubscription(subscription, subscriptionId, customerId, config.livemode);
+                        subscriptions.set(subscriptionId, subscription);
+                    }
+                    if (!subscription.safelyClosed && subscription.status !== "canceled") {
+                        try {
+                            subscription = await stripe.subscriptions.cancel(subscriptionId, {}, { idempotencyKey: erasureCancellationKey(input.idempotencyKey, subscriptionId) });
+                        }
+                        catch (error) {
+                            if (Number(error?.statusCode) === 404) {
+                                subscriptions.set(subscriptionId, { id: subscriptionId, safelyClosed: true });
+                                continue;
+                            }
+                            throwProviderOperationFailure(error);
+                        }
+                        attestErasureSubscription(subscription, subscriptionId, customerId, config.livemode);
+                        if (subscription.status !== "canceled")
+                            throw providerFailure(false);
+                        subscriptions.set(subscriptionId, subscription);
+                        changed = true;
+                    }
+                }
+                if (!changed)
+                    break;
+                if (pass === 3)
+                    throw providerFailure(true);
+            }
+            throwIfAborted(options.signal);
+            return Object.freeze({
+                ok: true,
+                outcome: "quiesced",
+                providerObservedAt: new Date().toISOString(),
+                checkouts: Object.freeze(checkouts.sort((left, right) => left.id.localeCompare(right.id)).map(Object.freeze)),
+                subscriptions: Object.freeze([...subscriptions.values()].sort((left, right) => left.id.localeCompare(right.id))
+                    .map((subscription) => Object.freeze({ id: subscription.id, state: subscription.safelyClosed ? "safely-closed" : "cancelled" }))),
+            });
+        },
     });
+}
+function validateErasureInput(input, livemode) {
+    const keys = Object.keys(input ?? {}).sort();
+    const expected = ["checkoutSessionIds", "idempotencyKey", "mode", "subscriptionIds",
+        ...(input?.customerId === undefined ? [] : ["customerId"]), ...(input?.checkoutRecoveries === undefined ? [] : ["checkoutRecoveries"])].sort();
+    if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== expected.join("\0")
+        || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
+        || input.customerId !== undefined && !validCustomerId(input.customerId)
+        || !Array.isArray(input.checkoutSessionIds) || !input.checkoutSessionIds.every(validSessionId)
+        || !Array.isArray(input.subscriptionIds) || !input.subscriptionIds.every(validSubscriptionId)
+        || new Set(input.checkoutSessionIds).size !== input.checkoutSessionIds.length
+        || new Set(input.subscriptionIds).size !== input.subscriptionIds.length
+        || input.checkoutRecoveries !== undefined && (!Array.isArray(input.checkoutRecoveries)
+            || !input.checkoutRecoveries.every((recovery) => { try {
+                validateInput(recovery);
+                return true;
+            }
+            catch {
+                return false;
+            } }))
+        || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255)
+        throw providerFailure(false);
+}
+function attestErasureCheckout(session, sessionId, livemode) {
+    if (session?.object !== "checkout.session" || session.id !== sessionId || session.mode !== "subscription"
+        || session.livemode !== livemode || !["open", "complete", "expired"].includes(session.status))
+        throw providerFailure(false);
+}
+function attestErasureSubscription(subscription, subscriptionId, customerId, livemode) {
+    if (subscription?.object !== "subscription" || subscription.id !== subscriptionId
+        || subscription.customer !== customerId || subscription.livemode !== livemode || typeof subscription.status !== "string")
+        throw providerFailure(false);
+}
+function erasureCancellationKey(erasureKey, subscriptionId) {
+    const crypto = process.getBuiltinModule("node:crypto");
+    return `sporades-team-billing-cancel-${crypto.createHash("sha256").update(`${erasureKey}\0${subscriptionId}`).digest("hex")}`;
 }
 function validateManagedSubscriptionInput(input, livemode) {
     const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
@@ -269,6 +465,13 @@ function validPortalUrl(value) {
     catch {
         return false;
     }
+}
+function isCheckoutNonExpireableRace(error) {
+    const message = error?.raw?.message ?? error?.message;
+    return Number(error?.statusCode) === 400
+        && error?.type === "StripeInvalidRequestError"
+        && error?.raw?.type === "invalid_request_error"
+        && /^Only Checkout Sessions with a status in \["open"\] can be expired\. This Checkout Session has a status of `(complete|expired)`\.$/.test(message);
 }
 function throwProviderOperationFailure(error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR")

@@ -68,6 +68,11 @@ sporades host push --restart
   `teamBilling.requestPlanTransition(...)`. Portal owns compatible same-policy
   switches; Sporades manages fixed-to-Team-counted transitions and keeps a
   Team-counted Subscription converged after membership commits.
+  `teamBilling.prepareErasure(...)` durably expires or safely resolves every
+  issued Checkout and immediately cancels known or newly discovered live
+  Subscriptions before a transaction-bound server admission permits the app's
+  separate local deletion. Provider-free identity tombstones reject late
+  entitlement recreation; the Stripe Customer is not deleted.
   Those commands may return only validated, short-lived Stripe-hosted URL
   capabilities. Verified Checkout, Subscription, and failed-invoice evidence
   converges through runtime-owned semantic ratchets and terminal latches;

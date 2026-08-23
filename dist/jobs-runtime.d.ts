@@ -75,6 +75,7 @@ export declare function runtimeOwnedJobHandlers(runtime: {
     expireTeamBillingPortal: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
     performTeamBillingPlanTransition: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
     performTeamBillingSeatConvergence: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+    performTeamBillingErasure: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
 }): {
     name: string;
     handler: (ctx: LooseRecord, payload: LooseRecord) => Promise<any>;

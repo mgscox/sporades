@@ -18,6 +18,16 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
         ok: true;
         outcome: "payment-action-required" | "acknowledged";
     }>>;
+    quiesceTeamBilling(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        outcome: "quiesced";
+        providerObservedAt: string;
+        checkouts: readonly Readonly<unknown>[];
+        subscriptions: readonly Readonly<{
+            id: any;
+            state: "cancelled" | "safely-closed";
+        }>[];
+    }>>;
 }>;
 export {};
 //# sourceMappingURL=stripe-team-billing-provider.d.ts.map

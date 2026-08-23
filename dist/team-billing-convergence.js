@@ -43,6 +43,11 @@ export async function applyVerifiedTeamBillingObservation(database, event) {
     const transaction = database?.adapter;
     if (!transaction?.prepare || !database.teamBillingDefinition)
         return Object.freeze({ applied: false, ignored: true });
+    if (typeof database.teamBillingErasureObjectKey === "function" && boundedObjectId(event?.objectId)) {
+        const erased = await transaction.prepare(transaction.dialect.sql("SELECT [objectKey] FROM [sporades_team_billing_erasure_object_tombstones] WHERE [objectKey] = ?")).get(database.teamBillingErasureObjectKey(event.objectId));
+        if (erased)
+            return Object.freeze({ applied: false, erased: true });
+    }
     const digest = safeDigest(event?.raw);
     const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
     const occurredAt = canonicalTimestamp(event?.occurredAt);

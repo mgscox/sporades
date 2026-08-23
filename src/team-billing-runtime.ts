@@ -80,7 +80,23 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       "[teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL" +
       ")",
     )),
-    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"]
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_state] (" +
+      "[teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, " +
+      "[activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL" +
+      ")",
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_tombstones] (" +
+      "[erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
+      ")",
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] (" +
+      "[objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL" +
+      ")",
+    )),
+    ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
     ...(["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
@@ -211,6 +227,7 @@ export async function startTeamBillingCheckout(database: LooseRecord, auth: Loos
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction: LooseRecord) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const existing = await transaction.prepare(sql(
       "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
@@ -242,9 +259,9 @@ export async function startTeamBillingCheckout(database: LooseRecord, auth: Loos
     )).run(now, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] " +
-      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) " +
-      "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)",
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, providerExpiresAt);
+      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) " +
+      "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)",
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
     enqueued = true;
@@ -262,6 +279,7 @@ export async function startTeamBillingPortal(database: LooseRecord, auth: LooseR
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction: LooseRecord) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const existing = await transaction.prepare(sql(
       "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
@@ -323,6 +341,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
     ? payload.operationId : null;
   if (!operationId) throw checkoutUnavailable();
   let providerInput: LooseRecord | null = null;
+  let providerLane: any = null;
   try {
     providerInput = await database.adapter.withTransaction(async (transaction: LooseRecord) => {
       const sql = transaction.dialect.sql;
@@ -331,6 +350,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
         "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
       )).get(operationId);
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
       const actor = await transaction.prepare(sql(
         "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?",
       )).get(operation.actorUserId);
@@ -364,6 +384,17 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
       const attemptedAt = database.clock.now().toISOString();
+      const claimToken = randomUUID();
+      const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 60_000).toISOString();
+      await transaction.prepare(sql(
+        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING",
+      )).run(operation.teamId, attemptedAt);
+      const claimed = await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? " +
+        "WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)",
+      )).run(claimToken, claimExpiresAt, attemptedAt, operation.teamId, attemptedAt);
+      if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw providerLaneBusy();
+      providerLane = { teamId: operation.teamId, claimToken };
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?",
       )).run(attemptedAt, attemptedAt, operationId);
@@ -387,6 +418,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
       error.retryable = true;
       throw error;
     }
+    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") throw error;
     await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
     const failure = checkoutUnavailable();
     (failure as any).retryable = false;
@@ -434,6 +466,12 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
     await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
     if (!willRetry) error.retryable = false;
     throw error;
+  } finally {
+    if (providerLane) {
+      await database.adapter.prepare(database.adapter.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?",
+      )).run(database.clock.now().toISOString(), providerLane.teamId, providerLane.claimToken);
+    }
   }
 }
 
@@ -594,6 +632,24 @@ export async function admitTeamBillingActor(database: LooseRecord, transaction: 
   if (!decision || typeof decision !== "object" || Array.isArray(decision)
     || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
   return Object.freeze({ admitted: true as const });
+}
+
+export function teamBillingErasureKey(database: LooseRecord, teamId: string) {
+  return createHash("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+}
+
+export function teamBillingErasureObjectKey(database: LooseRecord, providerObjectId: string) {
+  return createHash("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+}
+
+export async function assertTeamBillingErasureInactive(database: LooseRecord, transaction: LooseRecord, teamId: string) {
+  const active = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId] FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?",
+  )).get(teamId);
+  const erased = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?",
+  )).get(teamBillingErasureKey(database, teamId));
+  if (active || erased) throw teamBillingDenied();
 }
 
 export async function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string) {
@@ -956,6 +1012,13 @@ function checkoutActive() {
 function checkoutUnavailable() {
   const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
   (error as any).retryable = false;
+  return error;
+}
+
+function providerLaneBusy() {
+  const error: any = checkoutUnavailable();
+  error.code = "TEAM_BILLING_PROVIDER_LANE_BUSY";
+  error.retryable = true;
   return error;
 }
 

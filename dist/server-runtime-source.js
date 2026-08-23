@@ -20,9 +20,10 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 import { beginOAuthSignIn, resolvePasswordResetConfig } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
 import { countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
-import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, } from "./team-billing-runtime.js";
+import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
+import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, performTeamBillingErasure, prepareTeamBillingErasure, repairTeamBillingErasureStateAtStartup, settleExhaustedTeamBillingErasureJob, } from "./team-billing-erasure.js";
 // Batch 8. Eight names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
 // `routeEndpoint` takes the three writers and the failure log; `readEndpointBody` the body reader;
@@ -605,6 +606,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     throw error;
                 }
             },
+            performTeamBillingErasure: async (context, payload) => {
+                try {
+                    return await performTeamBillingErasure(database, context, payload);
+                }
+                catch (error) {
+                    if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 6) {
+                        await settleExhaustedTeamBillingErasureJob(database, payload, error?.code);
+                    }
+                    throw error;
+                }
+            },
         })];
     const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
@@ -664,6 +676,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         enqueueTeamBillingPortalExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
         enqueueTeamBillingPlanTransitionJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5_000 }, true, availableAt, availableAt !== undefined),
         enqueueTeamBillingSeatConvergenceJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_SEAT_CONVERGENCE_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 60_000 }, true, availableAt, availableAt !== undefined),
+        enqueueTeamBillingErasureJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_ERASURE_JOB, payload, idempotencyKey, { maxAttempts: 6, delayMs: 60_000 }, true, availableAt, availableAt !== undefined),
         stageTeamBillingMembershipChange: (teamId) => stageTeamBillingMembershipChange(database, teamId),
         readTeamBillingActorAuth: async (transaction, userId) => {
             if (typeof userId !== "string")
@@ -700,6 +713,15 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 operationKind: input.operationKind,
             }));
         },
+        quiesceTeamBillingProvider: async (context, input) => {
+            if (typeof database.createStripeTeamBillingProvider !== "function")
+                throw commandError("Team Billing provider is unavailable.", "Retry after the configured provider is available.", "TEAM_BILLING_PROVIDER_UNAVAILABLE");
+            const provider = database.createStripeTeamBillingProvider({
+                enabled: true, config: database.paymentsConfig.stripe, env: database.serverEnv, signal: context?.signal,
+                ...(database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}),
+            });
+            return provider.quiesceTeamBilling(input);
+        },
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
@@ -707,6 +729,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
         teamApplicationRoles,
         teamBillingDefinition,
+        teamBillingErasureObjectKey: (providerObjectId) => teamBillingErasureObjectKey(database, providerObjectId),
         runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function"
             ? async function (transactionAdapter, auth, input, signal) {
                 const rootDatabase = this.__rootDatabase ?? this;
@@ -849,8 +872,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
                 await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
             }
-            if (database.teamBillingDefinition)
+            if (database.teamBillingDefinition) {
                 await repairTeamBillingDesiredStateAtStartup(database);
+                await repairTeamBillingErasureStateAtStartup(database);
+            }
             database.__scheduleTimers = new Set();
             database.__activeScheduleOccurrences = new Set();
             database.__scheduleRecoveryTimer = null;
@@ -1683,6 +1708,15 @@ export async function recoverExpiredJobLeases(database) {
                         catch { }
                         const managementSettlement = await settleExhaustedTeamBillingManagementJob({ ...database, adapter: transaction, __transactionActive: true }, payload, "JOB_LEASE_EXPIRED");
                         replacementScheduled = managementSettlement?.replacementScheduled === true;
+                    }
+                    if (row.handler === TEAM_BILLING_ERASURE_JOB) {
+                        let payload = null;
+                        try {
+                            payload = JSON.parse(row.payload);
+                        }
+                        catch { }
+                        const erasureSettlement = await settleExhaustedTeamBillingErasureJob({ ...database, adapter: transaction, __transactionActive: true }, payload, "JOB_LEASE_EXPIRED");
+                        replacementScheduled = erasureSettlement?.replacementScheduled === true;
                     }
                 }
                 return replacementScheduled;
@@ -3266,6 +3300,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         },
     };
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+    context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {
@@ -4573,6 +4608,26 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             }
             return;
         }
+        if (message.type === "teamBilling.prepareErasure") {
+            try {
+                const input = message.input;
+                const data = await prepareTeamBillingErasure(database, client.session.auth, input?.teamId, input?.requestId);
+                sendJson(client, { id: message.id ?? null, type: "teamBilling.prepareErasure.result", data, error: null });
+            }
+            catch (error) {
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        code: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? error.code : "TEAM_BILLING_ERASURE_UNAVAILABLE",
+                        message: "Team billing erasure is unavailable.",
+                        hint: "Sign in as the current policy-approved Team administrator and retry.",
+                    },
+                });
+            }
+            return;
+        }
         if (message.type === "teams.create") {
             try {
                 const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -5596,6 +5651,7 @@ function createMutationContext(database, auth, options = {}) {
         },
     };
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+    context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
     context.serverAuth = {
         async setEmailPassword(email, newPassword) {

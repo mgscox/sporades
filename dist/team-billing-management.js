@@ -3,6 +3,7 @@
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
 import { countAcceptedTeamMembers } from "./teams-runtime.js";
+import { assertTeamBillingErasureInactive } from "./team-billing-runtime.js";
 export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 const CLAIM_TTL_MS = 5 * 60 * 1_000;
@@ -15,6 +16,7 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
     let enqueued = false;
     const result = await inTransaction(database, async (transaction) => {
         await admitPlanTransition(database, transaction, auth, teamId, productKey);
+        await assertTeamBillingErasureInactive(database, transaction, teamId);
         const sql = transaction.dialect.sql;
         const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
         if (repeated) {
@@ -54,6 +56,12 @@ export async function stageTeamBillingMembershipChange(database, teamId, effecti
         return { staged: false };
     let enqueued = false;
     const result = await inTransaction(database, async (transaction) => {
+        try {
+            await assertTeamBillingErasureInactive(database, transaction, teamId);
+        }
+        catch {
+            return Object.freeze({ staged: false, reason: "erasure-active" });
+        }
         const subscription = await optionalCurrentSubscription(transaction, teamId);
         if (!subscription)
             return Object.freeze({ staged: false });

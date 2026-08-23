@@ -474,6 +474,7 @@ const app = capsule({
       const me = requireAuth(ctx);
       me.userId.toUpperCase();
       requireUserAuth(ctx).userId.toUpperCase();
+      (await ctx.teamBilling.admitLocalErasure("00000000-0000-4000-8000-000000000000")).allowed.valueOf();
       const linkedUser = requireAuth(ctx, { linked: true });
       linkedUser.isGuest.valueOf();
       // @ts-expect-error requireAuth options accept a boolean linked flag only.
@@ -692,6 +693,14 @@ teamBilling.requestPlanTransition({
   if (result.data?.state === "pending") result.data.requestedAt.toUpperCase();
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
+teamBilling.prepareErasure({
+  teamId: "00000000-0000-4000-8000-000000000000",
+  requestId: "44444444-4444-4444-8444-444444444444",
+}).then((result) => {
+  if (result.data?.state === "pending") result.data.requestedAt.toUpperCase();
+});
+// @ts-expect-error erasure preparation never accepts provider identifiers.
+teamBilling.prepareErasure({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "44444444-4444-4444-8444-444444444444", customerId: "cus_browser_owned" });
 // @ts-expect-error managed Plan inputs never accept provider Price identifiers.
 teamBilling.requestPlanTransition({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "33333333-3333-4333-8333-333333333333", productKey: "agency", priceId: "price_browser_owned" });
 // @ts-expect-error Portal inputs never accept Customer or configuration identifiers.

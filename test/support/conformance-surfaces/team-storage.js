@@ -8,6 +8,11 @@ import {
   settleVerifiedTeamBillingTarget,
   stageTeamBillingMembershipChange,
 } from "../../../dist/team-billing-management.js";
+import {
+  performTeamBillingErasure,
+  prepareTeamBillingErasure,
+  repairTeamBillingErasureStateAtStartup,
+} from "../../../dist/team-billing-erasure.js";
 
 const NOW = "2026-08-14T12:00:00.000Z";
 
@@ -62,6 +67,59 @@ export const CONFORMANCE_SURFACE = {
           "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_operations] WHERE [providerSubscriptionId] = 'sub_private'"), 1);
         assert.equal(await count(adapter,
           "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_observations] WHERE [eventType] = 'customer.subscription.deleted' AND [eventRank] = 50 AND [outcome] = 'applied'"), 1);
+        for (const table of ["erasure_state", "erasure_tombstones", "erasure_object_tombstones"]) {
+          assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 0, table);
+        }
+      },
+    },
+    {
+      name: "provider-safe Team erasure survives restart with fenced generations on every adapter",
+      async run(adapter) {
+        const sql = adapter.dialect.sql;
+        const teamId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        const requestId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        const auth = { userId: "erasure-admin", isAuthenticated: true, isGuest: false, provider: "test" };
+        await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Erasure', ?, 'erasure-admin')")).run(teamId, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'erasure-admin', 'admin', ?)")).run(teamId, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, 'sandbox', 'cus_erasure_adapter', ?, ?)")).run(teamId, NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [observedAt], [updatedAt], [terminalLatch]) VALUES ('erasure-subscription', ?, 'sandbox', 'sub_erasure_adapter', 'price_erasure_adapter', 'si_erasure_adapter', 'agency', 2, 'active', 0, ?, ?, 0)")).run(teamId, NOW, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode]) VALUES ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', ?, 'erasure-admin', 'checkout', 'agency', 'ready', 'cs_test_erasure_adapter', 'checkout-erasure-adapter', NULL, ?, ?, 'sandbox')")).run(teamId, NOW, NOW);
+        const enqueued = [];
+        const providerCalls = [];
+        const database = {
+          adapter,
+          capsuleIdentity: "adapter-erasure",
+          clock: { now: () => new Date(NOW) },
+          paymentsConfig: { stripe: { livemode: false } },
+          teamBillingDefinition: { catalogue: { agency: {} }, checkout: { successPath: "/billing/success", cancelPath: "/billing/cancelled" } },
+          runTeamBillingAuthority: async () => ({ allow: true }),
+          readTeamBillingActorAuth: async () => auth,
+          enqueueTeamBillingErasureJob: async (_transaction, payload, key) => enqueued.push({ payload, key }),
+          scheduleTeamBillingJobDispatch() {},
+          quiesceTeamBillingProvider: async (_context, input) => {
+            providerCalls.push(input);
+            return {
+              ok: true, outcome: "quiesced", providerObservedAt: NOW,
+              checkouts: [{ id: "cs_test_erasure_adapter", state: "expired" }],
+              subscriptions: [{ id: "sub_erasure_adapter", state: "cancelled" }],
+            };
+          },
+        };
+        await prepareTeamBillingErasure(database, auth, teamId, requestId);
+        const stale = enqueued[0].payload;
+        assert.deepEqual(await repairTeamBillingErasureStateAtStartup(database), { queued: 1 });
+        const fresh = enqueued[1].payload;
+        assert.notEqual(fresh.generationId, stale.generationId);
+        assert.deepEqual(await performTeamBillingErasure(database, {}, stale), { superseded: true });
+        assert.deepEqual(await performTeamBillingErasure(database, {}, fresh), { providerQuiesced: true });
+        assert.equal(providerCalls.length, 1);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ?", teamId), 0);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_erasure_tombstones]"), 1);
+        const tombstone = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_erasure_tombstones]")).get();
+        assert.equal(JSON.stringify(tombstone).includes(teamId), false);
+        assert.equal(JSON.stringify(tombstone).includes("sub_erasure_adapter"), false);
+        await adapter.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?")).run(teamId);
+        await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
       },
     },
     {

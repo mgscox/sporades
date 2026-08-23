@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash9, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash10, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile9, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
@@ -183,6 +183,9 @@ export const teamBilling = {
   },
   requestPlanTransition(input) {
     return connect().teamBillingRequestPlanTransition(input);
+  },
+  prepareErasure(input) {
+    return connect().teamBillingPrepareErasure(input);
   },
 };
 
@@ -1258,6 +1261,7 @@ function createConnection() {
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
     teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
+    teamBillingPrepareErasure(input) { return request("teamBilling.prepareErasure", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (!result.error) journeyConsentOptions = options;
@@ -3160,8 +3164,8 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
     keepNames.add(activeReference);
   }
   for (const consumerTree of await publicTreeConsumerNames(treesDir)) keepNames.add(consumerTree);
-  const now = options.now ?? Date.now;
-  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
+  const now2 = options.now ?? Date.now;
+  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now2);
   for (const name of liveLeaseNames) keepNames.add(name);
   const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path5.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
@@ -3191,7 +3195,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
       `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
     );
   }
-  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)), now);
+  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)), now2);
   await removeOrphanedOwnerHeartbeats(treesDir);
 }
 async function readPublicAsset(tree, rawPathname) {
@@ -3299,7 +3303,7 @@ async function removePublicTreeLease(lease) {
   await rm2(lease.path, { force: true });
   LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
 }
-async function publicTreeLeaseStates(treesDir, now) {
+async function publicTreeLeaseStates(treesDir, now2) {
   const leasesDir = path5.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
@@ -3311,7 +3315,7 @@ async function publicTreeLeaseStates(treesDir, now) {
     try {
       const lease = JSON.parse(await readFile4(path5.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
-        if (await leaseIsLive(lease, path5.join(leasesDir, entry), now)) live.add(lease.tree);
+        if (await leaseIsLive(lease, path5.join(leasesDir, entry), now2)) live.add(lease.tree);
         else stale.add(lease.tree);
       } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
     } catch {
@@ -3320,7 +3324,7 @@ async function publicTreeLeaseStates(treesDir, now) {
   }
   return { live, stale };
 }
-async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
+async function removeStalePublicTreeLeases(treesDir, completedNames, now2) {
   const leasesDir = path5.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
@@ -3333,7 +3337,7 @@ async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
       lease = JSON.parse(await readFile4(leasePath, "utf8"));
     } catch {
     }
-    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
+    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now2)) {
       if (validLeaseRecord(lease)) {
         LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
         await stopOwnerHeartbeat(lease.token);
@@ -3347,9 +3351,9 @@ function validLeaseRecord(lease) {
     lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && lease.pid > 0 && (typeof lease.processStart === "string" || lease.processStart === null) && Number.isFinite(lease.createdAt) && Number.isFinite(lease.heartbeatAt) && typeof lease.token === "string" && lease.token.length > 0
   );
 }
-async function leaseIsLive(lease, recordPath, now) {
+async function leaseIsLive(lease, recordPath, now2) {
   if (lease.pid === process.pid && !LIVE_PUBLIC_TREE_LEASES.has(lease.token)) return false;
-  return ownerIdentityIsLive(lease, recordPath, now);
+  return ownerIdentityIsLive(lease, recordPath, now2);
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
@@ -4714,7 +4718,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash7, randomBytes as randomBytes5, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomBytes as randomBytes5, randomUUID as randomUUID7 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config-validation.ts
@@ -6425,7 +6429,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash6, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash7, createHmac as createHmac2, randomBytes as randomBytes4, randomUUID as randomUUID5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -6858,11 +6862,11 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
     storedDigest = Buffer.from(row.verifierDigest, "hex");
   }
   const verified = accessKeyCrypto().timingSafeEqual(candidateDigest, storedDigest);
-  const now = database.clock.now();
+  const now2 = database.clock.now();
   let failure = null;
   if (!verified || !row) failure = "invalid";
   else if (row.revokedAt) failure = "revoked";
-  else if (row.expiresAt && Date.parse(row.expiresAt) <= now.getTime()) failure = "expired";
+  else if (row.expiresAt && Date.parse(row.expiresAt) <= now2.getTime()) failure = "expired";
   else if (Number(row.ownerIsAuthenticated) !== 1 || Number(row.ownerIsGuest) !== 0) failure = "owner-ineligible";
   if (failure) {
     recordAccessKeyFailure(database, "source", source, 6e4);
@@ -6883,7 +6887,7 @@ async function resolveAccessKeyCredential(database, request, sessionToken) {
     credential: protectAccessKeyValue({ kind: "access-key", id: row.id, name: row.name }),
     grants: JSON.parse(row.grantsJson),
     record: row,
-    admittedAt: now.toISOString()
+    admittedAt: now2.toISOString()
   };
 }
 function accessKeyAuthenticationError(reason, limited = false) {
@@ -6956,7 +6960,7 @@ function requireOwnerSessionContext(context) {
   }
   return context;
 }
-function normalizeAccessKeyIssue(input, declaredScopes, now) {
+function normalizeAccessKeyIssue(input, declaredScopes, now2) {
   if (!isPlainObject2(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
     throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
   }
@@ -6968,12 +6972,12 @@ function normalizeAccessKeyIssue(input, declaredScopes, now) {
   let expiresAt = null;
   if (input.expiresAt !== void 0 && input.expiresAt !== null) {
     const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed <= now.getTime()) {
+    if (!Number.isFinite(parsed) || parsed <= now2.getTime()) {
       throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
     }
     expiresAt = new Date(parsed).toISOString();
   }
-  return { name, grants, expiresAt, createdAt: now.toISOString() };
+  return { name, grants, expiresAt, createdAt: now2.toISOString() };
 }
 function normalizeAccessKeyGrants(value, declaredScopes) {
   const grants = value === void 0 ? ["*"] : value;
@@ -7015,8 +7019,8 @@ function normalizeAccessKeyListOptions(value) {
   }
   return { cursor, limit, status: value.status ?? null };
 }
-function accessKeyListPage(rows, declaredScopes, now, options) {
-  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now.toISOString()));
+function accessKeyListPage(rows, declaredScopes, now2, options) {
+  let summaries = rows.map((row) => accessKeySummary(row, declaredScopes, now2.toISOString()));
   if (options.status) summaries = summaries.filter((summary) => summary.status === options.status);
   const totalCount = summaries.length;
   if (options.cursor) {
@@ -7031,9 +7035,9 @@ function accessKeyListPage(rows, declaredScopes, now, options) {
     totalCount
   };
 }
-function accessKeySummary(row, declaredScopes, now) {
+function accessKeySummary(row, declaredScopes, now2) {
   const grants = Array.isArray(row.grants) ? row.grants : JSON.parse(row.grantsJson);
-  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now) ? "expired" : "active";
+  const status = row.revokedAt ? "revoked" : row.expiresAt && Date.parse(row.expiresAt) <= Date.parse(now2) ? "expired" : "active";
   return {
     id: row.id,
     name: row.name,
@@ -7049,8 +7053,8 @@ function accessKeySummary(row, declaredScopes, now) {
     lifecycleRevision: Number(row.lifecycleRevision)
   };
 }
-function privilegedAccessKeySummary(row, declaredScopes, now) {
-  return { ...accessKeySummary(row, declaredScopes, now), ownerUserId: row.ownerUserId };
+function privilegedAccessKeySummary(row, declaredScopes, now2) {
+  return { ...accessKeySummary(row, declaredScopes, now2), ownerUserId: row.ownerUserId };
 }
 function withAccessKeyTransaction(database, operation) {
   return database.__transactionActive ? operation(database.adapter) : database.adapter.withTransaction(operation);
@@ -7172,18 +7176,18 @@ function accessKeyLimiter(database, kind) {
 }
 function assertAccessKeyFailureLimit(database, kind, key, limit, windowMs) {
   const state = accessKeyLimiter(database, kind).get(key);
-  const now = database.clock.now().getTime();
-  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+  const now2 = database.clock.now().getTime();
+  if (state && now2 - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
 }
 function recordAccessKeyFailure(database, kind, key, windowMs) {
   const limiter = accessKeyLimiter(database, kind);
-  const now = database.clock.now().getTime();
+  const now2 = database.clock.now().getTime();
   const previous = limiter.get(key);
-  const state = !previous || now - previous.startedAt >= windowMs ? { count: 1, startedAt: now, lastSeenAt: now } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
+  const state = !previous || now2 - previous.startedAt >= windowMs ? { count: 1, startedAt: now2, lastSeenAt: now2 } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now2 };
   limiter.delete(key);
   limiter.set(key, state);
   for (const [candidate, candidateState] of limiter) {
-    if (now - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
+    if (now2 - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
     else break;
   }
 }
@@ -7250,6 +7254,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
     await admitPlanTransition(database, transaction, auth, teamId, productKey);
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql(
       "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
@@ -7265,7 +7270,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
     const quantity = await targetQuantity(transaction, teamId, targetProduct);
     const operationId = randomUUID();
-    const now = nowIso(database);
+    const now2 = nowIso(database);
     const effectiveAt = nowSeconds(database);
     const staged = await stageDesired(transaction, database, {
       teamId,
@@ -7277,13 +7282,13 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     });
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
-    )).run(now, teamId);
+    )).run(now2, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity);
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity);
     await enqueueIntent(database, transaction, staged);
     enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
   });
   if (enqueued) scheduleAfterOwnedTransaction(database);
   return result;
@@ -7292,6 +7297,11 @@ async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = 
   if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
+    try {
+      await assertTeamBillingErasureInactive(database, transaction, teamId);
+    } catch {
+      return Object.freeze({ staged: false, reason: "erasure-active" });
+    }
     const subscription = await optionalCurrentSubscription(transaction, teamId);
     if (!subscription) return Object.freeze({ staged: false });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
@@ -7605,15 +7615,15 @@ async function stageDesired(transaction, database, input) {
   }
   const intentId = randomUUID();
   const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
-  const now = nowIso(database);
+  const now2 = nowIso(database);
   if (existing) {
     await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
-    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now, input.teamId);
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2, input.teamId);
   } else {
     await transaction.prepare(transaction.dialect.sql(
       "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)"
-    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now);
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2);
   }
   await ensureLane(transaction, input.teamId, database);
   return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -7694,11 +7704,11 @@ async function ensureLane(transaction, teamId, database) {
 }
 async function claimLane(transaction, teamId, token, database) {
   await ensureLane(transaction, teamId, database);
-  const now = nowIso(database);
+  const now2 = nowIso(database);
   const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS).toISOString();
   const result = await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
-  )).run(token, expiresAt, now, teamId, now);
+  )).run(token, expiresAt, now2, teamId, now2);
   return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
 }
 async function releaseLane(transaction, teamId, token, database) {
@@ -7840,6 +7850,12 @@ async function applyVerifiedTeamBillingObservation(database, event) {
   if (!SUPPORTED.has(event?.type)) return Object.freeze({ applied: false, ignored: true });
   const transaction = database?.adapter;
   if (!transaction?.prepare || !database.teamBillingDefinition) return Object.freeze({ applied: false, ignored: true });
+  if (typeof database.teamBillingErasureObjectKey === "function" && boundedObjectId(event?.objectId)) {
+    const erased = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [objectKey] FROM [sporades_team_billing_erasure_object_tombstones] WHERE [objectKey] = ?"
+    )).get(database.teamBillingErasureObjectKey(event.objectId));
+    if (erased) return Object.freeze({ applied: false, erased: true });
+  }
   const digest = safeDigest(event?.raw);
   const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
   const occurredAt = canonicalTimestamp(event?.occurredAt);
@@ -8113,11 +8129,11 @@ async function assertCustomerAssociation(tx, teamId, mode, customerId) {
   const byProvider = await tx.prepare(sql("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
   if (byTeam && (byTeam.mode !== mode || byTeam.providerCustomerId !== customerId) || byProvider && (byProvider.teamId !== teamId || byProvider.mode !== mode)) throw new Quarantine("provider-state-ambiguous", teamId);
 }
-async function bindCustomer(tx, teamId, mode, customerId, now) {
+async function bindCustomer(tx, teamId, mode, customerId, now2) {
   await assertCustomerAssociation(tx, teamId, mode, customerId);
   await tx.prepare(tx.dialect.sql(
     "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT ([teamId]) DO UPDATE SET [updatedAt] = excluded.[updatedAt]"
-  )).run(teamId, mode, customerId, now, now);
+  )).run(teamId, mode, customerId, now2, now2);
 }
 async function recordObservation(database, event, digest, teamId, objectId, rank, outcome, safeReason) {
   await database.adapter.prepare(database.adapter.dialect.sql(
@@ -8208,7 +8224,16 @@ function createTeamBillingTables(adapter) {
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)"
     )),
-    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "configurationId", "returnPath"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT")),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT")),
     ...["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT")),
     ...["lastEventRank", "terminalLatch"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT")),
@@ -8310,6 +8335,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const existing = await transaction.prepare(sql(
       "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
@@ -8319,14 +8345,14 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
       return checkoutOperationResult(database, transaction, teamId, requestId, existing);
     }
     const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
-    const now = database.clock.now().toISOString();
+    const now2 = database.clock.now().toISOString();
     const active = await transaction.prepare(sql(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
-      )).run(now, active.id);
+      )).run(now2, active.id);
     } else if (active) {
       throw checkoutActive();
     }
@@ -8335,14 +8361,14 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
-    )).run(now, teamId);
+    )).run(now2, teamId);
     await transaction.prepare(sql(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, providerExpiresAt);
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
     enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
   });
   if (enqueued) database.scheduleTeamBillingJobDispatch?.();
   return result;
@@ -8354,6 +8380,7 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
     await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const existing = await transaction.prepare(sql(
       "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
@@ -8363,27 +8390,27 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
       return portalOperationResult(database, transaction, teamId, requestId, existing);
     }
     const desired = await portalDesiredState(database, transaction, teamId);
-    const now = database.clock.now().toISOString();
+    const now2 = database.clock.now().toISOString();
     const active = await transaction.prepare(sql(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'portal' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
     )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now)) {
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
-      )).run(now, active.id);
+      )).run(now2, active.id);
     } else if (active) throw checkoutActive();
     const operationId = randomUUID3();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
-    )).run(now, teamId);
+    )).run(now2, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId], [returnPath]) VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
+    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
     if (typeof database.enqueueTeamBillingPortalJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingPortalJob(transaction, { operationId }, `team-billing-portal:${operationId}`);
     enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now });
+    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
   });
   if (enqueued) database.scheduleTeamBillingJobDispatch?.();
   return result;
@@ -8405,6 +8432,7 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
   const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
   if (!operationId) throw checkoutUnavailable();
   let providerInput = null;
+  let providerLane = null;
   try {
     providerInput = await database.adapter.withTransaction(async (transaction) => {
       const sql = transaction.dialect.sql;
@@ -8412,6 +8440,7 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
         "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
       )).get(operationId);
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
       const actor = await transaction.prepare(sql(
         "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider] FROM [sporades_auth_users] WHERE [id] = ?"
       )).get(operation.actorUserId);
@@ -8444,6 +8473,16 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
       const attemptedAt = database.clock.now().toISOString();
+      const claimToken = randomUUID3();
+      const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
+      await transaction.prepare(sql(
+        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
+      )).run(operation.teamId, attemptedAt);
+      const claimed = await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+      )).run(claimToken, claimExpiresAt, attemptedAt, operation.teamId, attemptedAt);
+      if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw providerLaneBusy();
+      providerLane = { teamId: operation.teamId, claimToken };
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
       )).run(attemptedAt, attemptedAt, operationId);
@@ -8467,6 +8506,7 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
       error.retryable = true;
       throw error;
     }
+    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") throw error;
     await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
     const failure = checkoutUnavailable();
     failure.retryable = false;
@@ -8484,13 +8524,13 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
     });
     const result = await provider.create(providerInput);
     if (!result?.ok || !validCheckoutContinuation(result.url, result.sessionId)) throw checkoutUnavailable();
-    const now = database.clock.now();
-    const expiresAt = new Date(now.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3).toISOString();
+    const now2 = database.clock.now();
+    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3).toISOString();
     let expiryEnqueued = false;
     const settled = await database.adapter.withTransaction(async (transaction) => {
       const outcome = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
-      )).run(result.sessionId, result.url, expiresAt, now.toISOString(), operationId);
+      )).run(result.sessionId, result.url, expiresAt, now2.toISOString(), operationId);
       if (Number(outcome?.changes ?? 0) === 1) {
         if (typeof database.enqueueTeamBillingCheckoutExpiryJob !== "function") throw checkoutUnavailable();
         await database.enqueueTeamBillingCheckoutExpiryJob(transaction, { operationId }, `team-billing-checkout-expiry:${operationId}`, expiresAt);
@@ -8508,11 +8548,17 @@ async function performTeamBillingCheckout(database, context, payload, attempt = 
     }
     return { ready: true };
   } catch (error) {
-    const retryable2 = error?.retryable !== false;
-    const willRetry = retryable2 && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
+    const retryable3 = error?.retryable !== false;
+    const willRetry = retryable3 && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
     await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
     if (!willRetry) error.retryable = false;
     throw error;
+  } finally {
+    if (providerLane) {
+      await database.adapter.prepare(database.adapter.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(database.clock.now().toISOString(), providerLane.teamId, providerLane.claimToken);
+    }
   }
 }
 async function performTeamBillingPortal(database, context, payload, attempt = 1) {
@@ -8528,10 +8574,10 @@ async function performTeamBillingPortal(database, context, payload, attempt = 1)
         await supersedeBillingOperation(database, transaction, operationId);
         return null;
       }
-      const now = database.clock.now().toISOString();
+      const now2 = database.clock.now().toISOString();
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
-      )).run(now, now, operationId);
+      )).run(now2, now2, operationId);
       return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
     });
   } catch (error) {
@@ -8586,13 +8632,13 @@ async function performTeamBillingPortal(database, context, payload, attempt = 1)
     if (!createInput) return null;
     const response = await provider.createPortal(createInput);
     if (!response?.ok || !validPortalContinuation(response.url, response.sessionId)) throw checkoutUnavailable();
-    const now = database.clock.now();
-    const expiresAt = new Date(now.getTime() + database.teamBillingDefinition.portal.continuationTtlSeconds * 1e3).toISOString();
+    const now2 = database.clock.now();
+    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.portal.continuationTtlSeconds * 1e3).toISOString();
     let expiryEnqueued = false;
     const settled = await database.adapter.withTransaction(async (transaction) => {
       const outcome = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
-      )).run(response.sessionId, response.url, expiresAt, now.toISOString(), operationId);
+      )).run(response.sessionId, response.url, expiresAt, now2.toISOString(), operationId);
       if (Number(outcome?.changes ?? 0) === 1) {
         if (typeof database.enqueueTeamBillingPortalExpiryJob !== "function") throw checkoutUnavailable();
         await database.enqueueTeamBillingPortalExpiryJob(transaction, { operationId }, `team-billing-portal-expiry:${operationId}`, expiresAt);
@@ -8604,8 +8650,8 @@ async function performTeamBillingPortal(database, context, payload, attempt = 1)
     if (Number(settled?.changes ?? 0) !== 1) throw checkoutUnavailable();
     return { ready: true };
   } catch (error) {
-    const retryable2 = error?.retryable !== false;
-    const willRetry = retryable2 && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
+    const retryable3 = error?.retryable !== false;
+    const willRetry = retryable3 && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
     await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
     if (!willRetry) error.retryable = false;
     throw error;
@@ -8614,22 +8660,22 @@ async function performTeamBillingPortal(database, context, payload, attempt = 1)
 async function expireTeamBillingCheckout(database, _context, payload) {
   const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
   if (!operationId) throw checkoutUnavailable();
-  const now = database.clock.now().toISOString();
+  const now2 = database.clock.now().toISOString();
   await database.adapter.prepare(database.adapter.dialect.sql(
     "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
-  )).run(now, operationId, now);
+  )).run(now2, operationId, now2);
   return null;
 }
 async function expireTeamBillingPortal(database, _context, payload) {
   const operationId = exactOperationId(payload);
   if (!operationId) throw checkoutUnavailable();
-  const now = database.clock.now().toISOString();
+  const now2 = database.clock.now().toISOString();
   await database.adapter.prepare(database.adapter.dialect.sql(
     "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = 'portal' AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
-  )).run(now, operationId, now);
+  )).run(now2, operationId, now2);
   return null;
 }
-async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, payloadJson, now) {
+async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, payloadJson, now2) {
   const kind = handler === TEAM_BILLING_CHECKOUT_JOB ? "checkout" : handler === TEAM_BILLING_PORTAL_JOB ? "portal" : null;
   if (!kind || typeof payloadJson !== "string") return;
   let payload;
@@ -8642,7 +8688,7 @@ async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, paylo
   if (!operationId) return;
   await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = ? AND [status] IN ('queued', 'running', 'retrying')"
-  )).run(now, operationId, kind);
+  )).run(now2, operationId, kind);
 }
 async function admitTeamBillingActor(database, transaction, auth, input) {
   requireAuth({ auth }, { linked: true });
@@ -8660,6 +8706,21 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   }));
   if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
   return Object.freeze({ admitted: true });
+}
+function teamBillingErasureKey(database, teamId) {
+  return createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+}
+function teamBillingErasureObjectKey(database, providerObjectId) {
+  return createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+}
+async function assertTeamBillingErasureInactive(database, transaction, teamId) {
+  const active = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId] FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?"
+  )).get(teamId);
+  const erased = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
+  )).get(teamBillingErasureKey(database, teamId));
+  if (active || erased) throw teamBillingDenied();
 }
 async function safeTeamBillingProjection(transaction, definition, teamId) {
   const sql = transaction.dialect.sql;
@@ -8978,12 +9039,335 @@ function checkoutUnavailable() {
   error.retryable = false;
   return error;
 }
+function providerLaneBusy() {
+  const error = checkoutUnavailable();
+  error.code = "TEAM_BILLING_PROVIDER_LANE_BUSY";
+  error.retryable = true;
+  return error;
+}
 function teamBillingDenied() {
   return commandError(
     "Team Billing is unavailable.",
     "Sign in as the current policy-approved billing administrator for this Team and retry.",
     "TEAM_BILLING_DENIED"
   );
+}
+
+// src/team-billing-erasure.ts
+import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
+var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
+var SUBSCRIPTION_ID2 = /^sub_[A-Za-z0-9_]{1,240}$/;
+var CUSTOMER_ID2 = /^cus_[A-Za-z0-9_]{1,120}$/;
+var CLAIM_TTL_MS2 = 5 * 6e4;
+async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
+  if (!TEAM_ID.test(String(teamId ?? "")) || !TEAM_ID.test(String(requestId ?? ""))) throw unavailable();
+  let dispatch = false;
+  const result = await database.adapter.withTransaction(async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId });
+    const key = teamBillingErasureKey(database, teamId);
+    if (await tombstone(transaction, key)) return Object.freeze({ state: "authorized", teamId, requestId });
+    const existing = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [e].[operationId], [e].[status], [o].[requestId], [o].[createdAt] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[teamId] = ?"
+    )).get(teamId);
+    if (existing) {
+      if (existing.requestId !== requestId) throw conflict2();
+      return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
+    }
+    const operationId = randomUUID4();
+    const generationId = randomUUID4();
+    const now2 = database.clock.now().toISOString();
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
+    )).run(now2, teamId);
+    await transaction.prepare(transaction.dialect.sql(
+      "DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+    )).run(teamId);
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'erasure', NULL, 'queued', NULL, ?, NULL, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, providerIdempotency(database, key), now2, now2);
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_erasure_state] ([teamId], [erasureKey], [operationId], [activeJobGenerationId], [status], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?)"
+    )).run(teamId, key, operationId, generationId, now2, now2);
+    if (typeof database.enqueueTeamBillingErasureJob !== "function") throw unavailable();
+    await database.enqueueTeamBillingErasureJob(
+      transaction,
+      { operationId, generationId },
+      `team-billing-erasure:${operationId}:${generationId}`
+    );
+    dispatch = true;
+    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
+  });
+  if (dispatch) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function performTeamBillingErasure(database, context, payload) {
+  if (!exactPayload(payload)) return { superseded: true };
+  const claimToken = randomUUID4();
+  const snapshot = await database.adapter.withTransaction(async (transaction) => {
+    const state = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
+    )).get(payload.operationId);
+    if (!state || state.activeJobGenerationId !== payload.generationId) return null;
+    const auth = await database.readTeamBillingActorAuth?.(transaction, state.actorUserId);
+    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId: state.teamId });
+    await ensureLane2(transaction, state.teamId, database);
+    const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS2).toISOString();
+    const claimed = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+    )).run(claimToken, expiresAt, now(database), state.teamId, now(database));
+    if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_BUSY");
+    const customer = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
+    )).get(state.teamId);
+    const subscriptions = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]"
+    )).all(state.teamId);
+    const checkouts = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]"
+    )).all(state.teamId);
+    const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
+    if (!["sandbox", "live"].includes(mode) || customer && customer.mode !== mode || subscriptions.some((row) => row.mode !== mode) || checkouts.some((row) => row.mode && row.mode !== mode)) throw unavailable();
+    const checkoutSessionIds = checkouts.map((row) => row.providerObjectId).filter(Boolean);
+    const checkoutRecoveries = checkouts.filter((row) => row.attemptedAt && !row.providerObjectId).map((row) => ({
+      operationId: row.id,
+      teamId: state.teamId,
+      productKey: row.productKey,
+      mode: "subscription",
+      priceId: row.providerPriceId,
+      quantity: Number(row.quantity),
+      successPath: database.teamBillingDefinition?.checkout?.successPath,
+      cancelPath: database.teamBillingDefinition?.checkout?.cancelPath,
+      idempotencyKey: row.idempotencyKey,
+      businessReference: row.id,
+      providerExpiresAt: Number(row.providerExpiresAt),
+      ...customer ? { customerId: customer.providerCustomerId } : {}
+    }));
+    const subscriptionIds = subscriptions.map((row) => row.providerSubscriptionId);
+    if (!checkoutSessionIds.every((id) => CHECKOUT_ID2.test(id)) || !subscriptionIds.every((id) => SUBSCRIPTION_ID2.test(id)) || customer && !CUSTOMER_ID2.test(customer.providerCustomerId)) throw unavailable();
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+    )).run(now(database), state.operationId, payload.generationId);
+    return {
+      teamId: state.teamId,
+      erasureKey: state.erasureKey,
+      operationId: state.operationId,
+      generationId: payload.generationId,
+      provider: {
+        mode,
+        ...customer ? { customerId: customer.providerCustomerId } : {},
+        checkoutSessionIds,
+        ...checkoutRecoveries.length ? { checkoutRecoveries } : {},
+        subscriptionIds,
+        idempotencyKey: providerIdempotency(database, state.erasureKey)
+      }
+    };
+  });
+  if (!snapshot) return { superseded: true };
+  try {
+    if (typeof database.quiesceTeamBillingProvider !== "function") throw retryable2("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+    const evidence = await database.quiesceTeamBillingProvider(context, Object.freeze(snapshot.provider));
+    const canonical = validateEvidence(evidence, snapshot.provider);
+    const settled = await database.adapter.withTransaction(async (transaction) => {
+      const laneOwned = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [updatedAt] = [updatedAt] WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(snapshot.teamId, claimToken);
+      if (Number(laneOwned?.changes ?? laneOwned?.changesCount ?? 0) !== 1) return false;
+      const current = await transaction.prepare(transaction.dialect.sql(
+        "SELECT [teamId], [erasureKey] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+      )).get(snapshot.operationId, snapshot.generationId);
+      if (!current) {
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+        )).run(now(database), snapshot.teamId, claimToken);
+        return false;
+      }
+      const digest = createHash6("sha256").update(JSON.stringify(canonical)).digest("hex");
+      await transaction.prepare(transaction.dialect.sql(
+        "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
+      )).run(current.erasureKey, digest, canonical.providerObservedAt, now(database));
+      for (const entry of [
+        ...canonical.checkouts.map((item) => ({ ...item, kind: "checkout" })),
+        ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" }))
+      ]) {
+        await transaction.prepare(transaction.dialect.sql(
+          "INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"
+        )).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
+      }
+      for (const table of [
+        "sporades_team_billing_observations",
+        "sporades_team_billing_subscriptions",
+        "sporades_team_billing_customers",
+        "sporades_team_billing_desired_state",
+        "sporades_team_billing_operations"
+      ]) await transaction.prepare(transaction.dialect.sql(`DELETE FROM [${table}] WHERE [teamId] = ?`)).run(current.teamId);
+      await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?")).run(current.teamId);
+      const released = await transaction.prepare(transaction.dialect.sql(
+        "DELETE FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(current.teamId, claimToken);
+      if (Number(released?.changes ?? released?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_LOST");
+      return true;
+    });
+    return settled ? { providerQuiesced: true } : { superseded: true };
+  } catch (error) {
+    await database.adapter.withTransaction(async (transaction) => {
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(now(database), snapshot.teamId, claimToken);
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'queued', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+      )).run(safeCode2(error?.code), now(database), snapshot.operationId, snapshot.generationId);
+    });
+    error.retryable ??= true;
+    throw error;
+  }
+}
+async function repairTeamBillingErasureStateAtStartup(database) {
+  let queued = 0;
+  await database.adapter.withTransaction(async (transaction) => {
+    const rows = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
+    )).all();
+    for (const row of rows) {
+      const generationId = randomUUID4();
+      const changed = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
+      )).run(generationId, now(database), row.operationId);
+      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) continue;
+      await database.enqueueTeamBillingErasureJob(
+        transaction,
+        { operationId: row.operationId, generationId },
+        `team-billing-erasure:${row.operationId}:${generationId}`
+      );
+      queued += 1;
+    }
+  });
+  if (queued) database.scheduleTeamBillingJobDispatch?.();
+  return { queued };
+}
+async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
+  if (!exactPayload(payload)) return { settled: false };
+  const failureCode = safeCode2(safeFailureCode);
+  let replacementScheduled = false;
+  const result = await inTransaction2(database, async (transaction) => {
+    const state = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [teamId], [operationId], [activeJobGenerationId], [status] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ?"
+    )).get(payload.operationId);
+    if (!state || state.activeJobGenerationId !== payload.generationId || !["queued", "running"].includes(state.status)) return { settled: false };
+    const lane = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+    )).get(state.teamId);
+    const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now(database) ? lane.claimExpiresAt : null;
+    if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
+      const generationId = randomUUID4();
+      const availableAt = liveClaimExpiry ?? now(database);
+      const changed = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+      )).run(generationId, now(database), payload.operationId, payload.generationId);
+      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return { settled: false };
+      await database.enqueueTeamBillingErasureJob(
+        transaction,
+        { operationId: payload.operationId, generationId },
+        `team-billing-erasure:${payload.operationId}:${generationId}`,
+        availableAt
+      );
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt };
+    }
+    const settled = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+    )).run(failureCode, now(database), payload.operationId, payload.generationId);
+    return { settled: Number(settled?.changes ?? settled?.changesCount ?? 0) === 1 };
+  });
+  if (replacementScheduled && !database.__transactionActive) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false) {
+  const requireContext = () => {
+    const context = contextGetter();
+    if (!database.__transactionActive || !context || !isCurrentContext(context) || context.signal?.aborted) {
+      throw inactiveContext();
+    }
+    return context;
+  };
+  return Object.freeze({
+    async admitLocalErasure(teamId) {
+      requireContext();
+      if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
+      await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+      requireContext();
+      if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
+      requireContext();
+      return Object.freeze({ allowed: true });
+    }
+  });
+}
+async function tombstone(transaction, key) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
+  )).get(key);
+}
+async function ensureLane2(transaction, teamId, database) {
+  await transaction.prepare(transaction.dialect.sql(
+    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
+  )).run(teamId, now(database));
+}
+async function inTransaction2(database, callback) {
+  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
+  return database.adapter.withTransaction(callback);
+}
+function validateEvidence(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0subscriptions" || value.ok !== true || value.outcome !== "quiesced" || !canonicalTimestamp3(value.providerObservedAt) || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions)) throw unavailable();
+  const checkouts = value.checkouts.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !CHECKOUT_ID2.test(entry.id) || !["complete", "expired", "safely-closed"].includes(entry.state)) throw unavailable();
+    return { id: entry.id, state: entry.state };
+  }).sort(byId);
+  const subscriptions = value.subscriptions.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !SUBSCRIPTION_ID2.test(entry.id) || !["cancelled", "safely-closed"].includes(entry.state)) throw unavailable();
+    return { id: entry.id, state: entry.state };
+  }).sort(byId);
+  if (new Set(checkouts.map((entry) => entry.id)).size !== checkouts.length || new Set(subscriptions.map((entry) => entry.id)).size !== subscriptions.length || checkouts.length < expected.checkoutSessionIds.length + (expected.checkoutRecoveries?.length ?? 0) || expected.checkoutSessionIds.some((id) => !checkouts.some((entry) => entry.id === id)) || expected.subscriptionIds.some((id) => !subscriptions.some((entry) => entry.id === id))) throw unavailable();
+  return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
+}
+function providerIdempotency(database, key) {
+  return `sporades-team-billing-erasure-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+}
+function exactPayload(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
+}
+function canonicalTimestamp3(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+function byId(left, right) {
+  return left.id.localeCompare(right.id);
+}
+function now(database) {
+  return database.clock.now().toISOString();
+}
+function safeCode2(value) {
+  return String(value ?? "PROVIDER_UNAVAILABLE").replace(/[^A-Z0-9_]/gi, "_").toUpperCase().slice(0, 64);
+}
+function retryable2(code) {
+  const error = unavailable();
+  error.code = code;
+  error.retryable = true;
+  return error;
+}
+function conflict2() {
+  const error = unavailable();
+  error.code = "TEAM_BILLING_REQUEST_CONFLICT";
+  return error;
+}
+function inactiveContext() {
+  const error = unavailable();
+  error.code = "TEAM_BILLING_ERASURE_CONTEXT_INACTIVE";
+  return error;
+}
+function unavailable() {
+  const error = new Error("Team Billing erasure is unavailable.");
+  error.code = "TEAM_BILLING_ERASURE_UNAVAILABLE";
+  return error;
 }
 
 // src/jobs-runtime.ts
@@ -9198,8 +9582,8 @@ function installStripeEventPayloadCleanupTimer(database, dueAt) {
 function startStripeEventPayloadCleanup(database) {
   if (database.__jobStopped) return void 0;
   if (database.__stripeEventPayloadCleanupPromise) {
-    const now = database.clock.now().getTime();
-    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? now : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now);
+    const now2 = database.clock.now().getTime();
+    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? now2 : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now2);
     return database.__stripeEventPayloadCleanupPromise;
   }
   const cleanup = runStripeEventPayloadCleanupChain(database);
@@ -9640,6 +10024,7 @@ function runtimeOwnedJobHandlers(runtime) {
     { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
     { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
     { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
+    { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
     {
       name: STRIPE_EVENT_JOB,
       handler: runtime.dispatchStripeEvent
@@ -9997,19 +10382,19 @@ async function cancelJob(database, context, id) {
   for (let transition = 0; transition < 8; transition += 1) {
     const row = await read();
     if (!row) return null;
-    const now = database.clock.now().toISOString();
+    const now2 = database.clock.now().toISOString();
     if (["queued", "delayed"].includes(row.status)) {
       const changed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?"
-      )).run(now, id, row.status);
-      if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now, startedAt: null, leaseExpiresAt: null }, true);
+      )).run(now2, id, row.status);
+      if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now2, startedAt: null, leaseExpiresAt: null }, true);
       continue;
     }
     if (row.status === "running") {
       const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
       const changed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " + (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL")
-      )).run(now, id, ...hasClaimToken ? [row.claimToken] : []);
+      )).run(now2, id, ...hasClaimToken ? [row.claimToken] : []);
       if (Number(changed?.changes ?? 0) !== 1) continue;
       const runtimeDatabase = database.__rootDatabase ?? database;
       if (database.__transactionActive) {
@@ -10020,7 +10405,7 @@ async function cancelJob(database, context, id) {
       } else {
         abortRuntimeJobClaim(runtimeDatabase, id, row.claimToken);
       }
-      return jobState({ ...row, cancelRequestedAt: now }, true);
+      return jobState({ ...row, cancelRequestedAt: now2 }, true);
     }
     throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
   }
@@ -11411,7 +11796,7 @@ async function createPendingFileUpload(database, auth, message) {
     };
   }
   return await withFileUploadPathLock("capsule", async () => {
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const replacing = message.replace === true;
     const replaceReference = message.fileReference ?? message.fileId;
     const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
@@ -11429,7 +11814,7 @@ async function createPendingFileUpload(database, auth, message) {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
       let target;
       try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now2);
       } catch (error) {
         return {
           ok: false,
@@ -11469,7 +11854,7 @@ async function createPendingFileUpload(database, auth, message) {
           type,
           version,
           expectedSize: size,
-          createdAt: now
+          createdAt: now2
         });
       } catch (error) {
         if (!isUniqueConstraintError(error)) throw error;
@@ -11528,13 +11913,13 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
     await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
     wroteFileVersion = true;
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const completion = await database.adapter.withTransaction(async (sqlite) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
+      const completed = await sqlite.completeFileUpload(upload, bytes.length, now2);
       if (completed?.changes === 0) {
         return { ok: false, superseded: true };
       }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
       return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
     });
     if (!completion.ok && completion.superseded) {
@@ -11617,7 +12002,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
       };
     }
     const id = nodeCryptoModule2.randomUUID();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await sqlite.insertPublicFileUrl({
       id,
       fileId: row.id,
@@ -11628,7 +12013,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
       ownerId: row.ownerId,
       version: row.version,
       expiresAt: expiry.expiresAt,
-      createdAt: now
+      createdAt: now2
     });
     return {
       ok: true,
@@ -11646,8 +12031,8 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   });
 }
 async function revokePublicFileUrl(database, auth, publicUrlId) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now2);
   if (result.changes === 0) {
     return {
       ok: false,
@@ -11656,12 +12041,12 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
   }
   return {
     ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
+    data: { publicUrl: { id: publicUrlId, revokedAt: now2 } },
     error: null
   };
 }
 async function deletePrivateFile(database, auth, fileReference) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     const resolved = await resolveAccessibleFileReference(transactionDatabase, auth, fileReference, "delete");
@@ -11677,11 +12062,11 @@ async function deletePrivateFile(database, auth, fileReference) {
     }
     await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
     await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now);
+    await sqlite.markFileDeleted(row.id, now2);
+    await sqlite.revokePublicFileUrlsForFile(row.id, now2);
     return {
       ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+      data: { file: fileMetadataFromRow({ ...row, deletedAt: now2 }) },
       error: null,
       deletedFile: row
     };
@@ -11782,18 +12167,18 @@ async function withFileUploadPathLock(path12, fn) {
     }
   }
 }
-async function resolveFileWriteTarget(database, ownerId, input, now) {
+async function resolveFileWriteTarget(database, ownerId, input, now2) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
   const path12 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
   const firstSegment = path12.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
+  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
   return { bucket, path: path12 };
 }
-async function ensureFileBucket(database, ownerId, name, now) {
+async function ensureFileBucket(database, ownerId, name, now2) {
   const existing = await database.adapter.findFileBucket(ownerId, name);
   if (existing) return existing;
-  const bucket = { id: nodeCryptoModule2.randomUUID(), ownerId, name, createdAt: now };
+  const bucket = { id: nodeCryptoModule2.randomUUID(), ownerId, name, createdAt: now2 };
   try {
     await database.adapter.createFileBucket(bucket);
     return bucket;
@@ -12589,17 +12974,17 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
     created = await withTeamTransaction(database, async (tx) => {
       await lockTeamLifecycle(tx, teamId);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const now = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
-      const nowIso2 = now.toISOString();
+      const now2 = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
+      const nowIso2 = now2.toISOString();
       await pruneExpiredTeamJoinLinks(tx, nowIso2);
       await reconcileTeamJoinLinkCapacity(tx, teamId, nowIso2);
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
-      const id = randomUUID4();
+      const id = randomUUID5();
       const selector = randomBytes4(16).toString("base64url");
       const verifier = randomBytes4(32).toString("base64url");
-      const expiresAt = new Date(now.getTime() + ttlSeconds * 1e3).toISOString();
+      const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
         "INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)"
@@ -12621,11 +13006,11 @@ async function listTeamJoinLinks(database, auth, teamId) {
   return withTeamTransaction(database, async (tx) => {
     await lockTeamLifecycle(tx, teamId);
     if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-    const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-    await pruneExpiredTeamJoinLinks(tx, now);
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    await pruneExpiredTeamJoinLinks(tx, now2);
     const rows = await tx.prepare(tx.dialect.sql(
       "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
-    )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
     return { links: rows.map((row) => ({ id: String(row.id), email: String(row.email), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
   });
 }
@@ -12641,10 +13026,10 @@ async function revokeTeamJoinLink(database, auth, teamId, joinLinkId, eventConte
       emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, teamId, "denied", "DENIED");
       throw teamDenied();
     }
-    const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
     const changed = await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ? AND [teamId] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
-    )).run(now, joinLinkId, teamId, now);
+    )).run(now2, joinLinkId, teamId, now2);
     if (Number(changed?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, teamId);
   });
   emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoked", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_REVOKED");
@@ -12744,10 +13129,10 @@ async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
     assertActive();
     await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
     assertActive();
-    const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
     const rows = await tx.prepare(tx.dialect.sql(
       "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
-    )).all(teamId, now, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
     assertActive();
     return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
   });
@@ -12771,9 +13156,9 @@ async function validateTeamJoinLink(database, auth, code) {
   const actualSignature = Buffer.from(parsed.signature, "base64url");
   const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
   const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
-  const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
+  const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
   const expiresAt = Date.parse(row?.expiresAt ?? "");
-  if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now) return { valid: false };
+  if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
   const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
   if (!team) return { valid: false };
   const attachedEmails = await database.adapter.prepare(database.adapter.dialect.sql(
@@ -12813,9 +13198,9 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       const actualSignature = Buffer.from(parsed.signature, "base64url");
       const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
       const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
-      const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       const expiresAt = Date.parse(row?.expiresAt ?? "");
-      if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now)) throw invalidTeamJoinLink();
+      if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
       const team = await tx.prepare(sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
       if (!team) throw invalidTeamJoinLink();
       const attachedEmails = await tx.prepare(sql(
@@ -12842,11 +13227,11 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
       if (redemption) throw invalidTeamJoinLink();
       const consumed = await tx.prepare(sql(
         "UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
-      )).run(now, row.id, now);
+      )).run(now2, row.id, now2);
       if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
       await tx.prepare(sql(
         "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(row.id, row.teamId, joiningUserId, now);
+      )).run(row.id, row.teamId, joiningUserId, now2);
       await ensureInitialTeamOnAdapter(tx, joiningUserId);
       let membership = await tx.prepare(sql(
         "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
@@ -12863,7 +13248,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         }
         await tx.prepare(sql(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
-        )).run(row.teamId, joiningUserId, now);
+        )).run(row.teamId, joiningUserId, now2);
         membership = { role: "member" };
       }
       await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
@@ -12940,7 +13325,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash6("sha256").update(verifier).digest("base64url");
+  return createHash7("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -12977,54 +13362,54 @@ async function releaseTeamMembershipSlot(tx, userId) {
     "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] - 1 WHERE [userId] = ? AND [membershipCount] > 0"
   )).run(userId);
 }
-async function pruneExpiredTeamJoinLinks(tx, now) {
-  const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now, TEAM_JOIN_LINK_PRUNE_LIMIT);
+async function pruneExpiredTeamJoinLinks(tx, now2) {
+  const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
   for (const row of rows) {
-    const deleted = await deleteExpiredTeamJoinLink(tx, String(row.id), String(row.teamId), now);
+    const deleted = await deleteExpiredTeamJoinLink(tx, String(row.id), String(row.teamId), now2);
     if (Number(deleted?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
   }
 }
-async function claimTeamJoinLinkCreationSlot(tx, teamId, adminUserId, now) {
-  const windowStart = new Date(Date.parse(now) - 60 * 60 * 1e3).toISOString();
+async function claimTeamJoinLinkCreationSlot(tx, teamId, adminUserId, now2) {
+  const windowStart = new Date(Date.parse(now2) - 60 * 60 * 1e3).toISOString();
   await tx.prepare(tx.dialect.sql(
     "INSERT INTO [sporades_team_join_link_throttles] ([teamId], [adminUserId], [windowStartedAt], [count]) VALUES (?, ?, ?, 0) ON CONFLICT ([teamId], [adminUserId]) DO NOTHING"
-  )).run(teamId, adminUserId, now);
+  )).run(teamId, adminUserId, now2);
   await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_team_join_link_throttles] SET [windowStartedAt] = ?, [count] = 0 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] <= ?"
-  )).run(now, teamId, adminUserId, windowStart);
+  )).run(now2, teamId, adminUserId, windowStart);
   const claimed = await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_team_join_link_throttles] SET [count] = [count] + 1 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] > ? AND [count] < ?"
   )).run(teamId, adminUserId, windowStart, TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR);
   if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkThrottleError();
 }
-async function claimTeamJoinLinkCapacity(tx, teamId, now) {
+async function claimTeamJoinLinkCapacity(tx, teamId, now2) {
   await tx.prepare(tx.dialect.sql(
     "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
-  )).run(teamId, teamId, now);
+  )).run(teamId, teamId, now2);
   const claimed = await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] + 1 WHERE [teamId] = ? AND [activeCount] < ?"
   )).run(teamId, TEAM_JOIN_LINK_MAX_OUTSTANDING);
   if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkLimitError();
 }
-async function reconcileTeamJoinLinkCapacity(tx, teamId, now) {
+async function reconcileTeamJoinLinkCapacity(tx, teamId, now2) {
   const expired = await tx.prepare(tx.dialect.sql(
     "SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] <= ? LIMIT ?"
-  )).all(teamId, now, TEAM_JOIN_LINK_PRUNE_LIMIT);
-  for (const row of expired) await deleteExpiredTeamJoinLink(tx, String(row.id), teamId, now);
+  )).all(teamId, now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
+  for (const row of expired) await deleteExpiredTeamJoinLink(tx, String(row.id), teamId, now2);
   await tx.prepare(tx.dialect.sql(
     "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
-  )).run(teamId, teamId, now);
+  )).run(teamId, teamId, now2);
   await tx.prepare(tx.dialect.sql(
     "UPDATE [sporades_team_join_link_counters] SET [activeCount] = (SELECT COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL) WHERE [teamId] = ?"
-  )).run(teamId, now, teamId);
+  )).run(teamId, now2, teamId);
 }
-async function deleteExpiredTeamJoinLink(tx, joinLinkId, teamId, now) {
+async function deleteExpiredTeamJoinLink(tx, joinLinkId, teamId, now2) {
   await tx.prepare(tx.dialect.sql(
     "DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ? AND [teamId] = ?"
   )).run(joinLinkId, teamId);
   return tx.prepare(tx.dialect.sql(
     "DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [teamId] = ? AND [expiresAt] <= ?"
-  )).run(joinLinkId, teamId, now);
+  )).run(joinLinkId, teamId, now2);
 }
 async function releaseTeamJoinLinkCapacity(tx, teamId) {
   await tx.prepare(tx.dialect.sql(
@@ -13079,14 +13464,14 @@ async function createAdditionalTeam(database, auth, name, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id = randomUUID4();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const id = randomUUID5();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
-    )).run(id, normalizedName, now, auth.userId);
+    )).run(id, normalizedName, now2, auth.userId);
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)"
-    )).run(id, auth.userId, now);
+    )).run(id, auth.userId, now2);
     return teamSummary({ id, name: normalizedName, role: "admin", memberCount: 1 });
   });
   emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id, "succeeded", "TEAM_CREATED");
@@ -13135,9 +13520,9 @@ async function updateTeamMemberApplicationRoles(database, auth, teamId, userId, 
       for (const role of patch.remove) {
         await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
       }
-      const now = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       for (const role of patch.add) {
-        await tx.prepare(sql("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now);
+        await tx.prepare(sql("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now2);
       }
     });
   } catch (error) {
@@ -13396,18 +13781,18 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql = tx.dialect.sql;
-  const id = randomUUID4();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const id = randomUUID5();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
-  )).run(userId, id, now);
+  )).run(userId, id, now2);
   if (Number(claim?.changes ?? 0) === 0) {
     const existing = await tx.prepare(sql("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
     if (existing?.teamId) return String(existing.teamId);
     throw new Error("Team bootstrap claim was not committed.");
   }
-  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, userId);
-  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now);
+  await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now2, userId);
+  await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now2);
   await tx.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
   return id;
 }
@@ -13704,7 +14089,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   }
   const displayName = normalizeSimulatedText(options.displayName) ?? email;
   const picture = normalizeSimulatedText(options.picture);
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const token = createSessionToken();
   return await withAuthTransaction(database, async (tx) => {
     const subject = `local:${email}`;
@@ -13718,12 +14103,12 @@ async function simulateLocalIdentitySession(database, options = {}) {
         email,
         displayName,
         picture,
-        updatedAt: now
+        updatedAt: now2
       });
     } else {
       await tx.insertAuthUser({
         id: userId,
-        createdAt: now,
+        createdAt: now2,
         displayName,
         email,
         picture,
@@ -13739,12 +14124,12 @@ async function simulateLocalIdentitySession(database, options = {}) {
         email,
         displayName,
         picture,
-        createdAt: now,
-        updatedAt: now
+        createdAt: now2,
+        updatedAt: now2
       });
       await bootstrapInitialTeamForLinkedUser(tx, userId);
     }
-    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider, createdAt: now2, expiresAt: sessionExpiresAt(now2) });
     const auth = {
       userId,
       displayName,
@@ -14602,11 +14987,11 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
   ]);
   const cacheRoot = microsoftOidcCache(database);
   const cache = cacheRoot.discovery;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
+  const now2 = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now2, 32);
   let state = cache.get(cacheKey);
   if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
+    pruneMicrosoftOidcCacheMap(cache, now2, 32, true);
     state = {
       value: null,
       expiresAt: 0,
@@ -14625,7 +15010,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
     cache.set(cacheKey, state);
   }
   state.lastAccess = cacheRoot.nextAccess++;
-  if (state.value && state.expiresAt > now) return state.value;
+  if (state.value && state.expiresAt > now2) return state.value;
   if (state.inflight) return await state.inflight;
   const requestGeneration = state.nextGeneration++;
   const inflight = (async () => {
@@ -14738,9 +15123,9 @@ function microsoftOidcNow(database) {
 function microsoftOidcCacheKey(parts) {
   return JSON.stringify(parts);
 }
-function pruneMicrosoftOidcCacheMap(cache, now, maximumSize, reserveSlot = false) {
+function pruneMicrosoftOidcCacheMap(cache, now2, maximumSize, reserveSlot = false) {
   for (const [key, state] of cache) {
-    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now)) {
+    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now2)) {
       cache.delete(key);
     }
   }
@@ -15030,11 +15415,11 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
   ]);
   const cacheRoot = microsoftOidcCache(database);
   const cache = cacheRoot.jwks;
-  const now = microsoftOidcNow(database);
-  pruneMicrosoftOidcCacheMap(cache, now, 32);
+  const now2 = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now2, 32);
   let state = cache.get(cacheKey);
   if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
+    pruneMicrosoftOidcCacheMap(cache, now2, 32, true);
     state = {
       value: null,
       expiresAt: 0,
@@ -15070,12 +15455,12 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
   };
   if (forceRefresh) {
     if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
-      rememberMissingKid(state.value, missingKid, now);
+      rememberMissingKid(state.value, missingKid, now2);
       return state.value;
     }
     const cooldownUntil = state.missingKidCooldowns.get(missingKid);
-    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now) return state.value;
-  } else if (state.value && state.expiresAt > now) {
+    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now2) return state.value;
+  } else if (state.value && state.expiresAt > now2) {
     return state.value;
   }
   if (state.inflight) {
@@ -15221,10 +15606,10 @@ function hashPasswordResetVerifier(verifier) {
   return nodeCryptoModule3.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
-  const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
+  const { selector, code, verifierHash, now: now2 } = passwordResetCodeParts(database, requestedCode);
   if (requestedCode) {
     const existing = await database.adapter.findPasswordResetCode(selector);
-    if (existing && Date.parse(existing.expiresAt) > now.getTime()) {
+    if (existing && Date.parse(existing.expiresAt) > now2.getTime()) {
       if (existing.email !== credential.email || existing.userId !== credential.userId || existing.verifierHash !== verifierHash) {
         throw commandError("Password reset request conflicted with existing state.", "Request a new password reset link.", "PASSWORD_RESET_REQUEST_CONFLICT");
       }
@@ -15234,9 +15619,9 @@ async function issuePasswordResetCode(database, credential, requestedCode = null
     }
     if (!allowRequestedCodeInsert) return null;
   }
-  const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
-  await database.adapter.prunePasswordResetCodes(now.toISOString());
-  const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now.toISOString());
+  const expiresAt = new Date(now2.getTime() + database.passwordResetConfig.ttlMs).toISOString();
+  await database.adapter.prunePasswordResetCodes(now2.toISOString());
+  const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now2.toISOString());
   if (outstanding >= PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL) {
     return null;
   }
@@ -15245,7 +15630,7 @@ async function issuePasswordResetCode(database, credential, requestedCode = null
     verifierHash,
     email: credential.email,
     userId: credential.userId,
-    createdAt: now.toISOString(),
+    createdAt: now2.toISOString(),
     expiresAt
   });
   const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
@@ -15461,15 +15846,15 @@ function emailSignInThrottleKeys(email, session) {
 }
 function currentEmailSignInThrottleState(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
-  const now = Date.now();
-  pruneEmailSignInThrottleState(attempts, now);
+  const now2 = Date.now();
+  pruneEmailSignInThrottleState(attempts, now2);
   const keys = emailSignInThrottleKeys(email, session);
   const entries = keys.map((key) => {
     const current = attempts.get(key);
     return {
       key,
       count: current?.count ?? 0,
-      resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
+      resetAt: current?.resetAt ?? now2 + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
     };
   });
   return {
@@ -15496,9 +15881,9 @@ function resetEmailSignInAttempts(database, email, session, scope = EMAIL_SIGN_I
     attempts.delete(key);
   }
 }
-function pruneEmailSignInThrottleState(attempts, now = Date.now()) {
+function pruneEmailSignInThrottleState(attempts, now2 = Date.now()) {
   for (const [key, entry] of attempts) {
-    if (!entry || now >= entry.resetAt) {
+    if (!entry || now2 >= entry.resetAt) {
       attempts.delete(key);
     }
   }
@@ -15597,8 +15982,8 @@ function createSessionToken() {
   return nodeCryptoModule3.randomBytes(32).toString("base64url");
 }
 async function refreshSessionOnAdapter(sqlite, token) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const expiresAt = sessionExpiresAt(now);
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  const expiresAt = sessionExpiresAt(now2);
   await sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
@@ -15613,13 +15998,13 @@ async function resolveAnonymousSession(database, sessionToken) {
       }
     }
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const userId = nodeCryptoModule3.randomUUID();
   const token = createSessionToken();
   await database.adapter.withTransaction(async (tx) => {
     await tx.insertAuthUser({
       id: userId,
-      createdAt: now,
+      createdAt: now2,
       displayName: "Anonymous",
       email: null,
       picture: null,
@@ -15627,7 +16012,7 @@ async function resolveAnonymousSession(database, sessionToken) {
       isGuest: 1,
       provider: "anonymous"
     });
-    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now2, expiresAt: sessionExpiresAt(now2) });
   });
   return {
     token,
@@ -15944,7 +16329,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
       isGuest: false,
       provider
     };
-    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
     if (identity) {
       await tx.updateAuthIdentity({
         id: identity.id,
@@ -15952,7 +16337,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
         email,
         displayName: auth.displayName,
         picture: auth.picture,
-        updatedAt: now
+        updatedAt: now2
       });
     } else {
       await tx.insertAuthIdentity({
@@ -15963,8 +16348,8 @@ async function linkProviderIdentity(database, session, provider, profile) {
         email,
         displayName: auth.displayName,
         picture: auth.picture,
-        createdAt: now,
-        updatedAt: now
+        createdAt: now2,
+        updatedAt: now2
       });
     }
     await tx.linkAuthUser({
@@ -16019,21 +16404,21 @@ function isTransientAuthTransactionError(error) {
   return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text2.includes("locked") || text2.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const token = createSessionToken();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now2, expiresAt: sessionExpiresAt(now2) });
   return token;
 }
 async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
   await sqlite.rotateAuthSession(session.token, {
     token: session.token,
     userId,
     provider,
-    createdAt: now,
-    expiresAt: sessionExpiresAt(now)
+    createdAt: now2,
+    expiresAt: sessionExpiresAt(now2)
   });
 }
 async function routeSporadesAuth(database, request, response) {
@@ -16193,7 +16578,7 @@ async function beginOAuthSignIn(database, session, provider, options) {
   const nonce = nodeCryptoModule3.randomBytes(32).toString("base64url");
   const pkceVerifier = nodeCryptoModule3.randomBytes(48).toString("base64url");
   const pkceChallenge = nodeCryptoModule3.createHash("sha256").update(pkceVerifier).digest("base64url");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
   let started;
   try {
@@ -16231,7 +16616,7 @@ async function beginOAuthSignIn(database, session, provider, options) {
     sessionToken: session.token,
     returnTo,
     redirectUri,
-    createdAt: now,
+    createdAt: now2,
     expiresAt,
     nonce,
     pkceVerifier
@@ -16502,7 +16887,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql) {
@@ -18016,21 +18401,21 @@ function createSharedDatabaseAdapterMethods(dialect) {
     deletePasswordResetCode(selector) {
       return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [selector] = ?")).run(selector);
     },
-    countPasswordResetCodesForEmail(email, now) {
+    countPasswordResetCodesForEmail(email, now2) {
       return thenIfPromise(
         this.prepare(
           sql(
             "SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ? AND [expiresAt] > ?"
           )
-        ).get(email, now),
+        ).get(email, now2),
         (row) => Number(row?.count ?? 0)
       );
     },
     deletePasswordResetCodesForUser(userId) {
       return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
     },
-    prunePasswordResetCodes(now) {
-      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now);
+    prunePasswordResetCodes(now2) {
+      return this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [expiresAt] <= ?")).run(now2);
     },
     // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
     // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
@@ -19199,7 +19584,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID5().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID6().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -19640,6 +20025,16 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         }
         throw error;
       }
+    },
+    performTeamBillingErasure: async (context, payload) => {
+      try {
+        return await performTeamBillingErasure(database, context, payload);
+      } catch (error) {
+        if ((database.__runtimeJobAttempts.get(context) ?? 1) >= 6) {
+          await settleExhaustedTeamBillingErasureJob(database, payload, error?.code);
+        }
+        throw error;
+      }
     }
   })];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
@@ -19699,6 +20094,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     enqueueTeamBillingPortalExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, void 0, true, availableAt),
     enqueueTeamBillingPlanTransitionJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5e3 }, true, availableAt, availableAt !== void 0),
     enqueueTeamBillingSeatConvergenceJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_SEAT_CONVERGENCE_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 6e4 }, true, availableAt, availableAt !== void 0),
+    enqueueTeamBillingErasureJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_ERASURE_JOB, payload, idempotencyKey, { maxAttempts: 6, delayMs: 6e4 }, true, availableAt, availableAt !== void 0),
     stageTeamBillingMembershipChange: (teamId) => stageTeamBillingMembershipChange(database, teamId),
     readTeamBillingActorAuth: async (transaction, userId) => {
       if (typeof userId !== "string") return null;
@@ -19742,6 +20138,21 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         operationKind: input.operationKind
       }));
     },
+    quiesceTeamBillingProvider: async (context, input) => {
+      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError(
+        "Team Billing provider is unavailable.",
+        "Retry after the configured provider is available.",
+        "TEAM_BILLING_PROVIDER_UNAVAILABLE"
+      );
+      const provider = database.createStripeTeamBillingProvider({
+        enabled: true,
+        config: database.paymentsConfig.stripe,
+        env: database.serverEnv,
+        signal: context?.signal,
+        ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
+      });
+      return provider.quiesceTeamBilling(input);
+    },
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus2(config, serverEnv),
@@ -19749,6 +20160,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     teamJoinLinkConfig: resolveTeamJoinLinkConfig(config),
     teamApplicationRoles,
     teamBillingDefinition,
+    teamBillingErasureObjectKey: (providerObjectId) => teamBillingErasureObjectKey(database, providerObjectId),
     runTeamJoinAdmission: typeof capsuleDefinition?.teams?.admitJoin === "function" ? async function(transactionAdapter, auth, input, signal) {
       const rootDatabase = this.__rootDatabase ?? this;
       const trustedTransaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
@@ -19876,7 +20288,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false }));
       }
-      if (database.teamBillingDefinition) await repairTeamBillingDesiredStateAtStartup(database);
+      if (database.teamBillingDefinition) {
+        await repairTeamBillingDesiredStateAtStartup(database);
+        await repairTeamBillingErasureStateAtStartup(database);
+      }
       database.__scheduleTimers = /* @__PURE__ */ new Set();
       database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
       database.__scheduleRecoveryTimer = null;
@@ -20013,7 +20428,7 @@ function resolveJourneySessionInactivityMinutes(config = {}) {
   return Math.min(1440, Math.max(1, Math.round(value)));
 }
 async function reconcileSchedules(database) {
-  const now = database.clock.now();
+  const now2 = database.clock.now();
   const declaredNames = new Set(database.schedules.map((definition) => definition.name));
   for (let attempt = 0; ; attempt += 1) {
     let candidateArmed = false;
@@ -20049,13 +20464,13 @@ async function reconcileSchedules(database) {
             if (retainedExhaustion) {
               exhausted = true;
             } else if (changed || row?.nextOccurrence === null || row?.nextOccurrence === void 0) {
-              nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
+              nextOccurrence = nextScheduleOccurrence(definition.fields, now2, definition.effectiveTimezone).toISOString();
             } else {
               nextOccurrence = String(row.nextOccurrence);
-              if (Date.parse(nextOccurrence) <= now.getTime()) {
+              if (Date.parse(nextOccurrence) <= now2.getTime()) {
                 let latest = new Date(nextOccurrence);
                 let successor = nextScheduleCursor(definition, latest);
-                while (!successor.exhausted && Date.parse(successor.nextOccurrence) <= now.getTime()) {
+                while (!successor.exhausted && Date.parse(successor.nextOccurrence) <= now2.getTime()) {
                   latest = new Date(successor.nextOccurrence);
                   successor = nextScheduleCursor(definition, latest);
                 }
@@ -20074,7 +20489,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID6() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID7() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -20291,10 +20706,10 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID6();
-  const now = database.clock.now();
-  const nowIso2 = now.toISOString();
-  const fullLeaseExpiresAt = jobTimestampAfter(now, RUNTIME_CLAIM_LEASE_MS);
+  const token = randomUUID7();
+  const now2 = database.clock.now();
+  const nowIso2 = now2.toISOString();
+  const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
   const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso2) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
   if (expiresAt === null) {
     throw commandError("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
@@ -20603,6 +21018,19 @@ async function recoverExpiredJobLeases(database) {
             );
             replacementScheduled = managementSettlement?.replacementScheduled === true;
           }
+          if (row.handler === TEAM_BILLING_ERASURE_JOB) {
+            let payload = null;
+            try {
+              payload = JSON.parse(row.payload);
+            } catch {
+            }
+            const erasureSettlement = await settleExhaustedTeamBillingErasureJob(
+              { ...database, adapter: transaction, __transactionActive: true },
+              payload,
+              "JOB_LEASE_EXPIRED"
+            );
+            replacementScheduled = erasureSettlement?.replacementScheduled === true;
+          }
         }
         return replacementScheduled;
       });
@@ -20651,8 +21079,8 @@ function scheduleJobLeaseRecoveryAt(database, dueAt) {
 function startJobLeaseRecovery(database) {
   if (database.__jobStopped) return void 0;
   if (database.__jobLeaseRecoveryPromise) {
-    const now = database.clock.now().getTime();
-    database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null ? now : Math.min(database.__jobLeaseRecoveryRequestedAt, now);
+    const now2 = database.clock.now().getTime();
+    database.__jobLeaseRecoveryRequestedAt = database.__jobLeaseRecoveryRequestedAt === null ? now2 : Math.min(database.__jobLeaseRecoveryRequestedAt, now2);
     return database.__jobLeaseRecoveryPromise;
   }
   const recovery = runJobLeaseRecoveryChain(database);
@@ -20988,12 +21416,12 @@ function createPrivilegedHandlerContext(database, context, signal) {
   return privilegedContext;
 }
 function createLogEnvelope(input) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
   const envelope = {
     schema: "sporades.log.v1",
-    timestamp: input.timestamp ?? now,
+    timestamp: input.timestamp ?? now2,
     category: input.category ?? "platform",
     event: input.event ?? "runtime.event",
     level: input.level ?? "info",
@@ -21004,7 +21432,7 @@ function createLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request ? {
-      id: input.request.id ?? randomUUID6(),
+      id: input.request.id ?? randomUUID7(),
       method: input.request.method ?? null,
       path: input.request.path ?? null
     } : null,
@@ -22069,6 +22497,12 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     }
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.teamBilling = createCurrentUserTeamBillingErasureApi(
+    database,
+    auth,
+    () => holder.current,
+    (candidate) => handlerContextByDatabase.get(database)?.() === candidate
+  );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
@@ -22370,11 +22804,11 @@ async function withTrustedRead(database, options, callback) {
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
     insert(values) {
-      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID6(),
-        createdAt: now,
-        updatedAt: now
+        id: randomUUID7(),
+        createdAt: now2,
+        updatedAt: now2
       };
       const fieldValues = table.fields.map(
         (field) => fieldValueForWrite(
@@ -22407,11 +22841,11 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       )) {
         throw new Error(`insertOrIgnore requires an exactly matching declared unique constraint on ${table.name}.`);
       }
-      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID6(),
-        createdAt: now,
-        updatedAt: now
+        id: randomUUID7(),
+        createdAt: now2,
+        updatedAt: now2
       };
       const fieldValues = table.fields.map(
         (field) => fieldValueForWrite(
@@ -22457,8 +22891,8 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         if (fieldsToUpdate.length === 0) {
           return runTableWriteWithAcl(database, table, "update", previous, previous, contextGetter, () => previous);
         }
-        const now = (/* @__PURE__ */ new Date()).toISOString();
-        const serializedValues = { updatedAt: now };
+        const now2 = (/* @__PURE__ */ new Date()).toISOString();
+        const serializedValues = { updatedAt: now2 };
         const fieldValues = fieldsToUpdate.map((field) => fieldValueForWrite(database, field, values[field.name]));
         const finishValues = (resolvedValues) => {
           for (const [index, field] of fieldsToUpdate.entries()) {
@@ -22466,7 +22900,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
           }
           const next = {
             ...previous,
-            updatedAt: now,
+            updatedAt: now2,
             ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])]))
           };
           return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
@@ -22778,7 +23212,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         ].join("\r\n")
       );
       const origin = resolveOAuthRequestOrigin(policy, request);
-      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const client = {
         id: `client-${(nextClientId++).toString(36)}`,
         socket,
@@ -22787,8 +23221,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         subscriptions: /* @__PURE__ */ new Map(),
         session: createPendingWebSocketSession(),
         origin,
-        connectedAt: now,
-        lastSeenAt: now,
+        connectedAt: now2,
+        lastSeenAt: now2,
         journey: null,
         journeySubscriptions: /* @__PURE__ */ new Set()
       };
@@ -22868,9 +23302,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
   };
   function pruneConnectionTokens() {
-    const now = Date.now();
+    const now2 = Date.now();
     for (const [token, expiresAt] of connectionTokens) {
-      if (expiresAt <= now) {
+      if (expiresAt <= now2) {
         connectionTokens.delete(token);
       }
     }
@@ -22888,8 +23322,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     return [...journeys.values()].sort((a, b) => a.userId.localeCompare(b.userId) || a.sessionId.localeCompare(b.sessionId));
   }
   function pruneExpiredJourneys() {
-    const now = getDatabase().clock.now().getTime();
-    const expired = [...journeys.values()].filter((record) => Date.parse(record.expiresAt) <= now).sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt) || a.sessionId.localeCompare(b.sessionId));
+    const now2 = getDatabase().clock.now().getTime();
+    const expired = [...journeys.values()].filter((record) => Date.parse(record.expiresAt) <= now2).sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt) || a.sessionId.localeCompare(b.sessionId));
     for (const record of expired) {
       if (journeys.get(record.sessionId) !== record) continue;
       journeys.delete(record.sessionId);
@@ -23333,6 +23767,25 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       }
       return;
     }
+    if (message.type === "teamBilling.prepareErasure") {
+      try {
+        const input = message.input;
+        const data = await prepareTeamBillingErasure(database, client.session.auth, input?.teamId, input?.requestId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.prepareErasure.result", data, error: null });
+      } catch (error) {
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? error.code : "TEAM_BILLING_ERASURE_UNAVAILABLE",
+            message: "Team billing erasure is unavailable.",
+            hint: "Sign in as the current policy-approved Team administrator and retry."
+          }
+        });
+      }
+      return;
+    }
     if (message.type === "teams.create") {
       try {
         const data = await createAdditionalTeam(database, client.session.auth, message.name);
@@ -23517,8 +23970,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
           if (userCount >= 32) throw { code: "JOURNEY_USER_CAPACITY", message: "Journey user capacity reached.", hint: "Wait for an existing Journey state to expire or disable one before publishing another." };
           if (journeys.size >= 1e3) throw { code: "JOURNEY_CAPSULE_CAPACITY", message: "Journey Capsule capacity reached.", hint: "Wait for an existing Journey state to expire or be disabled before publishing another." };
         }
-        const now = nowDate.toISOString();
-        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, metadata: state.metadata ?? null, updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1e3).toISOString() };
+        const now2 = nowDate.toISOString();
+        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, metadata: state.metadata ?? null, updatedAt: now2, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1e3).toISOString() };
         journeys.set(record.sessionId, record);
         client.journey.lastActivityAt = nowDate.getTime();
         scheduleJourneyExpiry();
@@ -23772,16 +24225,16 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
 async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey, retry = void 0, deferDispatch = false, availableAt = void 0, persistDelayed = false) {
   const queueDatabase = database.__rootDatabase ?? database;
   const jobAdapter = database.adapter;
-  const now = queueDatabase.clock.now().toISOString();
-  const jobAvailableAt = availableAt ?? now;
-  const status = persistDelayed && jobAvailableAt > now ? "delayed" : "queued";
+  const now2 = queueDatabase.clock.now().toISOString();
+  const jobAvailableAt = availableAt ?? now2;
+  const status = persistDelayed && jobAvailableAt > now2 ? "delayed" : "queued";
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await jobAdapter.prepare(
     jobAdapter.dialect.sql(
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID6(),
+    randomUUID7(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -23790,7 +24243,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     status,
     jobAvailableAt,
     idempotencyKey,
-    now,
+    now2,
     JSON.stringify(normalizeJobRetry(retry))
   );
   if (!deferDispatch) deferOrScheduleJobDispatch(database, queueDatabase);
@@ -23820,7 +24273,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash7("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash8("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -24292,6 +24745,12 @@ function createMutationContext(database, auth, options = {}) {
     }
   };
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
+  context.teamBilling = createCurrentUserTeamBillingErasureApi(
+    database,
+    auth,
+    () => holder.current,
+    (candidate) => handlerContextByDatabase.get(database)?.() === candidate
+  );
   context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
   context.serverAuth = {
     async setEmailPassword(email, newPassword) {
@@ -24377,10 +24836,10 @@ function createCurrentUserJobApi(database, contextGetter) {
       }
       const id = crypto.randomUUID();
       const nowInstant = queueDatabase.clock.now();
-      const now = normalizeJobAvailableAt(nowInstant);
-      const availableAt = options.availableAt === void 0 ? now : normalizeJobAvailableAt(options.availableAt);
+      const now2 = normalizeJobAvailableAt(nowInstant);
+      const availableAt = options.availableAt === void 0 ? now2 : normalizeJobAvailableAt(options.availableAt);
       const retry = normalizeJobRetry(options.retry);
-      const firstAttemptInstant = availableAt > now ? new Date(availableAt) : nowInstant;
+      const firstAttemptInstant = availableAt > now2 ? new Date(availableAt) : nowInstant;
       if (jobTimestampAfter(firstAttemptInstant, RUNTIME_CLAIM_LEASE_MS) === null && !scheduleProvenance) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value with room for a canonical runtime claim lease.");
       }
@@ -24390,11 +24849,11 @@ function createCurrentUserJobApi(database, contextGetter) {
       const provenanceContext = context.__jobParentContext?.credential ? context.__jobParentContext : context;
       const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
       const credentialJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now2 ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now2, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
           "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
-        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        )).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now2, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) {
@@ -24664,7 +25123,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID6();
+      const claimToken = randomUUID7();
       const claimed = await database.adapter.prepare(sql(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -24812,11 +25271,11 @@ async function runInsertMutation(database, context, mutationName, args) {
       }
     };
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID6(),
-    createdAt: now,
-    updatedAt: now
+    id: randomUUID7(),
+    createdAt: now2,
+    updatedAt: now2
   };
   try {
     for (const field of table.fields) {
@@ -24888,7 +25347,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
       }
     };
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
   const previousRow = (await database.adapter.selectAppRows(resolved.table, {
     ownerId: ownerScoped ? context.auth.userId : void 0,
@@ -24907,7 +25366,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
       id,
       {
         [resolved.field.name]: nextValue,
-        updatedAt: now
+        updatedAt: now2
       },
       { ownerId: ownerScoped ? context.auth.userId : void 0 }
     );
@@ -24917,7 +25376,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
     const previous = deserializeRow(resolved.table, previousRow);
     const next = {
       ...previous,
-      updatedAt: now,
+      updatedAt: now2,
       [resolved.field.name]: deserializeFieldValue(resolved.field, nextValue)
     };
     await runTableWriteWithAcl(database, resolved.table, "update", previous, next, () => context, write);
@@ -29089,7 +29548,7 @@ function writeResult(result, failed = false) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -29378,7 +29837,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash8("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash9("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -30066,14 +30525,14 @@ function hostedRuntimeHealthCheck(result, commands) {
   }
   const failure = String(result.data?.failure ?? "");
   const routeMismatch = failure.includes("route") || failure.includes("container");
-  const unavailable = failure.includes("unavailable");
+  const unavailable2 = failure.includes("unavailable");
   return {
     id: "doctor.hosted.runtime-health",
     title: "Hosted Capsule health",
     scope: "hosted",
     status: "warn",
     severity: "warning",
-    message: routeMismatch ? "Hosted Capsule route and container state appear mismatched." : unavailable ? "Hosted Capsule is returning the Host unavailable response state." : result.error?.message ?? "Hosted Capsule runtime health check failed.",
+    message: routeMismatch ? "Hosted Capsule route and container state appear mismatched." : unavailable2 ? "Hosted Capsule is returning the Host unavailable response state." : result.error?.message ?? "Hosted Capsule runtime health check failed.",
     hint: result.error?.hint ?? "Inspect Hosted Capsule logs and retry health.",
     commands: [commands.capsuleHealth, commands.hostLogs, commands.hostPushVerify],
     details: result.data ?? null
@@ -30110,15 +30569,15 @@ function hostedSealedServerEnvCheck(capsule, commands) {
   );
   const releaseKeyUnavailable = Boolean(missingHostKeyMaterial && releaseFingerprint && inspectedFingerprint === releaseFingerprint);
   const currentKeyUnavailable = Boolean(missingHostKeyMaterial && (!releaseKeyUnavailable || !releaseFingerprint));
-  const unavailable = releaseKeyUnavailable || currentKeyUnavailable;
+  const unavailable2 = releaseKeyUnavailable || currentKeyUnavailable;
   return {
     id: "doctor.hosted.sealed-server-env",
     title: "Hosted Capsule Sealed Server env fingerprints",
     scope: "hosted",
-    status: unavailable ? "warn" : "pass",
-    severity: unavailable ? "warning" : "info",
-    message: unavailable ? releaseKeyUnavailable ? `Release metadata references sealed-env key fingerprint ${releaseFingerprint}, but matching Host key material is unavailable.` : releaseFingerprint && currentFingerprint && releaseFingerprint !== currentFingerprint ? `Current Host sealed-env key fingerprint ${currentFingerprint} is unavailable; current release metadata references ${releaseFingerprint}, so doctor cannot infer that release key material is unavailable from this inspection signal.` : `Host sealed-env key fingerprint ${currentFingerprint} is unavailable.` : mismatch ? `Release sealed-env key fingerprint ${releaseFingerprint} differs from the current Host key fingerprint ${currentFingerprint}; this can be a healthy rotated-key state when old release keys are retained.` : releaseFingerprint ? `Release sealed-env key fingerprint ${releaseFingerprint} is available on the Host.` : "Current release metadata does not reference a Sealed Server env key fingerprint.",
-    ...unavailable ? { hint: "Re-key and re-seal from source values, then push a verified release." } : {},
+    status: unavailable2 ? "warn" : "pass",
+    severity: unavailable2 ? "warning" : "info",
+    message: unavailable2 ? releaseKeyUnavailable ? `Release metadata references sealed-env key fingerprint ${releaseFingerprint}, but matching Host key material is unavailable.` : releaseFingerprint && currentFingerprint && releaseFingerprint !== currentFingerprint ? `Current Host sealed-env key fingerprint ${currentFingerprint} is unavailable; current release metadata references ${releaseFingerprint}, so doctor cannot infer that release key material is unavailable from this inspection signal.` : `Host sealed-env key fingerprint ${currentFingerprint} is unavailable.` : mismatch ? `Release sealed-env key fingerprint ${releaseFingerprint} differs from the current Host key fingerprint ${currentFingerprint}; this can be a healthy rotated-key state when old release keys are retained.` : releaseFingerprint ? `Release sealed-env key fingerprint ${releaseFingerprint} is available on the Host.` : "Current release metadata does not reference a Sealed Server env key fingerprint.",
+    ...unavailable2 ? { hint: "Re-key and re-seal from source values, then push a verified release." } : {},
     commands: [commands.hostPushVerify],
     details: {
       releasePublicKeyFingerprint: releaseFingerprint,
@@ -33936,7 +34395,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash9("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash10("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -35857,8 +36316,8 @@ function uploadHostReleaseArchive(options) {
     );
   }
 }
-function createHostReleaseId(now = /* @__PURE__ */ new Date()) {
-  const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
+  const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `${timestamp}-${randomBytes7(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data) {

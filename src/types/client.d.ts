@@ -357,12 +357,19 @@ export type TeamBillingPlanTransitionResult =
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
   | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "provider-state-ambiguous" | "unavailable" };
 
+export type TeamBillingErasureRequest = { teamId: string; requestId: string };
+export type TeamBillingErasureResult =
+  | { state: "pending"; teamId: string; requestId: string; requestedAt: string }
+  | { state: "authorized"; teamId: string; requestId: string };
+
 /** Headless Team Billing transport. Apps own every rendered element and all copy. */
 export type TeamBillingApi = {
   get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
   startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
   requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
+  /** Proves provider quiescence before the app performs its separate local Team deletion transaction. */
+  prepareErasure(input: TeamBillingErasureRequest): Promise<SporadesResult<TeamBillingErasureResult>>;
 };
 
 /** Hook state returned by `useQuery()`. */

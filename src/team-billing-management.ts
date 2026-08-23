@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { countAcceptedTeamMembers } from "./teams-runtime.js";
+import { assertTeamBillingErasureInactive } from "./team-billing-runtime.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -25,6 +26,7 @@ export async function requestTeamBillingPlanTransition(
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
     await admitPlanTransition(database, transaction, auth, teamId, productKey);
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql(
       "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
@@ -67,6 +69,8 @@ export async function stageTeamBillingMembershipChange(database: LooseRecord, te
   if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
+    try { await assertTeamBillingErasureInactive(database, transaction, teamId); }
+    catch { return Object.freeze({ staged: false as const, reason: "erasure-active" as const }); }
     const subscription = await optionalCurrentSubscription(transaction, teamId);
     if (!subscription) return Object.freeze({ staged: false as const });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];

@@ -58,6 +58,7 @@
 import { assertJsonCompatible, commandError } from "./runtime-errors.js";
 import { PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_REQUEST_JOB, privilegedAuthUserId } from "./auth-runtime.js";
 import { TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB } from "./team-billing-runtime.js";
+import { TEAM_BILLING_ERASURE_JOB } from "./team-billing-erasure.js";
 import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB } from "./team-billing-management.js";
 
 // Synchronous access to a Node builtin without an import — see the header. Bound as one namespace
@@ -881,6 +882,7 @@ export function runtimeOwnedJobHandlers(runtime: {
   expireTeamBillingPortal: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
   performTeamBillingPlanTransition: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
   performTeamBillingSeatConvergence: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+  performTeamBillingErasure: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
 }) {
   return [
     {
@@ -895,6 +897,7 @@ export function runtimeOwnedJobHandlers(runtime: {
     { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
     { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
     { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
+    { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
     {
       name: STRIPE_EVENT_JOB,
       handler: runtime.dispatchStripeEvent,
